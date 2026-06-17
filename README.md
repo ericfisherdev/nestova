@@ -23,8 +23,26 @@ make generate   # regenerate Go from .templ files
 make fmt        # format templ and Go sources
 make test       # run tests with the race detector + coverage profile
 make cover      # print a per-function coverage summary
+make hooks      # install the Lefthook Git hooks
 make help       # list all targets
 ```
+
+### Git hooks (Lefthook)
+
+[Lefthook](https://lefthook.dev) is pinned as a Go tool directive in `go.mod`.
+Enable the hooks once per clone:
+
+```sh
+make hooks            # go tool lefthook install
+make hooks-uninstall  # remove them
+```
+
+The hooks delegate to the same `make` targets as CI, so local and CI checks
+never diverge ([`lefthook.yml`](lefthook.yml)):
+
+- **pre-commit** (piped, fails fast): format staged sources, verify generated
+  `*_templ.go` is in sync, `make lint`, and `go test ./...`.
+- **pre-push**: the full race-enabled `make test` plus `make lint`.
 
 ### Testing
 

@@ -18,7 +18,7 @@ GOLANGCI_LINT_VERSION := v2.11.4
 # Coverage profile written by `make test` and read by `make cover`.
 COVERAGE_OUT := coverage.out
 
-.PHONY: all build run test cover lint fmt generate tidy clean help
+.PHONY: all build run test cover lint fmt generate hooks hooks-uninstall tidy clean help
 
 ## all: default aggregate target (alias for build)
 all: build
@@ -52,6 +52,14 @@ fmt:
 ## generate: generate Go code from .templ files
 generate:
 	go tool templ generate
+
+## hooks: install the Lefthook Git hooks (pre-commit, pre-push)
+hooks:
+	go tool lefthook install
+
+## hooks-uninstall: remove the Lefthook Git hooks
+hooks-uninstall:
+	go tool lefthook uninstall
 
 ## tidy: prune and verify module dependencies
 tidy:
