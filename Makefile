@@ -10,7 +10,10 @@ SERVER_BIN := $(BIN_DIR)/server
 
 .DEFAULT_GOAL := build
 
-.PHONY: build run test lint fmt generate tidy clean help
+.PHONY: all build run test lint fmt generate tidy clean help
+
+## all: default aggregate target (alias for build)
+all: build
 
 ## build: compile the server binary into ./bin
 build:
