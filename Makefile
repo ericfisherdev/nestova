@@ -33,13 +33,14 @@ test:
 lint:
 	go vet ./...
 
-## fmt: format all Go sources
+## fmt: format templ and Go sources
 fmt:
+	go tool templ fmt .
 	gofmt -s -w .
 
-## generate: run code generation (templ wired up in NES-9)
+## generate: generate Go code from .templ files
 generate:
-	go generate ./...
+	go tool templ generate
 
 ## tidy: prune and verify module dependencies
 tidy:
