@@ -21,9 +21,17 @@ make build      # compile the server into ./bin
 make run        # run the server from source (serves /healthz on :8080)
 make generate   # regenerate Go from .templ files
 make fmt        # format templ and Go sources
-make test       # run tests with the race detector
+make test       # run tests with the race detector + coverage profile
+make cover      # print a per-function coverage summary
 make help       # list all targets
 ```
+
+### Testing
+
+See [docs/testing.md](docs/testing.md) for the project's test conventions
+(table-driven, black-box, environment isolation) and coverage workflow.
+`make test` writes a coverage profile to `coverage.out`; `make cover` renders a
+per-function summary.
 
 ### Templates (templ)
 
