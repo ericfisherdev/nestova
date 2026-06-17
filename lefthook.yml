@@ -1,0 +1,42 @@
+# Lefthook Git hooks.
+#
+# Commands delegate to Makefile targets / pinned go tools so local hooks and CI
+# (NES-12) enforce the same gates. Enable them with `make hooks` (which runs
+# `go tool lefthook install`). Tooling is pinned in go.mod (lefthook, templ) and
+# the README (golangci-lint).
+
+# pre-commit runs the fast gates on staged changes, piped so it stops at the
+# first failure. Committing unformatted, stale-generated, lint-failing, or
+# test-failing code is blocked.
+pre-commit:
+  piped: true
+  jobs:
+    - name: fmt
+      glob: "*.{go,templ}"
+      run: make fmt
+      # Re-stage files that were already staged and got reformatted.
+      stage_fixed: true
+    - name: templ-generate
+      glob: "*.templ"
+      # Fail if committed *_templ.go is stale relative to its .templ source.
+      # Note: this is a git pathspec, not a shell glob — '*' crosses directory
+      # boundaries, so '*_templ.go' matches generated files at any depth
+      # (e.g. web/components/hello_templ.go).
+      run: make generate && git diff --exit-code -- '*_templ.go'
+    - name: lint
+      glob: "*.go"
+      run: make lint
+    - name: test
+      glob: "*.go"
+      # Fast feedback on commit; the full race suite runs on pre-push and in CI.
+      run: go test ./...
+
+# pre-push is the heavier safety net: the full race-enabled suite and lint over
+# the whole module before anything leaves the machine.
+pre-push:
+  parallel: true
+  jobs:
+    - name: lint
+      run: make lint
+    - name: test
+      run: make test
