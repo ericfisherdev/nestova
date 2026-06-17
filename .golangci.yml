@@ -1,0 +1,38 @@
+# golangci-lint configuration (schema v2).
+#
+# `version: "2"` is required and selects the v2 configuration schema (verified
+# with `golangci-lint config verify` on v2.11.4). In v2, formatters such as
+# gofumpt/goimports live in their own top-level `formatters:` section rather
+# than under `linters`, and generated-file handling moved to
+# `exclusions.generated`.
+#
+# The binary version is pinned for reproducibility: CI installs it via the
+# official golangci/golangci-lint-action (see NES-12) and local developers
+# install the matching release (see README). Do not install via `go install`
+# — the maintainers advise against it (untested Go versions / dep conflicts).
+version: "2"
+
+linters:
+  # Start from the curated standard set (errcheck, govet, ineffassign,
+  # staticcheck, unused) and add revive for style/lint rules.
+  default: standard
+  enable:
+    - revive
+  exclusions:
+    # Skip files carrying the "// Code generated ... DO NOT EDIT." header
+    # (e.g. templ's *_templ.go output) using the strict Go convention.
+    generated: strict
+    warn-unused: true
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/ericfisherdev/nestova
+    gofumpt:
+      module-path: github.com/ericfisherdev/nestova
+  exclusions:
+    generated: strict
