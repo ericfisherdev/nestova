@@ -15,7 +15,10 @@ GOLANGCI_LINT_VERSION := v2.11.4
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build run test lint fmt generate tidy clean help
+# Coverage profile written by `make test` and read by `make cover`.
+COVERAGE_OUT := coverage.out
+
+.PHONY: all build run test cover lint fmt generate tidy clean help
 
 ## all: default aggregate target (alias for build)
 all: build
@@ -29,10 +32,13 @@ build:
 run:
 	go run ./cmd/server
 
-## test: run the test suite with the race detector and coverage
-## (coverage reporting is finalized in NES-14)
+## test: run the test suite with the race detector and write a coverage profile
 test:
-	go test -race ./...
+	go test -race -cover -coverprofile=$(COVERAGE_OUT) ./...
+
+## cover: print a per-function coverage summary (runs test first)
+cover: test
+	go tool cover -func=$(COVERAGE_OUT)
 
 ## lint: run static analysis (golangci-lint, config in .golangci.yml)
 lint:
