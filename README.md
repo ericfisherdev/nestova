@@ -7,9 +7,12 @@ Nestova — family household management app (Go/Postgres/HTMX/Alpine/Tailwind/GS
 ### Prerequisites
 
 - Go (see the `go` directive in [`go.mod`](go.mod))
+- [golangci-lint](https://golangci-lint.run) **v2.11.4** (see [Linting](#linting-golangci-lint))
 
-Developer tooling is pinned in `go.mod` via Go tool directives, so no global
-installs are required — invoke tools with `go tool <name>`.
+Most developer tooling (templ, etc.) is pinned in `go.mod` via Go tool
+directives, so no global install is needed — invoke it with `go tool <name>`.
+golangci-lint is the exception: its maintainers advise against `go install`, so
+it is installed as a pinned binary instead.
 
 ### Common tasks
 
@@ -36,3 +39,18 @@ compiles type-safe `.templ` components to Go.
   be edited by hand.
 - After editing a `.templ` file, run `make generate` and commit the updated
   `*_templ.go` alongside it. CI verifies generated output is in sync.
+
+### Linting (golangci-lint)
+
+Static analysis is configured in [`.golangci.yml`](.golangci.yml) (schema v2).
+
+- **Version is pinned** to `v2.11.4` (the `GOLANGCI_LINT_VERSION` variable in
+  the `Makefile` is the single source of truth; CI installs this exact version
+  via the official action). Install the matching release locally from the
+  [install guide](https://golangci-lint.run/docs/welcome/install/) — do **not**
+  use `go install`.
+- `make lint` runs `golangci-lint run`; `make fmt` applies the configured
+  formatters (gofumpt + goimports) via `golangci-lint fmt`.
+- Generated `*_templ.go` files are excluded from linting and formatting via
+  the `exclusions.generated: strict` setting under both `linters` and
+  `formatters` in `.golangci.yml`.

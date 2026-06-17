@@ -8,6 +8,11 @@
 BIN_DIR := bin
 SERVER_BIN := $(BIN_DIR)/server
 
+# Pinned golangci-lint version (single source of truth shared with CI, which
+# installs this exact version via golangci/golangci-lint-action). Keep in sync
+# with the version documented in the README.
+GOLANGCI_LINT_VERSION := v2.11.4
+
 .DEFAULT_GOAL := build
 
 .PHONY: all build run test lint fmt generate tidy clean help
@@ -29,14 +34,14 @@ run:
 test:
 	go test -race ./...
 
-## lint: run static analysis (configured in NES-10)
+## lint: run static analysis (golangci-lint, config in .golangci.yml)
 lint:
-	go vet ./...
+	golangci-lint run
 
-## fmt: format templ and Go sources
+## fmt: format templ and Go sources (golangci-lint runs gofumpt + goimports)
 fmt:
 	go tool templ fmt .
-	gofmt -s -w .
+	golangci-lint fmt
 
 ## generate: generate Go code from .templ files
 generate:
