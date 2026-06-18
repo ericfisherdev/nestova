@@ -42,6 +42,8 @@ never diverge ([`lefthook.yml`](lefthook.yml)):
 
 - **pre-commit** (piped, fails fast): format staged sources, verify generated
   `*_templ.go` is in sync, `make lint`, and `go test ./...`.
+- **commit-msg**: enforce [Conventional Commits](https://www.conventionalcommits.org)
+  (see [CONTRIBUTING.md](CONTRIBUTING.md#commit-messages)).
 - **pre-push**: the full race-enabled `make test` plus `make lint`.
 
 ### Testing

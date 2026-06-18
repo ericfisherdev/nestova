@@ -1,0 +1,33 @@
+# Conventional Commits enforcement (siderolabs/conform).
+#
+# Enforced locally via the lefthook commit-msg hook and in CI (see
+# CONTRIBUTING.md). conform is pinned as a go.mod tool directive; run it with
+# `go tool conform`.
+policies:
+  - type: commit
+    spec:
+      header:
+        # Max length of the commit subject line.
+        length: 100
+        # Allow non-imperative subjects (e.g. "fix: updated X").
+        imperative: false
+        case: lower
+        invalidLastCharacters: .
+      body:
+        required: false
+      conventional:
+        types:
+          - feat
+          - fix
+          - docs
+          - chore
+          - refactor
+          - test
+          - build
+          - ci
+          - perf
+          - style
+          - revert
+        # Any scope is allowed (the project uses Jira keys, e.g. NES-8).
+        scopes:
+          - .*
