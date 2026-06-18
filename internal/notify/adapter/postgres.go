@@ -34,13 +34,16 @@ func NewOutboxRepository(pool *pgxpool.Pool) *OutboxRepository {
 }
 
 // Enqueue inserts a new notification into the outbox table. The caller is
-// responsible for setting a valid ID, HouseholdID, Channel, Title, Body,
-// ScheduledFor, and Status before calling Enqueue. MemberID, SourceType, and
-// SourceID are optional and may be nil/empty.
+// responsible for setting a valid ID, HouseholdID, Channel, Title, Body, and
+// ScheduledFor. MemberID, SourceType, and SourceID are optional (nil/empty).
+// The row is always persisted with StatusPending — enqueueing an
+// already-terminal notification is not meaningful — and the entity's Status is
+// updated to match.
 func (r *OutboxRepository) Enqueue(ctx context.Context, n *domain.Notification) error {
 	if n == nil {
 		return errors.New("adapter: enqueue: nil notification")
 	}
+	n.Status = domain.StatusPending
 	const q = `
 		INSERT INTO notification
 		    (id, household_id, member_id, channel, title, body, scheduled_for, status, source_type, source_id)

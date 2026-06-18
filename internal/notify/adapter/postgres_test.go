@@ -200,7 +200,9 @@ func TestClaimDue_Concurrency_NoDoubleClaimWithSKIPLOCKED(t *testing.T) {
 		err     error
 	}
 
-	var wg sync.WaitGroup
+	var wg, ready sync.WaitGroup
+	ready.Add(2)
+	start := make(chan struct{})
 	results := make([]result, 2)
 
 	for i, repo := range []domain.Outbox{repo1, repo2} {
@@ -209,10 +211,16 @@ func TestClaimDue_Concurrency_NoDoubleClaimWithSKIPLOCKED(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			// Both goroutines block here until released together, forcing the two
+			// ClaimDue calls to actually contend rather than run sequentially.
+			ready.Done()
+			<-start
 			claimed, err := r.ClaimDue(ctx, 10)
 			results[idx] = result{claimed: claimed, err: err}
 		}(i, repo)
 	}
+	ready.Wait()
+	close(start)
 	wg.Wait()
 
 	// Verify: no errors.
