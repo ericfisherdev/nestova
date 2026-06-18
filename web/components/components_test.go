@@ -64,6 +64,43 @@ func TestNavPillActive(t *testing.T) {
 	}
 }
 
+func TestLayoutRendersShell(t *testing.T) {
+	props := components.ShellProps{Members: []components.MemberView{{Name: "Maya", Initials: "M", Color: "sage"}}}
+	nav := []components.NavItem{
+		{Label: "Calendar", Href: "/calendar", Active: true},
+		{Label: "Chores", Href: "/chores"},
+	}
+	out := renderString(t, components.Layout(props, nav, templ.Raw(`<p id="body">hi</p>`)))
+
+	for _, want := range []string{
+		"<!doctype html>",
+		`href="/static/css/app.css"`,     // styled
+		`src="/static/js/htmx.min.js"`,   // htmx wired
+		`src="/static/js/alpine.min.js"`, // alpine wired
+		`id="sidebar"`,                   // fixed sidebar
+		`aria-label="Primary"`,           // nav landmark
+		"Skip to content",                // a11y skip link
+		`aria-controls="sidebar"`,        // drawer toggle wiring
+		`aria-current="page"`,            // active nav pill
+		"Maya",                           // family list
+		`id="body"`,                      // content slot rendered
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("layout missing %q", want)
+		}
+	}
+}
+
+func TestDashboardRendersCards(t *testing.T) {
+	out := renderString(t, components.Dashboard())
+	// Note: templ HTML-escapes "&", so assert on un-ampersanded substrings.
+	for _, want := range []string{"Dashboard", "Calendar", "Chores", "Meals", "Groceries", "Photos", "Subscriptions"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dashboard missing card/heading %q", want)
+		}
+	}
+}
+
 func TestMemberAvatar(t *testing.T) {
 	avatar := renderString(t, components.MemberAvatar(components.MemberView{Name: "Maya", Initials: "M", Color: "clay"}))
 	if !strings.Contains(avatar, "bg-member-clay-tint") || !strings.Contains(avatar, "text-member-clay-fg") {

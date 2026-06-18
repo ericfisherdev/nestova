@@ -1,0 +1,122 @@
+package components
+
+import "strconv"
+
+// NavItem is a sidebar navigation entry. Active marks the current page.
+type NavItem struct {
+	Label  string
+	Href   string
+	Active bool
+}
+
+// ShellProps configures the A · Hearth app shell.
+type ShellProps struct {
+	// Members renders the sidebar Family list.
+	Members []MemberView
+}
+
+// Layout renders the A · Hearth app shell — a fixed left sidebar plus the main
+// content area — around content. Use it with the render seam, binding props and
+// nav into the layout func:
+//
+//	layout := func(c templ.Component) templ.Component { return components.Layout(props, nav, c) }
+//	render.Page(ctx, w, r, layout, content)
+templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+			<script src="/static/js/htmx.min.js" defer></script>
+			<script src="/static/js/alpine.min.js" defer></script>
+		</head>
+		<body
+			class="bg-sand font-sans text-ink min-h-screen"
+			x-data="{ open: false }"
+			@keydown.escape.window="if (open) { open = false; $refs.navToggle.focus() }"
+		>
+			<a
+				href="#main-content"
+				class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white"
+			>Skip to content</a>
+			<!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).
+			     Opening moves focus into the drawer; closing returns it here. -->
+			<button
+				type="button"
+				x-ref="navToggle"
+				class="fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden"
+				@click="open = true; $nextTick(() => $refs.navPanel.focus())"
+				aria-label="Open navigation"
+				aria-controls="sidebar"
+				:aria-expanded="open"
+			>
+				<span aria-hidden="true">&#9776;</span>
+			</button>
+			<!-- Click-away overlay shown with the drawer on narrow screens. -->
+			<div
+				x-show="open"
+				x-cloak
+				@click="open = false; $refs.navToggle.focus()"
+				class="fixed inset-0 z-30 bg-ink/30 md:hidden"
+			></div>
+			@sidebar(props, nav)
+			<!-- inert disables the main content behind the open drawer so keyboard
+			     focus cannot escape the modal drawer (WCAG 2.4.3). -->
+			<main id="main-content" class="bg-main min-h-screen md:ml-[264px]" :inert="open">
+				@content
+			</main>
+		</body>
+	</html>
+}
+
+// sidebar is the fixed 264px navigation rail; on narrow screens it slides in as
+// an Alpine-controlled drawer.
+templ sidebar(props ShellProps, nav []NavItem) {
+	<aside
+		id="sidebar"
+		x-ref="navPanel"
+		tabindex="-1"
+		class="fixed inset-y-0 left-0 z-40 flex w-[264px] -translate-x-full flex-col gap-4 overflow-y-auto border-r border-sidebar-border bg-sidebar p-4 transition-transform outline-none md:translate-x-0"
+		:class="open ? 'translate-x-0' : ''"
+	>
+		<div class="flex items-center gap-2 px-1">
+			<span class="inline-block h-7 w-7 rounded-full border-4 border-sage" aria-hidden="true"></span>
+			<span class="text-lg font-semibold">Nestova</span>
+		</div>
+		@Button("Create", ButtonPrimary, "")
+		<nav class="flex flex-col gap-1" aria-label="Primary">
+			for _, item := range nav {
+				@NavPill(item.Label, item.Href, item.Active)
+			}
+		</nav>
+		<hr class="border-sidebar-border"/>
+		@miniMonth()
+		if len(props.Members) > 0 {
+			<div class="flex flex-col gap-2">
+				<h2 class="px-1 text-sm font-semibold text-ink-muted">Family</h2>
+				for _, m := range props.Members {
+					<div class="flex items-center gap-2 px-1">
+						@MemberAvatar(m)
+						<span class="text-sm">{ m.Name }</span>
+					</div>
+				}
+			</div>
+		}
+	</aside>
+}
+
+// miniMonth is a static placeholder calendar widget; it is wired to real data in
+// a later phase.
+templ miniMonth() {
+	<div class="rounded-card bg-surface p-3 shadow-warm" aria-hidden="true">
+		<div class="mb-2 text-center text-sm font-medium text-ink-secondary">This month</div>
+		<div class="grid grid-cols-7 gap-1 text-center text-xs text-ink-muted">
+			for day := 1; day <= 28; day++ {
+				<span class="py-1">{ strconv.Itoa(day) }</span>
+			}
+		</div>
+	</div>
+}

@@ -9,15 +9,15 @@ import (
 	"testing"
 )
 
-func exampleMux() *http.ServeMux {
+func webMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	registerExampleRoutes(mux, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	registerWebRoutes(mux, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return mux
 }
 
-func TestExampleHomeRendersFullPage(t *testing.T) {
+func TestDashboardRendersShell(t *testing.T) {
 	rec := httptest.NewRecorder()
-	exampleMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	webMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -26,40 +26,40 @@ func TestExampleHomeRendersFullPage(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/html", got)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"<!doctype html>", `href="/static/css/app.css"`, "Create", "Nestova"} {
+	for _, want := range []string{
+		"<!doctype html>",
+		`href="/static/css/app.css"`, // styled
+		"Nestova",                    // wordmark
+		`aria-label="Primary"`,       // sidebar nav
+		"Calendar", "Chores",         // nav pills
+		"Dashboard",    // page heading
+		"Maya",         // family list
+		`id="sidebar"`, // shell sidebar
+	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("full page missing %q", want)
+			t.Errorf("dashboard page missing %q", want)
 		}
 	}
 }
 
-func TestExampleHomeHTMXReturnsFragment(t *testing.T) {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("HX-Request", "true")
-	exampleMux().ServeHTTP(rec, req)
-
-	body := rec.Body.String()
-	if strings.Contains(body, "<!doctype html>") || strings.Contains(body, "<html") {
-		t.Errorf("HTMX home should return a fragment without a full document: %q", body[:min(120, len(body))])
+// TestPrimaryNavActive verifies only the matching nav item is marked active.
+func TestPrimaryNavActive(t *testing.T) {
+	nav := primaryNav("/chores")
+	var activeCount int
+	for _, item := range nav {
+		if item.Active {
+			activeCount++
+			if item.Href != "/chores" {
+				t.Errorf("active item = %q, want /chores", item.Href)
+			}
+		}
 	}
-	if !strings.Contains(body, "Create") {
-		t.Errorf("HTMX home fragment missing content: %q", body)
+	if activeCount != 1 {
+		t.Errorf("active nav items = %d, want 1", activeCount)
 	}
-}
-
-func TestExampleFragmentRoute(t *testing.T) {
-	rec := httptest.NewRecorder()
-	exampleMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/fragment", nil))
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	body := rec.Body.String()
-	if strings.Contains(body, "<html") {
-		t.Errorf("fragment route should not return a full document: %q", body)
-	}
-	if !strings.Contains(body, "Swapped!") {
-		t.Errorf("fragment missing expected content: %q", body)
+	for _, item := range primaryNav("") {
+		if item.Active {
+			t.Errorf("no item should be active for empty selection, got %q", item.Href)
+		}
 	}
 }

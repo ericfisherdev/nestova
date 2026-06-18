@@ -1,0 +1,31 @@
+package components
+
+// Dashboard is the home content: a top bar plus a responsive grid of
+// placeholder cards, one per feature area. It renders into the Layout shell.
+templ Dashboard() {
+	<div class="p-6">
+		<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+			<h1 class="text-2xl font-semibold">Dashboard</h1>
+		</div>
+		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			@Card("Calendar") {
+				<p>Upcoming family events will appear here.</p>
+			}
+			@Card("Chores") {
+				<p>Today's rotating chores will appear here.</p>
+			}
+			@Card("Meals & Recipes") {
+				<p>This week's meal plan will appear here.</p>
+			}
+			@Card("Groceries") {
+				<p>Your shopping list will appear here.</p>
+			}
+			@Card("Photos") {
+				<p>The family photo album will appear here.</p>
+			}
+			@Card("Subscriptions") {
+				<p>Upcoming renewals will appear here.</p>
+			}
+		</div>
+	</div>
+}
