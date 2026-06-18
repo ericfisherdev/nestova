@@ -57,7 +57,7 @@ func run(logger *slog.Logger) error {
 			return db.Health(ctx, pool)
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerExampleRoutes(mux, logger)
+			registerWebRoutes(mux, logger)
 		},
 	})
 

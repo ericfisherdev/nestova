@@ -79,3 +79,9 @@
   font-display: swap;
   src: url("/static/fonts/space-mono.woff2") format("woff2");
 }
+
+/* Hide Alpine x-cloak elements until Alpine initializes, preventing a flash of
+ * the drawer overlay before hydration. */
+[x-cloak] {
+  display: none !important;
+}
