@@ -1,4 +1,8 @@
-@import "tailwindcss";
+/* source(none) disables Tailwind's automatic source detection so it does not
+ * scan .go files (whose identifiers/comments — e.g. "uppercase" — would
+ * otherwise leak spurious utilities and make app.css depend on Go code). Only
+ * the explicit @source globs below are scanned. */
+@import "tailwindcss" source(none);
 
 /* Scan the templ sources (not the .min.js vendored libs) for utility classes. */
 @source "../../**/*.templ";
