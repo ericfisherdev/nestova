@@ -18,6 +18,8 @@ import (
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
+	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 )
 
 // testCredRepo is a no-op CredentialRepository used in unit tests that have no
@@ -102,8 +104,17 @@ func buildTestHandler() http.Handler {
 	authHandlers := authadapter.NewHandlers(sm, authn, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(repo, testCredStore{}, testProvisioner{}, sm, logger)
 
+	// Stub task dependencies so the composition root builds without a database.
+	taskRecurringRepo := fakeRecurringTaskRepo{}
+	taskInstanceRepo := &fakeTaskInstanceRepo{}
+	taskService, err := tasksapp.NewTaskService(taskRecurringRepo, taskInstanceRepo)
+	if err != nil {
+		panic("buildTestHandler: " + err.Error())
+	}
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, taskRecurringRepo, taskInstanceRepo, repo, sm, logger)
+
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo, taskWebHandlers)
 
 	// Apply the session middleware so CSRF tokens and member lookups work.
 	return sm.LoadAndSave(
@@ -179,13 +190,14 @@ func TestLoginPageRendersForm(t *testing.T) {
 
 // TestPrimaryNavActive verifies only the matching nav item is marked active.
 func TestPrimaryNavActive(t *testing.T) {
-	nav := primaryNav("/chores")
+	// The Chores nav item now links to /tasks (NES-32).
+	nav := primaryNav("/tasks")
 	var activeCount int
 	for _, item := range nav {
 		if item.Active {
 			activeCount++
-			if item.Href != "/chores" {
-				t.Errorf("active item = %q, want /chores", item.Href)
+			if item.Href != "/tasks" {
+				t.Errorf("active item = %q, want /tasks", item.Href)
 			}
 		}
 	}

@@ -569,10 +569,11 @@ func (r *TaskInstanceRepository) LatestDueOn(
 	return domain.DateOf(*maxDueOn), true, nil
 }
 
-// Claim assigns the instance to assignee when it is pending and currently
-// unassigned. On 0 rows affected, the instance is read to produce the precise
-// sentinel: domain.ErrInstanceNotFound, domain.ErrInstanceInTerminalState, or
-// domain.ErrInstanceAlreadyClaimed.
+// Claim assigns the instance to assignee when it is pending or overdue and
+// currently unassigned. An overdue chore is still claimable — it can be picked
+// up late. On 0 rows affected, the instance is read to produce the precise
+// sentinel: domain.ErrInstanceNotFound, domain.ErrInstanceInTerminalState
+// (done/skipped), or domain.ErrInstanceAlreadyClaimed (already assigned).
 func (r *TaskInstanceRepository) Claim(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -585,7 +586,7 @@ func (r *TaskInstanceRepository) Claim(
 		       updated_at  = now()
 		 WHERE id          = $1
 		   AND household_id = $2
-		   AND status       = 'pending'
+		   AND status       IN ('pending', 'overdue')
 		   AND assignee_id IS NULL`
 	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String(), assignee.String())
 	if err != nil {
@@ -598,7 +599,9 @@ func (r *TaskInstanceRepository) Claim(
 }
 
 // disambiguateClaim reads the instance to determine why a Claim UPDATE matched
-// zero rows, returning the appropriate domain sentinel.
+// zero rows, returning the appropriate domain sentinel. A done or skipped row is
+// terminal (ErrInstanceInTerminalState); a pending-or-overdue row that is
+// already assigned yields ErrInstanceAlreadyClaimed.
 func (r *TaskInstanceRepository) disambiguateClaim(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -609,16 +612,18 @@ func (r *TaskInstanceRepository) disambiguateClaim(
 		// Covers both ErrInstanceNotFound and unexpected DB errors.
 		return err
 	}
-	if inst.Status != domain.StatusPending {
+	if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
+		// done or skipped → terminal.
 		return domain.ErrInstanceInTerminalState
 	}
-	// Status is pending but assignee_id is not null.
+	// Status is pending or overdue but assignee_id is not null.
 	return domain.ErrInstanceAlreadyClaimed
 }
 
-// Complete transitions the instance from pending to done, recording by and at.
+// Complete transitions the instance from pending or overdue to done, recording
+// by and at. An overdue chore is still actionable — it can be completed late.
 // On 0 rows affected, the instance is read to produce the precise sentinel:
-// domain.ErrInstanceNotFound or domain.ErrInstanceInTerminalState.
+// domain.ErrInstanceNotFound or domain.ErrInstanceInTerminalState (done/skipped).
 func (r *TaskInstanceRepository) Complete(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -634,7 +639,7 @@ func (r *TaskInstanceRepository) Complete(
 		       updated_at   = now()
 		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       = 'pending'`
+		   AND status       IN ('pending', 'overdue')`
 	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String(), by.String(), at)
 	if err != nil {
 		return fmt.Errorf("complete task instance: %w", err)
@@ -645,9 +650,10 @@ func (r *TaskInstanceRepository) Complete(
 	return nil
 }
 
-// Skip transitions the instance from pending to skipped. On 0 rows affected,
-// the instance is read to produce the precise sentinel: domain.ErrInstanceNotFound
-// or domain.ErrInstanceInTerminalState.
+// Skip transitions the instance from pending or overdue to skipped. An overdue
+// chore is still actionable — it can be skipped late. On 0 rows affected, the
+// instance is read to produce the precise sentinel: domain.ErrInstanceNotFound
+// or domain.ErrInstanceInTerminalState (done/skipped).
 func (r *TaskInstanceRepository) Skip(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -659,7 +665,7 @@ func (r *TaskInstanceRepository) Skip(
 		       updated_at   = now()
 		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       = 'pending'`
+		   AND status       IN ('pending', 'overdue')`
 	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String())
 	if err != nil {
 		return fmt.Errorf("skip task instance: %w", err)
@@ -673,7 +679,9 @@ func (r *TaskInstanceRepository) Skip(
 // disambiguateTerminal reads the instance to determine why a Complete or Skip
 // UPDATE matched zero rows, returning domain.ErrInstanceNotFound when the row
 // does not exist in the household or domain.ErrInstanceInTerminalState when it
-// is already in a terminal state.
+// is already done or skipped. Because Complete and Skip now act on both pending
+// and overdue rows, a zero-row update for an existing instance means the row is
+// in a terminal state (done or skipped).
 func (r *TaskInstanceRepository) disambiguateTerminal(
 	ctx context.Context,
 	householdID household.HouseholdID,

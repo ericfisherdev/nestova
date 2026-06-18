@@ -1,0 +1,185 @@
+package components
+
+import (
+	"fmt"
+	"time"
+)
+
+// TaskRow is the view model for a single task instance row in the tasks list.
+// It carries everything the template needs — title, category, due-date label,
+// status, assignee info, and the CSRF token for the action forms — so handlers
+// remain the sole place that touches domain types and the wall clock. The view
+// is deliberately free of time.Now() so rendering is deterministic: the template
+// renders the pre-computed DueLabel and never formats DueOn itself.
+type TaskRow struct {
+	// InstanceID is the string representation of the TaskInstanceID UUID; used as
+	// the stable HTML anchor id and the HTMX action URL segment.
+	InstanceID string
+	// Title is the parent recurring task's display title.
+	Title string
+	// Category is one of "chore" or "maintenance".
+	Category string
+	// DueOn is the calendar date (midnight UTC) the instance is due. It is the
+	// sort key the handler orders rows by; the template does not render it
+	// directly (it renders DueLabel instead).
+	DueOn time.Time
+	// DueLabel is the pre-formatted, human-readable due date computed by the
+	// handler against its reference "today" (e.g. "Today", "Tomorrow", "Jun 20").
+	// The component renders it verbatim so the template never calls time.Now().
+	DueLabel string
+	// Status is one of "pending", "overdue", "done", "skipped".
+	Status string
+	// AssigneeID is the string form of the assigned member's id, or empty when the
+	// instance is unassigned. It is the stable grouping key (display names are not
+	// unique within a household).
+	AssigneeID string
+	// AssigneeName is the display name of the assigned member, or empty when
+	// the instance is unassigned (claimable).
+	AssigneeName string
+	// AssigneeColor is the A·Hearth palette key for the assignee's avatar tint
+	// (e.g. "sage", "clay"). Empty when unassigned.
+	AssigneeColor string
+	// Claimable is true for pending or overdue, unassigned instances that the
+	// current member may claim.
+	Claimable bool
+	// CSRFToken is the per-session CSRF token embedded in every action form.
+	CSRFToken string
+}
+
+// TaskGroup is a named group of task rows shown together in the list (e.g.
+// all instances assigned to one member, or the "Up for grabs" section).
+type TaskGroup struct {
+	// Label is the group heading text displayed above the rows.
+	Label string
+	// AssigneeColor is the palette key used to tint the group heading avatar.
+	// Empty for the "Up for grabs" group.
+	AssigneeColor string
+	// Rows are the task rows belonging to this group.
+	Rows []TaskRow
+}
+
+// TasksPage renders the full chores & maintenance list, grouped by assignee.
+// Each group has a heading; unassigned claimable tasks appear last under "Up
+// for grabs". HTMX action buttons on each row POST to the server and swap the
+// row in place on success.
+templ TasksPage(groups []TaskGroup) {
+	<div class="p-6">
+		<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+			<h1 class="text-2xl font-semibold">Chores &amp; Maintenance</h1>
+		</div>
+		if len(groups) == 0 {
+			<div class="rounded-card bg-surface p-8 text-center shadow-warm">
+				<p class="text-ink-secondary">No upcoming or overdue tasks — you're all caught up!</p>
+			</div>
+		} else {
+			<div class="flex flex-col gap-6">
+				for _, group := range groups {
+					@taskGroup(group)
+				}
+			</div>
+		}
+	</div>
+}
+
+// taskGroup renders a single assignee group with its heading and task rows.
+templ taskGroup(group TaskGroup) {
+	<section>
+		<div class="mb-3 flex items-center gap-2">
+			if group.AssigneeColor != "" {
+				<span
+					class={ "inline-flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold", memberTintClass(group.AssigneeColor) }
+					aria-hidden="true"
+				></span>
+			}
+			<h2 class="font-semibold text-ink-secondary">{ group.Label }</h2>
+		</div>
+		<div class="flex flex-col gap-2">
+			for _, row := range group.Rows {
+				@TaskRowItem(row)
+			}
+		</div>
+	</section>
+}
+
+// TaskRowItem renders a single task instance row. It is the HTMX swap target:
+// each action (complete, skip, claim) swaps this element's outer HTML in place.
+// The wrapping div carries a stable id="task-{InstanceID}" for the swap selector.
+templ TaskRowItem(row TaskRow) {
+	<div
+		id={ fmt.Sprintf("task-%s", row.InstanceID) }
+		class="flex flex-wrap items-center justify-between gap-3 rounded-card bg-surface px-4 py-3 shadow-warm"
+	>
+		<!-- Left: category badge + title + due date -->
+		<div class="flex min-w-0 flex-col gap-1">
+			<div class="flex items-center gap-2">
+				@categoryBadge(row.Category)
+				<span class="truncate font-medium text-ink">{ row.Title }</span>
+			</div>
+			<div class="flex items-center gap-2 text-sm">
+				if row.Status == "overdue" {
+					<span class="font-medium text-red-600">Overdue — due { row.DueLabel }</span>
+				} else {
+					<span class="text-ink-muted">Due { row.DueLabel }</span>
+				}
+			</div>
+		</div>
+		<!-- Right: action buttons -->
+		<div class="flex shrink-0 items-center gap-2">
+			if row.Status == "pending" || row.Status == "overdue" {
+				if row.Claimable {
+					<!-- Claimable: unassigned pending instance -->
+					<form
+						method="post"
+						action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/claim", row.InstanceID)) }
+						hx-post={ fmt.Sprintf("/tasks/%s/claim", row.InstanceID) }
+						hx-target={ fmt.Sprintf("#task-%s", row.InstanceID) }
+						hx-swap="outerHTML"
+					>
+						<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
+						@Button("Claim", ButtonPrimary, "submit")
+					</form>
+				} else {
+					<!-- Assigned or current-member task: complete + skip -->
+					<form
+						method="post"
+						action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/complete", row.InstanceID)) }
+						hx-post={ fmt.Sprintf("/tasks/%s/complete", row.InstanceID) }
+						hx-target={ fmt.Sprintf("#task-%s", row.InstanceID) }
+						hx-swap="outerHTML"
+					>
+						<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
+						@Button("Done", ButtonPrimary, "submit")
+					</form>
+					<form
+						method="post"
+						action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/skip", row.InstanceID)) }
+						hx-post={ fmt.Sprintf("/tasks/%s/skip", row.InstanceID) }
+						hx-target={ fmt.Sprintf("#task-%s", row.InstanceID) }
+						hx-swap="outerHTML"
+					>
+						<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
+						@Button("Skip", ButtonSecondary, "submit")
+					</form>
+				}
+			} else if row.Status == "done" {
+				<span class="text-sm font-medium text-sage">Completed</span>
+			} else if row.Status == "skipped" {
+				<span class="text-sm font-medium text-ink-muted">Skipped</span>
+			}
+		</div>
+	</div>
+}
+
+// categoryBadge renders a small pill indicating whether a task is a chore or a
+// maintenance item.
+templ categoryBadge(category string) {
+	if category == "maintenance" {
+		<span class="inline-flex items-center rounded-control bg-member-ochre-tint px-2 py-0.5 text-xs font-medium text-member-ochre-fg">
+			Maintenance
+		</span>
+	} else {
+		<span class="inline-flex items-center rounded-control bg-member-sage-tint px-2 py-0.5 text-xs font-medium text-member-sage-fg">
+			Chore
+		</span>
+	}
+}

@@ -10,6 +10,7 @@ import (
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
+	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	"github.com/ericfisherdev/nestova/web/components"
 )
 
@@ -18,7 +19,7 @@ import (
 func primaryNav(active string) []components.NavItem {
 	defs := []components.NavItem{
 		{Label: "Calendar", Href: "/calendar"},
-		{Label: "Chores", Href: "/chores"},
+		{Label: "Chores", Href: "/tasks"},
 		{Label: "Meals & Recipes", Href: "/meals"},
 		{Label: "Groceries", Href: "/groceries"},
 		{Label: "Photos", Href: "/photos"},
@@ -54,6 +55,7 @@ func registerWebRoutes(
 	authHandlers *authadapter.Handlers,
 	onboardingHandlers *authadapter.OnboardingHandlers,
 	households household.HouseholdRepository,
+	taskHandlers *tasksadapter.WebHandlers,
 ) {
 	// Auth routes — public.
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -91,6 +93,25 @@ func registerWebRoutes(
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 	})))
+
+	// Tasks routes — RequireMember-gated.
+	// GET /tasks renders the chores & maintenance list.
+	// POST /tasks/{id}/complete|skip|claim are the three HTMX action endpoints.
+	//
+	// The layout callback is constructed per-request so the request context
+	// (for CSRF token generation and member list loading) is always available.
+	mux.Handle("GET /tasks", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				return components.Layout(props, nav, c)
+			}
+		}
+		taskHandlers.List(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /tasks/{id}/complete", requireMember(http.HandlerFunc(taskHandlers.Complete)))
+	mux.Handle("POST /tasks/{id}/skip", requireMember(http.HandlerFunc(taskHandlers.Skip)))
+	mux.Handle("POST /tasks/{id}/claim", requireMember(http.HandlerFunc(taskHandlers.Claim)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

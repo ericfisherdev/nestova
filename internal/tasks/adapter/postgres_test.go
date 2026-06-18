@@ -162,6 +162,31 @@ func seedTaskInstance(
 	return inst
 }
 
+// seedOverdueTaskInstance creates a past-due pending instance and runs the
+// household-scoped overdue sweep so it is transitioned to the overdue state.
+// It returns the now-overdue instance. The instance's due_on is one day before
+// refDate, and the sweep uses refDate as asOf so the strict due_on < asOf
+// predicate matches.
+func seedOverdueTaskInstance(
+	t *testing.T,
+	repo *adapter.TaskInstanceRepository,
+	rt *domain.RecurringTask,
+) *domain.TaskInstance {
+	t.Helper()
+	inst := seedTaskInstance(t, repo, rt, refDate.AddDate(0, 0, -1))
+	if _, err := repo.MarkPendingOverdue(testCtx(t), rt.HouseholdID, refDate); err != nil {
+		t.Fatalf("MarkPendingOverdue (seed overdue): %v", err)
+	}
+	got, err := repo.Get(testCtx(t), rt.HouseholdID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get (seed overdue): %v", err)
+	}
+	if got.Status != domain.StatusOverdue {
+		t.Fatalf("seedOverdueTaskInstance: status = %v, want overdue", got.Status)
+	}
+	return got
+}
+
 // ---------------------------------------------------------------------------
 // RecurringTaskRepository tests
 // ---------------------------------------------------------------------------
@@ -546,8 +571,8 @@ func TestTaskInstance_Claim_AlreadyClaimed(t *testing.T) {
 	}
 }
 
-// TestTaskInstance_Claim_TerminalState verifies that claiming an instance not
-// in the pending state returns ErrInstanceInTerminalState.
+// TestTaskInstance_Claim_TerminalState verifies that claiming an instance in a
+// terminal (done or skipped) state returns ErrInstanceInTerminalState.
 func TestTaskInstance_Claim_TerminalState(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
@@ -565,6 +590,34 @@ func TestTaskInstance_Claim_TerminalState(t *testing.T) {
 	err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1)
 	if !errors.Is(err, domain.ErrInstanceInTerminalState) {
 		t.Errorf("Claim(terminal) = %v, want ErrInstanceInTerminalState", err)
+	}
+}
+
+// TestTaskInstance_Claim_OverdueSuccess verifies that an overdue, unassigned
+// instance is still claimable (NES-32): claiming it assigns the member while
+// the status stays overdue.
+func TestTaskInstance_Claim_OverdueSuccess(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedOverdueTaskInstance(t, instRepo, rt)
+
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim(overdue): %v", err)
+	}
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after Claim(overdue): %v", err)
+	}
+	if got.AssigneeID == nil || *got.AssigneeID != m1 {
+		t.Errorf("AssigneeID = %v, want %v", got.AssigneeID, m1)
+	}
+	if got.Status != domain.StatusOverdue {
+		t.Errorf("Status = %v after Claim(overdue), want overdue", got.Status)
 	}
 }
 
@@ -723,6 +776,69 @@ func TestTaskInstance_Skip_NotFound(t *testing.T) {
 	err := instRepo.Skip(testCtx(t), h.ID, domain.NewTaskInstanceID())
 	if !errors.Is(err, domain.ErrInstanceNotFound) {
 		t.Errorf("Skip(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// TestTaskInstance_Complete_OverdueSuccess verifies that an overdue instance is
+// still completable (NES-32): completing it transitions it to done and records
+// completed_at and completed_by. The done⟺completed_at CHECK is satisfied.
+func TestTaskInstance_Complete_OverdueSuccess(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedOverdueTaskInstance(t, instRepo, rt)
+
+	completedAt := refDate.AddDate(0, 0, 1)
+	if err := instRepo.Complete(testCtx(t), h.ID, inst.ID, m1, completedAt); err != nil {
+		t.Fatalf("Complete(overdue): %v", err)
+	}
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after Complete(overdue): %v", err)
+	}
+	if got.Status != domain.StatusDone {
+		t.Errorf("Status = %v, want done", got.Status)
+	}
+	if got.CompletedBy == nil || *got.CompletedBy != m1 {
+		t.Errorf("CompletedBy = %v, want %v", got.CompletedBy, m1)
+	}
+	if got.CompletedAt == nil {
+		t.Fatal("CompletedAt is nil, want a time (done⟺completed_at)")
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("CompletedAt = %s, want %s", got.CompletedAt.Format(time.RFC3339), completedAt.Format(time.RFC3339))
+	}
+}
+
+// TestTaskInstance_Skip_OverdueSuccess verifies that an overdue instance is
+// still skippable (NES-32): skipping it transitions it to skipped and leaves
+// completed_at NULL (skipped⟺completed_at IS NULL).
+func TestTaskInstance_Skip_OverdueSuccess(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedOverdueTaskInstance(t, instRepo, rt)
+
+	if err := instRepo.Skip(testCtx(t), h.ID, inst.ID); err != nil {
+		t.Fatalf("Skip(overdue): %v", err)
+	}
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after Skip(overdue): %v", err)
+	}
+	if got.Status != domain.StatusSkipped {
+		t.Errorf("Status = %v, want skipped", got.Status)
+	}
+	if got.CompletedAt != nil {
+		t.Errorf("CompletedAt = %v, want nil for a skipped instance", got.CompletedAt)
 	}
 }
 
