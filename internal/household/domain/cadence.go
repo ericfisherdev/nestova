@@ -225,5 +225,7 @@ func atClock(day, ref time.Time) time.Time {
 func daysBetween(a, b time.Time) int {
 	ad := time.Date(a.Year(), a.Month(), a.Day(), 0, 0, 0, 0, time.UTC)
 	bd := time.Date(b.Year(), b.Month(), b.Day(), 0, 0, 0, 0, time.UTC)
-	return int(bd.Sub(ad).Hours() / 24)
+	// Both are UTC midnights, so the difference is an exact multiple of 24h;
+	// integer Duration division avoids float rounding.
+	return int(bd.Sub(ad) / (24 * time.Hour))
 }
