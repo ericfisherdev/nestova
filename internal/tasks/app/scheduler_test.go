@@ -63,9 +63,11 @@ type blockingOverdueRepo struct {
 	*fakeTaskInstanceRepo
 	release <-chan struct{}
 	called  chan<- struct{}
+	calls   atomic.Int64
 }
 
 func (r *blockingOverdueRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) (int, error) {
+	r.calls.Add(1)
 	// Signal that this method has been entered.
 	select {
 	case r.called <- struct{}{}:
@@ -335,5 +337,11 @@ func TestScheduler_Run_InFlightTickCompletesBeforeStop(t *testing.T) {
 	case <-runDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after in-flight tick completed")
+	}
+
+	// Exactly one tick must have run: the in-flight one completed and no new
+	// tick started after cancellation.
+	if n := blockRepo.calls.Load(); n != 1 {
+		t.Errorf("MarkPendingOverdueAll called %d times, want exactly 1 (no tick after cancel)", n)
 	}
 }
