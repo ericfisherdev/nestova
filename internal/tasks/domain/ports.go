@@ -162,4 +162,15 @@ type TaskInstanceRepository interface {
 	// MarkPendingOverdue bulk-transitions all pending instances for the household
 	// whose due_on < asOf to overdue. Returns the number of rows updated.
 	MarkPendingOverdue(ctx context.Context, householdID household.HouseholdID, asOf time.Time) (int, error)
+
+	// MarkPendingOverdueAll bulk-transitions all pending instances across ALL
+	// households whose due_on < asOf to overdue. Returns the number of rows
+	// updated.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process method reserved for the background scheduler (NES-31) and
+	// must not be called from user-facing request handlers, which must use the
+	// household-scoped [MarkPendingOverdue] instead. The same precedent applies
+	// here as for [RecurringTaskRepository.ListAllActive].
+	MarkPendingOverdueAll(ctx context.Context, asOf time.Time) (int, error)
 }

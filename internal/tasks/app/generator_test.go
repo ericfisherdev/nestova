@@ -252,6 +252,20 @@ func (r *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, householdID
 	return count, nil
 }
 
+func (r *fakeTaskInstanceRepo) MarkPendingOverdueAll(_ context.Context, asOf time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	asOfDate := domain.DateOf(asOf)
+	count := 0
+	for _, inst := range r.instances {
+		if inst.Status == domain.StatusPending && inst.DueOn.Before(asOfDate) {
+			inst.Status = domain.StatusOverdue
+			count++
+		}
+	}
+	return count, nil
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

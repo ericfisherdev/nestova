@@ -707,6 +707,28 @@ func (r *TaskInstanceRepository) MarkPendingOverdue(
 	return int(tag.RowsAffected()), nil
 }
 
+// MarkPendingOverdueAll bulk-transitions all pending instances across ALL
+// households whose due_on < asOf to overdue. Returns the number of rows
+// updated.
+//
+// WARNING: this method is intentionally NOT household-scoped. It is a
+// system-process method reserved for the background scheduler (NES-31) and
+// must not be called from user-facing request handlers, which must use the
+// household-scoped [MarkPendingOverdue] instead.
+func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf time.Time) (int, error) {
+	const q = `
+		UPDATE task_instance
+		   SET status     = 'overdue',
+		       updated_at = now()
+		 WHERE status = 'pending'
+		   AND due_on < $1`
+	tag, err := r.dbtx.Exec(ctx, q, domain.DateOf(asOf))
+	if err != nil {
+		return 0, fmt.Errorf("mark pending overdue all: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // scanTaskInstance scans a task_instance row from r. Nullable columns
 // (assignee_id, completed_at, completed_by) are read into pointer types and
 // converted to domain pointer fields. DueOn is normalized with domain.DateOf.

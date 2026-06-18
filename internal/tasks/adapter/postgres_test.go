@@ -1129,6 +1129,133 @@ func TestRecurringTask_CreateWithRotation_Success(t *testing.T) {
 	}
 }
 
+// TestTaskInstance_MarkPendingOverdueAll verifies that MarkPendingOverdueAll
+// transitions only pending instances whose due_on < asOf across ALL households
+// and returns the correct count. Instances on or after asOf and instances in
+// non-pending states must be untouched.
+//
+// This is a system-process method intentionally NOT household-scoped — the
+// same precedent as [RecurringTaskRepository.ListAllActive] (NES-30) in that
+// it operates across the full database rather than a single tenant.
+func TestTaskInstance_MarkPendingOverdueAll(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+
+	// Two separate households, each with one recurring task.
+	hA, m1A, _ := seedHousehold(t, pool)
+	hB, _, _ := seedHousehold(t, pool)
+
+	rtA := seedRecurringTask(t, taskRepo, hA.ID)
+	rtB := seedRecurringTask(t, taskRepo, hB.ID)
+
+	// Seed a second recurring task for hA so we can have an additional past-due
+	// instance without hitting the (recurring_task_id, due_on) unique constraint.
+	rtA2 := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    hA.ID,
+		Title:          "Second task A",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationClaimable,
+		Points:         5,
+		Active:         true,
+	}
+	if err := taskRepo.Create(testCtx(t), rtA2); err != nil {
+		t.Fatalf("Create rtA2: %v", err)
+	}
+
+	// Past-due pending instances in both households (3 total).
+	pastDueA1 := seedTaskInstance(t, instRepo, rtA, refDate.AddDate(0, 0, -3))
+	pastDueA2 := seedTaskInstance(t, instRepo, rtA2, refDate.AddDate(0, 0, -1))
+	pastDueB := seedTaskInstance(t, instRepo, rtB, refDate.AddDate(0, 0, -2))
+
+	// Future pending instances — must NOT be swept.
+	futureA := seedTaskInstance(t, instRepo, rtA, refDate.AddDate(0, 0, 7))
+	futureB := seedTaskInstance(t, instRepo, rtB, refDate.AddDate(0, 0, 7))
+
+	// A past-due done instance — must NOT flip to overdue (only pending → overdue).
+	// Seed it as pending then complete it to transition it to done.
+	rtA3 := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    hA.ID,
+		Title:          "Third task A",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationClaimable,
+		Points:         5,
+		Active:         true,
+	}
+	if err := taskRepo.Create(testCtx(t), rtA3); err != nil {
+		t.Fatalf("Create rtA3: %v", err)
+	}
+	doneInst := seedTaskInstance(t, instRepo, rtA3, refDate.AddDate(0, 0, -5))
+	if err := instRepo.Complete(testCtx(t), hA.ID, doneInst.ID, m1A, refDate); err != nil {
+		t.Fatalf("Complete doneInst: %v", err)
+	}
+
+	// Run the system-wide overdue sweep with asOf = refDate.
+	// Qualifies: due_on < refDate AND status = 'pending' → pastDueA1, pastDueA2, pastDueB = 3.
+	count, err := instRepo.MarkPendingOverdueAll(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("MarkPendingOverdueAll: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("MarkPendingOverdueAll count = %d, want 3", count)
+	}
+
+	// Past-due pending instances across both households must now be overdue.
+	gotA1, err := instRepo.Get(testCtx(t), hA.ID, pastDueA1.ID)
+	if err != nil {
+		t.Fatalf("Get pastDueA1: %v", err)
+	}
+	if gotA1.Status != domain.StatusOverdue {
+		t.Errorf("pastDueA1 Status = %v, want overdue", gotA1.Status)
+	}
+
+	gotA2, err := instRepo.Get(testCtx(t), hA.ID, pastDueA2.ID)
+	if err != nil {
+		t.Fatalf("Get pastDueA2: %v", err)
+	}
+	if gotA2.Status != domain.StatusOverdue {
+		t.Errorf("pastDueA2 Status = %v, want overdue", gotA2.Status)
+	}
+
+	gotB, err := instRepo.Get(testCtx(t), hB.ID, pastDueB.ID)
+	if err != nil {
+		t.Fatalf("Get pastDueB: %v", err)
+	}
+	if gotB.Status != domain.StatusOverdue {
+		t.Errorf("pastDueB Status = %v, want overdue", gotB.Status)
+	}
+
+	// Future instances must remain pending.
+	gotFutureA, err := instRepo.Get(testCtx(t), hA.ID, futureA.ID)
+	if err != nil {
+		t.Fatalf("Get futureA: %v", err)
+	}
+	if gotFutureA.Status != domain.StatusPending {
+		t.Errorf("futureA Status = %v, want pending", gotFutureA.Status)
+	}
+
+	gotFutureB, err := instRepo.Get(testCtx(t), hB.ID, futureB.ID)
+	if err != nil {
+		t.Fatalf("Get futureB: %v", err)
+	}
+	if gotFutureB.Status != domain.StatusPending {
+		t.Errorf("futureB Status = %v, want pending", gotFutureB.Status)
+	}
+
+	// The done instance must remain done (overdue sweep skips non-pending rows).
+	gotDone, err := instRepo.Get(testCtx(t), hA.ID, doneInst.ID)
+	if err != nil {
+		t.Fatalf("Get doneInst: %v", err)
+	}
+	if gotDone.Status != domain.StatusDone {
+		t.Errorf("doneInst Status = %v, want done", gotDone.Status)
+	}
+}
+
 // idsOf extracts task instance IDs for readable test error messages.
 func idsOf(instances []*domain.TaskInstance) []domain.TaskInstanceID {
 	ids := make([]domain.TaskInstanceID, len(instances))
