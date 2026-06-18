@@ -309,8 +309,12 @@ func TestPostTasksRequiresAuth(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code == http.StatusOK {
-		t.Errorf("unauthenticated POST /tasks should not return 200")
+	// RequireMember must redirect a non-HTMX unauthenticated POST to /login.
+	if rec.Code != http.StatusSeeOther {
+		t.Errorf("unauthenticated POST /tasks = %d, want %d (redirect to /login)", rec.Code, http.StatusSeeOther)
+	}
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/login") {
+		t.Errorf("Location = %q, want /login...", loc)
 	}
 	if len(repo.createCalls) != 0 {
 		t.Errorf("CreateWithRotation should not be called for unauthenticated request")
