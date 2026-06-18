@@ -1174,6 +1174,9 @@ func TestTaskInstance_MarkPendingOverdueAll(t *testing.T) {
 	futureA := seedTaskInstance(t, instRepo, rtA, refDate.AddDate(0, 0, 7))
 	futureB := seedTaskInstance(t, instRepo, rtB, refDate.AddDate(0, 0, 7))
 
+	// Boundary: due_on == asOf must NOT be swept (the predicate is strict <).
+	boundary := seedTaskInstance(t, instRepo, rtB, refDate)
+
 	// A past-due done instance — must NOT flip to overdue (only pending → overdue).
 	// Seed it as pending then complete it to transition it to done.
 	rtA3 := &domain.RecurringTask{
@@ -1244,6 +1247,15 @@ func TestTaskInstance_MarkPendingOverdueAll(t *testing.T) {
 	}
 	if gotFutureB.Status != domain.StatusPending {
 		t.Errorf("futureB Status = %v, want pending", gotFutureB.Status)
+	}
+
+	// The due_on == asOf boundary instance must remain pending (strict <).
+	gotBoundary, err := instRepo.Get(testCtx(t), hB.ID, boundary.ID)
+	if err != nil {
+		t.Fatalf("Get boundary: %v", err)
+	}
+	if gotBoundary.Status != domain.StatusPending {
+		t.Errorf("boundary (due_on == asOf) Status = %v, want pending", gotBoundary.Status)
 	}
 
 	// The done instance must remain done (overdue sweep skips non-pending rows).

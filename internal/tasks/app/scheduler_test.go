@@ -272,6 +272,11 @@ func TestScheduler_Run_ReturnsWhenContextCancelled(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
 	}
+
+	// Cancelling before the 10ms tick interval elapsed must not start a tick.
+	if n := instRepo.overdueAllCalls.Load(); n != 0 {
+		t.Errorf("scheduler ran %d ticks after immediate cancellation, want 0", n)
+	}
 }
 
 // TestScheduler_Run_InFlightTickCompletesBeforeStop verifies that a tick
