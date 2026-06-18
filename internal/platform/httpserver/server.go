@@ -42,6 +42,10 @@ type Deps struct {
 	// later contexts' handlers) on the mux after the platform routes. This is
 	// the extension point for feature wiring without changing New.
 	Routes func(mux *http.ServeMux)
+	// Middleware is an optional list of feature middleware inserted between
+	// Recoverer and Timeout in the canonical chain (NES-23: session/auth).
+	// Middleware is applied in the order given (first entry is outermost).
+	Middleware []middleware.Middleware
 }
 
 // New builds the application's HTTP server from cfg and deps with the core
@@ -56,15 +60,18 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	}
 	// Canonical middleware order (outermost first): request id and logging wrap
 	// everything so every request is logged with an id even on panic; recovery
-	// turns panics into 500s; the per-request timeout is innermost so it bounds
-	// only handler work. NES-23 inserts session/auth between Recoverer and
-	// Timeout.
-	handler := middleware.Chain(
+	// turns panics into 500s; feature middleware (session/auth) runs next so
+	// session state is available when the timeout fires; the per-request timeout
+	// is innermost so it bounds only handler work.
+	chain := []middleware.Middleware{
 		middleware.RequestID,
 		middleware.RequestLogger(deps.Logger),
 		middleware.Recoverer(deps.Logger),
-		middleware.Timeout(requestTimeout),
-	)(routes(deps))
+	}
+	chain = append(chain, deps.Middleware...)
+	chain = append(chain, middleware.Timeout(requestTimeout))
+
+	handler := middleware.Chain(chain...)(routes(deps))
 
 	return &http.Server{
 		Addr:              cfg.Server.Addr,

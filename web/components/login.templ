@@ -1,0 +1,77 @@
+package components
+
+// LoginForm holds the data the login page template needs to render.
+type LoginForm struct {
+	// CSRFToken is the per-session CSRF token embedded as a hidden form field.
+	CSRFToken string
+	// Next is the path the user should be redirected to after a successful login.
+	Next string
+	// Email pre-fills the email field after a failed login attempt so the user
+	// does not have to re-type it.
+	Email string
+	// Error is a generic error message shown below the form on failed login.
+	// Empty string means no error is shown.
+	Error string
+}
+
+// LoginPage renders the A · Hearth login screen. It is a self-contained HTML
+// page (not wrapped in Layout) because the app shell requires an authenticated
+// member.
+templ LoginPage(form LoginForm) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Sign in – Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4">
+			<div class="w-full max-w-sm">
+				<div class="mb-8 text-center">
+					<span class="inline-block h-10 w-10 rounded-full border-4 border-sage" aria-hidden="true"></span>
+					<h1 class="mt-3 text-2xl font-semibold">Nestova</h1>
+					<p class="mt-1 text-sm text-ink-muted">Sign in to your household</p>
+				</div>
+				<div class="rounded-card bg-surface p-6 shadow-warm">
+					<form method="POST" action="/login" novalidate>
+						<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+						<input type="hidden" name="next" value={ form.Next }/>
+						<div class="flex flex-col gap-4">
+							<div class="flex flex-col gap-1">
+								<label for="email" class="text-sm font-medium text-ink-secondary">Email</label>
+								<input
+									id="email"
+									type="email"
+									name="email"
+									value={ form.Email }
+									autocomplete="email"
+									required
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+									placeholder="you@example.com"
+								/>
+							</div>
+							<div class="flex flex-col gap-1">
+								<label for="password" class="text-sm font-medium text-ink-secondary">Password</label>
+								<input
+									id="password"
+									type="password"
+									name="password"
+									autocomplete="current-password"
+									required
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+									placeholder="••••••••"
+								/>
+							</div>
+							if form.Error != "" {
+								<p role="alert" class="text-sm text-red-600">{ form.Error }</p>
+							}
+							@Button("Sign in", ButtonPrimary, "submit")
+						</div>
+					</form>
+				</div>
+			</div>
+		</body>
+	</html>
+}

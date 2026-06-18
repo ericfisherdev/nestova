@@ -13,6 +13,8 @@ type NavItem struct {
 type ShellProps struct {
 	// Members renders the sidebar Family list.
 	Members []MemberView
+	// CSRFToken authorizes the sidebar logout form.
+	CSRFToken string
 }
 
 // Layout renders the A · Hearth app shell — a fixed left sidebar plus the main
@@ -105,6 +107,15 @@ templ sidebar(props ShellProps, nav []NavItem) {
 				}
 			</div>
 		}
+		<form method="post" action="/logout" class="mt-auto">
+			<input type="hidden" name="csrf_token" value={ props.CSRFToken }/>
+			<button
+				type="submit"
+				class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-left font-medium text-ink-secondary transition-colors hover:bg-surface-warm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage"
+			>
+				Log out
+			</button>
+		</form>
 	</aside>
 }
 

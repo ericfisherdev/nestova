@@ -12,9 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
+	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
+	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
+	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 )
 
 // shutdownTimeout bounds how long in-flight requests have to drain on shutdown.
@@ -50,14 +54,28 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 	logger.Info("connected to postgres", "max_conns", pool.Config().MaxConns)
 
-	// The readiness probe verifies live database connectivity on each call.
+	// NES-23: session manager backed by Postgres (scs + pgxstore).
+	sm := authadapter.NewSessionManager(pool, cfg.Session)
+
+	// NES-23: auth bounded context wiring.
+	credRepo := authadapter.NewCredentialRepository(pool)
+	authn := authapp.New(credRepo)
+	householdRepo := householdadapter.NewPostgresRepository(pool)
+	authHandlers := authadapter.NewHandlers(sm, authn, logger)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
 			return db.Health(ctx, pool)
 		},
+		// NES-23: session loading + authentication injected between Recoverer
+		// and Timeout (canonical chain order per server.go).
+		Middleware: []middleware.Middleware{
+			sm.LoadAndSave,
+			authadapter.Authenticate(sm, householdRepo),
+		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger)
+			registerWebRoutes(mux, logger, sm, authHandlers)
 		},
 	})
 
