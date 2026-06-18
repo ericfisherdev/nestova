@@ -23,6 +23,9 @@ var (
 	// ErrDuplicateMember is returned when adding a member whose display name
 	// already exists (case-insensitively) within the household.
 	ErrDuplicateMember = errors.New("household: duplicate member display name in household")
+	// ErrHouseholdExists is returned by first-run provisioning when a household
+	// already exists, so the (single-household) onboarding flow is a no-op.
+	ErrHouseholdExists = errors.New("household: a household already exists")
 )
 
 // HouseholdRepository persists households and their members. Member is a child

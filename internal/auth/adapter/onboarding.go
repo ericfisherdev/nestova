@@ -185,6 +185,12 @@ func (h *OnboardingHandlers) Onboard(w http.ResponseWriter, r *http.Request) {
 	// failure rolls back entirely, so onboarding never leaves an orphaned
 	// household or a member without credentials.
 	if err := h.provisioner.ProvisionHousehold(r.Context(), hh, owner, email, hash); err != nil {
+		if errors.Is(err, household.ErrHouseholdExists) {
+			// Lost the first-run onboarding race: a household now exists, so
+			// setup is complete — send the user to login.
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
 		if errors.Is(err, authdomain.ErrEmailAlreadyInUse) {
 			h.renderOnboardingPage(w, r, http.StatusConflict, components.OnboardingForm{
 				CSRFToken:     token,
