@@ -114,6 +114,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 			s.logger.Info("scheduler: stopped")
 			return
 		case <-ticker.C:
+			// When ctx is cancelled and a tick fires in the same select, Go may
+			// pick either case; re-check so no extra tick runs after shutdown.
+			if ctx.Err() != nil {
+				s.logger.Info("scheduler: stopped")
+				return
+			}
 			s.runTick()
 		}
 	}

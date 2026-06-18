@@ -177,18 +177,24 @@ func run(logger *slog.Logger) error {
 	}
 
 	// Cancel ctx (even on the serverErr path) so both background workers stop
-	// looping, then wait for both Run methods to return. Because each worker's
-	// tick runs under its own context (not this one), in-flight cycles finish
-	// their database writes before Run returns, so these waits drain them cleanly
-	// ahead of pool.Close.
+	// looping.
 	stop()
+
+	// Stop HTTP intake first so no new request can enqueue work while the
+	// background workers drain.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	shutdownErr := srv.Shutdown(shutdownCtx)
+
+	// Then wait for both Run methods to return. Because each worker's tick runs
+	// under its own context (not this one), in-flight cycles finish their database
+	// writes before Run returns, so these waits drain them cleanly ahead of
+	// pool.Close.
 	<-dispatcherDone
 	<-schedulerDone
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return errors.Join(runErr, err)
+	if shutdownErr != nil {
+		return errors.Join(runErr, shutdownErr)
 	}
 	return runErr
 }
