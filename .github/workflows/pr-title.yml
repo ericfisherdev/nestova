@@ -15,6 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  # Read-only: the action only needs to read the repo and the PR's title.
   contents: read
   # The action fetches the PR via the API to read its title.
   pull-requests: read
@@ -41,3 +42,9 @@ jobs:
             perf
             style
             revert
+          # Match .conform.yaml: subject must start lowercase and not end with a
+          # period (so a squash-merge subject can't bypass the commit policy).
+          subjectPattern: ^(?![A-Z]).*[^.]$
+          subjectPatternError: |
+            The subject "{subject}" in the PR title "{title}" must start with a
+            lowercase letter and must not end with a period.
