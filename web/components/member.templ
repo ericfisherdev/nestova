@@ -1,0 +1,42 @@
+package components
+
+// MemberView is the view model for rendering a member avatar/chip. It lives in
+// the view layer (not the household domain) so shell/layout code (NES-21) can
+// render members before the domain type exists; NES-22 maps its Member to this.
+type MemberView struct {
+	Name     string
+	Initials string
+	// Color is one of the five palette keys (sage, clay, ochre, blue, plum); it
+	// matches the Tailwind member-color token infix.
+	Color string
+}
+
+// MemberAvatar renders a member's initials on a tinted circle, sized for touch.
+templ MemberAvatar(m MemberView) {
+	<span
+		class={ "inline-flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold", memberTintClass(m.Color) }
+		title={ m.Name }
+		aria-label={ m.Name }
+	>
+		{ m.Initials }
+	</span>
+}
+
+// memberTintClass builds the tint/fg utility pair for a member color. The
+// resulting classes are constructed dynamically, so they are force-generated via
+// the @source inline safelist in web/static/css/input.css.
+func memberTintClass(color string) string {
+	c := normalizeMemberColor(color)
+	return "bg-member-" + c + "-tint text-member-" + c + "-fg"
+}
+
+// normalizeMemberColor falls back to "sage" for an unknown color so the avatar
+// always renders a valid, safelisted utility class.
+func normalizeMemberColor(color string) string {
+	switch color {
+	case "sage", "clay", "ochre", "blue", "plum":
+		return color
+	default:
+		return "sage"
+	}
+}

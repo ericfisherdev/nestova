@@ -1,0 +1,14 @@
+package components
+
+// Card is a titled surface container. The card body is supplied as children so
+// any content composes inside it.
+templ Card(title string) {
+	<section class="bg-surface rounded-card shadow-warm p-5">
+		if title != "" {
+			<h2 class="text-ink font-semibold mb-3">{ title }</h2>
+		}
+		<div class="text-ink-secondary">
+			{ children... }
+		</div>
+	</section>
+}

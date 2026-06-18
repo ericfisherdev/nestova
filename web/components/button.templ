@@ -1,0 +1,39 @@
+package components
+
+// ButtonVariant selects a button's visual treatment.
+type ButtonVariant int
+
+const (
+	// ButtonPrimary is the sage filled button (e.g. the sidebar "Create").
+	ButtonPrimary ButtonVariant = iota
+	// ButtonSecondary is the white, bordered button.
+	ButtonSecondary
+)
+
+// Button renders an A · Hearth button. Type is "button" by default; pass a
+// different one (e.g. "submit") via buttonType.
+templ Button(label string, variant ButtonVariant, buttonType string) {
+	<button
+		type={ buttonTypeOrDefault(buttonType) }
+		class={ "inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors", buttonVariantClass(variant) }
+	>
+		{ label }
+	</button>
+}
+
+// buttonVariantClass maps a variant to its Tailwind classes (A · Hearth tokens).
+func buttonVariantClass(v ButtonVariant) string {
+	if v == ButtonSecondary {
+		return "bg-surface text-ink border border-sidebar-border hover:bg-surface-warm"
+	}
+	return "bg-sage text-white shadow-warm hover:bg-sage-dark"
+}
+
+// buttonTypeOrDefault defaults an empty type to "button" so a Button never
+// accidentally submits a form.
+func buttonTypeOrDefault(t string) string {
+	if t == "" {
+		return "button"
+	}
+	return t
+}

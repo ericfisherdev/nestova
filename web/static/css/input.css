@@ -3,6 +3,10 @@
 /* Scan the templ sources (not the .min.js vendored libs) for utility classes. */
 @source "../../**/*.templ";
 
+/* Member color utilities are composed dynamically (e.g. bg-member-<color>-tint),
+ * so force-generate the full matrix for the five palette keys. */
+@source inline("{bg,text,border}-member-{sage,clay,ochre,blue,plum}-{solid,tint,fg}");
+
 /*
  * A · Hearth design tokens (see the NES-2 epic / .design_artifacts).
  * Color/font/radius/shadow variables become Tailwind utilities
