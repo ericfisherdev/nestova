@@ -86,7 +86,6 @@ func TestCreateAndGetHousehold(t *testing.T) {
 
 func TestAddListAndGetMembers(t *testing.T) {
 	repo := newTestRepo(t)
-	ctx := testCtx(t)
 	h := seedHousehold(t, repo)
 
 	names := []string{"Maya", "Daniel", "Ivy"}
@@ -100,14 +99,14 @@ func TestAddListAndGetMembers(t *testing.T) {
 			Role:        domain.RoleAdult,
 			Color:       domain.NextColor(used),
 		}
-		if err := repo.AddMember(ctx, m); err != nil {
+		if err := repo.AddMember(testCtx(t), m); err != nil {
 			t.Fatalf("AddMember(%s): %v", name, err)
 		}
 		used = append(used, m.Color)
 		ids = append(ids, m.ID)
 	}
 
-	members, err := repo.ListMembers(ctx, h.ID)
+	members, err := repo.ListMembers(testCtx(t), h.ID)
 	if err != nil {
 		t.Fatalf("ListMembers: %v", err)
 	}
@@ -122,7 +121,7 @@ func TestAddListAndGetMembers(t *testing.T) {
 		t.Errorf("members[1] = (%s, %s), want (Daniel, clay)", members[1].DisplayName, members[1].Color)
 	}
 
-	got, err := repo.GetMember(ctx, ids[0])
+	got, err := repo.GetMember(testCtx(t), ids[0])
 	if err != nil {
 		t.Fatalf("GetMember: %v", err)
 	}
@@ -133,16 +132,15 @@ func TestAddListAndGetMembers(t *testing.T) {
 
 func TestAddMemberDuplicateName(t *testing.T) {
 	repo := newTestRepo(t)
-	ctx := testCtx(t)
 	h := seedHousehold(t, repo)
 
 	first := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Maya", Role: domain.RoleAdult, Color: domain.ColorSage}
-	if err := repo.AddMember(ctx, first); err != nil {
+	if err := repo.AddMember(testCtx(t), first); err != nil {
 		t.Fatalf("AddMember(first): %v", err)
 	}
 	// Case-insensitive duplicate must be rejected.
 	dup := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "maya", Role: domain.RoleChild, Color: domain.ColorClay}
-	if err := repo.AddMember(ctx, dup); !errors.Is(err, domain.ErrDuplicateMember) {
+	if err := repo.AddMember(testCtx(t), dup); !errors.Is(err, domain.ErrDuplicateMember) {
 		t.Errorf("AddMember(duplicate) error = %v, want ErrDuplicateMember", err)
 	}
 }
@@ -176,12 +174,11 @@ func TestListMembersUnknownHousehold(t *testing.T) {
 
 func TestNotFoundErrors(t *testing.T) {
 	repo := newTestRepo(t)
-	ctx := testCtx(t)
 
-	if _, err := repo.GetHousehold(ctx, domain.NewHouseholdID()); !errors.Is(err, domain.ErrHouseholdNotFound) {
+	if _, err := repo.GetHousehold(testCtx(t), domain.NewHouseholdID()); !errors.Is(err, domain.ErrHouseholdNotFound) {
 		t.Errorf("GetHousehold(unknown) error = %v, want ErrHouseholdNotFound", err)
 	}
-	if _, err := repo.GetMember(ctx, domain.NewMemberID()); !errors.Is(err, domain.ErrMemberNotFound) {
+	if _, err := repo.GetMember(testCtx(t), domain.NewMemberID()); !errors.Is(err, domain.ErrMemberNotFound) {
 		t.Errorf("GetMember(unknown) error = %v, want ErrMemberNotFound", err)
 	}
 }
