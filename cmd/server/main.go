@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,9 @@ import (
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
+	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
+	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
+	"github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
@@ -25,6 +29,14 @@ import (
 // It is kept at or above the HTTP layer's per-request timeout (13s) so a request
 // running up to its deadline can still finish during a graceful shutdown.
 const shutdownTimeout = 15 * time.Second
+
+// Notification dispatcher tuning (NES-24).
+const (
+	// dispatchBatchSize caps how many due notifications one poll cycle claims.
+	dispatchBatchSize = 50
+	// dispatchPollInterval is how often the dispatcher polls the outbox.
+	dispatchPollInterval = 30 * time.Second
+)
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -63,6 +75,20 @@ func run(logger *slog.Logger) error {
 	householdRepo := householdadapter.NewPostgresRepository(pool)
 	authHandlers := authadapter.NewHandlers(sm, authn, logger)
 
+	// NES-24: notification outbox wiring.
+	outboxRepo := notifyadapter.NewOutboxRepository(pool)
+	inAppSender := notifyadapter.NewInAppSender(logger)
+	dispatcher, err := notifyapp.NewDispatcher(
+		outboxRepo,
+		[]domain.Sender{inAppSender},
+		logger,
+		dispatchBatchSize,
+		dispatchPollInterval,
+	)
+	if err != nil {
+		return fmt.Errorf("create dispatcher: %w", err)
+	}
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -91,14 +117,34 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// NES-24: the dispatcher uses the signal-cancelled ctx so it stops cleanly
+	// on SIGINT/SIGTERM alongside the HTTP server. dispatcherDone closes once the
+	// goroutine has fully exited, so shutdown waits for it before pool.Close runs.
+	dispatcherDone := make(chan struct{})
+	go func() {
+		defer close(dispatcherDone)
+		dispatcher.Run(ctx)
+	}()
+
+	var runErr error
 	select {
 	case err := <-serverErr:
-		return err
+		runErr = err
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 	}
 
+	// Cancel ctx (even on the serverErr path) so the dispatcher stops looping,
+	// then wait for Run to return. Because each dispatcher tick runs under its
+	// own context (not this one), an in-flight batch finishes its database writes
+	// before Run returns, so this wait drains it cleanly ahead of pool.Close.
+	stop()
+	<-dispatcherDone
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return errors.Join(runErr, err)
+	}
+	return runErr
 }
