@@ -7,10 +7,26 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 )
+
+// TX is the minimal query surface shared by *pgxpool.Pool and pgx.Tx. Adapters
+// depend on this interface (instead of the concrete pool) so the same repository
+// code runs both directly against the pool and inside a transaction: a
+// transactional caller constructs a repository with a pgx.Tx, while the default
+// composition uses the pool. Both concrete types satisfy TX unchanged.
+//
+// It is named TX (not DBTX) to avoid the db.DBTX stutter; "db.TX" reads as
+// "a database transaction-capable executor".
+type TX interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // Pool tuning. MaxConns is configurable via DBConfig (zero defers to pgx's own
 // default); the lifetime and health-check periods are conservative fixed

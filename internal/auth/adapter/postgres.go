@@ -10,10 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/db"
 )
 
 const (
@@ -28,18 +28,21 @@ const (
 // authdomain.CredentialRepository. UUIDs are passed and scanned as text to
 // match the household adapter convention (no pgx UUID codec registration).
 type CredentialRepository struct {
-	pool *pgxpool.Pool
+	dbtx db.TX
 }
 
 // Compile-time assurance the adapter satisfies the port.
 var _ authdomain.CredentialRepository = (*CredentialRepository)(nil)
 
-// NewCredentialRepository constructs the repository with an injected pgx pool.
-func NewCredentialRepository(pool *pgxpool.Pool) *CredentialRepository {
-	if pool == nil {
-		panic("adapter: NewCredentialRepository requires a non-nil pool")
+// NewCredentialRepository constructs the repository with an injected query
+// executor. The executor is a db.TX, satisfied by both *pgxpool.Pool (the
+// default composition) and pgx.Tx (so credential writes can join a caller's
+// transaction); the same methods work against either.
+func NewCredentialRepository(dbtx db.TX) *CredentialRepository {
+	if dbtx == nil {
+		panic("adapter: NewCredentialRepository requires a non-nil db.TX")
 	}
-	return &CredentialRepository{pool: pool}
+	return &CredentialRepository{dbtx: dbtx}
 }
 
 // FindByEmail returns the Credential for the given email address, or
@@ -56,7 +59,7 @@ func (r *CredentialRepository) FindByEmail(ctx context.Context, email string) (*
 		idStr        string
 		passwordHash string
 	)
-	err := r.pool.QueryRow(ctx, q, email).Scan(&idStr, &passwordHash)
+	err := r.dbtx.QueryRow(ctx, q, email).Scan(&idStr, &passwordHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, authdomain.ErrInvalidCredentials
@@ -75,6 +78,19 @@ func (r *CredentialRepository) FindByEmail(ctx context.Context, email string) (*
 	}, nil
 }
 
+// EmailExists reports whether any member already owns the given email address.
+// It is used as a pre-check (e.g. by the add-member flow) to surface a friendly
+// "already in use" message before attempting a write; the unique constraint
+// remains the authoritative guard against the residual race.
+func (r *CredentialRepository) EmailExists(ctx context.Context, email string) (bool, error) {
+	const q = `SELECT EXISTS(SELECT 1 FROM member WHERE email = $1)`
+	var exists bool
+	if err := r.dbtx.QueryRow(ctx, q, email).Scan(&exists); err != nil {
+		return false, fmt.Errorf("email exists: %w", err)
+	}
+	return exists, nil
+}
+
 // SetPassword stores (or replaces) the email and password hash on the member
 // row identified by memberID. It returns household.ErrMemberNotFound when the
 // member does not exist, and authdomain.ErrEmailAlreadyInUse when the email is
@@ -87,7 +103,7 @@ func (r *CredentialRepository) SetPassword(ctx context.Context, memberID househo
 		       updated_at    = now()
 		 WHERE id = $1`
 
-	tag, err := r.pool.Exec(ctx, q, memberID.String(), email, passwordHash)
+	tag, err := r.dbtx.Exec(ctx, q, memberID.String(), email, passwordHash)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == memberEmailUnique {

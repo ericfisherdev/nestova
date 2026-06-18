@@ -112,7 +112,7 @@ func LoginPage(form LoginForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</div></form></div></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</div></form></div><p class=\"mt-6 text-center text-sm text-ink-muted\">First time? <a href=\"/onboarding\" class=\"font-medium text-sage hover:text-sage-dark\">Set up your household</a></p></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -9,9 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ericfisherdev/nestova/internal/household/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/db"
 )
 
 const (
@@ -31,18 +31,21 @@ const (
 // PostgresRepository is the pgx-backed HouseholdRepository. UUIDs are passed and
 // scanned as text, so no pgx UUID codec registration is required.
 type PostgresRepository struct {
-	pool *pgxpool.Pool
+	dbtx db.TX
 }
 
 // Compile-time assurance the adapter satisfies the port.
 var _ domain.HouseholdRepository = (*PostgresRepository)(nil)
 
-// NewPostgresRepository constructs the repository with an injected pgx pool.
-func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
-	if pool == nil {
-		panic("adapter: NewPostgresRepository requires a non-nil pool")
+// NewPostgresRepository constructs the repository with an injected query
+// executor. The executor is a db.TX, satisfied by both *pgxpool.Pool (the
+// default composition) and pgx.Tx (so the repository can run inside a caller's
+// transaction); the same methods work against either.
+func NewPostgresRepository(dbtx db.TX) *PostgresRepository {
+	if dbtx == nil {
+		panic("adapter: NewPostgresRepository requires a non-nil db.TX")
 	}
-	return &PostgresRepository{pool: pool}
+	return &PostgresRepository{dbtx: dbtx}
 }
 
 // CreateHousehold inserts a household and populates its timestamps.
@@ -51,7 +54,7 @@ func (r *PostgresRepository) CreateHousehold(ctx context.Context, h *domain.Hous
 		return errors.New("adapter: create household: nil household")
 	}
 	const q = `INSERT INTO household (id, name) VALUES ($1, $2) RETURNING created_at, updated_at`
-	if err := r.pool.QueryRow(ctx, q, h.ID.String(), h.Name).Scan(&h.CreatedAt, &h.UpdatedAt); err != nil {
+	if err := r.dbtx.QueryRow(ctx, q, h.ID.String(), h.Name).Scan(&h.CreatedAt, &h.UpdatedAt); err != nil {
 		return fmt.Errorf("create household: %w", err)
 	}
 	return nil
@@ -60,7 +63,7 @@ func (r *PostgresRepository) CreateHousehold(ctx context.Context, h *domain.Hous
 // GetHousehold returns the household, or domain.ErrHouseholdNotFound.
 func (r *PostgresRepository) GetHousehold(ctx context.Context, id domain.HouseholdID) (*domain.Household, error) {
 	const q = `SELECT id, name, created_at, updated_at FROM household WHERE id = $1`
-	h, err := scanHousehold(r.pool.QueryRow(ctx, q, id.String()))
+	h, err := scanHousehold(r.dbtx.QueryRow(ctx, q, id.String()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrHouseholdNotFound
@@ -80,7 +83,7 @@ func (r *PostgresRepository) AddMember(ctx context.Context, m *domain.Member) er
 		INSERT INTO member (id, household_id, display_name, role, color_key)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING created_at, updated_at`
-	err := r.pool.QueryRow(ctx, q, m.ID.String(), m.HouseholdID.String(), m.DisplayName, m.Role.String(), m.Color.String()).
+	err := r.dbtx.QueryRow(ctx, q, m.ID.String(), m.HouseholdID.String(), m.DisplayName, m.Role.String(), m.Color.String()).
 		Scan(&m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -102,7 +105,7 @@ func (r *PostgresRepository) GetMember(ctx context.Context, id domain.MemberID) 
 	const q = `
 		SELECT id, household_id, display_name, role, color_key, created_at, updated_at
 		FROM member WHERE id = $1`
-	m, err := scanMember(r.pool.QueryRow(ctx, q, id.String()))
+	m, err := scanMember(r.dbtx.QueryRow(ctx, q, id.String()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrMemberNotFound
@@ -112,12 +115,24 @@ func (r *PostgresRepository) GetMember(ctx context.Context, id domain.MemberID) 
 	return m, nil
 }
 
+// HasAnyHousehold reports whether at least one household row exists in the
+// database. It is used by the onboarding flow to decide whether the
+// first-run setup page should be shown or whether to redirect to /login.
+func (r *PostgresRepository) HasAnyHousehold(ctx context.Context) (bool, error) {
+	const q = `SELECT EXISTS(SELECT 1 FROM household)`
+	var exists bool
+	if err := r.dbtx.QueryRow(ctx, q).Scan(&exists); err != nil {
+		return false, fmt.Errorf("has any household: %w", err)
+	}
+	return exists, nil
+}
+
 // ListMembers returns the household's members ordered by creation.
 func (r *PostgresRepository) ListMembers(ctx context.Context, householdID domain.HouseholdID) ([]*domain.Member, error) {
 	const q = `
 		SELECT id, household_id, display_name, role, color_key, created_at, updated_at
 		FROM member WHERE household_id = $1 ORDER BY created_at, id`
-	rows, err := r.pool.Query(ctx, q, householdID.String())
+	rows, err := r.dbtx.Query(ctx, q, householdID.String())
 	if err != nil {
 		return nil, fmt.Errorf("list members: %w", err)
 	}

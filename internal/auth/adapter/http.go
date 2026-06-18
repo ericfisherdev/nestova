@@ -160,16 +160,25 @@ func (h *Handlers) renderLoginPage(w http.ResponseWriter, r *http.Request, statu
 	}
 }
 
-// checkCSRF performs a constant-time comparison of the form's csrf_token field
-// against the value stored in the session. Returns false when either value is
-// absent.
-func (h *Handlers) checkCSRF(r *http.Request) bool {
-	sessionToken := h.sm.GetString(r.Context(), sessionKeyCSRF)
+// VerifyCSRF performs a constant-time comparison of the form's csrf_token field
+// against the value stored in the session. It returns false when either value is
+// absent. The caller must have already parsed the form (e.g. via r.ParseForm())
+// before calling this function. Exported so handlers outside this package (e.g.
+// OnboardingHandlers, member handlers) can reuse the same CSRF check without
+// duplicating the logic.
+func VerifyCSRF(r *http.Request, sm *scs.SessionManager) bool {
+	sessionToken := sm.GetString(r.Context(), sessionKeyCSRF)
 	formToken := r.FormValue("csrf_token")
 	if sessionToken == "" || formToken == "" {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(sessionToken), []byte(formToken)) == 1
+}
+
+// checkCSRF is the unexported per-receiver helper that delegates to VerifyCSRF
+// using the Handlers session manager.
+func (h *Handlers) checkCSRF(r *http.Request) bool {
+	return VerifyCSRF(r, h.sm)
 }
 
 // sanitizeNext ensures the post-login redirect target is a safe same-origin path

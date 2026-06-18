@@ -57,8 +57,32 @@ func (testHouseholdRepo) ListMembers(_ context.Context, _ household.HouseholdID)
 	return nil, nil
 }
 
+func (testHouseholdRepo) HasAnyHousehold(_ context.Context) (bool, error) {
+	return false, nil
+}
+
 // Compile-time assertion.
 var _ household.HouseholdRepository = testHouseholdRepo{}
+
+// testCredStore is a no-op credentialStore (EmailExists always false) for unit
+// tests that have no database.
+type testCredStore struct{}
+
+func (testCredStore) EmailExists(_ context.Context, _ string) (bool, error) { return false, nil }
+
+// testProvisioner is a no-op Provisioner for unit tests that have no database.
+type testProvisioner struct{}
+
+func (testProvisioner) ProvisionHousehold(_ context.Context, _ *household.Household, _ *household.Member, _, _ string) error {
+	return nil
+}
+
+func (testProvisioner) ProvisionMember(_ context.Context, _ *household.Member, _, _ string) error {
+	return nil
+}
+
+// Compile-time assertion.
+var _ authadapter.Provisioner = testProvisioner{}
 
 func newTestSessionManager() *scs.SessionManager {
 	sm := scs.New()
@@ -73,15 +97,17 @@ func newTestSessionManager() *scs.SessionManager {
 func buildTestHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
+	repo := testHouseholdRepo{}
 	authn := authapp.New(testCredRepo{})
 	authHandlers := authadapter.NewHandlers(sm, authn, logger)
+	onboardingHandlers := authadapter.NewOnboardingHandlers(repo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo)
 
 	// Apply the session middleware so CSRF tokens and member lookups work.
 	return sm.LoadAndSave(
-		authadapter.Authenticate(sm, testHouseholdRepo{})(mux),
+		authadapter.Authenticate(sm, repo)(mux),
 	)
 }
 
