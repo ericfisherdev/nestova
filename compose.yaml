@@ -1,0 +1,26 @@
+# Local development services. Start with: docker compose up -d
+# The default DATABASE_URL in internal/platform/config matches this service.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: nestova-postgres
+    environment:
+      # Local-development credentials only — NOT for any shared or production
+      # environment. Production must supply DATABASE_URL with real credentials.
+      POSTGRES_USER: nestova
+      POSTGRES_PASSWORD: nestova
+      POSTGRES_DB: nestova
+    ports:
+      # Bind to loopback only — this dev service has fixed local credentials and
+      # must not be reachable from other hosts on the network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - nestova-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nestova -d nestova"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  nestova-pgdata:

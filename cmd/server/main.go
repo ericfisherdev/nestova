@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
+	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 )
 
@@ -35,7 +36,22 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	srv := httpserver.New(cfg.Server.Addr)
+
+	// Establish the Postgres pool up front so a bad DSN or unreachable database
+	// fails fast at boot (db.New bounds the connectivity check with
+	// DB.ConnTimeout). Feature contexts (repositories, sessions) consume the
+	// pool as those tickets land.
+	pool, err := db.New(context.Background(), cfg.DB)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	logger.Info("connected to postgres", "max_conns", pool.Config().MaxConns)
+
+	// The readiness probe verifies live database connectivity on each call.
+	srv := httpserver.New(cfg.Server.Addr, func(ctx context.Context) error {
+		return db.Health(ctx, pool)
+	})
 
 	// Surface listen errors from the background goroutine to the main flow.
 	serverErr := make(chan error, 1)
