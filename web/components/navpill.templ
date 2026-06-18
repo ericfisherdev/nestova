@@ -1,0 +1,23 @@
+package components
+
+// NavPill renders a sidebar navigation pill. The active pill uses the sage green
+// tint background and dark-green text; inactive pills are quiet until hovered.
+templ NavPill(label, href string, active bool) {
+	<a
+		href={ templ.SafeURL(href) }
+		class={ "block rounded-control px-3 py-2 font-medium transition-colors", navPillClass(active) }
+		if active {
+			aria-current="page"
+		}
+	>
+		{ label }
+	</a>
+}
+
+// navPillClass maps the active state to its Tailwind classes.
+func navPillClass(active bool) string {
+	if active {
+		return "bg-sage-tint text-sage-darker"
+	}
+	return "text-ink-secondary hover:bg-surface-warm"
+}

@@ -56,6 +56,9 @@ func run(logger *slog.Logger) error {
 		Ready: func(ctx context.Context) error {
 			return db.Health(ctx, pool)
 		},
+		Routes: func(mux *http.ServeMux) {
+			registerExampleRoutes(mux, logger)
+		},
 	})
 
 	// Surface listen errors from the background goroutine to the main flow.

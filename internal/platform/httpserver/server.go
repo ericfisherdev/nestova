@@ -38,6 +38,10 @@ type Deps struct {
 	Logger *slog.Logger
 	// Ready backs the /readyz probe; nil means "always ready".
 	Ready ReadinessFunc
+	// Routes, if non-nil, registers feature routes (pages, HTMX fragments,
+	// later contexts' handlers) on the mux after the platform routes. This is
+	// the extension point for feature wiring without changing New.
+	Routes func(mux *http.ServeMux)
 }
 
 // New builds the application's HTTP server from cfg and deps with the core
@@ -60,7 +64,7 @@ func New(cfg config.Config, deps Deps) *http.Server {
 		middleware.RequestLogger(deps.Logger),
 		middleware.Recoverer(deps.Logger),
 		middleware.Timeout(requestTimeout),
-	)(routes(deps.Ready))
+	)(routes(deps))
 
 	return &http.Server{
 		Addr:              cfg.Server.Addr,
@@ -75,12 +79,16 @@ func New(cfg config.Config, deps Deps) *http.Server {
 
 // routes registers the base HTTP routes shared across bounded contexts.
 // Feature routes are mounted here as each context's adapter package lands.
-func routes(ready ReadinessFunc) http.Handler {
+func routes(deps Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("GET /readyz", handleReadyz(ready))
+	mux.HandleFunc("GET /readyz", handleReadyz(deps.Ready))
 	// Embedded front-end assets (built CSS, vendored HTMX/Alpine, fonts).
 	mux.Handle("GET /static/", staticAssets())
+	// Feature routes (pages, fragments, context handlers) register here.
+	if deps.Routes != nil {
+		deps.Routes(mux)
+	}
 	return mux
 }
 

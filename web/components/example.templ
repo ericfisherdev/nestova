@@ -1,0 +1,64 @@
+package components
+
+// ExamplePage is a minimal full-document wrapper used to prove the
+// templ -> HTTP -> styled-HTML path end to end (it links the built CSS and the
+// vendored HTMX/Alpine). It is NOT the app shell: the real layout is owned by
+// NES-21 and replaces this wrapper at the call site once it lands.
+templ ExamplePage(content templ.Component) {
+	<!doctype html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Nestova</title>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+			<script src="/static/js/htmx.min.js" defer></script>
+			<script src="/static/js/alpine.min.js" defer></script>
+		</head>
+		<body class="bg-main font-sans text-ink min-h-screen">
+			@content
+		</body>
+	</html>
+}
+
+// ExampleContent showcases the shared primitives and an HTMX fragment swap,
+// proving the components render with the A · Hearth tokens.
+templ ExampleContent(members []MemberView) {
+	<main class="mx-auto max-w-3xl space-y-6 p-8">
+		<h1 class="text-2xl font-semibold">Nestova</h1>
+		<div class="flex gap-3">
+			@Button("Create", ButtonPrimary, "")
+			@Button("Cancel", ButtonSecondary, "")
+		</div>
+		<div id="demo-card">
+			@Card("Welcome") {
+				<p>templ, HTMX, Alpine, and Tailwind are wired end to end.</p>
+			}
+		</div>
+		<button
+			class="rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark"
+			hx-get="/fragment"
+			hx-target="#demo-card"
+			hx-swap="outerHTML"
+		>
+			Swap card via HTMX
+		</button>
+		if len(members) > 0 {
+			<div class="flex gap-2">
+				for _, m := range members {
+					@MemberAvatar(m)
+				}
+			</div>
+		}
+	</main>
+}
+
+// ExampleFragment is the HTMX response that replaces the demo card, proving the
+// fragment (no full document) render path.
+templ ExampleFragment() {
+	<div id="demo-card">
+		@Card("Swapped!") {
+			<p>This card was loaded via an HTMX fragment request — no full page reload.</p>
+		}
+	</div>
+}
