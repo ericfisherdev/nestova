@@ -95,11 +95,15 @@ func registerWebRoutes(
 	})))
 
 	// Tasks routes — RequireMember-gated.
-	// GET /tasks renders the chores & maintenance list.
+	// GET /tasks           renders the chores & maintenance list.
+	// GET /tasks/new       renders the create-recurring-task form.
+	// POST /tasks          creates a new recurring task.
 	// POST /tasks/{id}/complete|skip|claim are the three HTMX action endpoints.
 	//
 	// The layout callback is constructed per-request so the request context
 	// (for CSRF token generation and member list loading) is always available.
+	// Go's ServeMux distinguishes POST /tasks from POST /tasks/{id}/complete
+	// because the latter's pattern has a path segment after the prefix.
 	mux.Handle("GET /tasks", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
@@ -108,6 +112,24 @@ func registerWebRoutes(
 			}
 		}
 		taskHandlers.List(layoutFn)(w, r)
+	})))
+	mux.Handle("GET /tasks/new", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				return components.Layout(props, nav, c)
+			}
+		}
+		taskHandlers.NewTaskPage(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /tasks", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				return components.Layout(props, nav, c)
+			}
+		}
+		taskHandlers.CreateTask(layoutFn)(w, r)
 	})))
 	mux.Handle("POST /tasks/{id}/complete", requireMember(http.HandlerFunc(taskHandlers.Complete)))
 	mux.Handle("POST /tasks/{id}/skip", requireMember(http.HandlerFunc(taskHandlers.Skip)))

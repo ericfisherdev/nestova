@@ -1,0 +1,326 @@
+package components
+
+// MemberOption is a single household member shown in the rotation-pool picker.
+type MemberOption struct {
+	// ID is the string form of the member's UUID, used as the checkbox value.
+	ID string
+	// Name is the member's display name shown next to the checkbox.
+	Name string
+	// Color is the A·Hearth palette key used to tint the member's avatar.
+	Color string
+}
+
+// NewTaskForm is the view model for the create-recurring-task form. All fields
+// carry the last-submitted values so the form is sticky after a validation error
+// (HTTP 422 re-render). The zero value renders a blank form.
+type NewTaskForm struct {
+	// CSRFToken is the per-session CSRF token embedded as a hidden form field.
+	CSRFToken string
+	// Error is a validation error shown above the submit button. Empty means no
+	// error is shown.
+	Error string
+	// Title pre-fills the title input after a failed submission.
+	Title string
+	// Category is the last-submitted category value ("chore" or "maintenance").
+	Category string
+	// Freq is the last-submitted frequency value ("daily", "weekly", "monthly").
+	Freq string
+	// Interval is the last-submitted interval string (stringified int >= 1).
+	Interval string
+	// Weekdays holds the last-submitted weekday values (e.g. ["0","3","5"]).
+	// Each value is a stringified time.Weekday int (0 = Sunday, 6 = Saturday).
+	Weekdays []string
+	// Anchor is the last-submitted anchor date in YYYY-MM-DD format.
+	Anchor string
+	// RotationPolicy is the last-submitted policy value ("fixed", "round_robin",
+	// "claimable").
+	RotationPolicy string
+	// Points is the last-submitted points string (stringified int >= 0).
+	Points string
+	// LeadTimeDays is the last-submitted lead-time string (stringified int >= 0).
+	LeadTimeDays string
+	// Members is the full list of household members shown in the pool picker.
+	Members []MemberOption
+	// SelectedMemberIDs holds the member IDs checked in the pool picker after a
+	// failed submission.
+	SelectedMemberIDs []string
+}
+
+// weekdaySelected reports whether the given weekday number string (e.g. "1")
+// is present in the selected weekdays slice.
+func weekdaySelected(wd string, selected []string) bool {
+	for _, s := range selected {
+		if s == wd {
+			return true
+		}
+	}
+	return false
+}
+
+// memberSelected reports whether memberID appears in the selected-member slice.
+func memberSelected(memberID string, selected []string) bool {
+	for _, s := range selected {
+		if s == memberID {
+			return true
+		}
+	}
+	return false
+}
+
+// NewTaskPage renders the create-recurring-task form in the A·Hearth app shell.
+// It is wired into the app shell by the LayoutFunc callback passed from home.go;
+// the caller wraps this component in the layout.
+templ NewTaskPage(form NewTaskForm) {
+	<div class="p-6">
+		<div class="mb-6">
+			<h1 class="text-2xl font-semibold">Add a chore or maintenance task</h1>
+			<p class="mt-1 text-sm text-ink-muted">Define a recurring task and assign it to your household.</p>
+		</div>
+		<div
+			class="max-w-lg rounded-card bg-surface p-6 shadow-warm"
+			x-data={ `{ freq: '` + form.Freq + `', policy: '` + form.RotationPolicy + `' }` }
+		>
+			<form method="POST" action="/tasks" novalidate>
+				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+				<div class="flex flex-col gap-5">
+					<!-- Title -->
+					<div class="flex flex-col gap-1">
+						<label for="nt_title" class="text-sm font-medium text-ink-secondary">Title</label>
+						<input
+							id="nt_title"
+							type="text"
+							name="title"
+							value={ form.Title }
+							autocomplete="off"
+							required
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+							placeholder="e.g. Vacuum living room"
+						/>
+					</div>
+					<!-- Category -->
+					<fieldset class="flex flex-col gap-2">
+						<legend class="text-sm font-medium text-ink-secondary">Category</legend>
+						<div class="flex gap-4">
+							<label class="flex items-center gap-2 text-sm">
+								<input
+									type="radio"
+									name="category"
+									value="chore"
+									checked?={ form.Category == "chore" || form.Category == "" }
+									class="accent-sage"
+								/>
+								Chore
+							</label>
+							<label class="flex items-center gap-2 text-sm">
+								<input
+									type="radio"
+									name="category"
+									value="maintenance"
+									checked?={ form.Category == "maintenance" }
+									class="accent-sage"
+								/>
+								Maintenance
+							</label>
+						</div>
+					</fieldset>
+					<!-- Cadence builder -->
+					<fieldset class="flex flex-col gap-3">
+						<legend class="text-sm font-medium text-ink-secondary">Cadence</legend>
+						<!-- Frequency + Interval row -->
+						<div class="flex flex-wrap items-end gap-3">
+							<div class="flex flex-col gap-1">
+								<label for="nt_freq" class="text-sm text-ink-secondary">Repeat</label>
+								<select
+									id="nt_freq"
+									name="freq"
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+									x-model="freq"
+								>
+									<option value="daily" selected?={ form.Freq == "daily" || form.Freq == "" }>Daily</option>
+									<option value="weekly" selected?={ form.Freq == "weekly" }>Weekly</option>
+									<option value="monthly" selected?={ form.Freq == "monthly" }>Monthly</option>
+								</select>
+							</div>
+							<div class="flex flex-col gap-1">
+								<label for="nt_interval" class="text-sm text-ink-secondary">Every N</label>
+								<input
+									id="nt_interval"
+									type="number"
+									name="interval"
+									value={ form.Interval }
+									min="1"
+									placeholder="1"
+									class="w-20 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+								/>
+							</div>
+						</div>
+						<!-- Weekday checkboxes — only visible when freq == "weekly" -->
+						<div x-show="freq === 'weekly'" x-cloak class="flex flex-col gap-1">
+							<span class="text-sm text-ink-secondary">On days</span>
+							<div class="flex flex-wrap gap-3">
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="0"
+										checked?={ weekdaySelected("0", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Sun
+								</label>
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="1"
+										checked?={ weekdaySelected("1", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Mon
+								</label>
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="2"
+										checked?={ weekdaySelected("2", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Tue
+								</label>
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="3"
+										checked?={ weekdaySelected("3", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Wed
+								</label>
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="4"
+										checked?={ weekdaySelected("4", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Thu
+								</label>
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="5"
+										checked?={ weekdaySelected("5", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Fri
+								</label>
+								<label class="flex items-center gap-1.5 text-sm">
+									<input
+										type="checkbox"
+										name="byweekday"
+										value="6"
+										checked?={ weekdaySelected("6", form.Weekdays) }
+										class="accent-sage"
+									/>
+									Sat
+								</label>
+							</div>
+						</div>
+						<!-- Anchor date -->
+						<div class="flex flex-col gap-1">
+							<label for="nt_anchor" class="text-sm text-ink-secondary">Starting on</label>
+							<input
+								id="nt_anchor"
+								type="date"
+								name="anchor"
+								value={ form.Anchor }
+								class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+							/>
+						</div>
+					</fieldset>
+					<!-- Rotation policy -->
+					<div class="flex flex-col gap-1">
+						<label for="nt_rotation_policy" class="text-sm font-medium text-ink-secondary">Assignment</label>
+						<select
+							id="nt_rotation_policy"
+							name="rotation_policy"
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+							x-model="policy"
+						>
+							<option value="fixed" selected?={ form.RotationPolicy == "fixed" || form.RotationPolicy == "" }>Fixed — always the same person(s)</option>
+							<option value="round_robin" selected?={ form.RotationPolicy == "round_robin" }>Round robin — rotate through pool</option>
+							<option value="claimable" selected?={ form.RotationPolicy == "claimable" }>Claimable — anyone can pick it up</option>
+						</select>
+					</div>
+					<!-- Points + Lead time -->
+					<div class="flex flex-wrap gap-4">
+						<div class="flex flex-col gap-1">
+							<label for="nt_points" class="text-sm font-medium text-ink-secondary">Points</label>
+							<input
+								id="nt_points"
+								type="number"
+								name="points"
+								value={ form.Points }
+								min="0"
+								placeholder="0"
+								class="w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+							/>
+						</div>
+						<div class="flex flex-col gap-1">
+							<label for="nt_lead_time" class="text-sm font-medium text-ink-secondary">Visible N days early</label>
+							<input
+								id="nt_lead_time"
+								type="number"
+								name="lead_time_days"
+								value={ form.LeadTimeDays }
+								min="0"
+								placeholder="0"
+								class="w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+							/>
+						</div>
+					</div>
+					<!-- Rotation pool — hidden for claimable via Alpine -->
+					if len(form.Members) > 0 {
+						<fieldset class="flex flex-col gap-2" x-show="policy !== 'claimable'" x-cloak>
+							<legend class="text-sm font-medium text-ink-secondary">Rotation pool</legend>
+							<div class="flex flex-col gap-2">
+								for _, m := range form.Members {
+									<label class="flex items-center gap-2 text-sm">
+										<input
+											type="checkbox"
+											name="pool"
+											value={ m.ID }
+											checked?={ memberSelected(m.ID, form.SelectedMemberIDs) }
+											class="accent-sage"
+										/>
+										<span
+											class={ "inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold", memberTintClass(m.Color) }
+											aria-hidden="true"
+										></span>
+										{ m.Name }
+									</label>
+								}
+							</div>
+						</fieldset>
+					}
+					<!-- Error message -->
+					if form.Error != "" {
+						<p role="alert" class="text-sm text-red-600">{ form.Error }</p>
+					}
+					<!-- Actions -->
+					<div class="flex gap-3">
+						@Button("Save chore", ButtonPrimary, "submit")
+						<a
+							href="/tasks"
+							class="inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors bg-surface text-ink border border-sidebar-border hover:bg-surface-warm"
+						>Cancel</a>
+					</div>
+				</div>
+			</form>
+		</div>
+	</div>
+}

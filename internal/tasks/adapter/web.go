@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/a-h/templ"
@@ -224,6 +226,306 @@ func (h *WebHandlers) Claim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondAfterMutation(w, r)
+}
+
+// NewTaskPage handles GET /tasks/new. It loads the household member list for the
+// rotation-pool picker and renders the create-recurring-task form in the app
+// shell with a fresh CSRF token.
+//
+// The layout callback is supplied by the caller (home.go) so this handler stays
+// decoupled from ShellProps / nav construction.
+func (h *WebHandlers) NewTaskPage(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+		if err != nil {
+			h.logger.ErrorContext(r.Context(), "new task page: list members", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		form := components.NewTaskForm{
+			CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
+			Members:   toMemberOptions(members),
+		}
+		content := components.NewTaskPage(form)
+		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
+			h.logger.ErrorContext(r.Context(), "new task page: render", "error", err)
+		}
+	}
+}
+
+// CreateTask handles POST /tasks. It parses and validates the form, builds a
+// RecurringTask and a rotation pool, delegates to TaskService.CreateRecurringTask,
+// and on success redirects to /tasks. On validation failure it re-renders the
+// form at HTTP 422 with the submitted values preserved and an error message.
+//
+// Error mapping:
+//   - bad CSRF                       → 403
+//   - missing/invalid title/category → 422 (form re-render)
+//   - ErrInvalidCadence              → 422 (form re-render)
+//   - ErrNoRotationMembers           → 422 (form re-render)
+//   - other                          → 500
+func (h *WebHandlers) CreateTask(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !authadapter.VerifyCSRF(r, h.sm) {
+			http.Error(w, "invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		task, pool, form, validationMsg := h.parseCreateForm(r, member.HouseholdID)
+		if validationMsg != "" {
+			// Reload member list for the pool picker on re-render.
+			members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+			if err != nil {
+				h.logger.ErrorContext(r.Context(), "create task: list members on re-render", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			form.Members = toMemberOptions(members)
+			h.renderNewTaskForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+			return
+		}
+
+		// Defense-in-depth: verify every selected pool member belongs to this
+		// household before touching the database. The composite tenant FK also
+		// rejects cross-household members, but an app-level check fails earlier
+		// with a friendly message. Claimable tasks ignore the pool, so skip it.
+		if task.RotationPolicy != domain.RotationClaimable && len(pool) > 0 {
+			members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+			if err != nil {
+				h.logger.ErrorContext(r.Context(), "create task: list members for pool validation", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			allowed := make(map[household.MemberID]bool, len(members))
+			for _, m := range members {
+				allowed[m.ID] = true
+			}
+			for _, id := range pool {
+				if !allowed[id] {
+					form.Members = toMemberOptions(members)
+					form.Error = "One or more selected members are not in your household."
+					h.renderNewTaskForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+					return
+				}
+			}
+		}
+
+		if err := h.svc.CreateRecurringTask(r.Context(), task, pool); err != nil {
+			errMsg := createTaskErrMessage(err)
+			if errMsg == "" {
+				h.logger.ErrorContext(r.Context(), "create task: service error", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			// Service returned a known validation error — re-render with message.
+			members, listErr := h.households.ListMembers(r.Context(), member.HouseholdID)
+			if listErr != nil {
+				h.logger.ErrorContext(r.Context(), "create task: list members on service error", "error", listErr)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			form.Members = toMemberOptions(members)
+			form.Error = errMsg
+			h.renderNewTaskForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+			return
+		}
+
+		http.Redirect(w, r, "/tasks", http.StatusSeeOther)
+	}
+}
+
+// parseCreateForm reads the submitted form values from r, builds a RecurringTask
+// and pool, and also returns a sticky NewTaskForm for re-rendering. validationMsg
+// is non-empty when any field fails local validation (before the service is
+// called). task and pool are only valid when validationMsg is empty.
+//
+// The householdID is threaded in so it can be stamped onto the task immediately
+// here, keeping the handler body lean.
+func (h *WebHandlers) parseCreateForm(
+	r *http.Request,
+	householdID household.HouseholdID,
+) (task *domain.RecurringTask, pool []household.MemberID, form components.NewTaskForm, validationMsg string) {
+	// Capture sticky values first so the form is always populated for re-renders.
+	rawTitle := strings.TrimSpace(r.FormValue("title"))
+	rawCategory := r.FormValue("category")
+	rawFreq := r.FormValue("freq")
+	rawInterval := r.FormValue("interval")
+	rawWeekdays := r.Form["byweekday"]
+	rawAnchor := r.FormValue("anchor")
+	rawPolicy := r.FormValue("rotation_policy")
+	rawPoints := r.FormValue("points")
+	rawLead := r.FormValue("lead_time_days")
+	rawPool := r.Form["pool"]
+
+	form = components.NewTaskForm{
+		CSRFToken:         authadapter.GetCSRFToken(r.Context(), h.sm),
+		Title:             rawTitle,
+		Category:          rawCategory,
+		Freq:              rawFreq,
+		Interval:          rawInterval,
+		Weekdays:          rawWeekdays,
+		Anchor:            rawAnchor,
+		RotationPolicy:    rawPolicy,
+		Points:            rawPoints,
+		LeadTimeDays:      rawLead,
+		SelectedMemberIDs: rawPool,
+	}
+
+	if rawTitle == "" {
+		form.Error = "Title is required."
+		return nil, nil, form, form.Error
+	}
+
+	category, err := domain.ParseCategory(rawCategory)
+	if err != nil {
+		form.Error = "Please select a valid category."
+		return nil, nil, form, form.Error
+	}
+
+	freq, err := household.ParseFreq(rawFreq)
+	if err != nil {
+		form.Error = "Please select a valid frequency."
+		return nil, nil, form, form.Error
+	}
+
+	interval, err := strconv.Atoi(rawInterval)
+	if err != nil || interval < 1 {
+		form.Error = "Interval must be a whole number of 1 or more."
+		return nil, nil, form, form.Error
+	}
+
+	var byWeekday []time.Weekday
+	if freq == household.FreqWeekly {
+		for _, s := range rawWeekdays {
+			n, convErr := strconv.Atoi(s)
+			if convErr != nil || n < int(time.Sunday) || n > int(time.Saturday) {
+				form.Error = "One or more selected weekday values are invalid."
+				return nil, nil, form, form.Error
+			}
+			byWeekday = append(byWeekday, time.Weekday(n))
+		}
+	}
+
+	anchor := domain.DateOf(time.Now())
+	if rawAnchor != "" {
+		parsed, parseErr := time.Parse("2006-01-02", rawAnchor)
+		if parseErr != nil {
+			form.Error = "Starting date must be in YYYY-MM-DD format."
+			return nil, nil, form, form.Error
+		}
+		anchor = domain.DateOf(parsed)
+	}
+
+	policy, err := domain.ParseRotationPolicy(rawPolicy)
+	if err != nil {
+		form.Error = "Please select a valid assignment policy."
+		return nil, nil, form, form.Error
+	}
+
+	points := 0
+	if rawPoints != "" {
+		points, err = strconv.Atoi(rawPoints)
+		if err != nil || points < 0 {
+			form.Error = "Points must be a whole number of 0 or more."
+			return nil, nil, form, form.Error
+		}
+	}
+
+	leadDays := 0
+	if rawLead != "" {
+		leadDays, err = strconv.Atoi(rawLead)
+		if err != nil || leadDays < 0 {
+			form.Error = "Lead time must be a whole number of 0 or more."
+			return nil, nil, form, form.Error
+		}
+	}
+
+	// Build the rotation pool (ignored by the service for claimable tasks).
+	pool = make([]household.MemberID, 0, len(rawPool))
+	for _, idStr := range rawPool {
+		memberID, parseErr := household.ParseMemberID(idStr)
+		if parseErr != nil {
+			form.Error = "One or more selected members are invalid."
+			return nil, nil, form, form.Error
+		}
+		pool = append(pool, memberID)
+	}
+
+	task = &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: householdID,
+		Title:       rawTitle,
+		Category:    category,
+		Cadence: household.Cadence{
+			Freq:      freq,
+			Interval:  interval,
+			ByWeekday: byWeekday,
+			Anchor:    anchor,
+		},
+		RotationPolicy: policy,
+		Points:         points,
+		LeadTimeDays:   leadDays,
+		Active:         true,
+	}
+	return task, pool, form, ""
+}
+
+// createTaskErrMessage maps known service-layer errors to user-readable messages.
+// An empty string means the error is unexpected and should be treated as a 500.
+func createTaskErrMessage(err error) string {
+	switch {
+	case errors.Is(err, household.ErrInvalidCadence):
+		return "The cadence configuration is invalid. Please check the frequency, interval, and starting date."
+	case errors.Is(err, domain.ErrNoRotationMembers):
+		return "At least one rotation pool member is required for fixed or round-robin tasks."
+	default:
+		return ""
+	}
+}
+
+// renderNewTaskForm renders the new-task form component at the given HTTP status.
+// It is called for both the GET render (200) and validation re-renders (422).
+func (h *WebHandlers) renderNewTaskForm(
+	w http.ResponseWriter,
+	r *http.Request,
+	status int,
+	form components.NewTaskForm,
+	layout func(templ.Component) templ.Component,
+) {
+	content := components.NewTaskPage(form)
+	if err := render.Render(r.Context(), w, status, layout(content)); err != nil {
+		h.logger.ErrorContext(r.Context(), "new task: render form", "error", err)
+	}
+}
+
+// toMemberOptions maps domain Members to the MemberOption view model used by
+// the create-task form's rotation-pool picker.
+func toMemberOptions(members []*household.Member) []components.MemberOption {
+	opts := make([]components.MemberOption, 0, len(members))
+	for _, m := range members {
+		opts = append(opts, components.MemberOption{
+			ID:    m.ID.String(),
+			Name:  m.DisplayName,
+			Color: m.Color.String(),
+		})
+	}
+	return opts
 }
 
 // upForGrabsLabel is the heading for the group of unassigned, claimable rows.
