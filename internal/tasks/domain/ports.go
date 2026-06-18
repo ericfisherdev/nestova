@@ -111,10 +111,11 @@ type TaskInstanceRepository interface {
 	// exist yet.
 	LatestDueOn(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) (time.Time, bool, error)
 
-	// Claim assigns the instance to assignee when it is currently unassigned.
-	// Claiming is first-come, not reassignment.
+	// Claim assigns the instance to assignee when it is pending and currently
+	// unassigned. Claiming is first-come, not reassignment.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
-	// Returns [ErrInstanceAlreadyClaimed] when the instance is already assigned.
+	// Returns [ErrInstanceInTerminalState] when the instance is done/skipped/overdue.
+	// Returns [ErrInstanceAlreadyClaimed] when a pending instance is already assigned.
 	Claim(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID) error
 
 	// Complete transitions the instance from pending to done, recording by and at.

@@ -42,11 +42,13 @@ type TaskInstance struct {
 	RecurringTaskID RecurringTaskID
 	HouseholdID     household.HouseholdID
 	AssigneeID      *household.MemberID
-	DueOn           time.Time
-	Status          InstanceStatus
-	CompletedAt     *time.Time
-	CompletedBy     *household.MemberID
-	CreatedAt       time.Time
+	// DueOn is a calendar date (the clock component is not significant); it maps
+	// to the task_instance.due_on DATE column. Construct it at midnight UTC.
+	DueOn       time.Time
+	Status      InstanceStatus
+	CompletedAt *time.Time
+	CompletedBy *household.MemberID
+	CreatedAt   time.Time
 	// UpdatedAt is refreshed on every status transition (claim, complete, skip,
 	// overdue sweep); the NES-29 adapter maintains it.
 	UpdatedAt time.Time
