@@ -23,21 +23,26 @@ func newTestRepo(t *testing.T) *adapter.PostgresRepository {
 	if dsn == "" {
 		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the household repository tests")
 	}
-	ctx := context.Background()
+	// Bound migration setup so a slow/unresponsive database fails the test
+	// rather than hanging it.
+	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	if err := migrate.Reset(ctx, dsn); err != nil {
+	if err := migrate.Reset(setupCtx, dsn); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
-	if err := migrate.Up(ctx, dsn); err != nil {
+	if err := migrate.Up(setupCtx, dsn); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := migrate.Reset(ctx, dsn); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
 			t.Logf("cleanup reset failed: %v", err)
 		}
 	})
 
-	pool, err := db.New(ctx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
+	pool, err := db.New(setupCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("connect pool: %v", err)
 	}
@@ -100,9 +105,12 @@ func TestAddListAndGetMembers(t *testing.T) {
 	if len(members) != len(names) {
 		t.Fatalf("ListMembers returned %d, want %d", len(members), len(names))
 	}
-	// Colors were assigned in canonical order.
-	if members[0].Color != domain.ColorSage || members[1].Color != domain.ColorClay {
-		t.Errorf("member colors = %q, %q; want sage, clay", members[0].Color, members[1].Color)
+	// Insertion order is preserved and colors were assigned in canonical order.
+	if members[0].DisplayName != "Maya" || members[0].Color != domain.ColorSage {
+		t.Errorf("members[0] = (%s, %s), want (Maya, sage)", members[0].DisplayName, members[0].Color)
+	}
+	if members[1].DisplayName != "Daniel" || members[1].Color != domain.ColorClay {
+		t.Errorf("members[1] = (%s, %s), want (Daniel, clay)", members[1].DisplayName, members[1].Color)
 	}
 
 	got, err := repo.GetMember(ctx, ids[0])

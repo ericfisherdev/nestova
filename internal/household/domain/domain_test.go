@@ -59,10 +59,12 @@ func TestMemberInitials(t *testing.T) {
 		"Étienne":          "É",
 	}
 	for name, want := range tests {
-		m := domain.Member{DisplayName: name}
-		if got := m.Initials(); got != want {
-			t.Errorf("Initials(%q) = %q, want %q", name, got, want)
-		}
+		t.Run(name, func(t *testing.T) {
+			m := domain.Member{DisplayName: name}
+			if got := m.Initials(); got != want {
+				t.Errorf("Initials(%q) = %q, want %q", name, got, want)
+			}
+		})
 	}
 }
 
@@ -85,7 +87,7 @@ func TestNextColor(t *testing.T) {
 			want:     domain.ColorSage,
 		},
 		{
-			name:     "sage reused twice -> next reuse is clay",
+			name:     "sage used twice -> next reuse is clay",
 			existing: append(domain.MemberColors(), domain.ColorSage),
 			want:     domain.ColorClay,
 		},
