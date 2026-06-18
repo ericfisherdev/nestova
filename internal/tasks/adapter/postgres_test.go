@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
 	"github.com/ericfisherdev/nestova/internal/tasks/adapter"
+	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
 
@@ -899,6 +901,156 @@ func TestTaskInstance_LatestDueOn(t *testing.T) {
 		t.Errorf("LatestDueOn = %v, want %v", ts, wantLatest)
 	}
 }
+
+// TestRecurringTask_ListAllActive verifies that ListAllActive returns all active
+// tasks across multiple households and omits inactive ones.
+func TestRecurringTask_ListAllActive(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+
+	// Two separate households.
+	hA, _, _ := seedHousehold(t, pool)
+	hB, _, _ := seedHousehold(t, pool)
+
+	// One active task per household.
+	activeA := seedRecurringTask(t, repo, hA.ID)
+	activeB := seedRecurringTask(t, repo, hB.ID)
+
+	// One inactive task in household A.
+	inactive := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    hA.ID,
+		Title:          "Inactive task",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationClaimable,
+		Active:         false,
+	}
+	if err := repo.Create(testCtx(t), inactive); err != nil {
+		t.Fatalf("Create inactive task: %v", err)
+	}
+
+	got, err := repo.ListAllActive(testCtx(t))
+	if err != nil {
+		t.Fatalf("ListAllActive: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListAllActive returned %d tasks, want 2", len(got))
+	}
+
+	ids := map[domain.RecurringTaskID]bool{got[0].ID: true, got[1].ID: true}
+	if !ids[activeA.ID] {
+		t.Errorf("ListAllActive missing activeA (%v)", activeA.ID)
+	}
+	if !ids[activeB.ID] {
+		t.Errorf("ListAllActive missing activeB (%v)", activeB.ID)
+	}
+	if ids[inactive.ID] {
+		t.Errorf("ListAllActive returned inactive task (%v)", inactive.ID)
+	}
+}
+
+// TestGenerator_EndToEnd is a gated integration test that exercises the full
+// materialisation pipeline against a real database: it seeds a household with
+// two members, creates a round-robin recurring task via TaskService, runs
+// GenerateDue, verifies instances and assignee cycling, then verifies that a
+// second GenerateDue call inserts nothing new.
+func TestGenerator_EndToEnd(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instanceRepo := adapter.NewTaskInstanceRepository(pool)
+
+	h, m1, m2 := seedHousehold(t, pool)
+
+	// Build and create a round-robin weekly task via TaskService.
+	svc, err := tasksapp.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	rt := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: h.ID,
+		Title:       "Vacuum",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   refDate, // 2025-03-10
+		},
+		RotationPolicy: domain.RotationRoundRobin,
+		Points:         10,
+		Active:         true,
+	}
+
+	memberPool := []household.MemberID{m1, m2}
+	if err := svc.CreateRecurringTask(testCtx(t), rt, memberPool); err != nil {
+		t.Fatalf("CreateRecurringTask: %v", err)
+	}
+
+	// Run the generator with a 14-day horizon, asOf = refDate.
+	// Window: (refDate-1ns, refDate+14d] → occurrences at refDate, +7d, +14d = 3.
+	logger := slog.New(slog.NewTextHandler(noopTestWriter{}, nil))
+	gen, err := tasksapp.NewGenerator(taskRepo, instanceRepo, logger, 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+
+	count, err := gen.GenerateDue(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("GenerateDue (run 1): %v", err)
+	}
+	if count != 3 {
+		t.Errorf("GenerateDue (run 1) inserted %d instances, want 3", count)
+	}
+
+	// Verify instances via ListByHousehold.
+	from := refDate
+	to := refDate.AddDate(0, 0, 14)
+	instances, err := instanceRepo.ListByHousehold(testCtx(t), h.ID, domain.StatusPending, from, to)
+	if err != nil {
+		t.Fatalf("ListByHousehold: %v", err)
+	}
+	if len(instances) != 3 {
+		t.Fatalf("ListByHousehold returned %d instances, want 3", len(instances))
+	}
+
+	// Verify round-robin cycling: ordinals 0,1,2 → m1, m2, m1.
+	wantAssignees := []household.MemberID{m1, m2, m1}
+	for i, inst := range instances {
+		if inst.AssigneeID == nil {
+			t.Errorf("instance %d (due %s): assignee is nil", i, inst.DueOn.Format(time.DateOnly))
+			continue
+		}
+		if *inst.AssigneeID != wantAssignees[i] {
+			t.Errorf("instance %d (due %s): assignee = %v, want %v",
+				i, inst.DueOn.Format(time.DateOnly), *inst.AssigneeID, wantAssignees[i])
+		}
+	}
+
+	// Second run must insert nothing.
+	count2, err := gen.GenerateDue(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("GenerateDue (run 2): %v", err)
+	}
+	if count2 != 0 {
+		t.Errorf("GenerateDue (run 2) inserted %d instances, want 0", count2)
+	}
+
+	// Row count must be unchanged.
+	instances2, err := instanceRepo.ListByHousehold(testCtx(t), h.ID, domain.StatusPending, from, to)
+	if err != nil {
+		t.Fatalf("ListByHousehold (after run 2): %v", err)
+	}
+	if len(instances2) != 3 {
+		t.Errorf("ListByHousehold after run 2 returned %d instances, want 3", len(instances2))
+	}
+}
+
+// noopTestWriter discards writes in the gated tests (used for the slog handler).
+type noopTestWriter struct{}
+
+func (noopTestWriter) Write(p []byte) (int, error) { return len(p), nil }
 
 // idsOf extracts task instance IDs for readable test error messages.
 func idsOf(instances []*domain.TaskInstance) []domain.TaskInstanceID {

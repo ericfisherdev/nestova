@@ -16,6 +16,11 @@ import (
 // belongs to a different household is treated as unknown (yields
 // [ErrTaskNotFound]).
 //
+// Exception: [RecurringTaskRepository.ListAllActive] is intentionally NOT
+// household-scoped — it is a system-process method used by the background
+// generator (NES-30) to iterate every active task across all households. It
+// must never be exposed to user-facing request handlers.
+//
 // Persistence contracts:
 //   - Create expects rt.ID, rt.HouseholdID, rt.Title, rt.Category, rt.Cadence,
 //     rt.RotationPolicy, rt.Points, rt.LeadTimeDays, and rt.Active set. The
@@ -29,6 +34,8 @@ import (
 //   - Get returns [ErrTaskNotFound] when id is unknown or belongs to another
 //     household.
 //   - ListActive returns an empty slice (not an error) for an unknown household.
+//   - ListAllActive returns an empty slice (not an error) when no active tasks
+//     exist in any household.
 //   - SetRotationMembers returns [ErrTaskNotFound] when id is unknown or belongs
 //     to another household.
 //   - RotationMembers returns [ErrTaskNotFound] when id is unknown or belongs to
@@ -39,6 +46,21 @@ type RecurringTaskRepository interface {
 	// Create persists a new recurring task.
 	Create(ctx context.Context, rt *RecurringTask) error
 
+	// CreateWithRotation atomically persists a new recurring task together with
+	// its initial rotation pool in a single transaction. If any insert fails
+	// (e.g. a member id that does not exist or belongs to another household),
+	// the whole operation rolls back and no recurring_task row is left behind.
+	//
+	// The pool slice order determines rotation position (position = slice index).
+	// Passing an empty pool persists the task with no rotation members; callers
+	// that require a non-empty pool (fixed/round_robin policies) must enforce
+	// that before calling.
+	//
+	// task.ID, task.HouseholdID, task.Title, task.Category, task.Cadence,
+	// task.RotationPolicy, task.Points, task.LeadTimeDays, and task.Active must be
+	// set; the store populates task.CreatedAt and task.UpdatedAt.
+	CreateWithRotation(ctx context.Context, task *RecurringTask, pool []household.MemberID) error
+
 	// Get returns the recurring task with the given id within the household.
 	// Returns [ErrTaskNotFound] when id is unknown or belongs to another household.
 	Get(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) (*RecurringTask, error)
@@ -46,6 +68,15 @@ type RecurringTaskRepository interface {
 	// ListActive returns all active recurring tasks for the household.
 	// Returns an empty slice (not an error) when householdID is unknown.
 	ListActive(ctx context.Context, householdID household.HouseholdID) ([]*RecurringTask, error)
+
+	// ListAllActive returns every active recurring task across ALL households,
+	// ordered by household_id then created_at.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is reserved
+	// for the background materialisation process (Generator.GenerateDue) and must
+	// not be called from user-facing request handlers, which must use the
+	// household-scoped [ListActive] instead.
+	ListAllActive(ctx context.Context) ([]*RecurringTask, error)
 
 	// SetRotationMembers atomically replaces the rotation pool for the task
 	// within the household. Position is determined by the slice order
