@@ -18,7 +18,9 @@ import (
 )
 
 // shutdownTimeout bounds how long in-flight requests have to drain on shutdown.
-const shutdownTimeout = 10 * time.Second
+// It is kept at or above the HTTP layer's per-request timeout (13s) so a request
+// running up to its deadline can still finish during a graceful shutdown.
+const shutdownTimeout = 15 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -49,8 +51,11 @@ func run(logger *slog.Logger) error {
 	logger.Info("connected to postgres", "max_conns", pool.Config().MaxConns)
 
 	// The readiness probe verifies live database connectivity on each call.
-	srv := httpserver.New(cfg.Server.Addr, func(ctx context.Context) error {
-		return db.Health(ctx, pool)
+	srv := httpserver.New(cfg, httpserver.Deps{
+		Logger: logger,
+		Ready: func(ctx context.Context) error {
+			return db.Health(ctx, pool)
+		},
 	})
 
 	// Surface listen errors from the background goroutine to the main flow.

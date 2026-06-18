@@ -1,29 +1,69 @@
-// Package httpserver wires the HTTP transport: routing and server lifecycle.
+// Package httpserver wires the HTTP transport: the router, the core middleware
+// chain, and the server lifecycle. It owns the New constructor that feature
+// contexts extend by adding fields to Deps.
 package httpserver
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/ericfisherdev/nestova/internal/platform/config"
+	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 )
 
-// readinessTimeout bounds the dependency check performed by the readiness probe
-// so a stalled dependency cannot hang the endpoint.
-const readinessTimeout = 2 * time.Second
+const (
+	// readinessTimeout bounds the dependency check performed by the readiness
+	// probe so a stalled dependency cannot hang the endpoint.
+	readinessTimeout = 2 * time.Second
+	// requestTimeout bounds in-handler work via the request context. It must be
+	// less than the connection-level WriteTimeout below so a handler has time to
+	// write a clean 500/503 after its context cancels, rather than racing the
+	// connection's write deadline.
+	requestTimeout = 13 * time.Second
+)
 
 // ReadinessFunc reports whether the server's backing dependencies (e.g. the
 // database) are reachable. It returns a non-nil error when the server is not
 // ready to serve traffic.
 type ReadinessFunc func(ctx context.Context) error
 
-// New builds the application's HTTP server bound to addr with the base routes
-// registered. ready is invoked by the /readyz probe to verify backing
-// dependencies; pass nil when there are none. Timeouts are set to conservative
+// Deps carries the dependencies the HTTP layer needs. Feature tickets append
+// fields here (session manager, repositories, handlers) rather than changing
+// the New signature.
+type Deps struct {
+	// Logger receives the structured per-request log line. Required.
+	Logger *slog.Logger
+	// Ready backs the /readyz probe; nil means "always ready".
+	Ready ReadinessFunc
+}
+
+// New builds the application's HTTP server from cfg and deps with the core
+// middleware (request id, structured logging, panic recovery, per-request
+// timeout) applied to every route. Connection timeouts are set to conservative
 // defaults to avoid Slowloris-style resource exhaustion on a public listener.
-func New(addr string, ready ReadinessFunc) *http.Server {
+func New(cfg config.Config, deps Deps) *http.Server {
+	// Logger is required: the logging and recovery middleware use it on every
+	// request. Fail loudly at construction rather than panicking mid-request.
+	if deps.Logger == nil {
+		panic("httpserver: Deps.Logger is required")
+	}
+	// Canonical middleware order (outermost first): request id and logging wrap
+	// everything so every request is logged with an id even on panic; recovery
+	// turns panics into 500s; the per-request timeout is innermost so it bounds
+	// only handler work. NES-23 inserts session/auth between Recoverer and
+	// Timeout.
+	handler := middleware.Chain(
+		middleware.RequestID,
+		middleware.RequestLogger(deps.Logger),
+		middleware.Recoverer(deps.Logger),
+		middleware.Timeout(requestTimeout),
+	)(routes(deps.Ready))
+
 	return &http.Server{
-		Addr:              addr,
-		Handler:           routes(ready),
+		Addr:              cfg.Server.Addr,
+		Handler:           handler,
 		MaxHeaderBytes:    1 << 20, // 1 MiB, bounding header memory per connection.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
