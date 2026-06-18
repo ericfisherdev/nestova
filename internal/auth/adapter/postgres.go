@@ -19,8 +19,9 @@ import (
 const (
 	// uniqueViolation is the PostgreSQL SQLSTATE for a unique-constraint violation.
 	uniqueViolation = "23505"
-	// memberEmailUnique is the auto-named unique constraint on member.email.
-	memberEmailUnique = "member_email_key"
+	// memberEmailUnique is the unique constraint on member.email (named in the
+	// 00002_auth migration).
+	memberEmailUnique = "member_email_unique"
 )
 
 // CredentialRepository is the pgx-backed implementation of

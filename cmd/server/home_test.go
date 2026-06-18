@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,10 @@ func TestDashboardRequiresAuth(t *testing.T) {
 	if !strings.HasPrefix(location, "/login") {
 		t.Errorf("Location = %q, want /login...", location)
 	}
+	// The original path must be preserved so the user returns to it after login.
+	if !strings.Contains(location, "next=") {
+		t.Errorf("Location = %q, want a next= return path", location)
+	}
 }
 
 func TestDashboardHTMXUnauthorized(t *testing.T) {
@@ -138,6 +143,11 @@ func TestLoginPageRendersForm(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("login page missing %q", want)
 		}
+	}
+	// The CSRF field must carry a real token, not be empty.
+	m := regexp.MustCompile(`name="csrf_token"[^>]*value="([^"]+)"`).FindStringSubmatch(body)
+	if m == nil || m[1] == "" {
+		t.Error("login page csrf_token field has no non-empty value")
 	}
 }
 

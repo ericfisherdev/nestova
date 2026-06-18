@@ -65,7 +65,10 @@ func TestNavPillActive(t *testing.T) {
 }
 
 func TestLayoutRendersShell(t *testing.T) {
-	props := components.ShellProps{Members: []components.MemberView{{Name: "Maya", Initials: "M", Color: "sage"}}}
+	props := components.ShellProps{
+		Members:   []components.MemberView{{Name: "Maya", Initials: "M", Color: "sage"}},
+		CSRFToken: "csrf-test-token",
+	}
 	nav := []components.NavItem{
 		{Label: "Calendar", Href: "/calendar", Active: true},
 		{Label: "Chores", Href: "/chores"},
@@ -84,6 +87,8 @@ func TestLayoutRendersShell(t *testing.T) {
 		`aria-current="page"`,            // active nav pill
 		"Maya",                           // family list
 		`id="body"`,                      // content slot rendered
+		`action="/logout"`,               // logout form
+		`value="csrf-test-token"`,        // csrf token threaded into the logout form
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("layout missing %q", want)
