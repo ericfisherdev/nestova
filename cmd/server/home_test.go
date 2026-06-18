@@ -32,7 +32,10 @@ func TestDashboardRendersShell(t *testing.T) {
 		"Nestova",                    // wordmark
 		`aria-label="Primary"`,       // sidebar nav
 		"Calendar", "Chores",         // nav pills
-		"Dashboard",    // page heading
+		"Create",    // sidebar Create CTA
+		"Dashboard", // page heading
+		// full placeholder card set (templ escapes "&")
+		"Meals &amp; Recipes", "Groceries", "Photos", "Subscriptions",
 		"Maya",         // family list
 		`id="sidebar"`, // shell sidebar
 	} {

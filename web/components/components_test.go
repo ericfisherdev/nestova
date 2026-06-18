@@ -93,8 +93,8 @@ func TestLayoutRendersShell(t *testing.T) {
 
 func TestDashboardRendersCards(t *testing.T) {
 	out := renderString(t, components.Dashboard())
-	// Note: templ HTML-escapes "&", so assert on un-ampersanded substrings.
-	for _, want := range []string{"Dashboard", "Calendar", "Chores", "Meals", "Groceries", "Photos", "Subscriptions"} {
+	// Note: templ HTML-escapes "&", so the meals card asserts the escaped title.
+	for _, want := range []string{"Dashboard", "Calendar", "Chores", "Meals &amp; Recipes", "Groceries", "Photos", "Subscriptions"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dashboard missing card/heading %q", want)
 		}
