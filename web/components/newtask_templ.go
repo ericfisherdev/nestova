@@ -104,9 +104,9 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
-		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(`{ freq: '` + form.Freq + `', policy: '` + form.RotationPolicy + `' }`)
+		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(alpineTaskState(form.Freq, form.RotationPolicy))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 81, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 81, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {

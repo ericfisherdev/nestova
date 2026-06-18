@@ -235,9 +235,9 @@ func TestNewTaskPageAlpineFreqBinding(t *testing.T) {
 	}
 	out := renderString(t, components.NewTaskPage(form))
 
-	// The seeded freq must live inside the x-data initialiser (templ HTML-escapes
-	// the attribute value's quotes), not merely the freq <select>.
-	if !strings.Contains(out, "freq: &#39;weekly&#39;") {
+	// The seeded freq must live inside the JSON x-data initialiser (templ
+	// HTML-escapes the JSON quotes to &#34;), not merely the freq <select>.
+	if !strings.Contains(out, "&#34;freq&#34;:&#34;weekly&#34;") {
 		t.Errorf("new-task form x-data initialiser does not seed freq=weekly: %q", out)
 	}
 	// The weekday section must be gated by an x-show keyed off freq === 'weekly'.
@@ -247,5 +247,30 @@ func TestNewTaskPageAlpineFreqBinding(t *testing.T) {
 	// The pool picker must be gated by an x-show keyed off the policy.
 	if !strings.Contains(out, `x-show="policy !== 'claimable'"`) {
 		t.Errorf("new-task form missing x-show=\"policy !== 'claimable'\" on pool picker: %q", out)
+	}
+}
+
+// TestNewTaskPageXDataInjectionSafe is the regression test for Alpine expression
+// injection: a hostile sticky freq value (from a 422 re-render) must be safely
+// JSON- and HTML-encoded inside x-data, never breaking out of the expression.
+func TestNewTaskPageXDataInjectionSafe(t *testing.T) {
+	form := components.NewTaskForm{
+		CSRFToken: "tok",
+		Freq:      "evil'); alert(1); ('",
+	}
+	out := renderString(t, components.NewTaskPage(form))
+
+	// The vulnerable string-concat form must be gone.
+	if strings.Contains(out, "freq: 'evil") {
+		t.Errorf("x-data still concatenates the raw freq value (injection): %q", out)
+	}
+	// The single quotes in the payload must be HTML-escaped, so the payload can
+	// neither close the x-data attribute nor the Alpine string literal.
+	if strings.Contains(out, "'); alert(1); ('") {
+		t.Errorf("x-data contains the unescaped injection payload: %q", out)
+	}
+	// It must still be the JSON object form.
+	if !strings.Contains(out, "&#34;freq&#34;:") {
+		t.Errorf("x-data is not the JSON object form: %q", out)
 	}
 }
