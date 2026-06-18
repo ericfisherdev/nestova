@@ -170,8 +170,23 @@ func (r *RecurringTaskRepository) SetRotationMembers(
 		return err
 	}
 
+	// Replace the pool atomically so a mid-loop failure cannot leave it partially
+	// rewritten. db.TX is either a *pgxpool.Pool or a pgx.Tx; both expose Begin
+	// (pgx.Tx.Begin opens a savepoint), so this is safe in either context.
+	beginner, ok := r.dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return errors.New("set rotation members: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("set rotation members: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	const del = `DELETE FROM rotation_member WHERE recurring_task_id = $1`
-	if _, err := r.dbtx.Exec(ctx, del, id.String()); err != nil {
+	if _, err := tx.Exec(ctx, del, id.String()); err != nil {
 		return fmt.Errorf("set rotation members: delete existing: %w", err)
 	}
 
@@ -179,7 +194,7 @@ func (r *RecurringTaskRepository) SetRotationMembers(
 		INSERT INTO rotation_member (household_id, recurring_task_id, member_id, position)
 		VALUES ($1, $2, $3, $4)`
 	for i, memberID := range members {
-		if _, err := r.dbtx.Exec(ctx, ins,
+		if _, err := tx.Exec(ctx, ins,
 			householdID.String(),
 			id.String(),
 			memberID.String(),
@@ -187,6 +202,9 @@ func (r *RecurringTaskRepository) SetRotationMembers(
 		); err != nil {
 			return fmt.Errorf("set rotation members: insert position %d: %w", i, err)
 		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("set rotation members: commit: %w", err)
 	}
 	return nil
 }

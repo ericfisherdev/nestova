@@ -578,6 +578,36 @@ func TestTaskInstance_Claim_NotFound(t *testing.T) {
 	}
 }
 
+// TestTaskInstance_Claim_CrossHouseholdAssigneeRejected verifies the composite
+// tenant FK prevents assigning an instance to a member of another household.
+func TestTaskInstance_Claim_CrossHouseholdAssigneeRejected(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	hA, _, _ := seedHousehold(t, pool)
+	_, otherMember, _ := seedHousehold(t, pool) // member in a different household
+
+	rt := seedRecurringTask(t, taskRepo, hA.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 1))
+
+	if err := instRepo.Claim(testCtx(t), hA.ID, inst.ID, otherMember); err == nil {
+		t.Error("Claim with a cross-household assignee succeeded, want rejection by the tenant FK")
+	}
+}
+
+// TestTaskInstance_Complete_NotFound verifies that completing an unknown
+// instance returns ErrInstanceNotFound.
+func TestTaskInstance_Complete_NotFound(t *testing.T) {
+	pool := newTestPool(t)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	err := instRepo.Complete(testCtx(t), h.ID, domain.NewTaskInstanceID(), m1, refDate)
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("Complete(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
 // TestTaskInstance_Complete_Success verifies that completing a pending instance
 // transitions it to done and persists completed_at and completed_by.
 func TestTaskInstance_Complete_Success(t *testing.T) {
