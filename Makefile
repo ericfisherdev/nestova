@@ -18,7 +18,8 @@ GOLANGCI_LINT_VERSION := v2.11.4
 # Coverage profile written by `make test` and read by `make cover`.
 COVERAGE_OUT := coverage.out
 
-.PHONY: all build run test cover lint fmt generate hooks hooks-uninstall tidy clean help
+.PHONY: all build run test cover lint fmt generate hooks hooks-uninstall tidy clean help \
+	migrate-up migrate-down migrate-status migrate-reset migrate-create
 
 ## all: default aggregate target (alias for build)
 all: build
@@ -48,6 +49,27 @@ lint:
 fmt:
 	go tool templ fmt .
 	golangci-lint fmt
+
+## migrate-up: apply all pending database migrations
+migrate-up:
+	go run ./cmd/migrate up
+
+## migrate-down: roll back the most recent migration
+migrate-down:
+	go run ./cmd/migrate down
+
+## migrate-status: show the migration status
+migrate-status:
+	go run ./cmd/migrate status
+
+## migrate-reset: roll back all migrations
+migrate-reset:
+	go run ./cmd/migrate reset
+
+## migrate-create: scaffold a new migration (usage: make migrate-create name=add_widgets)
+migrate-create:
+	@test -n "$(name)" || { echo "Error: name is required, e.g. make migrate-create name=add_widgets"; exit 1; }
+	go run ./cmd/migrate create "$(name)"
 
 ## generate: generate Go code from .templ files
 generate:
