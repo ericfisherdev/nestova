@@ -4,12 +4,17 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
+
+// onboardingAdvisoryLock is a fixed key for the transaction-scoped advisory lock
+// that serializes first-run household provisioning across connections.
+const onboardingAdvisoryLock int64 = 0x4E45535F4F4E42 // "NES_ONB"
 
 // txProvisioner implements authadapter.Provisioner by running each multi-table
 // write inside a single pgx transaction. It lives in the composition root
@@ -47,7 +52,21 @@ func (p *txProvisioner) ProvisionHousehold(
 	if passwordHash == "" {
 		return fmt.Errorf("provision household: owner password hash is required")
 	}
-	return p.withTx(ctx, func(hr *householdadapter.PostgresRepository, cr *authadapter.CredentialRepository) error {
+	return p.withTx(ctx, func(tx pgx.Tx, hr *householdadapter.PostgresRepository, cr *authadapter.CredentialRepository) error {
+		// Serialize concurrent first-run onboarding across connections: a
+		// transaction-scoped advisory lock makes the "no household yet" check and
+		// the insert atomic, closing the check-then-create race without
+		// permanently constraining the schema to a single household.
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", onboardingAdvisoryLock); err != nil {
+			return fmt.Errorf("acquire onboarding lock: %w", err)
+		}
+		exists, err := hr.HasAnyHousehold(ctx)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return household.ErrHouseholdExists
+		}
 		if err := hr.CreateHousehold(ctx, hh); err != nil {
 			return err
 		}
@@ -66,7 +85,7 @@ func (p *txProvisioner) ProvisionMember(
 	m *household.Member,
 	email, passwordHash string,
 ) error {
-	return p.withTx(ctx, func(hr *householdadapter.PostgresRepository, cr *authadapter.CredentialRepository) error {
+	return p.withTx(ctx, func(_ pgx.Tx, hr *householdadapter.PostgresRepository, cr *authadapter.CredentialRepository) error {
 		if err := hr.AddMember(ctx, m); err != nil {
 			return err
 		}
@@ -85,7 +104,7 @@ func (p *txProvisioner) ProvisionMember(
 // after a successful Commit (canonical pgx v5 pattern).
 func (p *txProvisioner) withTx(
 	ctx context.Context,
-	fn func(*householdadapter.PostgresRepository, *authadapter.CredentialRepository) error,
+	fn func(pgx.Tx, *householdadapter.PostgresRepository, *authadapter.CredentialRepository) error,
 ) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -96,7 +115,7 @@ func (p *txProvisioner) withTx(
 	hr := householdadapter.NewPostgresRepository(tx)
 	cr := authadapter.NewCredentialRepository(tx)
 
-	if err := fn(hr, cr); err != nil {
+	if err := fn(tx, hr, cr); err != nil {
 		return err
 	}
 
