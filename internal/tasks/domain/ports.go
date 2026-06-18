@@ -1,0 +1,133 @@
+package domain
+
+import (
+	"context"
+	"time"
+
+	household "github.com/ericfisherdev/nestova/internal/household/domain"
+)
+
+// RecurringTaskRepository is the persistence port for [RecurringTask] aggregates
+// and their associated rotation pools. Implementations live in the adapter layer
+// (NES-29) and are injected into application services (NES-30).
+//
+// All ID-based methods are tenant-scoped: they take the household id as a
+// leading argument and enforce household isolation, so a RecurringTaskID that
+// belongs to a different household is treated as unknown (yields
+// [ErrTaskNotFound]).
+//
+// Persistence contracts:
+//   - Create expects rt.ID, rt.HouseholdID, rt.Title, rt.Category, rt.Cadence,
+//     rt.RotationPolicy, rt.Points, rt.LeadTimeDays, and rt.Active set. The
+//     store sets CreatedAt and UpdatedAt.
+//   - SetRotationMembers replaces the entire pool atomically; the slice order
+//     determines position (position = slice index). Passing an empty slice
+//     clears the pool.
+//   - RotationMembers returns members ordered by position ascending.
+//
+// Error contracts:
+//   - Get returns [ErrTaskNotFound] when id is unknown or belongs to another
+//     household.
+//   - ListActive returns an empty slice (not an error) for an unknown household.
+//   - SetRotationMembers returns [ErrTaskNotFound] when id is unknown or belongs
+//     to another household.
+//   - RotationMembers returns [ErrTaskNotFound] when id is unknown or belongs to
+//     another household, and an empty slice (not [ErrNoRotationMembers]) when
+//     the pool is empty — the caller (generator) raises [ErrNoRotationMembers]
+//     after inspecting the slice.
+type RecurringTaskRepository interface {
+	// Create persists a new recurring task.
+	Create(ctx context.Context, rt *RecurringTask) error
+
+	// Get returns the recurring task with the given id within the household.
+	// Returns [ErrTaskNotFound] when id is unknown or belongs to another household.
+	Get(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) (*RecurringTask, error)
+
+	// ListActive returns all active recurring tasks for the household.
+	// Returns an empty slice (not an error) when householdID is unknown.
+	ListActive(ctx context.Context, householdID household.HouseholdID) ([]*RecurringTask, error)
+
+	// SetRotationMembers atomically replaces the rotation pool for the task
+	// within the household. Position is determined by the slice order
+	// (position = index).
+	// Returns [ErrTaskNotFound] when id is unknown or belongs to another household.
+	SetRotationMembers(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID, members []household.MemberID) error
+
+	// RotationMembers returns the rotation pool members ordered by position for
+	// the task within the household.
+	// Returns [ErrTaskNotFound] when id is unknown or belongs to another household.
+	// Returns an empty slice (not an error) when the pool is empty.
+	RotationMembers(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) ([]household.MemberID, error)
+}
+
+// TaskInstanceRepository is the persistence port for [TaskInstance] records.
+// Implementations live in the adapter layer (NES-29) and are injected into
+// application services (NES-30).
+//
+// All ID-based methods are tenant-scoped: they take the household id as a
+// leading argument and enforce household isolation, so a TaskInstanceID or
+// RecurringTaskID that belongs to a different household is treated as unknown
+// (yields [ErrInstanceNotFound]).
+//
+// Persistence contracts:
+//   - Insert expects inst.ID, inst.RecurringTaskID, inst.HouseholdID, inst.DueOn,
+//     inst.Status, and optionally inst.AssigneeID set. The store sets CreatedAt
+//     and UpdatedAt.
+//   - Complete transitions status from pending to done and records completed_at
+//     and completed_by. Skip transitions pending to skipped. Both refresh
+//     updated_at.
+//   - MarkPendingOverdue bulk-transitions pending instances whose due_on < asOf
+//     to overdue, scoped to the household, refreshing updated_at.
+//
+// Error contracts:
+//   - Insert returns [ErrDuplicateInstance] on (recurring_task_id, due_on)
+//     conflict (constraint task_instance_task_due_uniq).
+//   - Get returns [ErrInstanceNotFound] when id is unknown or belongs to another
+//     household.
+//   - Claim, Complete, and Skip return [ErrInstanceNotFound] when id is unknown
+//     or belongs to another household.
+//   - Claim returns [ErrInstanceAlreadyClaimed] when the instance is already
+//     assigned to a member.
+//   - Complete and Skip return [ErrInstanceInTerminalState] when the instance
+//     is already in a terminal state (done, skipped, or overdue).
+//   - LatestDueOn returns (zero, false, nil) when no instances exist for the task.
+//   - ListByHousehold returns an empty slice (not an error) when no instances
+//     match the filter.
+type TaskInstanceRepository interface {
+	// Insert persists a new task instance.
+	// Returns [ErrDuplicateInstance] on a (recurring_task_id, due_on) conflict.
+	Insert(ctx context.Context, inst *TaskInstance) error
+
+	// Get returns the task instance with the given id within the household.
+	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
+	Get(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) (*TaskInstance, error)
+
+	// ListByHousehold returns instances for the household filtered by status and
+	// due date range [from, to] (inclusive). Returns an empty slice when none match.
+	ListByHousehold(ctx context.Context, householdID household.HouseholdID, status InstanceStatus, from, to time.Time) ([]*TaskInstance, error)
+
+	// LatestDueOn returns the most recent due_on materialised for the task within
+	// the household and ok=true, or the zero time and ok=false when no instances
+	// exist yet.
+	LatestDueOn(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) (time.Time, bool, error)
+
+	// Claim assigns the instance to assignee when it is currently unassigned.
+	// Claiming is first-come, not reassignment.
+	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
+	// Returns [ErrInstanceAlreadyClaimed] when the instance is already assigned.
+	Claim(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID) error
+
+	// Complete transitions the instance from pending to done, recording by and at.
+	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
+	// Returns [ErrInstanceInTerminalState] when the instance is already terminal.
+	Complete(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
+
+	// Skip transitions the instance from pending to skipped.
+	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
+	// Returns [ErrInstanceInTerminalState] when the instance is already terminal.
+	Skip(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) error
+
+	// MarkPendingOverdue bulk-transitions all pending instances for the household
+	// whose due_on < asOf to overdue. Returns the number of rows updated.
+	MarkPendingOverdue(ctx context.Context, householdID household.HouseholdID, asOf time.Time) (int, error)
+}
