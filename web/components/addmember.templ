@@ -1,0 +1,98 @@
+package components
+
+// AddMemberForm holds the data the add-member page template needs to render.
+type AddMemberForm struct {
+	// CSRFToken is the per-session CSRF token embedded as a hidden form field.
+	CSRFToken string
+	// DisplayName pre-fills the display name field after a failed submission.
+	DisplayName string
+	// Role pre-fills the role select after a failed submission.
+	Role string
+	// Email pre-fills the email field after a failed submission.
+	Email string
+	// Error is a validation or persistence error shown below the form. Empty means
+	// no error is shown.
+	Error string
+}
+
+// AddMemberPage renders the add-member form wrapped in the A · Hearth app shell.
+templ AddMemberPage(props ShellProps, nav []NavItem, form AddMemberForm) {
+	@Layout(props, nav, addMemberContent(form))
+}
+
+// addMemberContent is the inner content component for the add-member page.
+templ addMemberContent(form AddMemberForm) {
+	<div class="p-6">
+		<div class="mb-6">
+			<h1 class="text-2xl font-semibold">Add a household member</h1>
+			<p class="mt-1 text-sm text-ink-muted">New members can optionally log in with an email and password.</p>
+		</div>
+		<div class="max-w-sm rounded-card bg-surface p-6 shadow-warm">
+			<form method="POST" action="/members" novalidate>
+				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+				<div class="flex flex-col gap-4">
+					<div class="flex flex-col gap-1">
+						<label for="am_display_name" class="text-sm font-medium text-ink-secondary">Display name</label>
+						<input
+							id="am_display_name"
+							type="text"
+							name="display_name"
+							value={ form.DisplayName }
+							autocomplete="off"
+							required
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+							placeholder="Jamie"
+						/>
+					</div>
+					<div class="flex flex-col gap-1">
+						<label for="am_role" class="text-sm font-medium text-ink-secondary">Role</label>
+						<select
+							id="am_role"
+							name="role"
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+						>
+							<option value="adult" selected?={ form.Role == "adult" || form.Role == "" }>Adult</option>
+							<option value="child" selected?={ form.Role == "child" }>Child</option>
+						</select>
+					</div>
+					<fieldset class="flex flex-col gap-3">
+						<legend class="text-sm font-medium text-ink-secondary">Login credentials (optional)</legend>
+						<div class="flex flex-col gap-1">
+							<label for="am_email" class="text-sm font-medium text-ink-secondary">Email</label>
+							<input
+								id="am_email"
+								type="email"
+								name="email"
+								value={ form.Email }
+								autocomplete="off"
+								class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+								placeholder="member@example.com"
+							/>
+						</div>
+						<div class="flex flex-col gap-1">
+							<label for="am_password" class="text-sm font-medium text-ink-secondary">Password</label>
+							<input
+								id="am_password"
+								type="password"
+								name="password"
+								autocomplete="new-password"
+								class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+								placeholder="••••••••"
+							/>
+						</div>
+					</fieldset>
+					if form.Error != "" {
+						<p role="alert" class="text-sm text-red-600">{ form.Error }</p>
+					}
+					<div class="flex gap-3">
+						@Button("Add member", ButtonPrimary, "submit")
+						<a
+							href="/"
+							class="inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors bg-surface text-ink border border-sidebar-border hover:bg-surface-warm"
+						>Cancel</a>
+					</div>
+				</div>
+			</form>
+		</div>
+	</div>
+}

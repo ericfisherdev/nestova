@@ -44,10 +44,16 @@ var (
 //   - ListMembers returns an empty slice (not an error) for an unknown household.
 //   - CreateHousehold/AddMember surface other failures (e.g. an id collision) as
 //     a wrapped error, not a sentinel.
+//   - HasAnyHousehold returns (false, nil) on an empty database and (true, nil)
+//     once at least one household row exists. It never returns a sentinel error.
 type HouseholdRepository interface {
 	CreateHousehold(ctx context.Context, h *Household) error
 	GetHousehold(ctx context.Context, id HouseholdID) (*Household, error)
 	AddMember(ctx context.Context, m *Member) error
 	GetMember(ctx context.Context, id MemberID) (*Member, error)
 	ListMembers(ctx context.Context, householdID HouseholdID) ([]*Member, error)
+	// HasAnyHousehold reports whether at least one household row exists. It is
+	// used by the onboarding flow to gate the first-run setup page and to block
+	// a second call to the public POST /onboarding route (open-registration guard).
+	HasAnyHousehold(ctx context.Context) (bool, error)
 }

@@ -75,6 +75,13 @@ func run(logger *slog.Logger) error {
 	householdRepo := householdadapter.NewPostgresRepository(pool)
 	authHandlers := authadapter.NewHandlers(sm, authn, logger)
 
+	// NES-26: onboarding + member provisioning handlers. The provisioner runs the
+	// multi-table writes (household + member + credentials) atomically in one
+	// transaction; it lives in the composition root so neither bounded-context
+	// adapter imports the other.
+	provisioner := newTxProvisioner(pool)
+	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, credRepo, provisioner, sm, logger)
+
 	// NES-24: notification outbox wiring.
 	outboxRepo := notifyadapter.NewOutboxRepository(pool)
 	inAppSender := notifyadapter.NewInAppSender(logger)
@@ -101,7 +108,7 @@ func run(logger *slog.Logger) error {
 			authadapter.Authenticate(sm, householdRepo),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo)
 		},
 	})
 

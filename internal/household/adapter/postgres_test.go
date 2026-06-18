@@ -182,3 +182,29 @@ func TestNotFoundErrors(t *testing.T) {
 		t.Errorf("GetMember(unknown) error = %v, want ErrMemberNotFound", err)
 	}
 }
+
+// TestHasAnyHousehold verifies the first-run guard: false on an empty schema,
+// true after CreateHousehold.
+func TestHasAnyHousehold(t *testing.T) {
+	repo := newTestRepo(t)
+
+	// After migrate.Reset + migrate.Up the schema is clean; no households exist.
+	got, err := repo.HasAnyHousehold(testCtx(t))
+	if err != nil {
+		t.Fatalf("HasAnyHousehold (empty): %v", err)
+	}
+	if got {
+		t.Error("HasAnyHousehold (empty) = true, want false")
+	}
+
+	// Insert one household; the guard must now report true.
+	seedHousehold(t, repo)
+
+	got, err = repo.HasAnyHousehold(testCtx(t))
+	if err != nil {
+		t.Fatalf("HasAnyHousehold (after create): %v", err)
+	}
+	if !got {
+		t.Error("HasAnyHousehold (after create) = false, want true")
+	}
+}
