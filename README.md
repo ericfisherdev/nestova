@@ -81,6 +81,40 @@ check is bounded by `DB_CONNECT_TIMEOUT` (see [Configuration](#configuration)).
 The database-backed tests are skipped unless `NESTOVA_TEST_DATABASE_URL` points
 at a reachable test database, so `make test` stays hermetic by default.
 
+### Database migrations
+
+Schema migrations are SQL files embedded into the binary
+([`internal/platform/db/migrate/migrations`](internal/platform/db/migrate/migrations))
+and applied with [goose](https://github.com/pressly/goose) over the pgx stdlib
+driver. Migrations run **explicitly** (never automatically on server boot).
+
+Ensure `DATABASE_URL` is configured before running migrations (see
+[Configuration](#configuration)).
+
+```sh
+make migrate-up                     # apply all pending migrations
+make migrate-down                   # roll back the most recent migration
+make migrate-status                 # show applied/pending migrations
+make migrate-reset                  # roll back every migration
+make migrate-create name=add_foo    # scaffold internal/.../migrations/NNNNN_add_foo.sql
+```
+
+`migrate-create` writes to the source tree, so run it from the repo root.
+Migrations are numbered sequentially (`NNNNN_name.sql`) with `-- +goose Up` /
+`-- +goose Down` sections. The baseline (`00001_baseline.sql`) creates the
+`household`, `member`, and `notification` tables.
+
+> **Run migrations serially.** Sequential numbering assumes migrations are
+> created and applied one at a time. Create new migrations serially (`create`
+> refuses to overwrite an existing file). In a multi-instance deployment, apply
+> migrations from a single coordinated job rather than from each instance, so
+> two processes never migrate concurrently.
+>
+> **Rollback caution.** `migrate-down` / `migrate-reset` run the `-- +goose Down`
+> SQL, which can drop tables and destroy data. Test the up/down round-trip in
+> development first (`migrate_test.go` exercises it against a test database), and
+> take a backup before rolling back in production.
+
 ### Git hooks (Lefthook)
 
 [Lefthook](https://lefthook.dev) is pinned as a Go tool directive in `go.mod`.
