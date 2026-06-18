@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"testing"
@@ -990,7 +991,7 @@ func TestGenerator_EndToEnd(t *testing.T) {
 
 	// Run the generator with a 14-day horizon, asOf = refDate.
 	// Window: (refDate-1ns, refDate+14d] → occurrences at refDate, +7d, +14d = 3.
-	logger := slog.New(slog.NewTextHandler(noopTestWriter{}, nil))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gen, err := tasksapp.NewGenerator(taskRepo, instanceRepo, logger, 14*24*time.Hour)
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
@@ -1047,10 +1048,86 @@ func TestGenerator_EndToEnd(t *testing.T) {
 	}
 }
 
-// noopTestWriter discards writes in the gated tests (used for the slog handler).
-type noopTestWriter struct{}
+// TestRecurringTask_CreateWithRotation_Atomic verifies that CreateWithRotation
+// is atomic: when a rotation_member insert fails (here, a member id from a
+// DIFFERENT household, rejected by the composite tenant FK), the whole
+// transaction rolls back and NO recurring_task row is persisted.
+func TestRecurringTask_CreateWithRotation_Atomic(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
 
-func (noopTestWriter) Write(p []byte) (int, error) { return len(p), nil }
+	hA, _, _ := seedHousehold(t, pool)
+	_, otherMember, _ := seedHousehold(t, pool) // member belongs to a different household
+
+	rt := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    hA.ID,
+		Title:          "Atomic vacuum",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationRoundRobin,
+		Points:         10,
+		Active:         true,
+	}
+
+	// The cross-household member violates the rotation_member composite tenant FK,
+	// so the rotation_member insert (and thus the whole transaction) must fail.
+	err := repo.CreateWithRotation(testCtx(t), rt, []household.MemberID{otherMember})
+	if err == nil {
+		t.Fatal("CreateWithRotation with a cross-household member succeeded, want failure")
+	}
+
+	// The task must NOT have been persisted — the failed rotation insert rolls
+	// back the recurring_task insert too.
+	if _, err := repo.Get(testCtx(t), hA.ID, rt.ID); !errors.Is(err, domain.ErrTaskNotFound) {
+		t.Errorf("Get after rolled-back CreateWithRotation = %v, want ErrTaskNotFound", err)
+	}
+}
+
+// TestRecurringTask_CreateWithRotation_Success verifies the happy path:
+// CreateWithRotation persists the task and its pool in position order.
+func TestRecurringTask_CreateWithRotation_Success(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+
+	h, m1, m2 := seedHousehold(t, pool)
+
+	rt := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    h.ID,
+		Title:          "Atomic dishes",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationRoundRobin,
+		Points:         5,
+		Active:         true,
+	}
+
+	if err := repo.CreateWithRotation(testCtx(t), rt, []household.MemberID{m1, m2}); err != nil {
+		t.Fatalf("CreateWithRotation: %v", err)
+	}
+
+	// The task must round-trip through Get with its timestamps populated.
+	got, err := repo.Get(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("Get after CreateWithRotation: %v", err)
+	}
+	if got.ID != rt.ID {
+		t.Errorf("ID = %v, want %v", got.ID, rt.ID)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero, want a populated timestamp")
+	}
+
+	// The rotation pool must be persisted in position order.
+	members, err := repo.RotationMembers(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("RotationMembers: %v", err)
+	}
+	if len(members) != 2 || members[0] != m1 || members[1] != m2 {
+		t.Errorf("RotationMembers = %v, want [%v %v]", members, m1, m2)
+	}
+}
 
 // idsOf extracts task instance IDs for readable test error messages.
 func idsOf(instances []*domain.TaskInstance) []domain.TaskInstanceID {
