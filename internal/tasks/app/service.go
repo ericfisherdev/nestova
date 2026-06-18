@@ -88,14 +88,15 @@ func (s *TaskService) CreateRecurringTask(
 	return nil
 }
 
-// CompleteInstance transitions a task instance from pending to done, recording
-// the completing member (by) and the completion timestamp (at).
+// CompleteInstance transitions a task instance from pending or overdue to done,
+// recording the completing member (by) and the completion timestamp (at). An
+// overdue chore is still actionable: it can be completed late.
 //
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
 //     another household.
 //   - Returns [domain.ErrInstanceInTerminalState] when the instance is already
-//     done, skipped, or overdue.
+//     done or skipped.
 func (s *TaskService) CompleteInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -109,13 +110,14 @@ func (s *TaskService) CompleteInstance(
 	return nil
 }
 
-// SkipInstance transitions a task instance from pending to skipped.
+// SkipInstance transitions a task instance from pending or overdue to skipped.
+// An overdue chore is still actionable: it can be skipped late.
 //
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
 //     another household.
 //   - Returns [domain.ErrInstanceInTerminalState] when the instance is already
-//     in a terminal state.
+//     done or skipped.
 func (s *TaskService) SkipInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -127,16 +129,17 @@ func (s *TaskService) SkipInstance(
 	return nil
 }
 
-// ClaimInstance assigns an unassigned pending instance to assignee.
-// Claiming is first-come: an already-assigned instance cannot be re-claimed.
+// ClaimInstance assigns an unassigned pending or overdue instance to assignee.
+// An overdue chore is still claimable: it can be picked up late. Claiming is
+// first-come: an already-assigned instance cannot be re-claimed.
 //
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
 //     another household.
-//   - Returns [domain.ErrInstanceInTerminalState] when the instance is done,
-//     skipped, or overdue.
-//   - Returns [domain.ErrInstanceAlreadyClaimed] when a pending instance is
-//     already assigned to a member.
+//   - Returns [domain.ErrInstanceInTerminalState] when the instance is done or
+//     skipped.
+//   - Returns [domain.ErrInstanceAlreadyClaimed] when a pending or overdue
+//     instance is already assigned to a member.
 func (s *TaskService) ClaimInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,

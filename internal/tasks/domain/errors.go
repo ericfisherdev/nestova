@@ -19,9 +19,11 @@ var (
 	// instances can be materialised.
 	ErrNoRotationMembers = errors.New("tasks: rotation pool is empty")
 
-	// ErrInstanceInTerminalState is returned by TaskInstanceRepository.Complete
-	// and TaskInstanceRepository.Skip when the target instance is already in a
-	// terminal state (done, skipped, or overdue). Callers should check this
+	// ErrInstanceInTerminalState is returned by TaskInstanceRepository.Complete,
+	// TaskInstanceRepository.Skip, and TaskInstanceRepository.Claim when the
+	// target instance is already in a terminal state (done or skipped). As of
+	// NES-32, overdue is NOT terminal: an overdue chore is still actionable (it
+	// can be completed, skipped, or claimed late). Callers should check this
 	// sentinel and treat it as a no-op or surface it to the user accordingly.
 	ErrInstanceInTerminalState = errors.New("tasks: instance is already in a terminal state")
 

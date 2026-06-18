@@ -104,9 +104,10 @@ type RecurringTaskRepository interface {
 //   - Insert expects inst.ID, inst.RecurringTaskID, inst.HouseholdID, inst.DueOn,
 //     inst.Status, and optionally inst.AssigneeID set. The store sets CreatedAt
 //     and UpdatedAt.
-//   - Complete transitions status from pending to done and records completed_at
-//     and completed_by. Skip transitions pending to skipped. Both refresh
-//     updated_at.
+//   - Complete transitions status from pending OR overdue to done and records
+//     completed_at and completed_by. Skip transitions pending OR overdue to
+//     skipped. Both refresh updated_at. An overdue chore is still actionable: it
+//     can be completed or skipped late.
 //   - MarkPendingOverdue bulk-transitions pending instances whose due_on < asOf
 //     to overdue, scoped to the household, refreshing updated_at.
 //
@@ -115,12 +116,14 @@ type RecurringTaskRepository interface {
 //     conflict (constraint task_instance_task_due_uniq).
 //   - Get returns [ErrInstanceNotFound] when id is unknown or belongs to another
 //     household.
+//   - Claim, Complete, and Skip act on a pending or overdue instance.
 //   - Claim, Complete, and Skip return [ErrInstanceNotFound] when id is unknown
 //     or belongs to another household.
 //   - Claim returns [ErrInstanceAlreadyClaimed] when the instance is already
 //     assigned to a member.
-//   - Complete and Skip return [ErrInstanceInTerminalState] when the instance
-//     is already in a terminal state (done, skipped, or overdue).
+//   - Complete, Skip, and Claim return [ErrInstanceInTerminalState] when the
+//     instance is already in a terminal state. As of NES-32, terminal means done
+//     or skipped only — overdue is no longer terminal for these transitions.
 //   - LatestDueOn returns (zero, false, nil) when no instances exist for the task.
 //   - ListByHousehold returns an empty slice (not an error) when no instances
 //     match the filter.
@@ -142,21 +145,22 @@ type TaskInstanceRepository interface {
 	// exist yet.
 	LatestDueOn(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) (time.Time, bool, error)
 
-	// Claim assigns the instance to assignee when it is pending and currently
-	// unassigned. Claiming is first-come, not reassignment.
+	// Claim assigns the instance to assignee when it is pending or overdue and
+	// currently unassigned. Claiming is first-come, not reassignment.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
-	// Returns [ErrInstanceInTerminalState] when the instance is done/skipped/overdue.
-	// Returns [ErrInstanceAlreadyClaimed] when a pending instance is already assigned.
+	// Returns [ErrInstanceInTerminalState] when the instance is done or skipped.
+	// Returns [ErrInstanceAlreadyClaimed] when a pending/overdue instance is already assigned.
 	Claim(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID) error
 
-	// Complete transitions the instance from pending to done, recording by and at.
+	// Complete transitions the instance from pending or overdue to done, recording
+	// by and at.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
-	// Returns [ErrInstanceInTerminalState] when the instance is already terminal.
+	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Complete(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
 
-	// Skip transitions the instance from pending to skipped.
+	// Skip transitions the instance from pending or overdue to skipped.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
-	// Returns [ErrInstanceInTerminalState] when the instance is already terminal.
+	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Skip(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) error
 
 	// MarkPendingOverdue bulk-transitions all pending instances for the household
