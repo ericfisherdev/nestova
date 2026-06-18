@@ -22,6 +22,9 @@ func newSenderRegistry(senders []domain.Sender) (senderRegistry, error) {
 	}
 	reg := make(senderRegistry, len(senders))
 	for _, s := range senders {
+		if s == nil {
+			return nil, errors.New("app: dispatcher received a nil sender")
+		}
 		if _, exists := reg[s.Channel()]; exists {
 			return nil, fmt.Errorf("app: duplicate sender for channel %s", s.Channel())
 		}
@@ -112,6 +115,11 @@ func (d *Dispatcher) RunOnce(ctx context.Context) (int, error) {
 	return len(notifications), nil
 }
 
+// markWriteTimeout bounds the status-write calls (MarkSent/MarkFailed). They run
+// under their own context so a notification's outcome is still recorded even if
+// the batch's work context has already expired or been cancelled.
+const markWriteTimeout = 5 * time.Second
+
 // deliver attempts to send a single notification and updates its status.
 // Errors are logged with the notification id (not PII); they do not propagate.
 func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
@@ -122,12 +130,7 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 			"channel", n.Channel.String(),
 			"error", err,
 		)
-		if mfErr := d.outbox.MarkFailed(ctx, n.ID); mfErr != nil {
-			d.logger.Error("dispatcher: mark failed after unknown channel",
-				"notification_id", n.ID.String(),
-				"error", mfErr,
-			)
-		}
+		d.markFailed(n.ID, "mark failed after unknown channel")
 		return
 	}
 
@@ -137,18 +140,30 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 			"channel", n.Channel.String(),
 			"error", err,
 		)
-		if mfErr := d.outbox.MarkFailed(ctx, n.ID); mfErr != nil {
-			d.logger.Error("dispatcher: mark failed after send error",
-				"notification_id", n.ID.String(),
-				"error", mfErr,
-			)
-		}
+		d.markFailed(n.ID, "mark failed after send error")
 		return
 	}
 
-	if err := d.outbox.MarkSent(ctx, n.ID); err != nil {
+	// Record success under an independent context so a timed-out work context
+	// cannot leave a delivered row stuck in the claimed (sent_at IS NULL) state.
+	markCtx, cancel := context.WithTimeout(context.Background(), markWriteTimeout)
+	defer cancel()
+	if err := d.outbox.MarkSent(markCtx, n.ID); err != nil {
 		d.logger.Error("dispatcher: mark sent",
 			"notification_id", n.ID.String(),
+			"error", err,
+		)
+	}
+}
+
+// markFailed records a delivery failure under an independent, bounded context so
+// the status write survives expiry/cancellation of the batch's work context.
+func (d *Dispatcher) markFailed(id domain.NotificationID, logMsg string) {
+	ctx, cancel := context.WithTimeout(context.Background(), markWriteTimeout)
+	defer cancel()
+	if err := d.outbox.MarkFailed(ctx, id); err != nil {
+		d.logger.Error("dispatcher: "+logMsg,
+			"notification_id", id.String(),
 			"error", err,
 		)
 	}

@@ -284,6 +284,13 @@ func TestNewDispatcher_DuplicateChannel_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestNewDispatcher_NilSenderEntry_ReturnsError(t *testing.T) {
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{nil}, silentLogger(), 10, time.Minute)
+	if err == nil {
+		t.Error("NewDispatcher(nil sender) error = nil, want non-nil")
+	}
+}
+
 func TestRun_ReturnsWhenContextCancelled(t *testing.T) {
 	d, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), 10, 10*time.Millisecond)
 	if err != nil {

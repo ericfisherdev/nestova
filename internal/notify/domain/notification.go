@@ -46,8 +46,17 @@ var (
 	ErrUnknownChannel = errors.New("notify: unknown channel")
 )
 
+// Enqueuer is the narrow producer port: callers that only need to queue a
+// notification (feature code raising events) depend on this, not on the full
+// dispatcher lifecycle in Outbox (interface segregation).
+type Enqueuer interface {
+	// Enqueue persists a new notification in pending status.
+	Enqueue(ctx context.Context, n *Notification) error
+}
+
 // Outbox is the outbound persistence port for the notification outbox. It is
 // implemented in the adapter layer and injected into the application layer.
+// It embeds Enqueuer and adds the dispatcher-side lifecycle methods.
 //
 // Persistence contracts:
 //   - Enqueue expects n.ID, n.HouseholdID, n.Channel, n.Title, n.Body,
@@ -62,8 +71,7 @@ var (
 //   - MarkSent returns ErrNotificationNotFound when id is unknown.
 //   - MarkFailed returns ErrNotificationNotFound when id is unknown.
 type Outbox interface {
-	// Enqueue persists a new notification in pending status.
-	Enqueue(ctx context.Context, n *Notification) error
+	Enqueuer
 
 	// ClaimDue atomically selects up to limit pending notifications with
 	// scheduled_for <= now(), transitions them to StatusSent (optimistic claim,
