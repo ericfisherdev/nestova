@@ -1,0 +1,880 @@
+package adapter_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
+	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/config"
+	"github.com/ericfisherdev/nestova/internal/platform/db"
+	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/tasks/adapter"
+	"github.com/ericfisherdev/nestova/internal/tasks/domain"
+)
+
+// newTestPool returns a pool backed by NESTOVA_TEST_DATABASE_URL with the full
+// schema applied, or skips when the env var is unset (keeping the default test
+// run hermetic). The cleanup handler resets the schema after the test.
+func newTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the tasks repository tests")
+	}
+
+	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := migrate.Reset(setupCtx, dsn); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	if err := migrate.Up(setupCtx, dsn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
+			t.Logf("cleanup reset failed: %v", err)
+		}
+	})
+
+	pool, err := db.New(setupCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("connect pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// testCtx returns a per-call context bounded to 10 s so a slow or unresponsive
+// database fails the test rather than hanging it.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// refDate is an arbitrary fixed reference date used throughout the tests so
+// no test depends on the wall clock.
+var refDate = time.Date(2025, 3, 10, 0, 0, 0, 0, time.UTC)
+
+// seedHousehold creates a household and two members, returning the household and
+// both member IDs. The household adapter is the seeding vehicle so tasks tests
+// do not depend on raw SQL.
+func seedHousehold(t *testing.T, pool *pgxpool.Pool) (*household.Household, household.MemberID, household.MemberID) {
+	t.Helper()
+	hhRepo := householdadapter.NewPostgresRepository(pool)
+
+	h := &household.Household{ID: household.NewHouseholdID(), Name: "The Fishers"}
+	if err := hhRepo.CreateHousehold(testCtx(t), h); err != nil {
+		t.Fatalf("CreateHousehold: %v", err)
+	}
+
+	m1 := &household.Member{
+		ID:          household.NewMemberID(),
+		HouseholdID: h.ID,
+		DisplayName: "Alice",
+		Role:        household.RoleAdult,
+		Color:       household.ColorSage,
+	}
+	if err := hhRepo.AddMember(testCtx(t), m1); err != nil {
+		t.Fatalf("AddMember(Alice): %v", err)
+	}
+
+	m2 := &household.Member{
+		ID:          household.NewMemberID(),
+		HouseholdID: h.ID,
+		DisplayName: "Bob",
+		Role:        household.RoleAdult,
+		Color:       household.ColorClay,
+	}
+	if err := hhRepo.AddMember(testCtx(t), m2); err != nil {
+		t.Fatalf("AddMember(Bob): %v", err)
+	}
+
+	return h, m1.ID, m2.ID
+}
+
+// newWeeklyCadence returns a simple weekly cadence anchored to refDate.
+func newWeeklyCadence() household.Cadence {
+	return household.Cadence{
+		Freq:     household.FreqWeekly,
+		Interval: 1,
+		Anchor:   refDate,
+	}
+}
+
+// seedRecurringTask creates and persists a basic recurring task for the given
+// household. The cadence, category, and rotation policy are sensible defaults.
+func seedRecurringTask(
+	t *testing.T,
+	repo *adapter.RecurringTaskRepository,
+	householdID household.HouseholdID,
+) *domain.RecurringTask {
+	t.Helper()
+	rt := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    householdID,
+		Title:          "Vacuum living room",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationRoundRobin,
+		Points:         10,
+		LeadTimeDays:   2,
+		Active:         true,
+	}
+	if err := repo.Create(testCtx(t), rt); err != nil {
+		t.Fatalf("Create recurring task: %v", err)
+	}
+	return rt
+}
+
+// seedTaskInstance creates and persists a pending task instance for the given
+// recurring task, due on the provided date.
+func seedTaskInstance(
+	t *testing.T,
+	repo *adapter.TaskInstanceRepository,
+	rt *domain.RecurringTask,
+	dueOn time.Time,
+) *domain.TaskInstance {
+	t.Helper()
+	inst := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     rt.HouseholdID,
+		DueOn:           dueOn,
+		Status:          domain.StatusPending,
+	}
+	if err := repo.Insert(testCtx(t), inst); err != nil {
+		t.Fatalf("Insert task instance: %v", err)
+	}
+	return inst
+}
+
+// ---------------------------------------------------------------------------
+// RecurringTaskRepository tests
+// ---------------------------------------------------------------------------
+
+// TestRecurringTask_CreateAndGet verifies that a recurring task round-trips
+// through Create and Get with all fields intact, including the cadence jsonb.
+func TestRecurringTask_CreateAndGet(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, repo, h.ID)
+
+	got, err := repo.Get(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.ID != rt.ID {
+		t.Errorf("ID = %v, want %v", got.ID, rt.ID)
+	}
+	if got.Title != rt.Title {
+		t.Errorf("Title = %q, want %q", got.Title, rt.Title)
+	}
+	if got.Category != rt.Category {
+		t.Errorf("Category = %v, want %v", got.Category, rt.Category)
+	}
+	if got.RotationPolicy != rt.RotationPolicy {
+		t.Errorf("RotationPolicy = %v, want %v", got.RotationPolicy, rt.RotationPolicy)
+	}
+	if got.Points != rt.Points {
+		t.Errorf("Points = %d, want %d", got.Points, rt.Points)
+	}
+	if got.LeadTimeDays != rt.LeadTimeDays {
+		t.Errorf("LeadTimeDays = %d, want %d", got.LeadTimeDays, rt.LeadTimeDays)
+	}
+	if !got.Active {
+		t.Error("Active = false, want true")
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero")
+	}
+
+	// Cadence must round-trip through jsonb.
+	if got.Cadence.Freq != rt.Cadence.Freq {
+		t.Errorf("Cadence.Freq = %v, want %v", got.Cadence.Freq, rt.Cadence.Freq)
+	}
+	if got.Cadence.Interval != rt.Cadence.Interval {
+		t.Errorf("Cadence.Interval = %d, want %d", got.Cadence.Interval, rt.Cadence.Interval)
+	}
+	if !got.Cadence.Anchor.Equal(rt.Cadence.Anchor) {
+		t.Errorf("Cadence.Anchor = %v, want %v", got.Cadence.Anchor, rt.Cadence.Anchor)
+	}
+}
+
+// TestRecurringTask_GetCrossHousehold verifies that a task belonging to one
+// household is invisible to a query scoped to a different household.
+func TestRecurringTask_GetCrossHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, repo, h.ID)
+
+	// Query with a different, unknown household ID.
+	otherHouseholdID := household.NewHouseholdID()
+	_, err := repo.Get(testCtx(t), otherHouseholdID, rt.ID)
+	if !errors.Is(err, domain.ErrTaskNotFound) {
+		t.Errorf("Get(cross-household) = %v, want ErrTaskNotFound", err)
+	}
+}
+
+// TestRecurringTask_ListActive verifies that ListActive returns only active
+// tasks for the household and omits inactive ones.
+func TestRecurringTask_ListActive(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	active1 := seedRecurringTask(t, repo, h.ID)
+
+	// Create an inactive task.
+	inactive := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    h.ID,
+		Title:          "Old task",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationClaimable,
+		Points:         0,
+		LeadTimeDays:   0,
+		Active:         false,
+	}
+	if err := repo.Create(testCtx(t), inactive); err != nil {
+		t.Fatalf("Create inactive task: %v", err)
+	}
+
+	active2 := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    h.ID,
+		Title:          "Mop floors",
+		Category:       domain.MaintenanceCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationFixed,
+		Points:         5,
+		LeadTimeDays:   1,
+		Active:         true,
+	}
+	if err := repo.Create(testCtx(t), active2); err != nil {
+		t.Fatalf("Create active2 task: %v", err)
+	}
+
+	got, err := repo.ListActive(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListActive returned %d tasks, want 2", len(got))
+	}
+
+	// Both active tasks must appear; inactive must not.
+	ids := map[domain.RecurringTaskID]bool{got[0].ID: true, got[1].ID: true}
+	if !ids[active1.ID] {
+		t.Errorf("ListActive missing active1 (%v)", active1.ID)
+	}
+	if !ids[active2.ID] {
+		t.Errorf("ListActive missing active2 (%v)", active2.ID)
+	}
+	if ids[inactive.ID] {
+		t.Errorf("ListActive returned inactive task (%v)", inactive.ID)
+	}
+}
+
+// TestRecurringTask_ListActiveUnknownHousehold verifies the documented
+// contract: an unknown household returns an empty slice, not an error.
+func TestRecurringTask_ListActiveUnknownHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+
+	got, err := repo.ListActive(testCtx(t), household.NewHouseholdID())
+	if err != nil {
+		t.Fatalf("ListActive(unknown) error = %v, want nil", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListActive(unknown) returned %d tasks, want 0", len(got))
+	}
+}
+
+// TestRecurringTask_SetAndGetRotationMembers verifies that SetRotationMembers
+// persists members in position order and RotationMembers returns them in that
+// order. It also verifies that replacing the pool with a smaller set works.
+func TestRecurringTask_SetAndGetRotationMembers(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, repo, h.ID)
+
+	// Set an initial pool: [m1, m2].
+	if err := repo.SetRotationMembers(testCtx(t), h.ID, rt.ID, []household.MemberID{m1, m2}); err != nil {
+		t.Fatalf("SetRotationMembers([m1,m2]): %v", err)
+	}
+
+	got, err := repo.RotationMembers(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("RotationMembers: %v", err)
+	}
+	if len(got) != 2 || got[0] != m1 || got[1] != m2 {
+		t.Errorf("RotationMembers = %v, want [%v %v]", got, m1, m2)
+	}
+
+	// Replace the pool with just [m2]; m1 must no longer appear.
+	if err := repo.SetRotationMembers(testCtx(t), h.ID, rt.ID, []household.MemberID{m2}); err != nil {
+		t.Fatalf("SetRotationMembers([m2]): %v", err)
+	}
+
+	got, err = repo.RotationMembers(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("RotationMembers after replace: %v", err)
+	}
+	if len(got) != 1 || got[0] != m2 {
+		t.Errorf("RotationMembers after replace = %v, want [%v]", got, m2)
+	}
+}
+
+// TestRecurringTask_RotationMembersEmpty verifies that RotationMembers returns
+// an empty slice (not an error) when no members have been added to the pool.
+func TestRecurringTask_RotationMembersEmpty(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, repo, h.ID)
+
+	got, err := repo.RotationMembers(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("RotationMembers(empty): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("RotationMembers(empty) = %v, want []", got)
+	}
+}
+
+// TestRecurringTask_SetRotationMembersUnknownTask verifies that
+// SetRotationMembers returns ErrTaskNotFound for an unknown task id.
+func TestRecurringTask_SetRotationMembersUnknownTask(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	err := repo.SetRotationMembers(testCtx(t), h.ID, domain.NewRecurringTaskID(), []household.MemberID{m1})
+	if !errors.Is(err, domain.ErrTaskNotFound) {
+		t.Errorf("SetRotationMembers(unknown task) = %v, want ErrTaskNotFound", err)
+	}
+}
+
+// TestRecurringTask_ClearRotationMembers verifies that passing an empty slice
+// to SetRotationMembers clears the pool and RotationMembers returns [].
+func TestRecurringTask_ClearRotationMembers(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, repo, h.ID)
+
+	if err := repo.SetRotationMembers(testCtx(t), h.ID, rt.ID, []household.MemberID{m1}); err != nil {
+		t.Fatalf("SetRotationMembers: %v", err)
+	}
+
+	// Clear the pool.
+	if err := repo.SetRotationMembers(testCtx(t), h.ID, rt.ID, []household.MemberID{}); err != nil {
+		t.Fatalf("SetRotationMembers(clear): %v", err)
+	}
+
+	got, err := repo.RotationMembers(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("RotationMembers after clear: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("RotationMembers after clear = %v, want []", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TaskInstanceRepository tests
+// ---------------------------------------------------------------------------
+
+// TestTaskInstance_InsertAndGet verifies that an instance round-trips through
+// Insert and Get with DueOn preserved as a calendar date (midnight UTC).
+func TestTaskInstance_InsertAndGet(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	dueOn := refDate.AddDate(0, 0, 7)
+	inst := seedTaskInstance(t, instRepo, rt, dueOn)
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.ID != inst.ID {
+		t.Errorf("ID = %v, want %v", got.ID, inst.ID)
+	}
+	if got.RecurringTaskID != rt.ID {
+		t.Errorf("RecurringTaskID = %v, want %v", got.RecurringTaskID, rt.ID)
+	}
+	if got.Status != domain.StatusPending {
+		t.Errorf("Status = %v, want pending", got.Status)
+	}
+	// DueOn must be midnight UTC regardless of what was passed in.
+	wantDueOn := domain.DateOf(dueOn)
+	if !got.DueOn.Equal(wantDueOn) {
+		t.Errorf("DueOn = %v, want %v", got.DueOn, wantDueOn)
+	}
+	if got.AssigneeID != nil {
+		t.Errorf("AssigneeID = %v, want nil", got.AssigneeID)
+	}
+	if got.CompletedAt != nil {
+		t.Errorf("CompletedAt = %v, want nil", got.CompletedAt)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero")
+	}
+}
+
+// TestTaskInstance_InsertDuplicateReturnsErrDuplicateInstance verifies that
+// inserting a second instance for the same (recurring_task_id, due_on) pair
+// returns domain.ErrDuplicateInstance.
+func TestTaskInstance_InsertDuplicateReturnsErrDuplicateInstance(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	dueOn := refDate.AddDate(0, 0, 7)
+
+	seedTaskInstance(t, instRepo, rt, dueOn)
+
+	// A second insert for the same task+due_on must be rejected.
+	dup := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		DueOn:           dueOn,
+		Status:          domain.StatusPending,
+	}
+	err := instRepo.Insert(testCtx(t), dup)
+	if !errors.Is(err, domain.ErrDuplicateInstance) {
+		t.Errorf("Insert(duplicate) = %v, want ErrDuplicateInstance", err)
+	}
+}
+
+// TestTaskInstance_GetCrossHousehold verifies that an instance belonging to one
+// household is invisible to a query scoped to a different household.
+func TestTaskInstance_GetCrossHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	_, err := instRepo.Get(testCtx(t), household.NewHouseholdID(), inst.ID)
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("Get(cross-household) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// TestTaskInstance_Claim_Success verifies that claiming a pending, unassigned
+// instance succeeds and the assignee is persisted.
+func TestTaskInstance_Claim_Success(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after Claim: %v", err)
+	}
+	if got.AssigneeID == nil || *got.AssigneeID != m1 {
+		t.Errorf("AssigneeID = %v, want %v", got.AssigneeID, m1)
+	}
+	if got.Status != domain.StatusPending {
+		t.Errorf("Status = %v after Claim, want pending", got.Status)
+	}
+}
+
+// TestTaskInstance_Claim_AlreadyClaimed verifies that claiming an already-
+// assigned pending instance returns ErrInstanceAlreadyClaimed.
+func TestTaskInstance_Claim_AlreadyClaimed(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	// m1 claims first.
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim(m1): %v", err)
+	}
+
+	// m2 tries to claim the same instance.
+	err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m2)
+	if !errors.Is(err, domain.ErrInstanceAlreadyClaimed) {
+		t.Errorf("Claim(already claimed) = %v, want ErrInstanceAlreadyClaimed", err)
+	}
+}
+
+// TestTaskInstance_Claim_TerminalState verifies that claiming an instance not
+// in the pending state returns ErrInstanceInTerminalState.
+func TestTaskInstance_Claim_TerminalState(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	// Skip the instance to put it in a terminal state.
+	if err := instRepo.Skip(testCtx(t), h.ID, inst.ID); err != nil {
+		t.Fatalf("Skip: %v", err)
+	}
+
+	err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1)
+	if !errors.Is(err, domain.ErrInstanceInTerminalState) {
+		t.Errorf("Claim(terminal) = %v, want ErrInstanceInTerminalState", err)
+	}
+}
+
+// TestTaskInstance_Claim_NotFound verifies that claiming an unknown instance
+// returns ErrInstanceNotFound.
+func TestTaskInstance_Claim_NotFound(t *testing.T) {
+	pool := newTestPool(t)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	err := instRepo.Claim(testCtx(t), h.ID, domain.NewTaskInstanceID(), m1)
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("Claim(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// TestTaskInstance_Complete_Success verifies that completing a pending instance
+// transitions it to done and persists completed_at and completed_by.
+func TestTaskInstance_Complete_Success(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	completedAt := refDate.AddDate(0, 0, 8)
+	if err := instRepo.Complete(testCtx(t), h.ID, inst.ID, m1, completedAt); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after Complete: %v", err)
+	}
+	if got.Status != domain.StatusDone {
+		t.Errorf("Status = %v, want done", got.Status)
+	}
+	if got.CompletedBy == nil || *got.CompletedBy != m1 {
+		t.Errorf("CompletedBy = %v, want %v", got.CompletedBy, m1)
+	}
+	if got.CompletedAt == nil {
+		t.Fatal("CompletedAt is nil, want a time")
+	}
+	if !got.CompletedAt.Equal(completedAt) {
+		t.Errorf("CompletedAt = %s, want %s", got.CompletedAt.Format(time.RFC3339), completedAt.Format(time.RFC3339))
+	}
+}
+
+// TestTaskInstance_Complete_AlreadyTerminal verifies that completing an
+// already-completed instance returns ErrInstanceInTerminalState.
+func TestTaskInstance_Complete_AlreadyTerminal(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	completedAt := refDate.AddDate(0, 0, 8)
+	if err := instRepo.Complete(testCtx(t), h.ID, inst.ID, m1, completedAt); err != nil {
+		t.Fatalf("Complete(first): %v", err)
+	}
+
+	// Completing again must be rejected.
+	err := instRepo.Complete(testCtx(t), h.ID, inst.ID, m1, completedAt)
+	if !errors.Is(err, domain.ErrInstanceInTerminalState) {
+		t.Errorf("Complete(already done) = %v, want ErrInstanceInTerminalState", err)
+	}
+}
+
+// TestTaskInstance_Skip_Success verifies that skipping a pending instance
+// transitions it to skipped.
+func TestTaskInstance_Skip_Success(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	if err := instRepo.Skip(testCtx(t), h.ID, inst.ID); err != nil {
+		t.Fatalf("Skip: %v", err)
+	}
+
+	got, err := instRepo.Get(testCtx(t), h.ID, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after Skip: %v", err)
+	}
+	if got.Status != domain.StatusSkipped {
+		t.Errorf("Status = %v, want skipped", got.Status)
+	}
+}
+
+// TestTaskInstance_Skip_AlreadyTerminal verifies that skipping a skipped
+// instance returns ErrInstanceInTerminalState.
+func TestTaskInstance_Skip_AlreadyTerminal(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	if err := instRepo.Skip(testCtx(t), h.ID, inst.ID); err != nil {
+		t.Fatalf("Skip(first): %v", err)
+	}
+
+	err := instRepo.Skip(testCtx(t), h.ID, inst.ID)
+	if !errors.Is(err, domain.ErrInstanceInTerminalState) {
+		t.Errorf("Skip(already skipped) = %v, want ErrInstanceInTerminalState", err)
+	}
+}
+
+// TestTaskInstance_Skip_NotFound verifies that skipping an unknown instance
+// returns ErrInstanceNotFound.
+func TestTaskInstance_Skip_NotFound(t *testing.T) {
+	pool := newTestPool(t)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	err := instRepo.Skip(testCtx(t), h.ID, domain.NewTaskInstanceID())
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("Skip(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// TestTaskInstance_MarkPendingOverdue verifies that MarkPendingOverdue
+// transitions only pending instances whose due_on < asOf and returns the count.
+// Instances on or after asOf must remain pending.
+func TestTaskInstance_MarkPendingOverdue(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+
+	// Three instances: two past due, one future.
+	pastDue1 := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, -3))
+	pastDue2 := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		DueOn:           refDate.AddDate(0, 0, -1),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(testCtx(t), pastDue2); err != nil {
+		t.Fatalf("Insert pastDue2: %v", err)
+	}
+	future := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		DueOn:           refDate.AddDate(0, 0, 7),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(testCtx(t), future); err != nil {
+		t.Fatalf("Insert future: %v", err)
+	}
+
+	// Use refDate as asOf: due_on < refDate matches pastDue1 and pastDue2.
+	count, err := instRepo.MarkPendingOverdue(testCtx(t), h.ID, refDate)
+	if err != nil {
+		t.Fatalf("MarkPendingOverdue: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("MarkPendingOverdue count = %d, want 2", count)
+	}
+
+	// Past-due instances must now be overdue.
+	got1, err := instRepo.Get(testCtx(t), h.ID, pastDue1.ID)
+	if err != nil {
+		t.Fatalf("Get pastDue1: %v", err)
+	}
+	if got1.Status != domain.StatusOverdue {
+		t.Errorf("pastDue1 Status = %v, want overdue", got1.Status)
+	}
+	got2, err := instRepo.Get(testCtx(t), h.ID, pastDue2.ID)
+	if err != nil {
+		t.Fatalf("Get pastDue2: %v", err)
+	}
+	if got2.Status != domain.StatusOverdue {
+		t.Errorf("pastDue2 Status = %v, want overdue", got2.Status)
+	}
+
+	// Future instance must remain pending.
+	gotFuture, err := instRepo.Get(testCtx(t), h.ID, future.ID)
+	if err != nil {
+		t.Fatalf("Get future: %v", err)
+	}
+	if gotFuture.Status != domain.StatusPending {
+		t.Errorf("future Status = %v, want pending", gotFuture.Status)
+	}
+}
+
+// TestTaskInstance_ListByHousehold verifies that ListByHousehold filters
+// correctly by status and date window, and returns an empty slice when none
+// match.
+func TestTaskInstance_ListByHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+
+	// Three pending instances on different dates.
+	inst1 := seedTaskInstance(t, instRepo, rt, refDate)
+	inst2 := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		DueOn:           refDate.AddDate(0, 0, 7),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(testCtx(t), inst2); err != nil {
+		t.Fatalf("Insert inst2: %v", err)
+	}
+	inst3 := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		DueOn:           refDate.AddDate(0, 0, 14),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(testCtx(t), inst3); err != nil {
+		t.Fatalf("Insert inst3: %v", err)
+	}
+
+	// Complete inst1 so it is no longer pending.
+	if err := instRepo.Complete(testCtx(t), h.ID, inst1.ID, m1, refDate.Add(time.Hour)); err != nil {
+		t.Fatalf("Complete inst1: %v", err)
+	}
+
+	// Query pending instances within [refDate, refDate+7d]. Only inst2 qualifies.
+	from := refDate
+	to := refDate.AddDate(0, 0, 7)
+	got, err := instRepo.ListByHousehold(testCtx(t), h.ID, domain.StatusPending, from, to)
+	if err != nil {
+		t.Fatalf("ListByHousehold: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != inst2.ID {
+		t.Errorf("ListByHousehold = %v IDs, want [%v]", idsOf(got), inst2.ID)
+	}
+
+	// Query with a status that matches nothing in the window.
+	got, err = instRepo.ListByHousehold(testCtx(t), h.ID, domain.StatusSkipped, from, to)
+	if err != nil {
+		t.Fatalf("ListByHousehold(no match): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListByHousehold(no match) = %d rows, want 0", len(got))
+	}
+}
+
+// TestTaskInstance_LatestDueOn verifies that LatestDueOn returns the most
+// recent due_on and ok=true, or (zero, false, nil) when no instances exist.
+func TestTaskInstance_LatestDueOn(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+
+	// No instances yet: must return (zero, false, nil).
+	ts, ok, err := instRepo.LatestDueOn(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("LatestDueOn (empty): %v", err)
+	}
+	if ok {
+		t.Errorf("LatestDueOn (empty) ok = true, want false")
+	}
+	if !ts.IsZero() {
+		t.Errorf("LatestDueOn (empty) ts = %v, want zero", ts)
+	}
+
+	// Add two instances; the later one must be returned.
+	seedTaskInstance(t, instRepo, rt, refDate)
+	inst2 := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		DueOn:           refDate.AddDate(0, 0, 14),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(testCtx(t), inst2); err != nil {
+		t.Fatalf("Insert inst2: %v", err)
+	}
+
+	ts, ok, err = instRepo.LatestDueOn(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("LatestDueOn (with instances): %v", err)
+	}
+	if !ok {
+		t.Fatal("LatestDueOn (with instances) ok = false, want true")
+	}
+	wantLatest := domain.DateOf(refDate.AddDate(0, 0, 14))
+	if !ts.Equal(wantLatest) {
+		t.Errorf("LatestDueOn = %v, want %v", ts, wantLatest)
+	}
+}
+
+// idsOf extracts task instance IDs for readable test error messages.
+func idsOf(instances []*domain.TaskInstance) []domain.TaskInstanceID {
+	ids := make([]domain.TaskInstanceID, len(instances))
+	for i, inst := range instances {
+		ids[i] = inst.ID
+	}
+	return ids
+}
