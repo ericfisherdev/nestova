@@ -1,6 +1,13 @@
-// Package domain holds entities, value objects, domain services, and ports (interfaces)
-// for the tasks bounded context (chores, task assignment, and gamification (points, streaks, rewards)).
+// Package domain holds entities, value objects, sentinel errors, and port
+// interfaces for the tasks bounded context.
 //
-// This package is part of the project's hexagonal/DDD layout and is
-// populated as the tasks features land.
+// The tasks context manages recurring household chores and maintenance items.
+// Each [RecurringTask] is a template that carries a recurrence [Cadence]
+// (shared-kernel value object from the household domain), a [Category], and a
+// [RotationPolicy] that governs how assignments are made. The generator
+// (NES-30) materialises [TaskInstance] rows ahead of time; the adapter (NES-29)
+// persists them via the repository ports defined here.
+//
+// Domain errors are collected in sentinel vars and documented on the port
+// methods that return them. No framework or infrastructure imports belong here.
 package domain
