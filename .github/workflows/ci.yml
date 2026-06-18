@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # CI only reads and runs checks; it never pushes.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          # Single source of truth: the version in go.mod.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify generated templ output is in sync
+        # templ is pinned via the go.mod tool directive, so the generated code
+        # (including its version header) is reproducible across machines.
+        run: |
+          go tool templ generate
+          git diff --exit-code -- '*_templ.go'
+
+      - name: Install golangci-lint
+        # install-only adds the pinned golangci-lint to PATH without running it,
+        # so the lint and format steps below invoke the same binary via the
+        # Makefile (single source of truth). version must match
+        # GOLANGCI_LINT_VERSION in the Makefile.
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        with:
+          install-only: true
+          version: v2.11.4
+
+      - name: Lint
+        run: make lint
+
+      - name: Check formatting
+        run: golangci-lint fmt --diff
+
+      - name: Test (race detector + coverage)
+        run: make test
+
+      - name: Report coverage
+        if: always()
+        run: |
+          if [[ ! -f coverage.out ]]; then
+            echo '_No coverage data (tests did not complete)._' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo '### Coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -n 1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
