@@ -60,16 +60,17 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	}
 	// Canonical middleware order (outermost first): request id and logging wrap
 	// everything so every request is logged with an id even on panic; recovery
-	// turns panics into 500s; feature middleware (session/auth) runs next so
-	// session state is available when the timeout fires; the per-request timeout
-	// is innermost so it bounds only handler work.
+	// turns panics into 500s; the per-request timeout comes next so its deadline
+	// also bounds the session/auth feature middleware (which do database work),
+	// not just the final handler; feature middleware (session/auth) runs last
+	// before the route handler.
 	chain := []middleware.Middleware{
 		middleware.RequestID,
 		middleware.RequestLogger(deps.Logger),
 		middleware.Recoverer(deps.Logger),
+		middleware.Timeout(requestTimeout),
 	}
 	chain = append(chain, deps.Middleware...)
-	chain = append(chain, middleware.Timeout(requestTimeout))
 
 	handler := middleware.Chain(chain...)(routes(deps))
 

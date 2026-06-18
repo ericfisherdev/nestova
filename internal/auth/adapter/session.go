@@ -40,6 +40,24 @@ func NewSessionManager(pool *pgxpool.Pool, cfg config.SessionConfig) *scs.Sessio
 	return sm
 }
 
+// lookupMember resolves the session's member_id to a Member. When the id is
+// malformed or the member no longer exists, the stale session key is removed so
+// subsequent requests do not repeat the failed lookup, and it reports ok=false
+// (the request proceeds anonymously).
+func lookupMember(ctx context.Context, sm *scs.SessionManager, members household.HouseholdRepository, memberIDStr string) (*household.Member, bool) {
+	memberID, err := household.ParseMemberID(memberIDStr)
+	if err != nil {
+		sm.Remove(ctx, "member_id")
+		return nil, false
+	}
+	member, err := members.GetMember(ctx, memberID)
+	if err != nil {
+		sm.Remove(ctx, "member_id")
+		return nil, false
+	}
+	return member, true
+}
+
 // CurrentMember returns the Member stored in ctx by the Authenticate
 // middleware, and false when no authenticated member is present.
 func CurrentMember(ctx context.Context) (*household.Member, bool) {
@@ -57,16 +75,8 @@ func Authenticate(sm *scs.SessionManager, members household.HouseholdRepository)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			memberIDStr := sm.GetString(r.Context(), "member_id")
 			if memberIDStr != "" {
-				memberID, err := household.ParseMemberID(memberIDStr)
-				if err == nil {
-					member, err := members.GetMember(r.Context(), memberID)
-					if err == nil {
-						ctx := context.WithValue(r.Context(), currentMemberKey, member)
-						r = r.WithContext(ctx)
-					}
-					// If GetMember fails (e.g. member deleted) the session key is
-					// stale; proceed as anonymous rather than returning an error so
-					// the user can still access the login page.
+				if member, ok := lookupMember(r.Context(), sm, members, memberIDStr); ok {
+					r = r.WithContext(context.WithValue(r.Context(), currentMemberKey, member))
 				}
 			}
 			next.ServeHTTP(w, r)

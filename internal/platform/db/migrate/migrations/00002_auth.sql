@@ -7,8 +7,11 @@ CREATE EXTENSION IF NOT EXISTS citext;
 -- members without login are unaffected; the CHECK keeps them consistent — a
 -- member either has both an email and a password hash, or neither.
 ALTER TABLE member
-    ADD COLUMN email         citext UNIQUE,
+    ADD COLUMN email         citext,
     ADD COLUMN password_hash text,
+    -- Named explicitly (not the auto-generated member_email_key) so the adapter
+    -- can map violations of this exact constraint to ErrEmailAlreadyInUse.
+    ADD CONSTRAINT member_email_unique UNIQUE (email),
     ADD CONSTRAINT member_credentials_complete CHECK (
         (email IS NULL AND password_hash IS NULL)
         OR (email IS NOT NULL AND password_hash IS NOT NULL)
