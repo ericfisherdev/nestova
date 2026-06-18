@@ -31,13 +31,16 @@ func main() {
 // graceful shutdown. It is separated from main so the lifecycle has a single
 // error return that is straightforward to test.
 func run(logger *slog.Logger) error {
-	cfg := config.Load()
-	srv := httpserver.New(cfg.Addr)
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	srv := httpserver.New(cfg.Server.Addr)
 
 	// Surface listen errors from the background goroutine to the main flow.
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("starting http server", "addr", cfg.Addr, "env", cfg.Env)
+		logger.Info("starting http server", "addr", cfg.Server.Addr, "env", cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}

@@ -27,6 +27,40 @@ make hooks      # install the Lefthook Git hooks
 make help       # list all targets
 ```
 
+### Configuration
+
+Configuration is read **only from environment variables** (so secrets are never
+committed) and validated at startup by
+[`internal/platform/config`](internal/platform/config/config.go). Startup
+**fails fast** with a single error listing every missing or invalid value.
+
+For local development, copy [`.env.example`](.env.example) to `.env` (gitignored)
+and adjust as needed — it is loaded automatically when `APP_ENV=dev`. Real
+environment variables always take precedence over `.env`.
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `APP_ENV` | no | `dev` | Deployment environment: `dev`, `test`, or `prod`. |
+| `PORT` | no | `8080` | HTTP listen port (a leading colon is tolerated). |
+| `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Override in prod. |
+| `DB_MAX_CONNS` | no | `0` | Connection pool cap; `0` lets the pool choose. |
+| `DB_CONNECT_TIMEOUT` | no | `5s` | Bounds the startup connectivity check (Go duration). |
+| `SESSION_SECRET` | yes in prod | dev-only default | Signs session cookies; ≥ 32 bytes. The dev default is rejected in prod. |
+| `SESSION_LIFETIME` | no | `12h` | Maximum session duration (Go duration). |
+| `GOOGLE_CLIENT_ID` | yes in prod | — | Google OAuth client ID (Google Calendar sync). |
+| `GOOGLE_CLIENT_SECRET` | yes in prod | — | Google OAuth client secret. |
+| `GOOGLE_REDIRECT_URL` | yes in prod | — | Google OAuth redirect URL. |
+
+In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
+`SESSION_SECRET`, and the Google OAuth credentials must be supplied explicitly
+(the dev defaults are rejected).
+
+> **Production secrets:** environment variables are appropriate for development
+> and small deployments. For production at scale, source secrets from a
+> dedicated manager (e.g. HashiCorp Vault, AWS/GCP Secrets Manager, or
+> Kubernetes Secrets) and inject them into the environment, rather than storing
+> them in plaintext `.env` files.
+
 ### Git hooks (Lefthook)
 
 [Lefthook](https://lefthook.dev) is pinned as a Go tool directive in `go.mod`.

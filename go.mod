@@ -8,7 +8,10 @@ tool (
 	github.com/siderolabs/conform/cmd/conform
 )
 
-require github.com/a-h/templ v0.3.1001
+require (
+	github.com/a-h/templ v0.3.1001
+	github.com/joho/godotenv v1.5.1
+)
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
