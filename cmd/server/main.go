@@ -23,6 +23,8 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
+	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
+	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 )
 
 // shutdownTimeout bounds how long in-flight requests have to drain on shutdown.
@@ -36,6 +38,18 @@ const (
 	dispatchBatchSize = 50
 	// dispatchPollInterval is how often the dispatcher polls the outbox.
 	dispatchPollInterval = 30 * time.Second
+)
+
+// Task scheduler tuning (NES-31).
+const (
+	// taskGenerationHorizon is how far ahead of now task instances are
+	// materialised by the background generator. Two weeks keeps upcoming
+	// instances visible without over-generating.
+	taskGenerationHorizon = 14 * 24 * time.Hour
+	// taskSchedulerPollInterval is how often the scheduler runs a
+	// generation+overdue-sweep cycle. Five minutes is sufficient; the
+	// overdue sweep is idempotent so occasional double-runs are harmless.
+	taskSchedulerPollInterval = 5 * time.Minute
 )
 
 func main() {
@@ -96,6 +110,18 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("create dispatcher: %w", err)
 	}
 
+	// NES-31: task scheduler wiring.
+	recurringTaskRepo := tasksadapter.NewRecurringTaskRepository(pool)
+	taskInstanceRepo := tasksadapter.NewTaskInstanceRepository(pool)
+	taskGenerator, err := tasksapp.NewGenerator(recurringTaskRepo, taskInstanceRepo, logger, taskGenerationHorizon)
+	if err != nil {
+		return fmt.Errorf("create task generator: %w", err)
+	}
+	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, logger, taskSchedulerPollInterval)
+	if err != nil {
+		return fmt.Errorf("create task scheduler: %w", err)
+	}
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -133,6 +159,15 @@ func run(logger *slog.Logger) error {
 		dispatcher.Run(ctx)
 	}()
 
+	// NES-31: the task scheduler uses the same signal-cancelled ctx. Each tick
+	// runs under its own bounded context (context.Background()), so an in-flight
+	// generation+sweep cycle completes its database writes before Run returns.
+	schedulerDone := make(chan struct{})
+	go func() {
+		defer close(schedulerDone)
+		taskScheduler.Run(ctx)
+	}()
+
 	var runErr error
 	select {
 	case err := <-serverErr:
@@ -141,12 +176,14 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutdown signal received")
 	}
 
-	// Cancel ctx (even on the serverErr path) so the dispatcher stops looping,
-	// then wait for Run to return. Because each dispatcher tick runs under its
-	// own context (not this one), an in-flight batch finishes its database writes
-	// before Run returns, so this wait drains it cleanly ahead of pool.Close.
+	// Cancel ctx (even on the serverErr path) so both background workers stop
+	// looping, then wait for both Run methods to return. Because each worker's
+	// tick runs under its own context (not this one), in-flight cycles finish
+	// their database writes before Run returns, so these waits drain them cleanly
+	// ahead of pool.Close.
 	stop()
 	<-dispatcherDone
+	<-schedulerDone
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
