@@ -50,10 +50,19 @@ func newTestRepo(t *testing.T) *adapter.PostgresRepository {
 	return adapter.NewPostgresRepository(pool)
 }
 
+// testCtx returns a per-call context bounded so a slow/unresponsive database
+// fails the test rather than hanging it.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func seedHousehold(t *testing.T, repo *adapter.PostgresRepository) *domain.Household {
 	t.Helper()
 	h := &domain.Household{ID: domain.NewHouseholdID(), Name: "The Fishers"}
-	if err := repo.CreateHousehold(context.Background(), h); err != nil {
+	if err := repo.CreateHousehold(testCtx(t), h); err != nil {
 		t.Fatalf("CreateHousehold: %v", err)
 	}
 	return h
@@ -63,7 +72,7 @@ func TestCreateAndGetHousehold(t *testing.T) {
 	repo := newTestRepo(t)
 	h := seedHousehold(t, repo)
 
-	got, err := repo.GetHousehold(context.Background(), h.ID)
+	got, err := repo.GetHousehold(testCtx(t), h.ID)
 	if err != nil {
 		t.Fatalf("GetHousehold: %v", err)
 	}
@@ -77,7 +86,7 @@ func TestCreateAndGetHousehold(t *testing.T) {
 
 func TestAddListAndGetMembers(t *testing.T) {
 	repo := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	h := seedHousehold(t, repo)
 
 	names := []string{"Maya", "Daniel", "Ivy"}
@@ -124,7 +133,7 @@ func TestAddListAndGetMembers(t *testing.T) {
 
 func TestAddMemberDuplicateName(t *testing.T) {
 	repo := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	h := seedHousehold(t, repo)
 
 	first := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Maya", Role: domain.RoleAdult, Color: domain.ColorSage}
@@ -147,7 +156,7 @@ func TestAddMemberUnknownHousehold(t *testing.T) {
 		Role:        domain.RoleAdult,
 		Color:       domain.ColorSage,
 	}
-	if err := repo.AddMember(context.Background(), m); !errors.Is(err, domain.ErrHouseholdNotFound) {
+	if err := repo.AddMember(testCtx(t), m); !errors.Is(err, domain.ErrHouseholdNotFound) {
 		t.Errorf("AddMember(unknown household) error = %v, want ErrHouseholdNotFound", err)
 	}
 }
@@ -156,7 +165,7 @@ func TestListMembersUnknownHousehold(t *testing.T) {
 	repo := newTestRepo(t)
 	// ListMembers fails open: an unknown household yields an empty slice, not an
 	// error (documented contract).
-	got, err := repo.ListMembers(context.Background(), domain.NewHouseholdID())
+	got, err := repo.ListMembers(testCtx(t), domain.NewHouseholdID())
 	if err != nil {
 		t.Fatalf("ListMembers(unknown) error = %v, want nil", err)
 	}
@@ -167,7 +176,7 @@ func TestListMembersUnknownHousehold(t *testing.T) {
 
 func TestNotFoundErrors(t *testing.T) {
 	repo := newTestRepo(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 
 	if _, err := repo.GetHousehold(ctx, domain.NewHouseholdID()); !errors.Is(err, domain.ErrHouseholdNotFound) {
 		t.Errorf("GetHousehold(unknown) error = %v, want ErrHouseholdNotFound", err)

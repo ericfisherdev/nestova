@@ -19,6 +19,9 @@ const (
 	uniqueViolation = "23505"
 	// foreignKeyViolation is the PostgreSQL SQLSTATE for a foreign-key violation.
 	foreignKeyViolation = "23503"
+	// memberHouseholdFK is the auto-named FK constraint member.household_id ->
+	// household.id (NES-17 baseline). Only this FK maps to ErrHouseholdNotFound.
+	memberHouseholdFK = "member_household_id_fkey"
 	// memberNameUniqueIndex is the unique index enforcing per-household display
 	// name uniqueness (the NES-17 baseline migration). Only this constraint maps
 	// to ErrDuplicateMember; other unique violations (e.g. the PK) surface as-is.
@@ -85,8 +88,7 @@ func (r *PostgresRepository) AddMember(ctx context.Context, m *domain.Member) er
 			switch {
 			case pgErr.Code == uniqueViolation && pgErr.ConstraintName == memberNameUniqueIndex:
 				return domain.ErrDuplicateMember
-			case pgErr.Code == foreignKeyViolation:
-				// The only FK on member is household_id -> household.
+			case pgErr.Code == foreignKeyViolation && pgErr.ConstraintName == memberHouseholdFK:
 				return domain.ErrHouseholdNotFound
 			}
 		}
