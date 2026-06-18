@@ -5,6 +5,14 @@
 # `go tool lefthook install`). Tooling is pinned in go.mod (lefthook, templ) and
 # the README (golangci-lint).
 
+# commit-msg validates the message against Conventional Commits (.conform.yaml)
+# so a non-conforming message is rejected before the commit is created. {1} is
+# the path to the commit message file that git passes to the hook.
+commit-msg:
+  jobs:
+    - name: conventional-commit
+      run: go tool conform enforce --commit-msg-file {1}
+
 # pre-commit runs the fast gates on staged changes, piped so it stops at the
 # first failure. Committing unformatted, stale-generated, lint-failing, or
 # test-failing code is blocked.
