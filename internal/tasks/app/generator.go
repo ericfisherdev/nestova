@@ -116,6 +116,17 @@ func (g *Generator) materialiseTask(
 		return 0, fmt.Errorf("generator: task %s: window start: %w", task.ID, err)
 	}
 
+	// Validate the persisted cadence before expanding occurrences. A corrupt
+	// cadence (e.g. interval 0 from a manual edit) would make OccurrencesBetween
+	// loop forever, so skip the task rather than hang the generator.
+	if err := task.Cadence.Validate(); err != nil {
+		g.logger.Error("generator: skipping task with invalid cadence",
+			"task_id", task.ID.String(),
+			"error", err,
+		)
+		return 0, fmt.Errorf("generator: task %s: invalid cadence: %w", task.ID, err)
+	}
+
 	occurrences := task.Cadence.OccurrencesBetween(windowStart, horizon)
 	if len(occurrences) == 0 {
 		return 0, nil

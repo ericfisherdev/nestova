@@ -12,9 +12,10 @@ import (
 
 // TaskService orchestrates user-facing task use cases. It is a thin
 // application-layer coordinator: business rules live in the domain and
-// persistence contracts in the adapter. The service adds cross-cutting
-// concerns such as input validation and multi-step coordination (e.g.
-// Create+SetRotationMembers).
+// persistence/atomicity contracts in the adapter. The service adds cross-cutting
+// concerns such as input validation and policy checks (e.g. requiring a
+// non-empty rotation pool), delegating multi-row atomicity to the repository
+// (CreateWithRotation).
 //
 // Methods are tenant-scoped via householdID arguments — the underlying
 // repository methods enforce household isolation at the persistence level.
@@ -63,11 +64,18 @@ func (s *TaskService) CreateRecurringTask(
 	task *domain.RecurringTask,
 	pool []household.MemberID,
 ) error {
+	if task == nil {
+		return errors.New("create recurring task: task is nil")
+	}
 	if err := task.Cadence.Validate(); err != nil {
 		return fmt.Errorf("create recurring task: %w", err)
 	}
 
-	if task.RotationPolicy != domain.RotationClaimable && len(pool) == 0 {
+	// A claimable task has no rotation pool; ignore any pool the caller passed so
+	// claimable instances are always materialized unassigned.
+	if task.RotationPolicy == domain.RotationClaimable {
+		pool = nil
+	} else if len(pool) == 0 {
 		return fmt.Errorf("create recurring task: %w", domain.ErrNoRotationMembers)
 	}
 

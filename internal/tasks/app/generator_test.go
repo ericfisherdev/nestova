@@ -460,8 +460,10 @@ func TestGenerator_RoundRobinStable(t *testing.T) {
 
 	g := newGenerator(t, taskRepo, instanceRepo)
 
-	// Generate 4 weeks from the anchor. OccurrencesBetween(anchor-1ns, anchor+4w)
-	// yields occurrences at anchor+0w, +1w, +2w, +3w, +4w = 5 occurrences.
+	// asOf = anchor + 4 weeks; horizon = 14 days, so the window is
+	// (anchor-1ns, DateOf(anchor+28d+14d)] = (anchor-1ns, anchor+42d]. The weekly
+	// occurrences are anchor+0w..6w = 7 occurrences. The exact count is not
+	// asserted here; this test only verifies round-robin cycling in pool order.
 	asOf := weeklyAnchor.AddDate(0, 0, 28)
 	count, err := g.GenerateDue(context.Background(), asOf)
 	if err != nil {
@@ -484,6 +486,37 @@ func TestGenerator_RoundRobinStable(t *testing.T) {
 		if *inst.AssigneeID != expectedMember {
 			t.Errorf("instance %d (due %s): assignee = %v, want %v",
 				i, inst.DueOn.Format(time.DateOnly), *inst.AssigneeID, expectedMember)
+		}
+	}
+
+	// Snapshot assignments, then re-run with the same asOf: the overlapping run
+	// must insert nothing and must leave every existing assignment unchanged.
+	snapshot := func() map[string]household.MemberID {
+		m := make(map[string]household.MemberID)
+		for _, inst := range instanceRepo.instances {
+			if inst.RecurringTaskID == task.ID && inst.AssigneeID != nil {
+				m[inst.DueOn.Format(time.DateOnly)] = *inst.AssigneeID
+			}
+		}
+		return m
+	}
+	before := snapshot()
+
+	count2, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue (second run): %v", err)
+	}
+	if count2 != 0 {
+		t.Errorf("second GenerateDue inserted %d instances, want 0 (idempotent)", count2)
+	}
+
+	after := snapshot()
+	if len(after) != len(before) {
+		t.Fatalf("instance count changed across runs: %d -> %d", len(before), len(after))
+	}
+	for due, member := range before {
+		if after[due] != member {
+			t.Errorf("assignee for %s changed across runs: %v -> %v", due, member, after[due])
 		}
 	}
 }
