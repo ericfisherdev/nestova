@@ -1,0 +1,796 @@
+package app_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"sync"
+	"testing"
+	"time"
+
+	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	"github.com/ericfisherdev/nestova/internal/tasks/app"
+	"github.com/ericfisherdev/nestova/internal/tasks/domain"
+)
+
+// ---------------------------------------------------------------------------
+// Fake repositories (hermetic, no DB)
+// ---------------------------------------------------------------------------
+
+// fakeRecurringTaskRepo is an in-memory implementation of
+// domain.RecurringTaskRepository for use in hermetic tests. Only the methods
+// exercised by the generator and service are implemented; unimplemented methods
+// panic so any accidental call is immediately obvious.
+type fakeRecurringTaskRepo struct {
+	mu      sync.Mutex
+	tasks   []*domain.RecurringTask
+	members map[domain.RecurringTaskID][]household.MemberID
+}
+
+func newFakeRecurringTaskRepo() *fakeRecurringTaskRepo {
+	return &fakeRecurringTaskRepo{
+		members: make(map[domain.RecurringTaskID][]household.MemberID),
+	}
+}
+
+func (r *fakeRecurringTaskRepo) Create(_ context.Context, rt *domain.RecurringTask) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tasks = append(r.tasks, rt)
+	return nil
+}
+
+func (r *fakeRecurringTaskRepo) CreateWithRotation(_ context.Context, task *domain.RecurringTask, pool []household.MemberID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tasks = append(r.tasks, task)
+	r.members[task.ID] = append([]household.MemberID(nil), pool...)
+	return nil
+}
+
+func (r *fakeRecurringTaskRepo) Get(_ context.Context, householdID household.HouseholdID, id domain.RecurringTaskID) (*domain.RecurringTask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.tasks {
+		if t.ID == id && t.HouseholdID == householdID {
+			return t, nil
+		}
+	}
+	return nil, domain.ErrTaskNotFound
+}
+
+func (r *fakeRecurringTaskRepo) ListActive(_ context.Context, householdID household.HouseholdID) ([]*domain.RecurringTask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.RecurringTask
+	for _, t := range r.tasks {
+		if t.HouseholdID == householdID && t.Active {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRecurringTaskRepo) ListAllActive(_ context.Context) ([]*domain.RecurringTask, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.RecurringTask
+	for _, t := range r.tasks {
+		if t.Active {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeRecurringTaskRepo) SetRotationMembers(_ context.Context, householdID household.HouseholdID, id domain.RecurringTaskID, members []household.MemberID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.tasks {
+		if t.ID == id && t.HouseholdID == householdID {
+			r.members[id] = append([]household.MemberID(nil), members...)
+			return nil
+		}
+	}
+	return domain.ErrTaskNotFound
+}
+
+func (r *fakeRecurringTaskRepo) RotationMembers(_ context.Context, householdID household.HouseholdID, id domain.RecurringTaskID) ([]household.MemberID, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.tasks {
+		if t.ID == id && t.HouseholdID == householdID {
+			return append([]household.MemberID(nil), r.members[id]...), nil
+		}
+	}
+	return nil, domain.ErrTaskNotFound
+}
+
+// instanceKey uniquely identifies an (recurring_task_id, due_on) pair, matching
+// the task_instance_task_due_uniq constraint.
+type instanceKey struct {
+	taskID domain.RecurringTaskID
+	dueOn  time.Time
+}
+
+// fakeTaskInstanceRepo is an in-memory implementation of
+// domain.TaskInstanceRepository for use in hermetic tests.
+type fakeTaskInstanceRepo struct {
+	mu        sync.Mutex
+	instances []*domain.TaskInstance
+	seen      map[instanceKey]bool
+}
+
+func newFakeTaskInstanceRepo() *fakeTaskInstanceRepo {
+	return &fakeTaskInstanceRepo{
+		seen: make(map[instanceKey]bool),
+	}
+}
+
+func (r *fakeTaskInstanceRepo) Insert(_ context.Context, inst *domain.TaskInstance) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := instanceKey{taskID: inst.RecurringTaskID, dueOn: domain.DateOf(inst.DueOn)}
+	if r.seen[key] {
+		return domain.ErrDuplicateInstance
+	}
+	r.seen[key] = true
+	snapshot := *inst
+	snapshot.DueOn = domain.DateOf(inst.DueOn)
+	r.instances = append(r.instances, &snapshot)
+	return nil
+}
+
+func (r *fakeTaskInstanceRepo) Get(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID) (*domain.TaskInstance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID == id && inst.HouseholdID == householdID {
+			return inst, nil
+		}
+	}
+	return nil, domain.ErrInstanceNotFound
+}
+
+func (r *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, householdID household.HouseholdID, status domain.InstanceStatus, from, to time.Time) ([]*domain.TaskInstance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fromDate := domain.DateOf(from)
+	toDate := domain.DateOf(to)
+	var out []*domain.TaskInstance
+	for _, inst := range r.instances {
+		if inst.HouseholdID == householdID &&
+			inst.Status == status &&
+			!inst.DueOn.Before(fromDate) &&
+			!inst.DueOn.After(toDate) {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeTaskInstanceRepo) LatestDueOn(_ context.Context, householdID household.HouseholdID, id domain.RecurringTaskID) (time.Time, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var latest time.Time
+	found := false
+	for _, inst := range r.instances {
+		if inst.HouseholdID == householdID && inst.RecurringTaskID == id {
+			if !found || inst.DueOn.After(latest) {
+				latest = inst.DueOn
+				found = true
+			}
+		}
+	}
+	return latest, found, nil
+}
+
+func (r *fakeTaskInstanceRepo) Claim(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID == id && inst.HouseholdID == householdID {
+			if inst.Status != domain.StatusPending {
+				return domain.ErrInstanceInTerminalState
+			}
+			if inst.AssigneeID != nil {
+				return domain.ErrInstanceAlreadyClaimed
+			}
+			inst.AssigneeID = &assignee
+			return nil
+		}
+	}
+	return domain.ErrInstanceNotFound
+}
+
+func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID == id && inst.HouseholdID == householdID {
+			if inst.Status != domain.StatusPending {
+				return domain.ErrInstanceInTerminalState
+			}
+			inst.Status = domain.StatusDone
+			inst.CompletedBy = &by
+			inst.CompletedAt = &at
+			return nil
+		}
+	}
+	return domain.ErrInstanceNotFound
+}
+
+func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID == id && inst.HouseholdID == householdID {
+			if inst.Status != domain.StatusPending {
+				return domain.ErrInstanceInTerminalState
+			}
+			inst.Status = domain.StatusSkipped
+			return nil
+		}
+	}
+	return domain.ErrInstanceNotFound
+}
+
+func (r *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, householdID household.HouseholdID, asOf time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	asOfDate := domain.DateOf(asOf)
+	count := 0
+	for _, inst := range r.instances {
+		if inst.HouseholdID == householdID &&
+			inst.Status == domain.StatusPending &&
+			inst.DueOn.Before(asOfDate) {
+			inst.Status = domain.StatusOverdue
+			count++
+		}
+	}
+	return count, nil
+}
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+// discardLogger returns a no-op logger suitable for tests.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// weeklyAnchor is a fixed anchor date used across tests.
+var weeklyAnchor = time.Date(2025, 3, 10, 0, 0, 0, 0, time.UTC)
+
+// newWeeklyTask returns a minimal recurring task with a weekly cadence and the
+// given rotation policy, anchored to weeklyAnchor.
+func newWeeklyTask(policy domain.RotationPolicy) *domain.RecurringTask {
+	return &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       "Test task",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: policy,
+		Points:         5,
+		Active:         true,
+	}
+}
+
+// newGenerator is a test helper that constructs a Generator with the supplied
+// repos and a 14-day horizon.
+func newGenerator(
+	t *testing.T,
+	taskRepo domain.RecurringTaskRepository,
+	instanceRepo domain.TaskInstanceRepository,
+) *app.Generator {
+	t.Helper()
+	g, err := app.NewGenerator(taskRepo, instanceRepo, discardLogger(), 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+	return g
+}
+
+// ---------------------------------------------------------------------------
+// assigneeFor tests (via package-internal export in export_test.go)
+// ---------------------------------------------------------------------------
+
+// TestAssigneeFor_Fixed verifies that RotationFixed always returns pool[0].
+func TestAssigneeFor_Fixed(t *testing.T) {
+	m0 := household.NewMemberID()
+	m1 := household.NewMemberID()
+	pool := []household.MemberID{m0, m1}
+
+	for ordinal := 0; ordinal < 5; ordinal++ {
+		got := app.AssigneeFor(domain.RotationFixed, pool, ordinal)
+		if got == nil {
+			t.Fatalf("ordinal %d: got nil, want %v", ordinal, m0)
+		}
+		if *got != m0 {
+			t.Errorf("ordinal %d: got %v, want %v", ordinal, *got, m0)
+		}
+	}
+}
+
+// TestAssigneeFor_RoundRobin verifies that RotationRoundRobin cycles through
+// pool members by ordinal, giving the same result for the same ordinal.
+func TestAssigneeFor_RoundRobin(t *testing.T) {
+	m0 := household.NewMemberID()
+	m1 := household.NewMemberID()
+	m2 := household.NewMemberID()
+	pool := []household.MemberID{m0, m1, m2}
+
+	cases := []struct {
+		ordinal int
+		want    household.MemberID
+	}{
+		{0, m0},
+		{1, m1},
+		{2, m2},
+		{3, m0}, // wraps
+		{4, m1},
+		{5, m2},
+	}
+	for _, tc := range cases {
+		got := app.AssigneeFor(domain.RotationRoundRobin, pool, tc.ordinal)
+		if got == nil {
+			t.Fatalf("ordinal %d: got nil, want %v", tc.ordinal, tc.want)
+		}
+		if *got != tc.want {
+			t.Errorf("ordinal %d: got %v, want %v", tc.ordinal, *got, tc.want)
+		}
+	}
+}
+
+// TestAssigneeFor_Claimable verifies that RotationClaimable always returns nil.
+func TestAssigneeFor_Claimable(t *testing.T) {
+	pool := []household.MemberID{household.NewMemberID()}
+	for ordinal := 0; ordinal < 5; ordinal++ {
+		got := app.AssigneeFor(domain.RotationClaimable, pool, ordinal)
+		if got != nil {
+			t.Errorf("ordinal %d: got %v, want nil", ordinal, *got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Generator idempotency tests
+// ---------------------------------------------------------------------------
+
+// TestGenerator_Idempotency verifies that running GenerateDue twice for the
+// same asOf inserts no duplicates on the second run and produces identical
+// instance assignments.
+func TestGenerator_Idempotency(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	task := newWeeklyTask(domain.RotationRoundRobin)
+	m0 := household.NewMemberID()
+	m1 := household.NewMemberID()
+
+	// Seed the task and its pool.
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := taskRepo.SetRotationMembers(context.Background(), task.HouseholdID, task.ID, []household.MemberID{m0, m1}); err != nil {
+		t.Fatalf("SetRotationMembers: %v", err)
+	}
+
+	g := newGenerator(t, taskRepo, instanceRepo)
+
+	// asOf = anchor + 3 weeks; horizon = 14 days, so the window is
+	// (anchor-1ns, DateOf(anchor+21d+14d)] = (anchor-1ns, anchor+35d]. The weekly
+	// occurrences in that window are anchor+0w,1w,2w,3w,4w,5w = 6 occurrences.
+	asOf := weeklyAnchor.AddDate(0, 0, 21)
+
+	// First run.
+	count1, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue (run 1): %v", err)
+	}
+	if count1 == 0 {
+		t.Fatal("GenerateDue (run 1) inserted 0 instances, want > 0")
+	}
+
+	// Capture the first-run assignments.
+	snapshot1 := make([]struct {
+		dueOn      time.Time
+		assigneeID *household.MemberID
+	}, len(instanceRepo.instances))
+	for i, inst := range instanceRepo.instances {
+		snapshot1[i].dueOn = inst.DueOn
+		snapshot1[i].assigneeID = inst.AssigneeID
+	}
+
+	// Second run with the same asOf must insert zero new rows.
+	count2, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue (run 2): %v", err)
+	}
+	if count2 != 0 {
+		t.Errorf("GenerateDue (run 2) inserted %d instances, want 0", count2)
+	}
+
+	// Assignments must be identical on both runs (ordinal-based, not counter-based).
+	if len(instanceRepo.instances) != len(snapshot1) {
+		t.Fatalf("instance count changed between runs: %d → %d",
+			len(snapshot1), len(instanceRepo.instances))
+	}
+	for i, inst := range instanceRepo.instances {
+		s := snapshot1[i]
+		if !inst.DueOn.Equal(s.dueOn) {
+			t.Errorf("instance %d: DueOn changed between runs: %v → %v", i, s.dueOn, inst.DueOn)
+		}
+		switch {
+		case s.assigneeID == nil && inst.AssigneeID == nil:
+			// both nil — OK
+		case s.assigneeID == nil || inst.AssigneeID == nil:
+			t.Errorf("instance %d (due %s): assignee nilness changed between runs", i, inst.DueOn.Format(time.DateOnly))
+		case *s.assigneeID != *inst.AssigneeID:
+			t.Errorf("instance %d (due %s): assignee changed between runs: %v → %v",
+				i, inst.DueOn.Format(time.DateOnly), *s.assigneeID, *inst.AssigneeID)
+		}
+	}
+}
+
+// TestGenerator_RoundRobinStable verifies that round-robin assignment is stable
+// across two independent GenerateDue runs covering overlapping windows and that
+// members are distributed in pool order.
+func TestGenerator_RoundRobinStable(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	task := newWeeklyTask(domain.RotationRoundRobin)
+	m0 := household.NewMemberID()
+	m1 := household.NewMemberID()
+
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := taskRepo.SetRotationMembers(context.Background(), task.HouseholdID, task.ID, []household.MemberID{m0, m1}); err != nil {
+		t.Fatalf("SetRotationMembers: %v", err)
+	}
+
+	g := newGenerator(t, taskRepo, instanceRepo)
+
+	// Generate 4 weeks from the anchor. OccurrencesBetween(anchor-1ns, anchor+4w)
+	// yields occurrences at anchor+0w, +1w, +2w, +3w, +4w = 5 occurrences.
+	asOf := weeklyAnchor.AddDate(0, 0, 28)
+	count, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("expected at least one inserted instance")
+	}
+
+	// Verify cycling in pool order: ordinal 0→m0, 1→m1, 2→m0, 3→m1, 4→m0 …
+	for i, inst := range instanceRepo.instances {
+		if inst.RecurringTaskID != task.ID {
+			continue
+		}
+		expectedMember := []household.MemberID{m0, m1}[i%2]
+		if inst.AssigneeID == nil {
+			t.Errorf("instance %d (due %s): assignee is nil, want %v", i, inst.DueOn.Format(time.DateOnly), expectedMember)
+			continue
+		}
+		if *inst.AssigneeID != expectedMember {
+			t.Errorf("instance %d (due %s): assignee = %v, want %v",
+				i, inst.DueOn.Format(time.DateOnly), *inst.AssigneeID, expectedMember)
+		}
+	}
+}
+
+// TestGenerator_FixedEmptyPool verifies that a fixed-rotation task with an
+// empty rotation pool is skipped with ErrNoRotationMembers and no instances
+// are inserted.
+func TestGenerator_FixedEmptyPool(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	task := newWeeklyTask(domain.RotationFixed)
+
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Deliberately do NOT set rotation members — pool remains empty.
+
+	g := newGenerator(t, taskRepo, instanceRepo)
+
+	asOf := weeklyAnchor.AddDate(0, 0, 14)
+	count, err := g.GenerateDue(context.Background(), asOf)
+
+	// The task must be skipped — ErrNoRotationMembers is the first non-duplicate
+	// error, returned as firstErr.
+	if !errors.Is(err, domain.ErrNoRotationMembers) {
+		t.Errorf("GenerateDue empty pool = %v, want ErrNoRotationMembers", err)
+	}
+	if count != 0 {
+		t.Errorf("GenerateDue empty pool inserted %d instances, want 0", count)
+	}
+	if len(instanceRepo.instances) != 0 {
+		t.Errorf("instanceRepo has %d instances, want 0", len(instanceRepo.instances))
+	}
+}
+
+// TestGenerator_ClaimableNoPool verifies that a claimable task inserts
+// instances with nil assignees even without a rotation pool.
+func TestGenerator_ClaimableNoPool(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	task := newWeeklyTask(domain.RotationClaimable)
+
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// No rotation members set — expected for claimable.
+
+	g := newGenerator(t, taskRepo, instanceRepo)
+
+	asOf := weeklyAnchor.AddDate(0, 0, 14)
+	count, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue claimable: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("expected at least one instance for claimable task")
+	}
+
+	for _, inst := range instanceRepo.instances {
+		if inst.AssigneeID != nil {
+			t.Errorf("instance due %s: assignee = %v, want nil for claimable task",
+				inst.DueOn.Format(time.DateOnly), *inst.AssigneeID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TaskService tests
+// ---------------------------------------------------------------------------
+
+// TestTaskService_CreateRecurringTask_InvalidCadence verifies that an invalid
+// cadence is rejected before any repository calls.
+func TestTaskService_CreateRecurringTask_InvalidCadence(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    household.NewHouseholdID(),
+		Title:          "Bad cadence task",
+		Category:       domain.ChoreCategory,
+		RotationPolicy: domain.RotationClaimable,
+		Active:         true,
+		// Cadence is zero-value — Interval < 1, fails Validate.
+	}
+
+	err = svc.CreateRecurringTask(context.Background(), task, nil)
+	if err == nil {
+		t.Fatal("CreateRecurringTask(invalid cadence) error = nil, want non-nil")
+	}
+	// Confirm it wraps the household cadence sentinel.
+	if !errors.Is(err, household.ErrInvalidCadence) {
+		t.Errorf("error = %v, want to wrap ErrInvalidCadence", err)
+	}
+	if len(taskRepo.tasks) != 0 {
+		t.Errorf("repo has %d tasks after invalid cadence, want 0", len(taskRepo.tasks))
+	}
+}
+
+// TestTaskService_CreateRecurringTask_FixedEmptyPool verifies that creating a
+// fixed-rotation task without a pool returns ErrNoRotationMembers.
+func TestTaskService_CreateRecurringTask_FixedEmptyPool(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       "Fixed no pool",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: domain.RotationFixed,
+		Active:         true,
+	}
+
+	err = svc.CreateRecurringTask(context.Background(), task, nil)
+	if !errors.Is(err, domain.ErrNoRotationMembers) {
+		t.Errorf("CreateRecurringTask(fixed, no pool) = %v, want ErrNoRotationMembers", err)
+	}
+	if len(taskRepo.tasks) != 0 {
+		t.Errorf("repo has %d tasks after empty pool rejection, want 0", len(taskRepo.tasks))
+	}
+}
+
+// TestTaskService_CreateRecurringTask_RoundRobinEmptyPool mirrors the fixed-pool
+// check for round_robin policy.
+func TestTaskService_CreateRecurringTask_RoundRobinEmptyPool(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       "RR no pool",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: domain.RotationRoundRobin,
+		Active:         true,
+	}
+
+	err = svc.CreateRecurringTask(context.Background(), task, []household.MemberID{})
+	if !errors.Is(err, domain.ErrNoRotationMembers) {
+		t.Errorf("CreateRecurringTask(round_robin, empty pool) = %v, want ErrNoRotationMembers", err)
+	}
+}
+
+// TestTaskService_CreateRecurringTask_Success verifies the happy path: a valid
+// task with a pool is persisted along with its rotation members.
+func TestTaskService_CreateRecurringTask_Success(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	hid := household.NewHouseholdID()
+	m0 := household.NewMemberID()
+	m1 := household.NewMemberID()
+
+	task := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: hid,
+		Title:       "Dishes",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: domain.RotationRoundRobin,
+		Points:         10,
+		Active:         true,
+	}
+
+	pool := []household.MemberID{m0, m1}
+	if err := svc.CreateRecurringTask(context.Background(), task, pool); err != nil {
+		t.Fatalf("CreateRecurringTask: %v", err)
+	}
+
+	if len(taskRepo.tasks) != 1 {
+		t.Fatalf("repo has %d tasks, want 1", len(taskRepo.tasks))
+	}
+
+	members, err := taskRepo.RotationMembers(context.Background(), hid, task.ID)
+	if err != nil {
+		t.Fatalf("RotationMembers: %v", err)
+	}
+	if len(members) != 2 || members[0] != m0 || members[1] != m1 {
+		t.Errorf("RotationMembers = %v, want [%v %v]", members, m0, m1)
+	}
+}
+
+// TestTaskService_CreateRecurringTask_ClaimableNoPool verifies that a claimable
+// task is created successfully without a pool.
+func TestTaskService_CreateRecurringTask_ClaimableNoPool(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       "Claimable dishes",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: domain.RotationClaimable,
+		Active:         true,
+	}
+
+	if err := svc.CreateRecurringTask(context.Background(), task, nil); err != nil {
+		t.Fatalf("CreateRecurringTask(claimable, no pool): %v", err)
+	}
+	if len(taskRepo.tasks) != 1 {
+		t.Fatalf("repo has %d tasks, want 1", len(taskRepo.tasks))
+	}
+}
+
+// TestTaskService_CompleteInstance_NotFound verifies that completing an unknown
+// instance propagates ErrInstanceNotFound.
+func TestTaskService_CompleteInstance_NotFound(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	hid := household.NewHouseholdID()
+	mid := household.NewMemberID()
+
+	err = svc.CompleteInstance(context.Background(), hid, domain.NewTaskInstanceID(), mid, time.Now())
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("CompleteInstance(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// TestTaskService_SkipInstance_NotFound verifies that skipping an unknown
+// instance propagates ErrInstanceNotFound.
+func TestTaskService_SkipInstance_NotFound(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	hid := household.NewHouseholdID()
+
+	err = svc.SkipInstance(context.Background(), hid, domain.NewTaskInstanceID())
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("SkipInstance(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// TestTaskService_ClaimInstance_NotFound verifies that claiming an unknown
+// instance propagates ErrInstanceNotFound.
+func TestTaskService_ClaimInstance_NotFound(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	hid := household.NewHouseholdID()
+	mid := household.NewMemberID()
+
+	err = svc.ClaimInstance(context.Background(), hid, domain.NewTaskInstanceID(), mid)
+	if !errors.Is(err, domain.ErrInstanceNotFound) {
+		t.Errorf("ClaimInstance(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}

@@ -58,24 +58,31 @@ func NewRecurringTaskRepository(dbtx db.TX) *RecurringTaskRepository {
 	return &RecurringTaskRepository{dbtx: dbtx}
 }
 
-// Create persists a new recurring task. The caller must populate ID,
-// HouseholdID, Title, Category, Cadence, RotationPolicy, Points, LeadTimeDays,
-// and Active; the store populates CreatedAt and UpdatedAt.
-func (r *RecurringTaskRepository) Create(ctx context.Context, rt *domain.RecurringTask) error {
-	if rt == nil {
-		return errors.New("adapter: create recurring task: nil task")
-	}
+// recurringTaskInsertSQL inserts a recurring_task row and returns the
+// store-populated created_at/updated_at timestamps. It is shared by Create and
+// CreateWithRotation so the column list lives in exactly one place.
+const recurringTaskInsertSQL = `
+	INSERT INTO recurring_task
+		(id, household_id, title, category, cadence, rotation_policy,
+		 points, lead_time_days, active)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	RETURNING created_at, updated_at`
+
+// querier abstracts QueryRow so insertRecurringTask works against both the
+// repository's db.TX and a pgx.Tx opened for an atomic CreateWithRotation.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// insertRecurringTask marshals rt.Cadence and inserts the recurring_task row via
+// q, scanning the generated timestamps back into rt. Callers wrap the returned
+// error with their own context prefix.
+func insertRecurringTask(ctx context.Context, q querier, rt *domain.RecurringTask) error {
 	cadenceJSON, err := json.Marshal(rt.Cadence)
 	if err != nil {
-		return fmt.Errorf("create recurring task: marshal cadence: %w", err)
+		return fmt.Errorf("marshal cadence: %w", err)
 	}
-	const q = `
-		INSERT INTO recurring_task
-			(id, household_id, title, category, cadence, rotation_policy,
-			 points, lead_time_days, active)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING created_at, updated_at`
-	err = r.dbtx.QueryRow(ctx, q,
+	return q.QueryRow(ctx, recurringTaskInsertSQL,
 		rt.ID.String(),
 		rt.HouseholdID.String(),
 		rt.Title,
@@ -86,8 +93,74 @@ func (r *RecurringTaskRepository) Create(ctx context.Context, rt *domain.Recurri
 		rt.LeadTimeDays,
 		rt.Active,
 	).Scan(&rt.CreatedAt, &rt.UpdatedAt)
-	if err != nil {
+}
+
+// Create persists a new recurring task. The caller must populate ID,
+// HouseholdID, Title, Category, Cadence, RotationPolicy, Points, LeadTimeDays,
+// and Active; the store populates CreatedAt and UpdatedAt.
+func (r *RecurringTaskRepository) Create(ctx context.Context, rt *domain.RecurringTask) error {
+	if rt == nil {
+		return errors.New("adapter: create recurring task: nil task")
+	}
+	if err := insertRecurringTask(ctx, r.dbtx, rt); err != nil {
 		return fmt.Errorf("create recurring task: %w", err)
+	}
+	return nil
+}
+
+// CreateWithRotation atomically persists a new recurring task together with its
+// initial rotation pool in a single transaction. The recurring_task row and all
+// rotation_member rows are inserted under one transaction; any failure (e.g. a
+// member id that does not exist or belongs to another household, which violates
+// the composite tenant FK) rolls back the whole operation, leaving no
+// recurring_task row behind.
+//
+// The pool slice order determines rotation position (position = slice index).
+// An empty pool persists the task with no rotation members.
+func (r *RecurringTaskRepository) CreateWithRotation(
+	ctx context.Context,
+	task *domain.RecurringTask,
+	pool []household.MemberID,
+) error {
+	if task == nil {
+		return errors.New("adapter: create recurring task with rotation: nil task")
+	}
+
+	// db.TX is either a *pgxpool.Pool or a pgx.Tx; both expose Begin (pgx.Tx.Begin
+	// opens a savepoint), so this is safe in either context — the same pattern
+	// SetRotationMembers uses.
+	beginner, ok := r.dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return errors.New("create recurring task with rotation: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("create recurring task with rotation: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := insertRecurringTask(ctx, tx, task); err != nil {
+		return fmt.Errorf("create recurring task with rotation: insert task: %w", err)
+	}
+
+	const ins = `
+		INSERT INTO rotation_member (household_id, recurring_task_id, member_id, position)
+		VALUES ($1, $2, $3, $4)`
+	for i, memberID := range pool {
+		if _, err := tx.Exec(ctx, ins,
+			task.HouseholdID.String(),
+			task.ID.String(),
+			memberID.String(),
+			i,
+		); err != nil {
+			return fmt.Errorf("create recurring task with rotation: insert position %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("create recurring task with rotation: commit: %w", err)
 	}
 	return nil
 }
@@ -144,6 +217,40 @@ func (r *RecurringTaskRepository) ListActive(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list active recurring tasks: %w", err)
+	}
+	return tasks, nil
+}
+
+// ListAllActive returns every active recurring task across ALL households,
+// ordered by household_id then created_at.
+//
+// WARNING: this method is intentionally NOT household-scoped. It is reserved
+// for the background materialisation process (Generator.GenerateDue) and must
+// not be called from user-facing request handlers, which must use the
+// household-scoped [ListActive] instead.
+func (r *RecurringTaskRepository) ListAllActive(ctx context.Context) ([]*domain.RecurringTask, error) {
+	const q = `
+		SELECT id, household_id, title, category, cadence, rotation_policy,
+		       points, lead_time_days, active, created_at, updated_at
+		  FROM recurring_task
+		 WHERE active = true
+		 ORDER BY household_id, created_at`
+	rows, err := r.dbtx.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list all active recurring tasks: %w", err)
+	}
+	defer rows.Close()
+
+	tasks := make([]*domain.RecurringTask, 0)
+	for rows.Next() {
+		rt, err := scanRecurringTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list all active recurring tasks: scan: %w", err)
+		}
+		tasks = append(tasks, rt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list all active recurring tasks: %w", err)
 	}
 	return tasks, nil
 }
