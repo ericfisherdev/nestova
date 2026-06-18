@@ -6,6 +6,14 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
 
+// DateOf returns t's calendar date at midnight UTC. It is the canonical
+// normalized form for [TaskInstance.DueOn]: persisting and re-reading a value
+// produced by DateOf through a DATE column never shifts the calendar day,
+// regardless of the input's clock time or location.
+func DateOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
 // RecurringTask is a template that defines a repeating household chore or
 // maintenance item. It is the aggregate root of the tasks bounded context. The
 // generator (NES-30) reads active recurring tasks and materialises
@@ -42,8 +50,10 @@ type TaskInstance struct {
 	RecurringTaskID RecurringTaskID
 	HouseholdID     household.HouseholdID
 	AssigneeID      *household.MemberID
-	// DueOn is a calendar date (the clock component is not significant); it maps
-	// to the task_instance.due_on DATE column. Construct it at midnight UTC.
+	// DueOn is a calendar date mapping to the task_instance.due_on DATE column.
+	// It must be normalized with [DateOf] (midnight UTC) so the calendar day is
+	// stable across a DATE round-trip; the NES-29 adapter applies DateOf on both
+	// write and read.
 	DueOn       time.Time
 	Status      InstanceStatus
 	CompletedAt *time.Time
