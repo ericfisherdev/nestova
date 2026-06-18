@@ -10,6 +10,7 @@ tool (
 
 require (
 	github.com/a-h/templ v0.3.1001
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 )
 
@@ -53,6 +54,9 @@ require (
 	github.com/google/go-github/v60 v60.0.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jdkato/prose/v3 v3.0.0-20210921205322-a376476c2627 // indirect
 	github.com/kaptinlin/go-i18n v0.1.7 // indirect

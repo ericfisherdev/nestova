@@ -61,6 +61,26 @@ In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
 > Kubernetes Secrets) and inject them into the environment, rather than storing
 > them in plaintext `.env` files.
 
+### Database (local Postgres)
+
+The app connects to Postgres on boot via a pgx connection pool
+([`internal/platform/db`](internal/platform/db/db.go)) and **fails fast** if the
+database is unreachable. Start the bundled local Postgres before running the
+server:
+
+```sh
+docker compose up -d        # starts postgres:17-alpine on :5432
+docker compose down         # stop it (add -v to drop the data volume)
+```
+
+The default `DATABASE_URL` matches this service, so no extra configuration is
+needed for local development. Pool sizing is `DB_MAX_CONNS` (0 lets pgx choose
+its default, itself the CPU count with a floor of 4); the startup connectivity
+check is bounded by `DB_CONNECT_TIMEOUT` (see [Configuration](#configuration)).
+
+The database-backed tests are skipped unless `NESTOVA_TEST_DATABASE_URL` points
+at a reachable test database, so `make test` stays hermetic by default.
+
 ### Git hooks (Lefthook)
 
 [Lefthook](https://lefthook.dev) is pinned as a Go tool directive in `go.mod`.
