@@ -32,9 +32,15 @@ jobs:
       - name: Verify generated templ output is in sync
         # templ is pinned via the go.mod tool directive, so the generated code
         # (including its version header) is reproducible across machines.
+        # Use `git status --porcelain` rather than `git diff` so a newly added
+        # but uncommitted *_templ.go (untracked) also fails the gate.
         run: |
           go tool templ generate
-          git diff --exit-code -- '*_templ.go'
+          if [ -n "$(git status --porcelain -- '*_templ.go')" ]; then
+            echo "::error::Generated templ output is stale or uncommitted. Run 'make generate' and commit the *_templ.go files."
+            git status --porcelain -- '*_templ.go'
+            exit 1
+          fi
 
       - name: Install golangci-lint
         # install-only adds the pinned golangci-lint to PATH without running it,
