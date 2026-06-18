@@ -5,9 +5,9 @@ name: PR Title
 # commit subject — so validate the title against Conventional Commits too.
 on:
   pull_request:
-    # Only the title matters here, so re-run when it can change — not on every
-    # pushed commit (synchronize).
-    types: [opened, edited, reopened]
+    # synchronize keeps the check status fresh on the latest commit (per the
+    # action's recommended usage); edited re-runs it when the title changes.
+    types: [opened, edited, synchronize, reopened]
     branches: [main]
 
 concurrency:
@@ -16,6 +16,8 @@ concurrency:
 
 permissions:
   contents: read
+  # The action fetches the PR via the API to read its title.
+  pull-requests: read
 
 jobs:
   pr-title:
