@@ -66,6 +66,10 @@ templ TasksPage(groups []TaskGroup) {
 	<div class="p-6">
 		<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
 			<h1 class="text-2xl font-semibold">Chores &amp; Maintenance</h1>
+			<a
+				href="/tasks/new"
+				class="inline-flex items-center justify-center rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm transition-colors hover:bg-sage-dark"
+			>Add chore</a>
 		</div>
 		if len(groups) == 0 {
 			<div class="rounded-card bg-surface p-8 text-center shadow-warm">
