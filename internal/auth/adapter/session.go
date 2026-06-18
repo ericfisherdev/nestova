@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 
@@ -47,12 +48,18 @@ func NewSessionManager(pool *pgxpool.Pool, cfg config.SessionConfig) *scs.Sessio
 func lookupMember(ctx context.Context, sm *scs.SessionManager, members household.HouseholdRepository, memberIDStr string) (*household.Member, bool) {
 	memberID, err := household.ParseMemberID(memberIDStr)
 	if err != nil {
+		// A malformed id can never become valid, so clear it.
 		sm.Remove(ctx, "member_id")
 		return nil, false
 	}
 	member, err := members.GetMember(ctx, memberID)
 	if err != nil {
-		sm.Remove(ctx, "member_id")
+		// Only clear the key when the member is genuinely gone; a transient
+		// error (DB/network) must not log the user out — proceed anonymous for
+		// just this request and keep the session for a later retry.
+		if errors.Is(err, household.ErrMemberNotFound) {
+			sm.Remove(ctx, "member_id")
+		}
 		return nil, false
 	}
 	return member, true
