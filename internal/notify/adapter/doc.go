@@ -1,6 +1,5 @@
-// Package adapter holds inbound (HTTP/templ handlers) and outbound (persistence) adapters
-// for the notify bounded context (cross-context notifications and reminders).
-//
-// This package is part of the project's hexagonal/DDD layout and is
-// populated as the notify features land.
+// Package adapter contains the notify context's outbound adapters: the
+// Postgres-backed OutboxRepository (domain.Outbox) and the InAppSender
+// (domain.Sender). Both are constructed with injected dependencies and satisfy
+// their respective port interfaces at compile time.
 package adapter

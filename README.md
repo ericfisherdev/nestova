@@ -186,6 +186,44 @@ compiles type-safe `.templ` components to Go.
 - After editing a `.templ` file, run `make generate` and commit the updated
   `*_templ.go` alongside it. CI verifies generated output is in sync.
 
+### Notifications (NES-24)
+
+The `internal/notify` bounded context implements a durable notification outbox.
+
+**Package layout:**
+
+| Package | Role |
+| --- | --- |
+| `internal/notify/domain` | `Notification` aggregate, `NotificationID`, `Channel`/`Status` enums, `Outbox`/`Sender` port interfaces, sentinel errors |
+| `internal/notify/adapter` | `OutboxRepository` (pgx-backed `Outbox`), `InAppSender` (in-app `Sender`) |
+| `internal/notify/app` | `Dispatcher` — polls the outbox and delivers via channel-specific senders |
+
+**Outbox lifecycle:**
+
+1. A producer calls `Outbox.Enqueue`, writing a `status='pending'` row.
+2. `Dispatcher.RunOnce` calls `Outbox.ClaimDue(ctx, limit)`, which atomically
+   selects due pending rows with `FOR UPDATE SKIP LOCKED` and transitions them
+   to `status='sent'` (leaving `sent_at` NULL) in a single CTE+UPDATE.
+   Concurrent dispatchers never claim the same row.
+3. The dispatcher invokes the appropriate `Sender`. On success it calls
+   `MarkSent` (which stamps `sent_at`). On failure it calls `MarkFailed`.
+
+**Delivery semantics:** the optimistic-claim pattern (mark `sent` before the
+send) leaves two gaps, both acceptable for the skeleton:
+1. A crash after `ClaimDue` but before the send leaves a row `(status='sent',
+   sent_at IS NULL)` that was never delivered — message loss (at-most-once).
+2. A crash after a successful send but before `MarkSent` leaves a delivered row
+   that a recovery sweep might re-dispatch — duplicate delivery (at-least-once).
+
+The `(status='sent', sent_at IS NULL)` shape is deliberately detectable so a
+future recovery sweep can close both gaps.
+
+**Dispatcher configuration** (wired in `cmd/server/main.go`):
+- Batch size: 50 notifications per poll cycle.
+- Poll interval: 30 seconds.
+- The dispatcher goroutine uses the same signal-cancelled context as the HTTP
+  server, so it stops cleanly on `SIGINT`/`SIGTERM`.
+
 ### Linting (golangci-lint)
 
 Static analysis is configured in [`.golangci.yml`](.golangci.yml) (schema v2).
