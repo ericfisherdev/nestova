@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,25 @@ func TestRequestIDHeader(t *testing.T) {
 	rec := doRequest(t, nil, "/healthz")
 	if got := rec.Header().Get("X-Request-Id"); got == "" {
 		t.Error("X-Request-Id header missing; request-id middleware not applied")
+	}
+}
+
+// TestStaticAssetHeaders verifies embedded assets are served with the expected
+// caching, security, and content-type headers.
+func TestStaticAssetHeaders(t *testing.T) {
+	rec := doRequest(t, nil, "/static/css/app.css")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Errorf("Cache-Control = %q, want %q", got, "public, max-age=3600")
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/css") {
+		t.Errorf("Content-Type = %q, want it to contain %q", got, "text/css")
 	}
 }
 

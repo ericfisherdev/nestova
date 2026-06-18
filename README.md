@@ -81,6 +81,36 @@ check is bounded by `DB_CONNECT_TIMEOUT` (see [Configuration](#configuration)).
 The database-backed tests are skipped unless `NESTOVA_TEST_DATABASE_URL` points
 at a reachable test database, so `make test` stays hermetic by default.
 
+### Front-end assets
+
+The UI is styled with [Tailwind CSS v4](https://tailwindcss.com) and made
+interactive with vendored, pinned [HTMX](https://htmx.org) and
+[Alpine.js](https://alpinejs.dev). There is **no Node toolchain**: the Tailwind
+**standalone CLI** (pinned in the `Makefile`, checksum-verified) builds the CSS.
+
+```sh
+make assets      # download the pinned Tailwind CLI if missing, then build app.css
+```
+
+- [`web/static/css/input.css`](web/static/css/input.css) defines the **A · Hearth**
+  design tokens in a `@theme static` block (sand/sage palette, the 5-set member
+  color system, warm-ink text, radii, soft shadows) and `@source`s the `.templ`
+  files. The build output, [`web/static/css/app.css`](web/static/css/app.css), is
+  committed so plain `go build` works.
+- HTMX and Alpine are vendored under `web/static/js/` (pinned versions); fonts
+  (Hanken Grotesk, Space Mono) are **self-hosted** under `web/static/fonts/` so
+  the entryway appliance works offline.
+- All assets are embedded into the binary ([`web/web.go`](web/web.go)) and served
+  under `/static/`. `make build` runs `make assets` first so the embedded CSS is
+  always fresh; CI rebuilds it to prove reproducibility.
+
+The Tailwind CLI version and per-platform checksums are pinned in the `Makefile`
+(`TAILWIND_VERSION` / `TAILWIND_SHA256`); the build auto-detects and
+checksum-verifies the correct binary for Linux and macOS (x64/arm64). Tailwind's
+CSS output is platform-independent, so the committed `app.css` matches CI's
+Linux rebuild regardless of where it was built. On an unsupported platform,
+download the matching release asset manually into `tools/bin/tailwindcss`.
+
 ### Database migrations
 
 Schema migrations are SQL files embedded into the binary
