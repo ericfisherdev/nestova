@@ -65,6 +65,16 @@ func run(ctx context.Context, command, dsn string) error {
 		return fmt.Errorf("connect to database: %w", err)
 	}
 
+	if command == "reset" {
+		// On a fresh database the goose_db_version table does not exist yet, so
+		// "reset" (down to zero) would fail trying to read applied versions.
+		// Ensure the table exists first so a reset against a clean database is a
+		// harmless no-op rather than an error.
+		if _, err := goose.EnsureDBVersionContext(ctx, db); err != nil {
+			return fmt.Errorf("ensure goose version table: %w", err)
+		}
+	}
+
 	if err := goose.RunContext(ctx, command, db, dir); err != nil {
 		return fmt.Errorf("goose %s: %w", command, err)
 	}
