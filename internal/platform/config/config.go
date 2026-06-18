@@ -64,9 +64,13 @@ type DBConfig struct {
 	ConnTimeout time.Duration
 }
 
-// SessionConfig configures session cookies and signing (consumed by NES-23).
+// SessionConfig configures sessions (consumed by NES-23).
 type SessionConfig struct {
-	// Secret signs session cookies; must be at least minSecretLen bytes.
+	// Secret is a high-entropy key reserved for cryptographic signing; it must
+	// be at least minSecretLen bytes. The session store is server-side
+	// (Postgres via scs), so the session cookie itself carries only an opaque
+	// random token and is not signed with Secret. Secret is validated/available
+	// for future signing needs (e.g. signed tokens).
 	Secret string
 	// Secure marks cookies Secure (HTTPS-only); derived as Env == EnvProd.
 	Secure bool

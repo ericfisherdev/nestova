@@ -5,7 +5,9 @@ import (
 	"net/http"
 
 	"github.com/a-h/templ"
+	"github.com/alexedwards/scs/v2"
 
+	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	"github.com/ericfisherdev/nestova/web/components"
 )
@@ -36,11 +38,22 @@ func primaryNav(active string) []components.NavItem {
 	return defs
 }
 
-// registerWebRoutes wires the user-facing pages. The dashboard is the home page,
-// rendered into the A · Hearth shell via the render seam.
-func registerWebRoutes(mux *http.ServeMux, logger *slog.Logger) {
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		props := components.ShellProps{Members: seedMembers}
+// registerWebRoutes wires the user-facing pages. The dashboard requires
+// authentication (RequireMember); auth routes (login, logout) are public.
+func registerWebRoutes(mux *http.ServeMux, logger *slog.Logger, sm *scs.SessionManager, authHandlers *authadapter.Handlers) {
+	// Auth routes — public.
+	mux.HandleFunc("GET /login", authHandlers.LoginPage)
+	mux.HandleFunc("POST /login", authHandlers.Login)
+	mux.HandleFunc("POST /logout", authHandlers.Logout)
+
+	// Dashboard — protected: RequireMember redirects unauthenticated visitors
+	// to /login?next=/ before the handler runs.
+	requireMember := authadapter.RequireMember(sm)
+	mux.Handle("GET /{$}", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		props := components.ShellProps{
+			Members:   seedMembers,
+			CSRFToken: authadapter.GetCSRFToken(r.Context(), sm),
+		}
 		nav := primaryNav("") // dashboard home: no feature item active
 		layout := func(c templ.Component) templ.Component {
 			return components.Layout(props, nav, c)
@@ -49,5 +62,5 @@ func registerWebRoutes(mux *http.ServeMux, logger *slog.Logger) {
 			logger.ErrorContext(r.Context(), "render dashboard", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
-	})
+	})))
 }
