@@ -3,21 +3,89 @@ package httpserver_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 )
+
+// testConfig returns a minimal config for building the server in tests.
+func testConfig() config.Config {
+	return config.Config{Server: config.ServerConfig{Addr: ":0"}, Env: config.EnvTest}
+}
 
 // doRequest builds the server's handler and serves a single GET request to path.
 func doRequest(t *testing.T, ready httpserver.ReadinessFunc, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	srv := httpserver.New(":0", ready)
+	deps := httpserver.Deps{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Ready: ready}
+	srv := httpserver.New(testConfig(), deps)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	srv.Handler.ServeHTTP(rec, req)
 	return rec
+}
+
+// TestRequestIDHeader verifies the core middleware is applied to all routes: the
+// server echoes a request id even on the simple health route.
+func TestRequestIDHeader(t *testing.T) {
+	rec := doRequest(t, nil, "/healthz")
+	if got := rec.Header().Get("X-Request-Id"); got == "" {
+		t.Error("X-Request-Id header missing; request-id middleware not applied")
+	}
+}
+
+// TestServerStartsAndShutsDown exercises a server built by New over a real
+// connection and verifies it shuts down gracefully.
+func TestServerStartsAndShutsDown(t *testing.T) {
+	srv := httpserver.New(testConfig(), httpserver.Deps{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	// Ensure the server and listener are released even if an assertion fails
+	// before the explicit Shutdown below. Bound it so a hung server cannot
+	// stall the test run.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + ln.Addr().String() + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	// Bound the wait so a Serve goroutine that never returns cannot hang the run.
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Serve did not return after Shutdown")
+	}
 }
 
 func TestHealthz(t *testing.T) {
