@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* Scan the templ sources (not the .min.js vendored libs) for utility classes. */
+@source "../../**/*.templ";
+
+/*
+ * A · Hearth design tokens (see the NES-2 epic / .design_artifacts).
+ * Color/font/radius/shadow variables become Tailwind utilities
+ * (bg-*, text-*, border-*, font-*, rounded-*, shadow-*).
+ */
+@theme static {
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, "Cascadia Code", monospace;
+
+  /* Sand backgrounds & surfaces */
+  --color-sand: #e3ded3;
+  --color-main: #faf7f0;
+  --color-sidebar: #f1ece1;
+  --color-sidebar-border: #e4ddce;
+  --color-surface: #ffffff;
+  --color-surface-warm: #fffdf9;
+  --color-surface-warm-alt: #fbf9f3;
+
+  /* Sage brand scale + green tint */
+  --color-sage: #6f8c6a;
+  --color-sage-dark: #4f6b4a;
+  --color-sage-darker: #41543f;
+  --color-sage-tint: #e1e9da;
+
+  /* Warm-ink text scale */
+  --color-ink: #34302a;
+  --color-ink-secondary: #5e594b;
+  --color-ink-muted: #7c7768;
+  --color-ink-faint: #a39d8e;
+
+  /* Member color system — sage / clay / ochre / blue / plum (solid/tint/fg).
+     The infix matches MemberColor.String() so bg-member-<color>-tint composes. */
+  --color-member-sage-solid: #6f8c6a;
+  --color-member-sage-tint: #e7ede1;
+  --color-member-sage-fg: #41543f;
+  --color-member-clay-solid: #b5795a;
+  --color-member-clay-tint: #f1e4d9;
+  --color-member-clay-fg: #6e4530;
+  --color-member-ochre-solid: #bf9f47;
+  --color-member-ochre-tint: #f1e9ce;
+  --color-member-ochre-fg: #65541d;
+  --color-member-blue-solid: #6f8a98;
+  --color-member-blue-tint: #e2e9ed;
+  --color-member-blue-fg: #3a4d56;
+  --color-member-plum-solid: #9b6f80;
+  --color-member-plum-tint: #ece0e5;
+  --color-member-plum-fg: #573a44;
+
+  /* Radii: card ~3px, buttons/pills ~11px */
+  --radius-card: 3px;
+  --radius-control: 11px;
+
+  /* Soft warm shadows */
+  --shadow-warm: 0 1px 3px rgba(40, 35, 25, 0.07), 0 4px 12px rgba(40, 35, 25, 0.06);
+  --shadow-warm-lg: 0 2px 8px rgba(40, 35, 25, 0.10), 0 8px 24px rgba(40, 35, 25, 0.12);
+}
+
+/* Self-hosted fonts (offline-friendly for the entryway appliance). */
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/static/fonts/hanken-grotesk.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/space-mono.woff2") format("woff2");
+}

@@ -42,6 +42,22 @@ jobs:
             exit 1
           fi
 
+      - name: Build front-end assets
+        # Downloads the pinned, checksum-verified Tailwind standalone CLI and
+        # rebuilds the CSS bundle (no Node toolchain). Tailwind's output is
+        # deterministic for a pinned version and platform-independent across the
+        # supported binaries, so the committed app.css must match this Linux
+        # rebuild (mirrors the templ-freshness gate); a stale or hand-edited
+        # bundle fails CI.
+        run: |
+          make assets
+          test -s web/static/css/app.css
+          if [ -n "$(git status --porcelain -- web/static/css/app.css)" ]; then
+            echo "::error::web/static/css/app.css is stale. Run 'make assets' and commit the result."
+            git diff -- web/static/css/app.css | head -40
+            exit 1
+          fi
+
       - name: Install golangci-lint
         # install-only adds the pinned golangci-lint to PATH without running it,
         # so the lint and format steps below invoke the same binary via the

@@ -11,6 +11,9 @@
 # Compiled binary output (see `make build`)
 /bin/
 
+# Downloaded tool binaries (e.g. the pinned Tailwind standalone CLI)
+/tools/bin/
+
 # Test binary, built with `go test -c`
 *.test
 

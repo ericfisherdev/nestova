@@ -13,21 +13,75 @@ SERVER_BIN := $(BIN_DIR)/server
 # with the version documented in the README.
 GOLANGCI_LINT_VERSION := v2.11.4
 
+# Pinned Tailwind standalone CLI (no Node toolchain). The platform asset and its
+# checksum are auto-detected from uname; keep the version + checksums in sync
+# with the README and the official release sha256sums.txt.
+TAILWIND_VERSION := v4.3.1
+TOOLS_BIN := tools/bin
+TAILWIND := $(TOOLS_BIN)/tailwindcss
+
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_S),Linux)
+  ifeq ($(UNAME_M),x86_64)
+    TAILWIND_PLATFORM := linux-x64
+    TAILWIND_SHA256 := 2526d063ba03b71f9a3ea7d5cee14f0aec147f117f222d5adc97b1d736d45999
+  else ifeq ($(UNAME_M),aarch64)
+    TAILWIND_PLATFORM := linux-arm64
+    TAILWIND_SHA256 := 3d662377a86d71c43b549dc06b90db4586b4acd412bf827a3268e951661e5adf
+  endif
+else ifeq ($(UNAME_S),Darwin)
+  ifeq ($(UNAME_M),x86_64)
+    TAILWIND_PLATFORM := macos-x64
+    TAILWIND_SHA256 := e9e830ceb3e70b7e0775a3dd79eee8ec82c6b31270f08f2fa2857d0077045ac3
+  else ifeq ($(UNAME_M),arm64)
+    TAILWIND_PLATFORM := macos-arm64
+    TAILWIND_SHA256 := a27c43626185953ee19bdace1939c7601e55da654e0b2fc4461e3e29957aa739
+  endif
+endif
+
+# Front-end asset sources/outputs.
+CSS_INPUT := web/static/css/input.css
+CSS_OUTPUT := web/static/css/app.css
+
+# Delete a target file if its recipe fails, so a failed checksum verification
+# never leaves a corrupted/partial Tailwind binary that a later run would reuse.
+.DELETE_ON_ERROR:
+
 .DEFAULT_GOAL := build
 
 # Coverage profile written by `make test` and read by `make cover`.
 COVERAGE_OUT := coverage.out
 
-.PHONY: all build run test cover lint fmt generate hooks hooks-uninstall tidy clean help \
+.PHONY: all build run test cover lint fmt generate assets hooks hooks-uninstall tidy clean help \
 	migrate-up migrate-down migrate-status migrate-reset migrate-create
 
 ## all: default aggregate target (alias for build)
 all: build
 
-## build: compile the server binary into ./bin
-build:
+## build: build assets then compile the server binary into ./bin
+build: assets
 	@mkdir -p $(BIN_DIR)
 	go build -o $(SERVER_BIN) ./cmd/server
+
+## assets: build the Tailwind CSS bundle (downloads the pinned CLI if missing)
+assets: $(TAILWIND)
+	$(TAILWIND) -i $(CSS_INPUT) -o $(CSS_OUTPUT) --minify
+
+# Download + checksum-verify the pinned Tailwind standalone CLI.
+$(TAILWIND):
+	@test -n "$(TAILWIND_PLATFORM)" || { echo "Unsupported platform $(UNAME_S)/$(UNAME_M): download the Tailwind CLI manually into $(TAILWIND)"; exit 1; }
+	@mkdir -p $(TOOLS_BIN)
+	@echo "downloading tailwindcss $(TAILWIND_VERSION) ($(TAILWIND_PLATFORM))..."
+	curl -fsSL -o $(TAILWIND) "https://github.com/tailwindlabs/tailwindcss/releases/download/$(TAILWIND_VERSION)/tailwindcss-$(TAILWIND_PLATFORM)"
+	@if command -v sha256sum >/dev/null 2>&1; then \
+		echo "$(TAILWIND_SHA256)  $(TAILWIND)" | sha256sum -c -; \
+	elif command -v shasum >/dev/null 2>&1; then \
+		echo "$(TAILWIND_SHA256)  $(TAILWIND)" | shasum -a 256 -c -; \
+	else \
+		echo "error: neither sha256sum nor shasum is available to verify the download"; exit 1; \
+	fi
+	@chmod +x $(TAILWIND)
 
 ## run: run the server from source
 run:

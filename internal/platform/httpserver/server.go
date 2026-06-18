@@ -11,6 +11,7 @@ import (
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
+	"github.com/ericfisherdev/nestova/web"
 )
 
 const (
@@ -78,7 +79,24 @@ func routes(ready ReadinessFunc) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(ready))
+	// Embedded front-end assets (built CSS, vendored HTMX/Alpine, fonts).
+	mux.Handle("GET /static/", staticAssets())
 	return mux
+}
+
+// staticAssets serves the embedded assets under /static/ with a moderate cache
+// lifetime. A long/immutable cache is intentionally avoided: the asset URLs are
+// not content-hashed, so a deploy reuses the same paths and an over-aggressive
+// cache would serve stale CSS/JS.
+func staticAssets() http.Handler {
+	const cacheControl = "public, max-age=3600"
+	assets := http.StripPrefix("/static/", web.StaticHandler())
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", cacheControl)
+		// Prevent MIME sniffing away from the declared content type.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		assets.ServeHTTP(w, r)
+	})
 }
 
 // handleHealthz reports process liveness for load balancers and uptime checks.
