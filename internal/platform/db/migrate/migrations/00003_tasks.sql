@@ -15,7 +15,10 @@ CREATE TABLE recurring_task (
     lead_time_days  int         NOT NULL DEFAULT 0  CHECK (lead_time_days >= 0),
     active          boolean     NOT NULL DEFAULT true,
     created_at      timestamptz NOT NULL DEFAULT now(),
-    updated_at      timestamptz NOT NULL DEFAULT now()
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    -- Referenced by the composite tenant FKs on rotation_member and
+    -- task_instance so a child can only point at a task in its own household.
+    CONSTRAINT recurring_task_household_id_uniq UNIQUE (household_id, id)
 );
 
 -- Partial index backing RecurringTaskRepository.ListActive (active tasks for a
@@ -23,18 +26,22 @@ CREATE TABLE recurring_task (
 CREATE INDEX recurring_task_household_active_idx ON recurring_task (household_id) WHERE active = true;
 
 -- Round-robin pool for a recurring_task. Position is the zero-based slot in the
--- rotation order; the application layer enforces that members belong to the
--- task's household (no DB-level composite FK here — the member table's
--- household_id is accessible via the recurring_task join if needed).
+-- rotation order. household_id is carried so the composite FKs below enforce
+-- tenant consistency: the task and the member must belong to the same household.
 CREATE TABLE rotation_member (
-    recurring_task_id uuid NOT NULL REFERENCES recurring_task (id) ON DELETE CASCADE,
-    member_id         uuid NOT NULL REFERENCES member (id) ON DELETE CASCADE,
+    household_id      uuid NOT NULL,
+    recurring_task_id uuid NOT NULL,
+    member_id         uuid NOT NULL,
     position          int  NOT NULL CHECK (position >= 0),
     PRIMARY KEY (recurring_task_id, member_id),
     -- One member per slot keeps the round-robin order well-defined. The unique
     -- constraint's implicit index also serves the ordered "members by position"
     -- query, so no separate index is needed.
-    CONSTRAINT rotation_member_task_position_uniq UNIQUE (recurring_task_id, position)
+    CONSTRAINT rotation_member_task_position_uniq UNIQUE (recurring_task_id, position),
+    CONSTRAINT rotation_member_task_fk FOREIGN KEY (household_id, recurring_task_id)
+        REFERENCES recurring_task (household_id, id) ON DELETE CASCADE,
+    CONSTRAINT rotation_member_member_fk FOREIGN KEY (household_id, member_id)
+        REFERENCES member (household_id, id) ON DELETE CASCADE
 );
 
 -- Materialized instance of a recurring_task. Each row represents one scheduled
@@ -42,8 +49,8 @@ CREATE TABLE rotation_member (
 -- idempotent-insert sentinel ErrDuplicateInstance in the domain (NES-29).
 CREATE TABLE task_instance (
     id                uuid        PRIMARY KEY,
-    recurring_task_id uuid        NOT NULL REFERENCES recurring_task (id) ON DELETE CASCADE,
     household_id      uuid        NOT NULL REFERENCES household (id) ON DELETE CASCADE,
+    recurring_task_id uuid        NOT NULL,
     -- assignee_id is NULL for claimable/unassigned instances.
     assignee_id       uuid                 REFERENCES member (id) ON DELETE SET NULL,
     due_on            date        NOT NULL,
@@ -57,10 +64,16 @@ CREATE TABLE task_instance (
     -- NES-29 adapter maintains it on Claim/Complete/Skip/MarkPendingOverdue.
     updated_at        timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT task_instance_task_due_uniq UNIQUE (recurring_task_id, due_on),
+    -- Tenant consistency: the instance and its parent task share a household.
+    CONSTRAINT task_instance_task_fk FOREIGN KEY (household_id, recurring_task_id)
+        REFERENCES recurring_task (household_id, id) ON DELETE CASCADE,
     -- A 'done' instance has a completion time and vice versa. Only completed_at
-    -- is constrained (not completed_by) because completed_by is SET NULL when the
-    -- completing member is deleted, which must not retroactively violate this.
-    CONSTRAINT task_instance_done_completed_at CHECK ((status = 'done') = (completed_at IS NOT NULL))
+    -- is constrained here (not completed_by) because completed_by is SET NULL
+    -- when the completing member is deleted, which must not retroactively violate it.
+    CONSTRAINT task_instance_done_completed_at CHECK ((status = 'done') = (completed_at IS NOT NULL)),
+    -- completed_by may only be set on a done instance (and is cleared, not
+    -- violating this, when the member is deleted).
+    CONSTRAINT task_instance_completed_by_done CHECK (completed_by IS NULL OR status = 'done')
 );
 
 -- Supports the scheduler's "list pending/overdue instances for a household
