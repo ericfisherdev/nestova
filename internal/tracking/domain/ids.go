@@ -85,3 +85,24 @@ func ParsePantryItemID(s string) (PantryItemID, error) {
 	}
 	return PantryItemID(u), nil
 }
+
+// ShoppingListItemID uniquely identifies an item on a household's shopping list.
+type ShoppingListItemID uuid.UUID
+
+// NewShoppingListItemID returns a new time-ordered (UUIDv7) shopping-list-item
+// id. See NewIngredientID for why Must is appropriate.
+func NewShoppingListItemID() ShoppingListItemID {
+	return ShoppingListItemID(uuid.Must(uuid.NewV7()))
+}
+
+// String returns the canonical UUID string.
+func (id ShoppingListItemID) String() string { return uuid.UUID(id).String() }
+
+// ParseShoppingListItemID parses a canonical UUID string into a ShoppingListItemID.
+func ParseShoppingListItemID(s string) (ShoppingListItemID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return ShoppingListItemID{}, fmt.Errorf("parse shopping list item id: %w", err)
+	}
+	return ShoppingListItemID(u), nil
+}

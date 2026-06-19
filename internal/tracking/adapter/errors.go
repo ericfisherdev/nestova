@@ -24,4 +24,13 @@ const (
 	// pantryItemIngredientFK is the auto-named FK pantry_item.ingredient_id ->
 	// ingredient.id; a violation means the ingredient does not exist.
 	pantryItemIngredientFK = "pantry_item_ingredient_id_fkey"
+	// shoppingListItemHouseholdFK is the auto-named FK
+	// shopping_list_item.household_id -> household.id.
+	shoppingListItemHouseholdFK = "shopping_list_item_household_id_fkey"
+	// shoppingListItemIngredientFK is the auto-named FK
+	// shopping_list_item.ingredient_id -> ingredient.id.
+	shoppingListItemIngredientFK = "shopping_list_item_ingredient_id_fkey"
+	// shoppingListItemAddedByFK is the named composite FK shopping_list_item ->
+	// member; a violation means the adder does not exist in the household.
+	shoppingListItemAddedByFK = "shopping_list_item_added_by_fk"
 )
