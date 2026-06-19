@@ -31,7 +31,9 @@ func parseQuantity(amountRaw, unitRaw string) (household.Quantity, error) {
 	}
 	unit, err := household.ParseUnit(strings.TrimSpace(unitRaw))
 	if err != nil {
-		return household.Quantity{}, err
+		// Normalize an unknown unit to the domain's invalid-quantity sentinel so
+		// callers can treat every parseQuantity failure as ErrInvalidQuantity.
+		return household.Quantity{}, household.ErrInvalidQuantity
 	}
 	return household.NewQuantity(amount, unit)
 }

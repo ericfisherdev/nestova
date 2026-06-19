@@ -67,7 +67,7 @@ var _ domain.UsageEventRepository = (*recordingEventRepo)(nil)
 func mustUsageService(t *testing.T, items domain.TrackedItemRepository, events domain.UsageEventRepository, preds domain.RestockPredictionRepository) *app.UsageService {
 	t.Helper()
 	predictor := mustPredictor(t, events, preds)
-	svc, err := app.NewUsageService(items, events, predictor)
+	svc, err := app.NewUsageService(items, events, predictor, discardLogger())
 	if err != nil {
 		t.Fatalf("NewUsageService: %v", err)
 	}
@@ -78,15 +78,19 @@ func TestNewUsageServiceRejectsNilDeps(t *testing.T) {
 	items := &recordingTrackedItemRepo{}
 	events := &recordingEventRepo{}
 	predictor := mustPredictor(t, events, &fakePredictionRepo{})
+	log := discardLogger()
 
-	if _, err := app.NewUsageService(nil, events, predictor); err == nil {
+	if _, err := app.NewUsageService(nil, events, predictor, log); err == nil {
 		t.Error("NewUsageService(nil items) = nil error, want error")
 	}
-	if _, err := app.NewUsageService(items, nil, predictor); err == nil {
+	if _, err := app.NewUsageService(items, nil, predictor, log); err == nil {
 		t.Error("NewUsageService(nil events) = nil error, want error")
 	}
-	if _, err := app.NewUsageService(items, events, nil); err == nil {
+	if _, err := app.NewUsageService(items, events, nil, log); err == nil {
 		t.Error("NewUsageService(nil predictor) = nil error, want error")
+	}
+	if _, err := app.NewUsageService(items, events, predictor, nil); err == nil {
+		t.Error("NewUsageService(nil logger) = nil error, want error")
 	}
 }
 
@@ -125,6 +129,18 @@ func TestRegisterItemRejectsEmptyName(t *testing.T) {
 	}
 	if len(items.created) != 0 {
 		t.Errorf("RegisterItem(blank name) must not persist, got %d Create calls", len(items.created))
+	}
+}
+
+func TestRegisterItemRejectsNegativeLeadDays(t *testing.T) {
+	items := &recordingTrackedItemRepo{}
+	svc := mustUsageService(t, items, &recordingEventRepo{}, &fakePredictionRepo{})
+
+	if _, err := svc.RegisterItem(context.Background(), household.NewHouseholdID(), "Coffee", "pantry", -1); err == nil {
+		t.Error("RegisterItem(negative lead days) = nil error, want error")
+	}
+	if len(items.created) != 0 {
+		t.Errorf("RegisterItem(negative lead days) must not persist, got %d Create calls", len(items.created))
 	}
 }
 
@@ -197,12 +213,22 @@ func TestLogEventNonDepletedDoesNotRecompute(t *testing.T) {
 	}
 }
 
-func TestLogEventPropagatesRecomputeError(t *testing.T) {
+func TestLogEventRecomputeIsBestEffort(t *testing.T) {
+	// The recompute Upsert fails, but the event is already committed: LogEvent must
+	// still return the event and no error (returning one would make the caller
+	// retry and append a duplicate depletion). The failure is logged, not returned.
 	events := &recordingEventRepo{depletions: depletionsAtDays(0, 10)}
 	svc := mustUsageService(t, &recordingTrackedItemRepo{}, events, &erroringPredictionRepo{})
 
-	if _, err := svc.LogEvent(context.Background(), household.NewHouseholdID(), domain.NewTrackedItemID(), domain.UsageDepleted, nil, baseDay.AddDate(0, 0, 20)); err == nil {
-		t.Error("LogEvent(depleted) with failing upsert = nil error, want propagated error")
+	event, err := svc.LogEvent(context.Background(), household.NewHouseholdID(), domain.NewTrackedItemID(), domain.UsageDepleted, nil, baseDay.AddDate(0, 0, 20))
+	if err != nil {
+		t.Fatalf("LogEvent(depleted) with failing upsert = %v, want nil (recompute is best-effort)", err)
+	}
+	if event == nil {
+		t.Fatal("LogEvent returned nil event")
+	}
+	if len(events.appended) != 1 {
+		t.Errorf("appended events = %d, want 1 (event committed despite recompute failure)", len(events.appended))
 	}
 }
 

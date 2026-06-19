@@ -26,9 +26,10 @@ func (f *fakeShoppingListRepo) AddRestockIfAbsent(context.Context, *domain.Shopp
 	return true, nil
 }
 
-func (f *fakeShoppingListRepo) UpdateStatus(_ context.Context, _ household.HouseholdID, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
+func (f *fakeShoppingListRepo) UpdateStatus(_ context.Context, householdID household.HouseholdID, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
 	for _, item := range f.items {
-		if item.ID == id {
+		// Scope by household like the real adapter: a foreign household sees not-found.
+		if item.ID == id && item.HouseholdID == householdID {
 			item.Status = status
 			return item, nil
 		}

@@ -184,7 +184,7 @@ func run(logger *slog.Logger) error {
 	)
 
 	// NES-45: groceries UI wiring — usage tracker, pantry, and shopping list.
-	usageService, err := trackingapp.NewUsageService(trackedItemRepo, usageEventRepo, predictor)
+	usageService, err := trackingapp.NewUsageService(trackedItemRepo, usageEventRepo, predictor, logger)
 	if err != nil {
 		return fmt.Errorf("create usage service: %w", err)
 	}
