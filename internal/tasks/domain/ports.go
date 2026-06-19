@@ -164,7 +164,8 @@ type TaskInstanceRepository interface {
 	// is never separated from the state change. The ledger INSERT uses ON
 	// CONFLICT DO NOTHING so a duplicate award for the same instance is silently
 	// skipped (belt-and-suspenders: the status guard already prevents
-	// re-completion). Tasks with points = 0 produce no ledger row.
+	// re-completion). When the associated recurring task has points = 0, no
+	// ledger row is produced.
 	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another
 	// household.
