@@ -168,13 +168,28 @@ type TaskInstanceRepository interface {
 	MarkPendingOverdue(ctx context.Context, householdID household.HouseholdID, asOf time.Time) (int, error)
 
 	// MarkPendingOverdueAll bulk-transitions all pending instances across ALL
-	// households whose due_on < asOf to overdue. Returns the number of rows
-	// updated.
+	// households whose due_on < asOf to overdue. Returns the newly-overdue rows
+	// as [ReminderTarget] values (Kind=[ReminderOverdue]) so the caller can
+	// enqueue overdue notifications without an additional query. Callers that
+	// only want the count use len() on the returned slice.
 	//
 	// WARNING: this method is intentionally NOT household-scoped. It is a
 	// system-process method reserved for the background scheduler (NES-31) and
 	// must not be called from user-facing request handlers, which must use the
 	// household-scoped [MarkPendingOverdue] instead. The same precedent applies
 	// here as for [RecurringTaskRepository.ListAllActive].
-	MarkPendingOverdueAll(ctx context.Context, asOf time.Time) (int, error)
+	MarkPendingOverdueAll(ctx context.Context, asOf time.Time) ([]ReminderTarget, error)
+
+	// ClaimDueSoonReminders atomically selects pending instances that have
+	// entered their lead-time window (due_on - lead_time_days <= asOf) and have
+	// not yet been reminded (reminded_at IS NULL), marks reminded_at = now() on
+	// each, and returns them as [ReminderTarget] values (Kind=[ReminderDueSoon]).
+	// Because reminded_at is set atomically, a row is returned at most once
+	// across concurrent or repeated calls — the idempotency guarantee.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process method reserved for the background scheduler (NES-34) and
+	// must not be called from user-facing request handlers. The same precedent
+	// applies here as for [RecurringTaskRepository.ListAllActive].
+	ClaimDueSoonReminders(ctx context.Context, asOf time.Time) ([]ReminderTarget, error)
 }

@@ -252,18 +252,28 @@ func (r *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, householdID
 	return count, nil
 }
 
-func (r *fakeTaskInstanceRepo) MarkPendingOverdueAll(_ context.Context, asOf time.Time) (int, error) {
+func (r *fakeTaskInstanceRepo) MarkPendingOverdueAll(_ context.Context, asOf time.Time) ([]domain.ReminderTarget, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	asOfDate := domain.DateOf(asOf)
-	count := 0
+	var targets []domain.ReminderTarget
 	for _, inst := range r.instances {
 		if inst.Status == domain.StatusPending && inst.DueOn.Before(asOfDate) {
 			inst.Status = domain.StatusOverdue
-			count++
+			targets = append(targets, domain.ReminderTarget{
+				InstanceID:  inst.ID,
+				HouseholdID: inst.HouseholdID,
+				AssigneeID:  inst.AssigneeID,
+				DueOn:       inst.DueOn,
+				Kind:        domain.ReminderOverdue,
+			})
 		}
 	}
-	return count, nil
+	return targets, nil
+}
+
+func (r *fakeTaskInstanceRepo) ClaimDueSoonReminders(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------

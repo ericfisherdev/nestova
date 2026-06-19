@@ -716,25 +716,225 @@ func (r *TaskInstanceRepository) MarkPendingOverdue(
 }
 
 // MarkPendingOverdueAll bulk-transitions all pending instances across ALL
-// households whose due_on < asOf to overdue. Returns the number of rows
-// updated.
+// households whose due_on < asOf to overdue. It returns the newly-overdue rows
+// as [domain.ReminderTarget] values so the caller can enqueue overdue
+// notifications without an additional query. Callers that only want the count
+// use len() on the returned slice.
+//
+// Implementation: a single UPDATE … RETURNING captures the transitioned rows,
+// then one follow-up SELECT fetches recurring_task title+category keyed by the
+// distinct recurring_task_ids. This avoids N+1 while keeping the UPDATE simple
+// (UPDATE … RETURNING cannot JOIN).
 //
 // WARNING: this method is intentionally NOT household-scoped. It is a
 // system-process method reserved for the background scheduler (NES-31) and
 // must not be called from user-facing request handlers, which must use the
 // household-scoped [MarkPendingOverdue] instead.
-func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf time.Time) (int, error) {
-	const q = `
+func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf time.Time) ([]domain.ReminderTarget, error) {
+	const updateQ = `
 		UPDATE task_instance
 		   SET status     = 'overdue',
 		       updated_at = now()
 		 WHERE status = 'pending'
-		   AND due_on < $1`
-	tag, err := r.dbtx.Exec(ctx, q, domain.DateOf(asOf))
+		   AND due_on < $1
+		RETURNING id, household_id, assignee_id, due_on, recurring_task_id`
+
+	rows, err := r.dbtx.Query(ctx, updateQ, domain.DateOf(asOf))
 	if err != nil {
-		return 0, fmt.Errorf("mark pending overdue all: %w", err)
+		return nil, fmt.Errorf("mark pending overdue all: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	defer rows.Close()
+
+	return scanReminderRows(ctx, rows, domain.ReminderOverdue, "mark pending overdue all", r)
+}
+
+// ClaimDueSoonReminders atomically selects pending instances that have entered
+// their lead-time window (due_on - lead_time_days <= asOf) and have not yet
+// been reminded (reminded_at IS NULL), stamps reminded_at = now() on each, and
+// returns them as [domain.ReminderTarget] values (Kind=[domain.ReminderDueSoon]).
+//
+// A CTE with SELECT … FOR UPDATE SKIP LOCKED + UPDATE keeps the claim atomic
+// and safe for concurrent callers. Because reminded_at is set in the same
+// statement, a row can only ever be returned once.
+//
+// WARNING: this method is intentionally NOT household-scoped. It is a
+// system-process method reserved for the background scheduler (NES-34) and
+// must not be called from user-facing request handlers.
+func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf time.Time) ([]domain.ReminderTarget, error) {
+	// The lead-time condition: due_on - lead_time_days <= asOf means the
+	// instance has entered its visibility window. Expressed as
+	//   ti.due_on <= $1::date + make_interval(days => rt.lead_time_days)
+	// so Postgres can use the partial index on due_on.
+	const q = `
+		WITH due AS (
+			SELECT ti.id
+			  FROM task_instance ti
+			  JOIN recurring_task rt ON rt.id = ti.recurring_task_id
+			 WHERE ti.status       = 'pending'
+			   AND ti.reminded_at IS NULL
+			   AND ti.due_on      <= $1::date + make_interval(days => rt.lead_time_days)
+			   FOR UPDATE OF ti SKIP LOCKED
+		)
+		UPDATE task_instance ti
+		   SET reminded_at = now()
+		  FROM due
+		 WHERE ti.id = due.id
+		RETURNING ti.id, ti.household_id, ti.assignee_id, ti.due_on,
+		          ti.recurring_task_id`
+
+	rows, err := r.dbtx.Query(ctx, q, domain.DateOf(asOf))
+	if err != nil {
+		return nil, fmt.Errorf("claim due-soon reminders: %w", err)
+	}
+	defer rows.Close()
+
+	return scanReminderRows(ctx, rows, domain.ReminderDueSoon, "claim due-soon reminders", r)
+}
+
+// reminderRow is the intermediate representation for a single row returned by
+// MarkPendingOverdueAll or ClaimDueSoonReminders before task metadata is joined
+// in memory.
+type reminderRow struct {
+	instanceID      domain.TaskInstanceID
+	householdID     household.HouseholdID
+	assigneeIDStr   *string
+	dueOn           time.Time
+	recurringTaskID domain.RecurringTaskID
+}
+
+// scanReminderRows consumes an open pgx.Rows cursor containing the five columns
+// (id, household_id, assignee_id, due_on, recurring_task_id), fetches
+// title+category for the distinct recurring tasks in one follow-up query, and
+// assembles the final []domain.ReminderTarget slice. op is a short label used
+// in error messages.
+func scanReminderRows(
+	ctx context.Context,
+	rows interface {
+		Next() bool
+		Scan(dest ...any) error
+		Err() error
+	},
+	kind domain.ReminderKind,
+	op string,
+	r *TaskInstanceRepository,
+) ([]domain.ReminderTarget, error) {
+	var scanned []reminderRow
+	taskIDSet := make(map[domain.RecurringTaskID]bool)
+
+	for rows.Next() {
+		var (
+			instStr, hhStr, rtStr string
+			assigneeIDStr         *string
+			dueOn                 time.Time
+		)
+		if err := rows.Scan(&instStr, &hhStr, &assigneeIDStr, &dueOn, &rtStr); err != nil {
+			return nil, fmt.Errorf("%s: scan: %w", op, err)
+		}
+		instID, err := domain.ParseTaskInstanceID(instStr)
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse instance id: %w", op, err)
+		}
+		hhID, err := household.ParseHouseholdID(hhStr)
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse household id: %w", op, err)
+		}
+		rtID, err := domain.ParseRecurringTaskID(rtStr)
+		if err != nil {
+			return nil, fmt.Errorf("%s: parse recurring task id: %w", op, err)
+		}
+		scanned = append(scanned, reminderRow{
+			instanceID:      instID,
+			householdID:     hhID,
+			assigneeIDStr:   assigneeIDStr,
+			dueOn:           domain.DateOf(dueOn),
+			recurringTaskID: rtID,
+		})
+		taskIDSet[rtID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if len(scanned) == 0 {
+		return nil, nil
+	}
+
+	meta, err := r.fetchTaskMeta(ctx, taskIDSet)
+	if err != nil {
+		return nil, fmt.Errorf("%s: fetch task meta: %w", op, err)
+	}
+
+	targets := make([]domain.ReminderTarget, 0, len(scanned))
+	for _, row := range scanned {
+		m := meta[row.recurringTaskID]
+		target := domain.ReminderTarget{
+			InstanceID:  row.instanceID,
+			HouseholdID: row.householdID,
+			Title:       m.title,
+			Category:    m.category,
+			DueOn:       row.dueOn,
+			Kind:        kind,
+		}
+		if row.assigneeIDStr != nil {
+			memberID, err := household.ParseMemberID(*row.assigneeIDStr)
+			if err != nil {
+				return nil, fmt.Errorf("%s: parse assignee id: %w", op, err)
+			}
+			target.AssigneeID = &memberID
+		}
+		targets = append(targets, target)
+	}
+	return targets, nil
+}
+
+// taskMeta holds the minimal fields fetched from recurring_task for
+// constructing reminder notifications.
+type taskMeta struct {
+	title    string
+	category domain.Category
+}
+
+// fetchTaskMeta performs a single SELECT to look up title and category for
+// the recurring tasks identified by taskIDSet. It returns a map keyed by
+// RecurringTaskID so callers can do O(1) lookups per row.
+func (r *TaskInstanceRepository) fetchTaskMeta(
+	ctx context.Context,
+	taskIDSet map[domain.RecurringTaskID]bool,
+) (map[domain.RecurringTaskID]taskMeta, error) {
+	ids := make([]string, 0, len(taskIDSet))
+	for id := range taskIDSet {
+		ids = append(ids, id.String())
+	}
+
+	const q = `
+		SELECT id, title, category
+		  FROM recurring_task
+		 WHERE id = ANY($1::uuid[])`
+	rows, err := r.dbtx.Query(ctx, q, ids)
+	if err != nil {
+		return nil, fmt.Errorf("fetch task meta: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[domain.RecurringTaskID]taskMeta, len(taskIDSet))
+	for rows.Next() {
+		var idStr, title, categoryStr string
+		if err := rows.Scan(&idStr, &title, &categoryStr); err != nil {
+			return nil, fmt.Errorf("fetch task meta: scan: %w", err)
+		}
+		id, err := domain.ParseRecurringTaskID(idStr)
+		if err != nil {
+			return nil, fmt.Errorf("fetch task meta: parse id: %w", err)
+		}
+		cat, err := domain.ParseCategory(categoryStr)
+		if err != nil {
+			return nil, fmt.Errorf("fetch task meta: parse category: %w", err)
+		}
+		result[id] = taskMeta{title: title, category: cat}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fetch task meta: %w", err)
+	}
+	return result, nil
 }
 
 // scanTaskInstance scans a task_instance row from r. Nullable columns

@@ -106,8 +106,12 @@ func (f *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, _ household
 	return 0, nil
 }
 
-func (f *fakeTaskInstanceRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) (int, error) {
-	return 0, nil
+func (f *fakeTaskInstanceRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) ([]tasksdomain.ReminderTarget, error) {
+	return nil, nil
+}
+
+func (f *fakeTaskInstanceRepo) ClaimDueSoonReminders(_ context.Context, _ time.Time) ([]tasksdomain.ReminderTarget, error) {
+	return nil, nil
 }
 
 // Compile-time assertion.
