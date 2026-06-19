@@ -78,15 +78,15 @@ func (r *PantryRepository) Get(ctx context.Context, id domain.PantryItemID) (*do
 }
 
 // Adjust increases the item's on-hand quantity by delta (e.g. a restock).
-func (r *PantryRepository) Adjust(ctx context.Context, id domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
-	return r.mutateQuantity(ctx, id, func(current household.Quantity) (household.Quantity, error) {
+func (r *PantryRepository) Adjust(ctx context.Context, householdID household.HouseholdID, id domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
+	return r.mutateQuantity(ctx, householdID, id, func(current household.Quantity) (household.Quantity, error) {
 		return current.Add(delta)
 	})
 }
 
 // Consume decreases the item's on-hand quantity by amount (e.g. using some up).
-func (r *PantryRepository) Consume(ctx context.Context, id domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
-	return r.mutateQuantity(ctx, id, func(current household.Quantity) (household.Quantity, error) {
+func (r *PantryRepository) Consume(ctx context.Context, householdID household.HouseholdID, id domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
+	return r.mutateQuantity(ctx, householdID, id, func(current household.Quantity) (household.Quantity, error) {
 		return current.Subtract(amount)
 	})
 }
@@ -96,7 +96,7 @@ func (r *PantryRepository) Consume(ctx context.Context, id domain.PantryItemID, 
 // concurrent Adjust/Consume calls and no update is lost. op carries the shared
 // Quantity arithmetic, so a unit mismatch or below-zero result is returned
 // unchanged (ErrUnitMismatch / ErrInvalidQuantity) and the row is left intact.
-func (r *PantryRepository) mutateQuantity(ctx context.Context, id domain.PantryItemID, op func(household.Quantity) (household.Quantity, error)) (*domain.PantryItem, error) {
+func (r *PantryRepository) mutateQuantity(ctx context.Context, householdID household.HouseholdID, id domain.PantryItemID, op func(household.Quantity) (household.Quantity, error)) (*domain.PantryItem, error) {
 	beginner, ok := r.dbtx.(interface {
 		Begin(context.Context) (pgx.Tx, error)
 	})
@@ -109,10 +109,13 @@ func (r *PantryRepository) mutateQuantity(ctx context.Context, id domain.PantryI
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Scope the locking read to the household so a member can never mutate another
+	// household's pantry item by guessing its id — a foreign id returns no row and
+	// surfaces as ErrPantryItemNotFound.
 	const selectQ = `
 		SELECT id, household_id, ingredient_id, quantity::float8, unit, expires_on, created_at, updated_at
-		FROM pantry_item WHERE id = $1 FOR UPDATE`
-	item, err := scanPantryItem(tx.QueryRow(ctx, selectQ, id.String()))
+		FROM pantry_item WHERE id = $1 AND household_id = $2 FOR UPDATE`
+	item, err := scanPantryItem(tx.QueryRow(ctx, selectQ, id.String(), householdID.String()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrPantryItemNotFound

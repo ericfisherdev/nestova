@@ -147,6 +147,7 @@ func run(logger *slog.Logger) error {
 	usageEventRepo := trackingadapter.NewUsageEventRepository(pool)
 	restockPredictionRepo := trackingadapter.NewRestockPredictionRepository(pool)
 	ingredientRepo := trackingadapter.NewIngredientRepository(pool)
+	pantryRepo := trackingadapter.NewPantryRepository(pool)
 	shoppingListRepo := trackingadapter.NewShoppingListRepository(pool)
 	predictor, err := trackingapp.NewPredictor(usageEventRepo, restockPredictionRepo)
 	if err != nil {
@@ -182,6 +183,32 @@ func run(logger *slog.Logger) error {
 		logger,
 	)
 
+	// NES-45: groceries UI wiring — usage tracker, pantry, and shopping list.
+	usageService, err := trackingapp.NewUsageService(trackedItemRepo, usageEventRepo, predictor)
+	if err != nil {
+		return fmt.Errorf("create usage service: %w", err)
+	}
+	pantryService, err := trackingapp.NewPantryService(pantryRepo)
+	if err != nil {
+		return fmt.Errorf("create pantry service: %w", err)
+	}
+	shoppingListService, err := trackingapp.NewShoppingListService(shoppingListRepo)
+	if err != nil {
+		return fmt.Errorf("create shopping list service: %w", err)
+	}
+	groceryWebHandlers := trackingadapter.NewWebHandlers(
+		usageService,
+		pantryService,
+		shoppingListService,
+		trackedItemRepo,
+		restockPredictionRepo,
+		ingredientRepo,
+		ingredientRepo,
+		householdRepo,
+		sm,
+		logger,
+	)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -194,7 +221,7 @@ func run(logger *slog.Logger) error {
 			authadapter.Authenticate(sm, householdRepo),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers)
 		},
 	})
 

@@ -186,6 +186,45 @@ func TestResolveErrors(t *testing.T) {
 	}
 }
 
+func TestNamesByIDs(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewIngredientRepository(pool)
+	ctx := testCtx(t)
+
+	flour, err := repo.EnsureIngredient(ctx, "flour")
+	if err != nil {
+		t.Fatalf("EnsureIngredient flour: %v", err)
+	}
+	sugar, err := repo.EnsureIngredient(ctx, "sugar")
+	if err != nil {
+		t.Fatalf("EnsureIngredient sugar: %v", err)
+	}
+	missing := domain.NewIngredientID()
+
+	names, err := repo.NamesByIDs(ctx, []domain.IngredientID{flour.ID, sugar.ID, missing})
+	if err != nil {
+		t.Fatalf("NamesByIDs: %v", err)
+	}
+	if names[flour.ID] != "flour" {
+		t.Errorf("names[flour] = %q, want %q", names[flour.ID], "flour")
+	}
+	if names[sugar.ID] != "sugar" {
+		t.Errorf("names[sugar] = %q, want %q", names[sugar.ID], "sugar")
+	}
+	if _, ok := names[missing]; ok {
+		t.Errorf("unknown id should be omitted, got %q", names[missing])
+	}
+
+	// Empty input returns an empty (non-nil) map without touching the database.
+	empty, err := repo.NamesByIDs(ctx, nil)
+	if err != nil {
+		t.Fatalf("NamesByIDs(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("NamesByIDs(nil) = %v, want empty map", empty)
+	}
+}
+
 func TestEnsureIngredientConcurrentIsRaceSafe(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewIngredientRepository(pool)

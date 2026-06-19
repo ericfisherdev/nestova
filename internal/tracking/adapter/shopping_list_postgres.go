@@ -83,10 +83,11 @@ func (r *ShoppingListRepository) AddRestockIfAbsent(ctx context.Context, item *d
 }
 
 // UpdateStatus transitions an item's status and returns the updated item, or
-// domain.ErrShoppingListItemNotFound when the id is unknown.
-func (r *ShoppingListRepository) UpdateStatus(ctx context.Context, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
-	const q = `UPDATE shopping_list_item SET status = $2 WHERE id = $1 RETURNING ` + shoppingListColumns
-	item, err := scanShoppingListItem(r.dbtx.QueryRow(ctx, q, id.String(), status.String()))
+// domain.ErrShoppingListItemNotFound when the id is unknown in the household. The
+// household scope stops a member transitioning another household's item by id.
+func (r *ShoppingListRepository) UpdateStatus(ctx context.Context, householdID household.HouseholdID, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
+	const q = `UPDATE shopping_list_item SET status = $2 WHERE id = $1 AND household_id = $3 RETURNING ` + shoppingListColumns
+	item, err := scanShoppingListItem(r.dbtx.QueryRow(ctx, q, id.String(), status.String(), householdID.String()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrShoppingListItemNotFound

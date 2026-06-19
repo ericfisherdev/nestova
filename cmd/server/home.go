@@ -11,8 +11,13 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
+	trackingadapter "github.com/ericfisherdev/nestova/internal/tracking/adapter"
 	"github.com/ericfisherdev/nestova/web/components"
 )
+
+// groceriesNavHref is the canonical href for the groceries nav item. Defined as a
+// constant so home.go and tests reference the same value.
+const groceriesNavHref = "/groceries"
 
 // rewardsNavHref is the canonical href for the rewards / scoreboard nav item.
 // Defined as a constant so home.go and tests reference the same value.
@@ -26,7 +31,7 @@ func primaryNav(active string) []components.NavItem {
 		{Label: "Chores", Href: "/tasks"},
 		{Label: "Rewards", Href: rewardsNavHref},
 		{Label: "Meals & Recipes", Href: "/meals"},
-		{Label: "Groceries", Href: "/groceries"},
+		{Label: "Groceries", Href: groceriesNavHref},
 		{Label: "Photos", Href: "/photos"},
 	}
 	for i := range defs {
@@ -62,6 +67,7 @@ func registerWebRoutes(
 	households household.HouseholdRepository,
 	taskHandlers *tasksadapter.WebHandlers,
 	gamificationHandlers *tasksadapter.GamificationWebHandlers,
+	groceryHandlers *trackingadapter.WebHandlers,
 ) {
 	// Auth routes — public.
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -162,6 +168,36 @@ func registerWebRoutes(
 		}
 		gamificationHandlers.Redeem(layoutFn)(w, r)
 	})))
+
+	// Groceries routes — RequireMember-gated (NES-45).
+	// GET  /groceries                          renders the usage tracker, pantry,
+	//                                          and shopping-list sections.
+	// POST /groceries/items                    registers a new tracked item.
+	// POST /groceries/items/{id}/usage         logs a usage event for an item.
+	// POST /groceries/pantry                   adds an on-hand pantry item.
+	// POST /groceries/pantry/{id}/consume      decreases a pantry item's quantity.
+	// POST /groceries/pantry/{id}/adjust       increases a pantry item's quantity.
+	// POST /groceries/shopping                 adds an ad-hoc manual shopping item.
+	// POST /groceries/shopping/{id}/status     transitions a shopping item's status.
+	//
+	// The layout callback is constructed per-request so the request context (CSRF
+	// token, member list) is always available, mirroring the tasks routes.
+	mux.Handle("GET /groceries", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, groceriesNavHref)
+				return components.Layout(props, nav, c)
+			}
+		}
+		groceryHandlers.Page(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /groceries/items", requireMember(http.HandlerFunc(groceryHandlers.RegisterItem)))
+	mux.Handle("POST /groceries/items/{id}/usage", requireMember(http.HandlerFunc(groceryHandlers.LogUsage)))
+	mux.Handle("POST /groceries/pantry", requireMember(http.HandlerFunc(groceryHandlers.PantryAdd)))
+	mux.Handle("POST /groceries/pantry/{id}/consume", requireMember(http.HandlerFunc(groceryHandlers.PantryConsume)))
+	mux.Handle("POST /groceries/pantry/{id}/adjust", requireMember(http.HandlerFunc(groceryHandlers.PantryAdjust)))
+	mux.Handle("POST /groceries/shopping", requireMember(http.HandlerFunc(groceryHandlers.ShoppingAdd)))
+	mux.Handle("POST /groceries/shopping/{id}/status", requireMember(http.HandlerFunc(groceryHandlers.ShoppingTransition)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

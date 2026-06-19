@@ -44,6 +44,18 @@ type IngredientEnsurer interface {
 	EnsureIngredient(ctx context.Context, name string) (*Ingredient, error)
 }
 
+// IngredientNamer is the read side (CQS query port) for display: it batch-maps
+// ingredient ids to their canonical names so a pantry or shopping list can label
+// ingredient-keyed rows without an N+1 lookup. It exists separately from
+// IngredientResolver (which maps names → ingredients) so a UI that only needs
+// names does not depend on the resolver's matching surface (ISP).
+type IngredientNamer interface {
+	// NamesByIDs returns a map from each supplied ingredient id to its canonical
+	// name. Ids that do not exist are omitted from the map (not an error), so the
+	// caller can fall back gracefully. An empty input yields an empty map.
+	NamesByIDs(ctx context.Context, ids []IngredientID) (map[IngredientID]string, error)
+}
+
 // NormalizeName lower-cases, trims, and collapses internal whitespace so that
 // "  Olive   Oil " and "olive oil" map to the same canonical form. It does not
 // fold plurals — that is the resolver's job via ResolutionCandidates.

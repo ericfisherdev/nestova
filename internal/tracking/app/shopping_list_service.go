@@ -51,14 +51,15 @@ func (s *ShoppingListService) AddManualItem(ctx context.Context, householdID hou
 	return item, nil
 }
 
-// TransitionStatus moves an item to status (needed/in_cart/purchased), returning
-// the updated item. It rejects an unknown status value and returns
-// domain.ErrShoppingListItemNotFound for an unknown id.
-func (s *ShoppingListService) TransitionStatus(ctx context.Context, itemID domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
+// TransitionStatus moves an item to status (needed/in_cart/purchased) within
+// householdID, returning the updated item. It rejects an unknown status value and
+// returns domain.ErrShoppingListItemNotFound when the id is unknown in the
+// household.
+func (s *ShoppingListService) TransitionStatus(ctx context.Context, householdID household.HouseholdID, itemID domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
 	if !status.Valid() {
 		return nil, fmt.Errorf("transition status: invalid status %q", status)
 	}
-	return s.items.UpdateStatus(ctx, itemID, status)
+	return s.items.UpdateStatus(ctx, householdID, itemID, status)
 }
 
 // ListByStatus returns the household's items in the given status.

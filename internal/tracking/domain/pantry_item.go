@@ -41,13 +41,14 @@ type PantryRepository interface {
 	Create(ctx context.Context, item *PantryItem) error
 	Get(ctx context.Context, id PantryItemID) (*PantryItem, error)
 	// Adjust increases an item's on-hand quantity by delta and returns the
-	// updated item. Consume decreases it by amount. Both apply the change
-	// atomically under a row lock so concurrent mutations cannot lose updates,
-	// reuse the shared Quantity arithmetic (so units must match — ErrUnitMismatch
-	// — and Consume cannot drop below zero — ErrInvalidQuantity), and return
-	// ErrPantryItemNotFound for an unknown id.
-	Adjust(ctx context.Context, id PantryItemID, delta household.Quantity) (*PantryItem, error)
-	Consume(ctx context.Context, id PantryItemID, amount household.Quantity) (*PantryItem, error)
+	// updated item. Consume decreases it by amount. Both are scoped to householdID
+	// (a foreign id yields ErrPantryItemNotFound, so a member cannot mutate another
+	// household's item) and apply the change atomically under a row lock so
+	// concurrent mutations cannot lose updates, reusing the shared Quantity
+	// arithmetic (units must match — ErrUnitMismatch — and Consume cannot drop
+	// below zero — ErrInvalidQuantity).
+	Adjust(ctx context.Context, householdID household.HouseholdID, id PantryItemID, delta household.Quantity) (*PantryItem, error)
+	Consume(ctx context.Context, householdID household.HouseholdID, id PantryItemID, amount household.Quantity) (*PantryItem, error)
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*PantryItem, error)
 	// ListExpiringWithin returns items in the household whose ExpiresOn falls in
 	// the window [asOf, asOf + days] — items that have an expiry and are expiring
