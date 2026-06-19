@@ -45,6 +45,10 @@ func TestResolutionCandidates(t *testing.T) {
 		{"Glasses", []string{"glasses", "glass"}, nil},
 		{"glass", []string{"glass"}, []string{"glas"}}, // -ss is not a plural
 		{"flour", []string{"flour"}, nil},              // not a plural
+		// Short "...es"/"...ies" inputs must never yield an empty candidate
+		// (a blank string would match nothing meaningful and is invalid).
+		{"es", []string{"es"}, []string{""}},
+		{"ies", []string{"ies"}, []string{""}},
 	}
 	for _, tt := range tests {
 		got := domain.ResolutionCandidates(tt.in)
@@ -57,6 +61,9 @@ func TestResolutionCandidates(t *testing.T) {
 			if slices.Contains(got, bad) {
 				t.Errorf("ResolutionCandidates(%q) = %v, should not contain %q", tt.in, got, bad)
 			}
+		}
+		if slices.Contains(got, "") {
+			t.Errorf("ResolutionCandidates(%q) = %v, contains an empty candidate", tt.in, got)
 		}
 		if dupes := duplicates(got); len(dupes) > 0 {
 			t.Errorf("ResolutionCandidates(%q) = %v, has duplicates %v", tt.in, got, dupes)
