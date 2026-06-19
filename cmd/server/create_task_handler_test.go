@@ -102,9 +102,10 @@ func buildCreateTaskHandler(
 	)
 
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
+	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationHandlers, groceryHandlers)
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

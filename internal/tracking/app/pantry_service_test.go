@@ -44,11 +44,11 @@ func (f *fakePantryRepo) Get(_ context.Context, id domain.PantryItemID) (*domain
 	return clonePantryItem(item), nil
 }
 
-func (f *fakePantryRepo) Adjust(_ context.Context, id domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
+func (f *fakePantryRepo) Adjust(_ context.Context, _ household.HouseholdID, id domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
 	return f.mutate(id, func(current household.Quantity) (household.Quantity, error) { return current.Add(delta) })
 }
 
-func (f *fakePantryRepo) Consume(_ context.Context, id domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
+func (f *fakePantryRepo) Consume(_ context.Context, _ household.HouseholdID, id domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
 	return f.mutate(id, func(current household.Quantity) (household.Quantity, error) { return current.Subtract(amount) })
 }
 
@@ -151,7 +151,7 @@ func TestPantryAdjustAndConsume(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	adjusted, err := svc.Adjust(ctx, item.ID, mustQty(t, 3, household.UnitCount))
+	adjusted, err := svc.Adjust(ctx, item.HouseholdID, item.ID, mustQty(t, 3, household.UnitCount))
 	if err != nil {
 		t.Fatalf("Adjust: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestPantryAdjustAndConsume(t *testing.T) {
 		t.Errorf("after Adjust = %v, want 8", adjusted.Quantity.Amount)
 	}
 
-	consumed, err := svc.Consume(ctx, item.ID, mustQty(t, 2, household.UnitCount))
+	consumed, err := svc.Consume(ctx, item.HouseholdID, item.ID, mustQty(t, 2, household.UnitCount))
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -177,13 +177,13 @@ func TestPantryConsumeBelowZeroAndUnitMismatch(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if _, err := svc.Consume(ctx, item.ID, mustQty(t, 5, household.UnitLiter)); !errors.Is(err, household.ErrInvalidQuantity) {
+	if _, err := svc.Consume(ctx, item.HouseholdID, item.ID, mustQty(t, 5, household.UnitLiter)); !errors.Is(err, household.ErrInvalidQuantity) {
 		t.Errorf("Consume below zero = %v, want ErrInvalidQuantity", err)
 	}
-	if _, err := svc.Consume(ctx, item.ID, mustQty(t, 1, household.UnitGram)); !errors.Is(err, household.ErrUnitMismatch) {
+	if _, err := svc.Consume(ctx, item.HouseholdID, item.ID, mustQty(t, 1, household.UnitGram)); !errors.Is(err, household.ErrUnitMismatch) {
 		t.Errorf("Consume unit mismatch = %v, want ErrUnitMismatch", err)
 	}
-	if _, err := svc.Adjust(ctx, item.ID, mustQty(t, 1, household.UnitGram)); !errors.Is(err, household.ErrUnitMismatch) {
+	if _, err := svc.Adjust(ctx, item.HouseholdID, item.ID, mustQty(t, 1, household.UnitGram)); !errors.Is(err, household.ErrUnitMismatch) {
 		t.Errorf("Adjust unit mismatch = %v, want ErrUnitMismatch", err)
 	}
 }
@@ -191,10 +191,10 @@ func TestPantryConsumeBelowZeroAndUnitMismatch(t *testing.T) {
 func TestPantryAdjustAndConsumeUnknownItem(t *testing.T) {
 	svc := mustService(t, newFakePantryRepo())
 	ctx := context.Background()
-	if _, err := svc.Adjust(ctx, domain.NewPantryItemID(), mustQty(t, 1, household.UnitCount)); !errors.Is(err, domain.ErrPantryItemNotFound) {
+	if _, err := svc.Adjust(ctx, household.NewHouseholdID(), domain.NewPantryItemID(), mustQty(t, 1, household.UnitCount)); !errors.Is(err, domain.ErrPantryItemNotFound) {
 		t.Errorf("Adjust(unknown) = %v, want ErrPantryItemNotFound", err)
 	}
-	if _, err := svc.Consume(ctx, domain.NewPantryItemID(), mustQty(t, 1, household.UnitCount)); !errors.Is(err, domain.ErrPantryItemNotFound) {
+	if _, err := svc.Consume(ctx, household.NewHouseholdID(), domain.NewPantryItemID(), mustQty(t, 1, household.UnitCount)); !errors.Is(err, domain.ErrPantryItemNotFound) {
 		t.Errorf("Consume(unknown) = %v, want ErrPantryItemNotFound", err)
 	}
 }

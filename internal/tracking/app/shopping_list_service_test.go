@@ -26,7 +26,7 @@ func (f *fakeShoppingListRepo) AddRestockIfAbsent(context.Context, *domain.Shopp
 	return true, nil
 }
 
-func (f *fakeShoppingListRepo) UpdateStatus(_ context.Context, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
+func (f *fakeShoppingListRepo) UpdateStatus(_ context.Context, _ household.HouseholdID, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
 	for _, item := range f.items {
 		if item.ID == id {
 			item.Status = status
@@ -123,7 +123,7 @@ func TestAddManualItemRejectsInvalidQuantity(t *testing.T) {
 func TestTransitionAndListRejectInvalidStatus(t *testing.T) {
 	svc := mustShoppingService(t, &fakeShoppingListRepo{})
 	ctx := context.Background()
-	if _, err := svc.TransitionStatus(ctx, domain.NewShoppingListItemID(), domain.ItemStatus("shipped")); err == nil {
+	if _, err := svc.TransitionStatus(ctx, household.NewHouseholdID(), domain.NewShoppingListItemID(), domain.ItemStatus("shipped")); err == nil {
 		t.Error("TransitionStatus(invalid) = nil error, want error")
 	}
 	if _, err := svc.ListByStatus(ctx, household.NewHouseholdID(), domain.ItemStatus("shipped")); err == nil {
@@ -146,7 +146,7 @@ func TestListByStatusFiltersByHouseholdAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddManualItem: %v", err)
 	}
-	if _, err := svc.TransitionStatus(ctx, inCartItem.ID, domain.StatusInCart); err != nil {
+	if _, err := svc.TransitionStatus(ctx, inCartItem.HouseholdID, inCartItem.ID, domain.StatusInCart); err != nil {
 		t.Fatalf("TransitionStatus: %v", err)
 	}
 	// Another household's needed item must not leak into hh's list.
@@ -171,7 +171,7 @@ func TestTransitionStatusDelegates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddManualItem: %v", err)
 	}
-	updated, err := svc.TransitionStatus(ctx, item.ID, domain.StatusInCart)
+	updated, err := svc.TransitionStatus(ctx, item.HouseholdID, item.ID, domain.StatusInCart)
 	if err != nil {
 		t.Fatalf("TransitionStatus: %v", err)
 	}

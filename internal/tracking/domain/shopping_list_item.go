@@ -67,13 +67,14 @@ func (i *ShoppingListItem) Validate() error {
 //     Source == SourceRestock and a non-nil IngredientID, and inserts only when
 //     no open (non-purchased) restock entry already exists for that
 //     (household, ingredient). It reports whether a new row was inserted.
-//   - UpdateStatus transitions an item's status and returns the updated item, or
-//     ErrShoppingListItemNotFound when the id is unknown.
+//   - UpdateStatus transitions an item's status within householdID and returns
+//     the updated item, or ErrShoppingListItemNotFound when the id is unknown in
+//     that household (so a member cannot transition another household's item).
 //   - ListByStatus returns the household's items in the given status ordered by
 //     creation, or an empty slice when none match.
 type ShoppingListRepository interface {
 	Add(ctx context.Context, item *ShoppingListItem) error
 	AddRestockIfAbsent(ctx context.Context, item *ShoppingListItem) (inserted bool, err error)
-	UpdateStatus(ctx context.Context, id ShoppingListItemID, status ItemStatus) (*ShoppingListItem, error)
+	UpdateStatus(ctx context.Context, householdID household.HouseholdID, id ShoppingListItemID, status ItemStatus) (*ShoppingListItem, error)
 	ListByStatus(ctx context.Context, householdID household.HouseholdID, status ItemStatus) ([]*ShoppingListItem, error)
 }

@@ -43,24 +43,26 @@ func (s *PantryService) Add(ctx context.Context, householdID household.Household
 	return item, nil
 }
 
-// Adjust increases an item's on-hand quantity by delta (e.g. a restock). The
+// Adjust increases an item's on-hand quantity by delta (e.g. a restock), scoped
+// to householdID so a member cannot mutate another household's item. The
 // repository applies the change atomically; units must match or it returns
 // ErrUnitMismatch.
-func (s *PantryService) Adjust(ctx context.Context, itemID domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
+func (s *PantryService) Adjust(ctx context.Context, householdID household.HouseholdID, itemID domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
 	if err := delta.Validate(); err != nil {
 		return nil, err
 	}
-	return s.pantry.Adjust(ctx, itemID, delta)
+	return s.pantry.Adjust(ctx, householdID, itemID, delta)
 }
 
-// Consume decreases an item's on-hand quantity by amount (e.g. using some up).
-// The repository applies the change atomically; units must match (ErrUnitMismatch)
-// and the result must not drop below zero (ErrInvalidQuantity).
-func (s *PantryService) Consume(ctx context.Context, itemID domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
+// Consume decreases an item's on-hand quantity by amount (e.g. using some up),
+// scoped to householdID. The repository applies the change atomically; units
+// must match (ErrUnitMismatch) and the result must not drop below zero
+// (ErrInvalidQuantity).
+func (s *PantryService) Consume(ctx context.Context, householdID household.HouseholdID, itemID domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
 	if err := amount.Validate(); err != nil {
 		return nil, err
 	}
-	return s.pantry.Consume(ctx, itemID, amount)
+	return s.pantry.Consume(ctx, householdID, itemID, amount)
 }
 
 // List returns all of the household's pantry items.

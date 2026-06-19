@@ -1,0 +1,477 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// View models
+//
+// Every value the template renders is pre-formatted by the handler (dates,
+// quantities, badge labels) so the component stays free of domain types and the
+// wall clock — rendering is deterministic, mirroring the tasks list pattern.
+// ---------------------------------------------------------------------------
+
+// UnitOption is a selectable measurement unit for the quantity inputs.
+type UnitOption struct {
+	// Value is the stored unit value posted back to the server (e.g. "count").
+	Value string
+	// Label is the human-readable option text (e.g. "count").
+	Label string
+}
+
+// TrackedItemView is the view model for one tracked consumable in the usage
+// tracker section. Prediction* fields are only meaningful when HasPrediction is
+// true (a cached prediction exists for the item).
+type TrackedItemView struct {
+	// ID is the string form of the TrackedItemID; used in the usage action URLs.
+	ID string
+	// Name is the item's display name.
+	Name string
+	// Category is the item's free-text category, or empty.
+	Category string
+	// HasPrediction is true when a restock prediction has been computed.
+	HasPrediction bool
+	// PredictedDepletionLabel is the pre-formatted predicted depletion date
+	// (e.g. "Jul 1, 2026"); empty when HasPrediction is false.
+	PredictedDepletionLabel string
+	// ConfidenceLabel is the pre-formatted confidence percentage (e.g. "40%");
+	// empty when HasPrediction is false.
+	ConfidenceLabel string
+}
+
+// PantryItemView is the view model for one on-hand pantry entry. QuantityLabel
+// and ExpiresLabel are pre-formatted; Expiring marks an item due to expire soon.
+type PantryItemView struct {
+	// ID is the string form of the PantryItemID; used in the consume/adjust URLs.
+	ID string
+	// Name is the resolved ingredient display name.
+	Name string
+	// QuantityLabel is the pre-formatted on-hand amount with unit (e.g. "2 l").
+	QuantityLabel string
+	// Unit is the stored unit value, pre-selected in the consume/adjust forms so
+	// member adjustments default to the item's own unit.
+	Unit string
+	// ExpiresLabel is the pre-formatted expiry date (e.g. "Jun 25, 2026"), or
+	// empty when the item has no tracked expiry.
+	ExpiresLabel string
+	// Expiring is true when the item is expiring within the soon-to-expire window
+	// and should be highlighted.
+	Expiring bool
+}
+
+// ShoppingItemView is the view model for one shopping-list entry.
+type ShoppingItemView struct {
+	// ID is the string form of the ShoppingListItemID; used in the status URL.
+	ID string
+	// Name is the item's display name (free-text or resolved ingredient).
+	Name string
+	// QuantityLabel is the pre-formatted amount with unit (e.g. "1 count").
+	QuantityLabel string
+	// SourceLabel is the pre-formatted origin badge text (e.g. "Manual",
+	// "Restock").
+	SourceLabel string
+	// Status is the item's lifecycle status value ("needed"/"in_cart"/
+	// "purchased").
+	Status string
+}
+
+// GroceriesView is the top-level view model for the /groceries page. It bundles
+// the three sections plus the form option lists and the per-session CSRF token
+// embedded in every action form.
+type GroceriesView struct {
+	// TrackedItems are the active tracked consumables for the usage tracker.
+	TrackedItems []TrackedItemView
+	// Pantry are the household's on-hand pantry items.
+	Pantry []PantryItemView
+	// Needed, InCart, and Purchased are the shopping-list items grouped by status.
+	Needed    []ShoppingItemView
+	InCart    []ShoppingItemView
+	Purchased []ShoppingItemView
+	// Units are the selectable measurement units for the quantity inputs.
+	Units []UnitOption
+	// CSRFToken is the per-session CSRF token embedded in every action form.
+	CSRFToken string
+}
+
+// ---------------------------------------------------------------------------
+// Top-level page
+// ---------------------------------------------------------------------------
+
+// GroceriesPage renders the usage tracker, pantry, and shopping-list sections
+// inside the A·Hearth app shell. The layout wrapper is supplied by the caller.
+// Every mutation is an HTMX POST that refreshes the page via HX-Redirect, so the
+// three sections always reflect the latest server state.
+templ GroceriesPage(view GroceriesView) {
+	<div class="p-6">
+		<div class="mb-6">
+			<h1 class="text-2xl font-semibold">Groceries</h1>
+			<p class="mt-1 text-sm text-ink-muted">Track usage, manage your pantry, and build your shopping list.</p>
+		</div>
+		<div class="grid gap-6 lg:grid-cols-3">
+			@usageTrackerSection(view.TrackedItems, view.CSRFToken)
+			@pantrySection(view.Pantry, view.Units, view.CSRFToken)
+			@shoppingSection(view.Needed, view.InCart, view.Purchased, view.Units, view.CSRFToken)
+		</div>
+	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Usage tracker
+// ---------------------------------------------------------------------------
+
+// usageTrackerSection renders the register-item form and the list of tracked
+// items with their restock predictions and four usage-logging actions.
+templ usageTrackerSection(items []TrackedItemView, csrfToken string) {
+	<section class="rounded-card bg-surface p-4 shadow-warm">
+		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Usage tracker</h2>
+		@registerItemForm(csrfToken)
+		if len(items) == 0 {
+			<p class="text-sm text-ink-muted">No tracked items yet — register one above to start predicting restocks.</p>
+		} else {
+			<ul class="flex flex-col gap-3">
+				for _, item := range items {
+					@trackedItemRow(item, csrfToken)
+				}
+			</ul>
+		}
+	</section>
+}
+
+// registerItemForm renders the form that registers a new tracked item.
+templ registerItemForm(csrfToken string) {
+	<form
+		method="post"
+		action="/groceries/items"
+		hx-post="/groceries/items"
+		class="mb-4 flex flex-col gap-2 rounded-control border border-sidebar-border bg-surface-warm p-3"
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<label class="text-xs font-medium text-ink-muted" for="register-item-name">Name</label>
+		<input
+			id="register-item-name"
+			type="text"
+			name="name"
+			required
+			placeholder="e.g. Coffee beans"
+			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		/>
+		<label class="text-xs font-medium text-ink-muted" for="register-item-category">Category</label>
+		<input
+			id="register-item-category"
+			type="text"
+			name="category"
+			placeholder="e.g. pantry"
+			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		/>
+		<label class="text-xs font-medium text-ink-muted" for="register-item-lead">Restock lead days</label>
+		<input
+			id="register-item-lead"
+			type="number"
+			name="lead_days"
+			min="0"
+			value="0"
+			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		/>
+		@Button("Register item", ButtonPrimary, "submit")
+	</form>
+}
+
+// trackedItemRow renders one tracked item: its name, optional restock
+// prediction, and the four usage-logging actions (replaced/refilled/depleted/
+// opened).
+templ trackedItemRow(item TrackedItemView, csrfToken string) {
+	<li class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-3">
+		<div class="mb-2 flex min-w-0 flex-col gap-1">
+			<span class="truncate font-medium text-ink">{ item.Name }</span>
+			if item.Category != "" {
+				<span class="text-xs text-ink-muted">{ item.Category }</span>
+			}
+			if item.HasPrediction {
+				<span class="text-sm text-ink-muted">
+					Predicted restock { item.PredictedDepletionLabel } ({ item.ConfidenceLabel } confidence)
+				</span>
+			} else {
+				<span class="text-sm text-ink-muted">No prediction yet</span>
+			}
+		</div>
+		<div class="flex flex-wrap gap-2">
+			@usageActionForm(item.ID, "replaced", "Replaced", csrfToken)
+			@usageActionForm(item.ID, "refilled", "Refilled", csrfToken)
+			@usageActionForm(item.ID, "depleted", "Depleted", csrfToken)
+			@usageActionForm(item.ID, "opened", "Opened", csrfToken)
+		</div>
+	</li>
+}
+
+// usageActionForm renders one usage-logging button posting the given usage type
+// for the item.
+templ usageActionForm(itemID, usageType, label, csrfToken string) {
+	<form
+		method="post"
+		action={ templ.SafeURL(fmt.Sprintf("/groceries/items/%s/usage", itemID)) }
+		hx-post={ fmt.Sprintf("/groceries/items/%s/usage", itemID) }
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<input type="hidden" name="type" value={ usageType }/>
+		@Button(label, ButtonSecondary, "submit")
+	</form>
+}
+
+// ---------------------------------------------------------------------------
+// Pantry
+// ---------------------------------------------------------------------------
+
+// pantrySection renders the add-item form and the on-hand pantry list with
+// consume/adjust actions and an expiring-soon highlight.
+templ pantrySection(items []PantryItemView, units []UnitOption, csrfToken string) {
+	<section class="rounded-card bg-surface p-4 shadow-warm">
+		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Pantry</h2>
+		@pantryAddForm(units, csrfToken)
+		if len(items) == 0 {
+			<p class="text-sm text-ink-muted">Your pantry is empty — add an item above.</p>
+		} else {
+			<ul class="flex flex-col gap-3">
+				for _, item := range items {
+					@pantryItemRow(item, units, csrfToken)
+				}
+			</ul>
+		}
+	</section>
+}
+
+// pantryAddForm renders the form that adds a new pantry item.
+templ pantryAddForm(units []UnitOption, csrfToken string) {
+	<form
+		method="post"
+		action="/groceries/pantry"
+		hx-post="/groceries/pantry"
+		class="mb-4 flex flex-col gap-2 rounded-control border border-sidebar-border bg-surface-warm p-3"
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<label class="text-xs font-medium text-ink-muted" for="pantry-add-name">Ingredient</label>
+		<input
+			id="pantry-add-name"
+			type="text"
+			name="name"
+			required
+			placeholder="e.g. Olive oil"
+			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		/>
+		<div class="flex gap-2">
+			<div class="flex flex-1 flex-col gap-1">
+				<label class="text-xs font-medium text-ink-muted" for="pantry-add-amount">Amount</label>
+				<input
+					id="pantry-add-amount"
+					type="number"
+					name="amount"
+					min="0"
+					step="any"
+					required
+					class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+				/>
+			</div>
+			<div class="flex flex-col gap-1">
+				<label class="text-xs font-medium text-ink-muted" for="pantry-add-unit">Unit</label>
+				@unitSelect("pantry-add-unit", units, "")
+			</div>
+		</div>
+		<label class="text-xs font-medium text-ink-muted" for="pantry-add-expires">Expires on (optional)</label>
+		<input
+			id="pantry-add-expires"
+			type="date"
+			name="expires_on"
+			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		/>
+		@Button("Add to pantry", ButtonPrimary, "submit")
+	</form>
+}
+
+// pantryItemRow renders one pantry entry with its quantity, expiry, and the
+// consume/adjust mini-forms.
+templ pantryItemRow(item PantryItemView, units []UnitOption, csrfToken string) {
+	<li
+		class={
+			"rounded-control border border-sidebar-border px-3 py-3",
+			templ.KV("bg-member-ochre-tint", item.Expiring),
+			templ.KV("bg-surface-warm", !item.Expiring),
+		}
+	>
+		<div class="mb-2 flex min-w-0 flex-col gap-1">
+			<span class="truncate font-medium text-ink">{ item.Name }</span>
+			<span class="text-sm text-ink-muted">{ item.QuantityLabel }</span>
+			if item.ExpiresLabel != "" {
+				if item.Expiring {
+					<span class="text-sm font-medium text-member-ochre-fg">Expiring { item.ExpiresLabel }</span>
+				} else {
+					<span class="text-sm text-ink-muted">Expires { item.ExpiresLabel }</span>
+				}
+			}
+		</div>
+		<div class="flex flex-col gap-2">
+			@pantryQuantityForm(item.ID, "consume", "Consume", item.Unit, units, csrfToken)
+			@pantryQuantityForm(item.ID, "adjust", "Add", item.Unit, units, csrfToken)
+		</div>
+	</li>
+}
+
+// pantryQuantityForm renders a consume/adjust mini-form posting an amount and
+// unit. action is the URL verb segment ("consume" or "adjust").
+templ pantryQuantityForm(itemID, action, label, selectedUnit string, units []UnitOption, csrfToken string) {
+	<form
+		method="post"
+		action={ templ.SafeURL(fmt.Sprintf("/groceries/pantry/%s/%s", itemID, action)) }
+		hx-post={ fmt.Sprintf("/groceries/pantry/%s/%s", itemID, action) }
+		class="flex items-end gap-2"
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<div class="flex flex-1 flex-col gap-1">
+			<label class="text-xs font-medium text-ink-muted" for={ fmt.Sprintf("pantry-%s-%s-amount", action, itemID) }>{ label } amount</label>
+			<input
+				id={ fmt.Sprintf("pantry-%s-%s-amount", action, itemID) }
+				type="number"
+				name="amount"
+				min="0"
+				step="any"
+				required
+				class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+			/>
+		</div>
+		@unitSelect(fmt.Sprintf("pantry-%s-%s-unit", action, itemID), units, selectedUnit)
+		@Button(label, ButtonSecondary, "submit")
+	</form>
+}
+
+// ---------------------------------------------------------------------------
+// Shopping list
+// ---------------------------------------------------------------------------
+
+// shoppingSection renders the add-manual-item form and the shopping list grouped
+// by status (needed / in cart / purchased).
+templ shoppingSection(needed, inCart, purchased []ShoppingItemView, units []UnitOption, csrfToken string) {
+	<section class="rounded-card bg-surface p-4 shadow-warm">
+		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Shopping list</h2>
+		@shoppingAddForm(units, csrfToken)
+		@shoppingStatusGroup("Needed", needed, csrfToken)
+		@shoppingStatusGroup("In cart", inCart, csrfToken)
+		@shoppingStatusGroup("Purchased", purchased, csrfToken)
+	</section>
+}
+
+// shoppingAddForm renders the form that adds an ad-hoc manual shopping item.
+templ shoppingAddForm(units []UnitOption, csrfToken string) {
+	<form
+		method="post"
+		action="/groceries/shopping"
+		hx-post="/groceries/shopping"
+		class="mb-4 flex flex-col gap-2 rounded-control border border-sidebar-border bg-surface-warm p-3"
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<label class="text-xs font-medium text-ink-muted" for="shopping-add-name">Item</label>
+		<input
+			id="shopping-add-name"
+			type="text"
+			name="name"
+			required
+			placeholder="e.g. Paper towels"
+			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		/>
+		<div class="flex gap-2">
+			<div class="flex flex-1 flex-col gap-1">
+				<label class="text-xs font-medium text-ink-muted" for="shopping-add-amount">Amount</label>
+				<input
+					id="shopping-add-amount"
+					type="number"
+					name="amount"
+					min="0"
+					step="any"
+					required
+					class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+				/>
+			</div>
+			<div class="flex flex-col gap-1">
+				<label class="text-xs font-medium text-ink-muted" for="shopping-add-unit">Unit</label>
+				@unitSelect("shopping-add-unit", units, "")
+			</div>
+		</div>
+		@Button("Add to list", ButtonPrimary, "submit")
+	</form>
+}
+
+// shoppingStatusGroup renders a labelled group of shopping items in one status.
+templ shoppingStatusGroup(label string, items []ShoppingItemView, csrfToken string) {
+	<div class="mb-4">
+		<h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">{ label }</h3>
+		if len(items) == 0 {
+			<p class="text-sm text-ink-muted">Nothing here.</p>
+		} else {
+			<ul class="flex flex-col gap-2">
+				for _, item := range items {
+					@shoppingItemRow(item, csrfToken)
+				}
+			</ul>
+		}
+	</div>
+}
+
+// shoppingItemRow renders one shopping item with its source badge and the
+// status-toggle buttons that move it through the needed → in_cart → purchased
+// lifecycle.
+templ shoppingItemRow(item ShoppingItemView, csrfToken string) {
+	<li class="flex flex-wrap items-center justify-between gap-2 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2">
+		<div class="flex min-w-0 flex-col gap-1">
+			<div class="flex items-center gap-2">
+				<span class="truncate font-medium text-ink">{ item.Name }</span>
+				@sourceBadge(item.SourceLabel)
+			</div>
+			<span class="text-sm text-ink-muted">{ item.QuantityLabel }</span>
+		</div>
+		<div class="flex shrink-0 items-center gap-2">
+			if item.Status != "needed" {
+				@shoppingStatusForm(item.ID, "needed", "Needed", csrfToken)
+			}
+			if item.Status != "in_cart" {
+				@shoppingStatusForm(item.ID, "in_cart", "In cart", csrfToken)
+			}
+			if item.Status != "purchased" {
+				@shoppingStatusForm(item.ID, "purchased", "Purchased", csrfToken)
+			}
+		</div>
+	</li>
+}
+
+// shoppingStatusForm renders one status-toggle button posting the target status.
+templ shoppingStatusForm(itemID, status, label, csrfToken string) {
+	<form
+		method="post"
+		action={ templ.SafeURL(fmt.Sprintf("/groceries/shopping/%s/status", itemID)) }
+		hx-post={ fmt.Sprintf("/groceries/shopping/%s/status", itemID) }
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<input type="hidden" name="status" value={ status }/>
+		@Button(label, ButtonSecondary, "submit")
+	</form>
+}
+
+// sourceBadge renders the small origin pill for a shopping item.
+templ sourceBadge(label string) {
+	<span class="inline-flex items-center rounded-control bg-member-sage-tint px-2 py-0.5 text-xs font-medium text-member-sage-fg">
+		{ label }
+	</span>
+}
+
+// ---------------------------------------------------------------------------
+// Shared inputs
+// ---------------------------------------------------------------------------
+
+// unitSelect renders a measurement-unit dropdown, pre-selecting selected when it
+// matches an option value.
+templ unitSelect(id string, units []UnitOption, selected string) {
+	<select
+		id={ id }
+		name="unit"
+		class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+	>
+		for _, u := range units {
+			<option value={ u.Value } selected?={ u.Value == selected }>{ u.Label }</option>
+		}
+	</select>
+}

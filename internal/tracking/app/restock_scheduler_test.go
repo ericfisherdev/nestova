@@ -58,7 +58,7 @@ func (f *fakeRestockShoppingRepo) AddRestockIfAbsent(context.Context, *domain.Sh
 	return f.inserted, nil
 }
 
-func (f *fakeRestockShoppingRepo) UpdateStatus(context.Context, domain.ShoppingListItemID, domain.ItemStatus) (*domain.ShoppingListItem, error) {
+func (f *fakeRestockShoppingRepo) UpdateStatus(context.Context, household.HouseholdID, domain.ShoppingListItemID, domain.ItemStatus) (*domain.ShoppingListItem, error) {
 	return nil, domain.ErrShoppingListItemNotFound
 }
 

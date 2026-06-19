@@ -63,7 +63,7 @@ func TestPantryCreateGetAndMutate(t *testing.T) {
 		t.Errorf("Get ExpiresOn = %v, want %v", got.ExpiresOn, expires)
 	}
 
-	adjusted, err := repo.Adjust(ctx, item.ID, qty(t, 1.5, household.UnitLiter))
+	adjusted, err := repo.Adjust(ctx, item.HouseholdID, item.ID, qty(t, 1.5, household.UnitLiter))
 	if err != nil {
 		t.Fatalf("Adjust: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestPantryCreateGetAndMutate(t *testing.T) {
 		t.Errorf("after Adjust = %v, want 4", adjusted.Quantity.Amount)
 	}
 
-	consumed, err := repo.Consume(ctx, item.ID, qty(t, 3, household.UnitLiter))
+	consumed, err := repo.Consume(ctx, item.HouseholdID, item.ID, qty(t, 3, household.UnitLiter))
 	if err != nil {
 		t.Fatalf("Consume: %v", err)
 	}
@@ -97,16 +97,16 @@ func TestPantryMutateErrors(t *testing.T) {
 	ing := seedIngredient(t, pool, "oil")
 	item := createPantryItem(t, repo, hh, ing, qty(t, 2, household.UnitLiter), nil)
 
-	if _, err := repo.Consume(ctx, item.ID, qty(t, 5, household.UnitLiter)); !errors.Is(err, household.ErrInvalidQuantity) {
+	if _, err := repo.Consume(ctx, item.HouseholdID, item.ID, qty(t, 5, household.UnitLiter)); !errors.Is(err, household.ErrInvalidQuantity) {
 		t.Errorf("Consume below zero = %v, want ErrInvalidQuantity", err)
 	}
-	if _, err := repo.Consume(ctx, item.ID, qty(t, 1, household.UnitGram)); !errors.Is(err, household.ErrUnitMismatch) {
+	if _, err := repo.Consume(ctx, item.HouseholdID, item.ID, qty(t, 1, household.UnitGram)); !errors.Is(err, household.ErrUnitMismatch) {
 		t.Errorf("Consume unit mismatch = %v, want ErrUnitMismatch", err)
 	}
-	if _, err := repo.Adjust(ctx, domain.NewPantryItemID(), qty(t, 1, household.UnitLiter)); !errors.Is(err, domain.ErrPantryItemNotFound) {
+	if _, err := repo.Adjust(ctx, hh, domain.NewPantryItemID(), qty(t, 1, household.UnitLiter)); !errors.Is(err, domain.ErrPantryItemNotFound) {
 		t.Errorf("Adjust(unknown) = %v, want ErrPantryItemNotFound", err)
 	}
-	if _, err := repo.Consume(ctx, domain.NewPantryItemID(), qty(t, 1, household.UnitLiter)); !errors.Is(err, domain.ErrPantryItemNotFound) {
+	if _, err := repo.Consume(ctx, hh, domain.NewPantryItemID(), qty(t, 1, household.UnitLiter)); !errors.Is(err, domain.ErrPantryItemNotFound) {
 		t.Errorf("Consume(unknown) = %v, want ErrPantryItemNotFound", err)
 	}
 
@@ -117,6 +117,32 @@ func TestPantryMutateErrors(t *testing.T) {
 	}
 	if got.Quantity.Amount != 2 {
 		t.Errorf("quantity after rejected mutations = %v, want 2", got.Quantity.Amount)
+	}
+}
+
+func TestPantryMutateRejectsForeignHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewPantryRepository(pool)
+	ctx := testCtx(t)
+	owner := seedHousehold(t, pool)
+	attacker := seedHousehold(t, pool)
+	ing := seedIngredient(t, pool, "butter")
+	item := createPantryItem(t, repo, owner, ing, qty(t, 3, household.UnitCount), nil)
+
+	// A different household cannot mutate the item even with its real id.
+	if _, err := repo.Consume(ctx, attacker, item.ID, qty(t, 1, household.UnitCount)); !errors.Is(err, domain.ErrPantryItemNotFound) {
+		t.Errorf("Consume(foreign household) = %v, want ErrPantryItemNotFound", err)
+	}
+	if _, err := repo.Adjust(ctx, attacker, item.ID, qty(t, 1, household.UnitCount)); !errors.Is(err, domain.ErrPantryItemNotFound) {
+		t.Errorf("Adjust(foreign household) = %v, want ErrPantryItemNotFound", err)
+	}
+	// The owner's quantity is unchanged.
+	got, err := repo.Get(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Quantity.Amount != 3 {
+		t.Errorf("quantity after foreign-household attempts = %v, want 3", got.Quantity.Amount)
 	}
 }
 

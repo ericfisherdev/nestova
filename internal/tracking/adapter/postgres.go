@@ -18,10 +18,11 @@ type IngredientRepository struct {
 	dbtx db.TX
 }
 
-// Compile-time assurance the repository satisfies both catalogue ports.
+// Compile-time assurance the repository satisfies the catalogue ports.
 var (
 	_ domain.IngredientResolver = (*IngredientRepository)(nil)
 	_ domain.IngredientEnsurer  = (*IngredientRepository)(nil)
+	_ domain.IngredientNamer    = (*IngredientRepository)(nil)
 )
 
 // NewIngredientRepository constructs the repository with an injected query
@@ -92,6 +93,42 @@ func (r *IngredientRepository) EnsureIngredient(ctx context.Context, name string
 		return nil, fmt.Errorf("ensure ingredient: reselect: %w", err)
 	}
 	return ing, nil
+}
+
+// NamesByIDs batch-maps ingredient ids to their canonical names for display.
+// Unknown ids are omitted from the result map; an empty input yields an empty
+// map without touching the database. Ids are passed as text, matching the rest of
+// this adapter (no pgx UUID codec registration required).
+func (r *IngredientRepository) NamesByIDs(ctx context.Context, ids []domain.IngredientID) (map[domain.IngredientID]string, error) {
+	names := make(map[domain.IngredientID]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+	idStrings := make([]string, len(ids))
+	for i, id := range ids {
+		idStrings[i] = id.String()
+	}
+	const q = `SELECT id, canonical_name FROM ingredient WHERE id = ANY($1::uuid[])`
+	rows, err := r.dbtx.Query(ctx, q, idStrings)
+	if err != nil {
+		return nil, fmt.Errorf("ingredient names by ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var idStr, name string
+		if err := rows.Scan(&idStr, &name); err != nil {
+			return nil, fmt.Errorf("ingredient names by ids: scan: %w", err)
+		}
+		id, err := domain.ParseIngredientID(idStr)
+		if err != nil {
+			return nil, fmt.Errorf("ingredient names by ids: %w", err)
+		}
+		names[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ingredient names by ids: %w", err)
+	}
+	return names, nil
 }
 
 // row abstracts pgx.Row and pgx.Rows for the shared scan helper.

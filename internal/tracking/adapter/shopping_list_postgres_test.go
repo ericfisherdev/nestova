@@ -53,7 +53,7 @@ func TestShoppingAddAndListByStatus(t *testing.T) {
 		t.Fatalf("needed list = %d items, want 2", len(needed))
 	}
 
-	if _, err := repo.UpdateStatus(ctx, adhoc.ID, domain.StatusInCart); err != nil {
+	if _, err := repo.UpdateStatus(ctx, hh, adhoc.ID, domain.StatusInCart); err != nil {
 		t.Fatalf("UpdateStatus: %v", err)
 	}
 	needed, _ = repo.ListByStatus(ctx, hh, domain.StatusNeeded)
@@ -77,7 +77,7 @@ func TestShoppingTransitionLifecycle(t *testing.T) {
 	}
 
 	for _, status := range []domain.ItemStatus{domain.StatusInCart, domain.StatusPurchased} {
-		got, err := repo.UpdateStatus(ctx, item.ID, status)
+		got, err := repo.UpdateStatus(ctx, hh, item.ID, status)
 		if err != nil {
 			t.Fatalf("UpdateStatus(%s): %v", status, err)
 		}
@@ -86,8 +86,33 @@ func TestShoppingTransitionLifecycle(t *testing.T) {
 		}
 	}
 
-	if _, err := repo.UpdateStatus(ctx, domain.NewShoppingListItemID(), domain.StatusInCart); !errors.Is(err, domain.ErrShoppingListItemNotFound) {
+	if _, err := repo.UpdateStatus(ctx, hh, domain.NewShoppingListItemID(), domain.StatusInCart); !errors.Is(err, domain.ErrShoppingListItemNotFound) {
 		t.Errorf("UpdateStatus(unknown) = %v, want ErrShoppingListItemNotFound", err)
+	}
+}
+
+func TestShoppingUpdateStatusRejectsForeignHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewShoppingListRepository(pool)
+	ctx := testCtx(t)
+	owner := seedHousehold(t, pool)
+	attacker := seedHousehold(t, pool)
+	item := adHocItem(owner, "Bananas", nil)
+	if err := repo.Add(ctx, item); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// A different household cannot transition the item even with its real id.
+	if _, err := repo.UpdateStatus(ctx, attacker, item.ID, domain.StatusPurchased); !errors.Is(err, domain.ErrShoppingListItemNotFound) {
+		t.Errorf("UpdateStatus(foreign household) = %v, want ErrShoppingListItemNotFound", err)
+	}
+	// The item's status is unchanged for the owner.
+	needed, err := repo.ListByStatus(ctx, owner, domain.StatusNeeded)
+	if err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if len(needed) != 1 {
+		t.Errorf("owner needed items = %d, want 1 (status unchanged by foreign attempt)", len(needed))
 	}
 }
 
@@ -114,7 +139,7 @@ func TestShoppingRestockDedup(t *testing.T) {
 	}
 
 	// Once the first is purchased, a fresh restock can be raised again.
-	if _, err := repo.UpdateStatus(ctx, first.ID, domain.StatusPurchased); err != nil {
+	if _, err := repo.UpdateStatus(ctx, hh, first.ID, domain.StatusPurchased); err != nil {
 		t.Fatalf("purchase first: %v", err)
 	}
 	inserted, err = repo.AddRestockIfAbsent(ctx, restockItem(hh, ing))
