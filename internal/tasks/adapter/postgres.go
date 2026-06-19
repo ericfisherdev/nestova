@@ -20,6 +20,10 @@ const (
 	// sqlstateUniqueViolation is the PostgreSQL SQLSTATE for a unique-constraint
 	// violation (error class 23 "Integrity Constraint Violation", subcode 505).
 	sqlstateUniqueViolation = "23505"
+
+	// sqlstateForeignKeyViolation is the PostgreSQL SQLSTATE for a foreign-key
+	// violation (error class 23 "Integrity Constraint Violation", subcode 503).
+	sqlstateForeignKeyViolation = "23503"
 )
 
 // Constraint names from 00003_tasks.sql used to map database errors to domain
@@ -646,6 +650,96 @@ func (r *TaskInstanceRepository) Complete(
 	}
 	if tag.RowsAffected() == 0 {
 		return r.disambiguateTerminal(ctx, householdID, id)
+	}
+	return nil
+}
+
+// CompleteAndAward atomically transitions the instance from pending or overdue
+// to done and appends a point_ledger credit for the completing member, all
+// within one database transaction. The approach mirrors CreateWithRotation:
+// open a tx, run the instance UPDATE RETURNING recurring_task_id, then
+// conditionally INSERT the ledger row with ON CONFLICT DO NOTHING. This
+// single-adapter-tx style is the simplest way to guarantee atomicity without
+// threading a transaction handle through the service layer.
+//
+// Idempotency: the ON CONFLICT on the partial unique index
+// (point_ledger_task_completion_uniq) is a belt-and-suspenders guard. The
+// status predicate IN ('pending','overdue') in the UPDATE already prevents
+// re-completion; the ON CONFLICT ensures that a manual or legacy duplicate
+// cannot produce a second ledger row either.
+//
+// Points = 0 optimization: the ledger INSERT is skipped entirely when
+// recurring_task.points = 0, keeping the ledger free of zero-value noise.
+func (r *TaskInstanceRepository) CompleteAndAward(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	by household.MemberID,
+	at time.Time,
+) error {
+	beginner, ok := r.dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return errors.New("complete and award: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("complete and award: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Step 1: mark instance done and return the parent recurring_task_id so we
+	// can look up the points value in step 2 without a separate query.
+	const updateQ = `
+		UPDATE task_instance
+		   SET status       = 'done',
+		       completed_by = $3,
+		       completed_at = $4,
+		       updated_at   = now()
+		 WHERE id           = $1
+		   AND household_id = $2
+		   AND status       IN ('pending', 'overdue')
+		RETURNING recurring_task_id`
+
+	var recurringTaskIDStr string
+	err = tx.QueryRow(ctx, updateQ, id.String(), householdID.String(), by.String(), at).
+		Scan(&recurringTaskIDStr)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return r.disambiguateTerminal(ctx, householdID, id)
+		}
+		return fmt.Errorf("complete and award: update instance: %w", err)
+	}
+
+	// Step 2: insert the point ledger row. The SELECT ... FROM recurring_task
+	// fetches the points value; the ON CONFLICT clause makes a duplicate a
+	// silent no-op. We skip the INSERT entirely when points = 0 to avoid
+	// zero-value ledger noise.
+	// The ledger id is generated application-side as a UUIDv7, matching the
+	// rest of the codebase (do not use gen_random_uuid()/v4 in SQL).
+	const awardQ = `
+		INSERT INTO point_ledger
+			(id, household_id, member_id, source_type, source_id, points, created_at)
+		SELECT $1::uuid, $2, $3, 'task_instance', $4::uuid, rt.points, now()
+		  FROM recurring_task rt
+		 WHERE rt.id     = $5::uuid
+		   AND rt.points > 0
+		ON CONFLICT (source_id) WHERE source_type = 'task_instance'
+		DO NOTHING`
+
+	if _, err := tx.Exec(ctx, awardQ,
+		domain.NewPointEntryID().String(),
+		householdID.String(),
+		by.String(),
+		id.String(),
+		recurringTaskIDStr,
+	); err != nil {
+		return fmt.Errorf("complete and award: insert ledger: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("complete and award: commit: %w", err)
 	}
 	return nil
 }

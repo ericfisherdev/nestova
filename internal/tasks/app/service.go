@@ -89,8 +89,15 @@ func (s *TaskService) CreateRecurringTask(
 }
 
 // CompleteInstance transitions a task instance from pending or overdue to done,
-// recording the completing member (by) and the completion timestamp (at). An
+// recording the completing member (by) and the completion timestamp (at), and
+// atomically credits the completing member with the task's point award. An
 // overdue chore is still actionable: it can be completed late.
+//
+// The award is performed atomically with the status transition inside the
+// adapter: a single database transaction marks the instance done and appends
+// the point ledger row so the two writes are never separated. Tasks with
+// points = 0 produce no ledger row. Re-completing an already-done instance
+// returns the terminal-state sentinel without making a second award.
 //
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
@@ -104,7 +111,7 @@ func (s *TaskService) CompleteInstance(
 	by household.MemberID,
 	at time.Time,
 ) error {
-	if err := s.instanceRepo.Complete(ctx, householdID, id, by, at); err != nil {
+	if err := s.instanceRepo.CompleteAndAward(ctx, householdID, id, by, at); err != nil {
 		return fmt.Errorf("complete instance: %w", err)
 	}
 	return nil

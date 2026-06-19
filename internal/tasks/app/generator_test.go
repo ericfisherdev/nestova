@@ -221,6 +221,29 @@ func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household
 	return domain.ErrInstanceNotFound
 }
 
+// CompleteAndAward is the in-memory implementation of the atomic complete+award
+// path. Like the real adapter, it accepts BOTH pending and overdue instances
+// (unlike Complete in this fake, which only transitions pending), marks the
+// instance done, and silently no-ops the point award since there is no ledger
+// in memory. Tests that need to verify award behaviour use the gated Postgres
+// tests instead.
+func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID == id && inst.HouseholdID == householdID {
+			if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
+				return domain.ErrInstanceInTerminalState
+			}
+			inst.Status = domain.StatusDone
+			inst.CompletedBy = &by
+			inst.CompletedAt = &at
+			return nil
+		}
+	}
+	return domain.ErrInstanceNotFound
+}
+
 func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
