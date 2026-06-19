@@ -238,3 +238,14 @@ Static analysis is configured in [`.golangci.yml`](.golangci.yml) (schema v2).
 - Generated `*_templ.go` files are excluded from linting and formatting via
   the `exclusions.generated: strict` setting under both `linters` and
   `formatters` in `.golangci.yml`.
+
+## License
+
+Nestova is licensed under the **GNU Affero General Public License v3.0**
+(AGPL-3.0). See [`LICENSE`](LICENSE) for the full text.
+
+In short: you are free to use, modify, and distribute this software, but if you
+run a modified version as a network service, you must make the corresponding
+source code available to its users.
+
+Copyright (C) 2026 Eric Fisher
