@@ -66,3 +66,22 @@ func ParseUsageEventID(s string) (UsageEventID, error) {
 	}
 	return UsageEventID(u), nil
 }
+
+// PantryItemID uniquely identifies an on-hand pantry entry within a household.
+type PantryItemID uuid.UUID
+
+// NewPantryItemID returns a new time-ordered (UUIDv7) pantry-item id. See
+// NewIngredientID for why Must is appropriate.
+func NewPantryItemID() PantryItemID { return PantryItemID(uuid.Must(uuid.NewV7())) }
+
+// String returns the canonical UUID string.
+func (id PantryItemID) String() string { return uuid.UUID(id).String() }
+
+// ParsePantryItemID parses a canonical UUID string into a PantryItemID.
+func ParsePantryItemID(s string) (PantryItemID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return PantryItemID{}, fmt.Errorf("parse pantry item id: %w", err)
+	}
+	return PantryItemID(u), nil
+}
