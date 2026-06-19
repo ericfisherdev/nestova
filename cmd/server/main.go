@@ -61,6 +61,10 @@ const (
 	// idempotent signal (depletion intervals are measured in days), so hourly is
 	// ample and keeps load low.
 	restockSchedulerPollInterval = time.Hour
+	// restockSchedulerTickTimeout bounds a single recompute+restock cycle (and so
+	// how long an in-flight cycle can delay shutdown). It is decoupled from the
+	// long poll interval so graceful shutdown is not held up for an hour.
+	restockSchedulerTickTimeout = 5 * time.Minute
 )
 
 func main() {
@@ -149,7 +153,8 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("create restock predictor: %w", err)
 	}
 	restockScheduler, err := trackingapp.NewRestockScheduler(
-		trackedItemRepo, predictor, ingredientRepo, shoppingListRepo, outboxRepo, logger, restockSchedulerPollInterval,
+		trackedItemRepo, predictor, ingredientRepo, shoppingListRepo, outboxRepo, logger,
+		restockSchedulerPollInterval, restockSchedulerTickTimeout,
 	)
 	if err != nil {
 		return fmt.Errorf("create restock scheduler: %w", err)
