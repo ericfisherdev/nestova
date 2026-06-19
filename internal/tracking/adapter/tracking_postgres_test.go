@@ -180,6 +180,27 @@ func TestUsageEventAppendUnknownItem(t *testing.T) {
 	}
 }
 
+func TestUsageEventAppendUnknownMember(t *testing.T) {
+	pool := newTestPool(t)
+	itemRepo := adapter.NewTrackedItemRepository(pool)
+	eventRepo := adapter.NewUsageEventRepository(pool)
+	hh := seedHousehold(t, pool)
+	item := seedTrackedItem(t, itemRepo, hh, "Soap", 2)
+	badMember := household.NewMemberID()
+
+	event := &domain.UsageEvent{
+		ID:            domain.NewUsageEventID(),
+		HouseholdID:   hh,
+		TrackedItemID: item.ID,
+		Type:          domain.UsageDepleted,
+		OccurredAt:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		MemberID:      &badMember,
+	}
+	if err := eventRepo.Append(testCtx(t), event); !errors.Is(err, household.ErrMemberNotFound) {
+		t.Errorf("Append(unknown member) = %v, want ErrMemberNotFound", err)
+	}
+}
+
 func TestRestockPredictionUpsertAndGet(t *testing.T) {
 	pool := newTestPool(t)
 	itemRepo := adapter.NewTrackedItemRepository(pool)
