@@ -41,15 +41,20 @@ CREATE TABLE usage_event (
         REFERENCES tracked_item (household_id, id) ON DELETE CASCADE,
     -- Tenant consistency: an attributed member must belong to the same household.
     -- member_id is nullable; with MATCH SIMPLE a NULL member_id skips this check,
-    -- so system events (no member) are allowed.
+    -- so system events (no member) are allowed. ON DELETE SET NULL (member_id)
+    -- nulls only the attribution column (not household_id, which is NOT NULL)
+    -- when a member is removed, preserving the usage/depletion history — the same
+    -- column-specific SET NULL pattern task_instance uses in 00004.
     CONSTRAINT usage_event_member_fk FOREIGN KEY (household_id, member_id)
-        REFERENCES member (household_id, id) ON DELETE CASCADE
+        REFERENCES member (household_id, id) ON DELETE SET NULL (member_id)
 );
 
--- Serves the depletion-history read (ListDepletionEvents): all events for an
--- item ordered by occurrence. Ordering in the index avoids a sort on that query.
-CREATE INDEX usage_event_item_occurred_idx
-    ON usage_event (tracked_item_id, occurred_at);
+-- Serves the depletion-history read (ListDepletionEvents), which filters
+-- type='depleted' for an item ordered by occurrence. Partial (depleted only) so
+-- it stays small, and ordered so the read needs no sort.
+CREATE INDEX usage_event_depleted_item_occurred_idx
+    ON usage_event (tracked_item_id, occurred_at)
+    WHERE type = 'depleted';
 
 CREATE TABLE restock_prediction (
     -- One prediction per item; Upsert replaces it (PK = tracked_item_id).
