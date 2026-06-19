@@ -7,41 +7,49 @@ import (
 	"log/slog"
 	"time"
 
+	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
 
-// Scheduler periodically materialises pending task instances and sweeps
-// past-due pending instances to overdue across all households. It is designed
-// to run as a single background goroutine alongside the notification dispatcher;
-// the two workers are independent and share no state.
+// Scheduler periodically materialises pending task instances, sweeps past-due
+// pending instances to overdue, and emits due-soon and overdue reminders
+// through the notify outbox. It is designed to run as a single background
+// goroutine alongside the notification dispatcher; the two workers are
+// independent and share no state.
 //
 // Each poll cycle:
 //  1. Calls [Generator.GenerateDue] to materialise upcoming instances.
 //  2. Calls [domain.TaskInstanceRepository.MarkPendingOverdueAll] to flip
-//     past-due pending instances to overdue.
+//     past-due pending instances to overdue and obtain the transitioned rows.
+//  3. Calls [Reminders.EmitOverdue] to enqueue overdue notifications.
+//  4. Calls [Reminders.EmitDueSoon] to claim and enqueue due-soon notifications.
 //
-// A failure in step 1 is logged and the error is recorded, but step 2 still
-// runs — a generation failure must not prevent the overdue sweep. The first
-// error encountered across both steps is surfaced by [Scheduler.RunOnce].
+// A failure in step 1 is logged and the error is recorded, but steps 2–4 still
+// run — a generation failure must not prevent the overdue sweep or reminder
+// emission. The first error encountered across all steps is surfaced by
+// [Scheduler.RunOnce].
 type Scheduler struct {
 	generator    *Generator
 	instanceRepo domain.TaskInstanceRepository
+	reminders    *Reminders
 	logger       *slog.Logger
 	pollInterval time.Duration
 }
 
 // NewScheduler constructs a Scheduler with injected dependencies.
-//   - generator materialises upcoming task instances; it encapsulates the
-//     recurring-task and instance repositories so the Scheduler never touches
-//     them directly for generation.
-//   - instanceRepo is used only for the overdue sweep
-//     ([domain.TaskInstanceRepository.MarkPendingOverdueAll]).
+//   - generator materialises upcoming task instances.
+//   - instanceRepo is used for the overdue sweep
+//     ([domain.TaskInstanceRepository.MarkPendingOverdueAll]) and due-soon
+//     claim ([domain.TaskInstanceRepository.ClaimDueSoonReminders]).
+//   - enqueuer is the notify outbox producer port; Scheduler builds a
+//     [Reminders] service internally.
 //   - logger receives structured log lines; only task/count identifiers are
 //     logged (not PII).
 //   - pollInterval controls how often [Scheduler.Run] polls. Must be positive.
 func NewScheduler(
 	generator *Generator,
 	instanceRepo domain.TaskInstanceRepository,
+	enqueuer notifydomain.Enqueuer,
 	logger *slog.Logger,
 	pollInterval time.Duration,
 ) (*Scheduler, error) {
@@ -51,26 +59,38 @@ func NewScheduler(
 	if instanceRepo == nil {
 		return nil, errors.New("app: NewScheduler requires a non-nil instance repository")
 	}
+	if enqueuer == nil {
+		return nil, errors.New("app: NewScheduler requires a non-nil enqueuer")
+	}
 	if logger == nil {
 		return nil, errors.New("app: NewScheduler requires a non-nil logger")
 	}
 	if pollInterval <= 0 {
 		return nil, fmt.Errorf("app: NewScheduler pollInterval must be positive, got %v", pollInterval)
 	}
+	reminders, err := NewReminders(instanceRepo, enqueuer, logger)
+	if err != nil {
+		return nil, fmt.Errorf("app: NewScheduler: %w", err)
+	}
 	return &Scheduler{
 		generator:    generator,
 		instanceRepo: instanceRepo,
+		reminders:    reminders,
 		logger:       logger,
 		pollInterval: pollInterval,
 	}, nil
 }
 
-// RunOnce executes one generation+sweep cycle as of asOf.
+// RunOnce executes one generation+sweep+reminder cycle as of asOf.
 //
-// It calls [Generator.GenerateDue] then
-// [domain.TaskInstanceRepository.MarkPendingOverdueAll]. A failure in the
-// generation step is logged; the overdue sweep still runs. The first non-nil
-// error from either step is returned.
+// Steps (each step still runs even if a previous step fails; the first
+// non-nil error is returned):
+//  1. [Generator.GenerateDue] — materialise upcoming instances.
+//  2. [domain.TaskInstanceRepository.MarkPendingOverdueAll] — transition
+//     past-due pending rows to overdue and collect the targets.
+//  3. [Reminders.EmitOverdue] — enqueue overdue notifications for the targets
+//     returned by step 2.
+//  4. [Reminders.EmitDueSoon] — claim and enqueue due-soon notifications.
 func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 	var firstErr error
 
@@ -82,14 +102,22 @@ func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 		s.logger.Info("scheduler: generated instances", "count", generated)
 	}
 
-	overdue, overdueErr := s.instanceRepo.MarkPendingOverdueAll(ctx, asOf)
+	overdueTargets, overdueErr := s.instanceRepo.MarkPendingOverdueAll(ctx, asOf)
 	if overdueErr != nil {
 		s.logger.Error("scheduler: overdue sweep failed", "error", overdueErr)
 		if firstErr == nil {
 			firstErr = fmt.Errorf("scheduler: overdue sweep: %w", overdueErr)
 		}
 	} else {
-		s.logger.Info("scheduler: marked overdue", "count", overdue)
+		s.logger.Info("scheduler: marked overdue", "count", len(overdueTargets))
+		s.reminders.EmitOverdue(ctx, asOf, overdueTargets)
+	}
+
+	if dueSoonErr := s.reminders.EmitDueSoon(ctx, asOf); dueSoonErr != nil {
+		s.logger.Error("scheduler: due-soon reminders failed", "error", dueSoonErr)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("scheduler: due-soon reminders: %w", dueSoonErr)
+		}
 	}
 
 	return firstErr

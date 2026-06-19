@@ -1315,12 +1315,21 @@ func TestTaskInstance_MarkPendingOverdueAll(t *testing.T) {
 
 	// Run the system-wide overdue sweep with asOf = refDate.
 	// Qualifies: due_on < refDate AND status = 'pending' → pastDueA1, pastDueA2, pastDueB = 3.
-	count, err := instRepo.MarkPendingOverdueAll(testCtx(t), refDate)
+	targets, err := instRepo.MarkPendingOverdueAll(testCtx(t), refDate)
 	if err != nil {
 		t.Fatalf("MarkPendingOverdueAll: %v", err)
 	}
-	if count != 3 {
-		t.Errorf("MarkPendingOverdueAll count = %d, want 3", count)
+	if len(targets) != 3 {
+		t.Errorf("MarkPendingOverdueAll returned %d targets, want 3", len(targets))
+	}
+	// All returned targets must have Kind=overdue.
+	for i, tgt := range targets {
+		if tgt.Kind != domain.ReminderOverdue {
+			t.Errorf("targets[%d].Kind = %v, want ReminderOverdue", i, tgt.Kind)
+		}
+		if tgt.Title == "" {
+			t.Errorf("targets[%d].Title is empty, want recurring task title", i)
+		}
 	}
 
 	// Past-due pending instances across both households must now be overdue.
@@ -1381,6 +1390,145 @@ func TestTaskInstance_MarkPendingOverdueAll(t *testing.T) {
 	}
 	if gotDone.Status != domain.StatusDone {
 		t.Errorf("doneInst Status = %v, want done", gotDone.Status)
+	}
+}
+
+// TestTaskInstance_ClaimDueSoonReminders verifies the idempotent due-soon claim:
+//   - A pending instance inside its lead-time window is returned once.
+//   - A second call returns nothing for the same instance (reminded_at guards it).
+//   - An instance outside the lead-time window is not returned.
+func TestTaskInstance_ClaimDueSoonReminders(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	// recurring task with a 2-day lead window (same as seedRecurringTask default).
+	rt := seedRecurringTask(t, taskRepo, h.ID) // LeadTimeDays = 2
+
+	// asOf = refDate. A due-soon instance is one whose due_on is within
+	// lead_time_days days of asOf, i.e. due_on <= asOf + 2 days.
+	// Seed an instance due 1 day after asOf → inside the 2-day window.
+	insideWindow := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 1))
+
+	// Seed a second recurring task with its own instance due 10 days out — outside
+	// the 2-day window. We need a second recurring_task to avoid the unique
+	// constraint on (recurring_task_id, due_on).
+	rt2 := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    h.ID,
+		Title:          "Mop floors",
+		Category:       domain.MaintenanceCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationClaimable,
+		Points:         5,
+		LeadTimeDays:   2,
+		Active:         true,
+	}
+	if err := taskRepo.Create(testCtx(t), rt2); err != nil {
+		t.Fatalf("Create rt2: %v", err)
+	}
+	outsideWindow := seedTaskInstance(t, instRepo, rt2, refDate.AddDate(0, 0, 10))
+
+	// First claim: must return only the inside-window instance.
+	targets, err := instRepo.ClaimDueSoonReminders(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("ClaimDueSoonReminders (first): %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("ClaimDueSoonReminders (first) returned %d targets, want 1", len(targets))
+	}
+	if targets[0].Kind != domain.ReminderDueSoon {
+		t.Errorf("targets[0].Kind = %v, want ReminderDueSoon", targets[0].Kind)
+	}
+	if targets[0].InstanceID != insideWindow.ID {
+		t.Errorf("targets[0].InstanceID = %v, want %v (inside-window instance)", targets[0].InstanceID, insideWindow.ID)
+	}
+	if targets[0].Title == "" {
+		t.Error("targets[0].Title is empty, want recurring task title")
+	}
+	if targets[0].HouseholdID != h.ID {
+		t.Errorf("targets[0].HouseholdID = %v, want %v", targets[0].HouseholdID, h.ID)
+	}
+
+	// Second claim: reminded_at is now set → must return nothing (idempotency).
+	targets2, err := instRepo.ClaimDueSoonReminders(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("ClaimDueSoonReminders (second): %v", err)
+	}
+	if len(targets2) != 0 {
+		t.Errorf("ClaimDueSoonReminders (second) returned %d targets, want 0 (idempotent)", len(targets2))
+	}
+
+	// The outside-window instance must never have been claimed.
+	_ = outsideWindow // present in DB but must not be returned
+}
+
+// TestTaskInstance_ClaimDueSoonReminders_OutsideWindow confirms that an
+// instance whose due_on is strictly beyond the lead window is excluded.
+func TestTaskInstance_ClaimDueSoonReminders_OutsideWindow(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID) // LeadTimeDays = 2
+
+	// due_on = asOf + 3 days > lead_time_days of 2 → outside window.
+	seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 3))
+
+	targets, err := instRepo.ClaimDueSoonReminders(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("ClaimDueSoonReminders: %v", err)
+	}
+	if len(targets) != 0 {
+		t.Errorf("ClaimDueSoonReminders returned %d targets for outside-window instance, want 0", len(targets))
+	}
+}
+
+// TestTaskInstance_MarkPendingOverdueAll_ReturnsTargetsWithTitle is an
+// additional assertion on top of TestTaskInstance_MarkPendingOverdueAll:
+// the returned []ReminderTarget includes the recurring_task title and category
+// so the caller can build notifications without an extra query.
+func TestTaskInstance_MarkPendingOverdueAll_ReturnsTargetsWithTitle(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, taskRepo, h.ID)
+	// One past-due pending instance.
+	seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, -1))
+
+	targets, err := instRepo.MarkPendingOverdueAll(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("MarkPendingOverdueAll: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("MarkPendingOverdueAll returned %d targets, want 1", len(targets))
+	}
+
+	tgt := targets[0]
+	if tgt.Kind != domain.ReminderOverdue {
+		t.Errorf("Kind = %v, want ReminderOverdue", tgt.Kind)
+	}
+	if tgt.Title != rt.Title {
+		t.Errorf("Title = %q, want %q", tgt.Title, rt.Title)
+	}
+	if tgt.Category != rt.Category {
+		t.Errorf("Category = %v, want %v", tgt.Category, rt.Category)
+	}
+	if tgt.HouseholdID != h.ID {
+		t.Errorf("HouseholdID = %v, want %v", tgt.HouseholdID, h.ID)
+	}
+
+	// A second call must return nothing (each row transitions only once).
+	targets2, err := instRepo.MarkPendingOverdueAll(testCtx(t), refDate)
+	if err != nil {
+		t.Fatalf("MarkPendingOverdueAll (second): %v", err)
+	}
+	if len(targets2) != 0 {
+		t.Errorf("MarkPendingOverdueAll (second) returned %d targets, want 0 (idempotent)", len(targets2))
 	}
 }
 

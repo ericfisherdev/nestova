@@ -7,9 +7,27 @@ import (
 	"testing"
 	"time"
 
+	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/tasks/app"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
+
+// ---------------------------------------------------------------------------
+// fakeEnqueuer records enqueued notifications for assertion in tests.
+// ---------------------------------------------------------------------------
+
+type fakeEnqueuer struct {
+	notifications []*notifydomain.Notification
+}
+
+func (e *fakeEnqueuer) Enqueue(_ context.Context, n *notifydomain.Notification) error {
+	e.notifications = append(e.notifications, n)
+	return nil
+}
+
+func newFakeEnqueuer() *fakeEnqueuer {
+	return &fakeEnqueuer{}
+}
 
 // ---------------------------------------------------------------------------
 // callCountingInstanceRepo wraps fakeTaskInstanceRepo and adds a configurable
@@ -29,9 +47,17 @@ func newCallCountingInstanceRepo() *callCountingInstanceRepo {
 	}
 }
 
-func (r *callCountingInstanceRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) (int, error) {
+func (r *callCountingInstanceRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
 	r.overdueAllCalls.Add(1)
-	return r.overdueAllCount, r.overdueAllErr
+	if r.overdueAllErr != nil {
+		return nil, r.overdueAllErr
+	}
+	targets := make([]domain.ReminderTarget, r.overdueAllCount)
+	return targets, nil
+}
+
+func (r *callCountingInstanceRepo) ClaimDueSoonReminders(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +92,7 @@ type blockingOverdueRepo struct {
 	calls   atomic.Int64
 }
 
-func (r *blockingOverdueRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) (int, error) {
+func (r *blockingOverdueRepo) MarkPendingOverdueAll(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
 	r.calls.Add(1)
 	// Signal that this method has been entered.
 	select {
@@ -78,7 +104,11 @@ func (r *blockingOverdueRepo) MarkPendingOverdueAll(_ context.Context, _ time.Ti
 	// (decoupled from the Run shutdown signal), so our block must survive the
 	// outer ctx cancellation.
 	<-r.release
-	return 0, nil
+	return nil, nil
+}
+
+func (r *blockingOverdueRepo) ClaimDueSoonReminders(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +116,8 @@ func (r *blockingOverdueRepo) MarkPendingOverdueAll(_ context.Context, _ time.Ti
 // ---------------------------------------------------------------------------
 
 // newTestScheduler constructs a Scheduler over the provided fakes with the
-// given poll interval.
+// given poll interval. A no-op fake enqueuer is used unless tests need to
+// inspect enqueued notifications.
 func newTestScheduler(
 	t *testing.T,
 	taskRepo *fakeRecurringTaskRepo,
@@ -98,7 +129,7 @@ func newTestScheduler(
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	s, err := app.NewScheduler(gen, instRepo, discardLogger(), pollInterval)
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), pollInterval)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -111,7 +142,7 @@ func newTestScheduler(
 
 func TestNewScheduler_NilGenerator_ReturnsError(t *testing.T) {
 	instRepo := newCallCountingInstanceRepo()
-	_, err := app.NewScheduler(nil, instRepo, discardLogger(), time.Minute)
+	_, err := app.NewScheduler(nil, instRepo, newFakeEnqueuer(), discardLogger(), time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil generator) error = nil, want non-nil")
 	}
@@ -123,9 +154,22 @@ func TestNewScheduler_NilInstanceRepo_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, nil, discardLogger(), time.Minute)
+	_, err = app.NewScheduler(gen, nil, newFakeEnqueuer(), discardLogger(), time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil instanceRepo) error = nil, want non-nil")
+	}
+}
+
+func TestNewScheduler_NilEnqueuer_ReturnsError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	gen, err := app.NewGenerator(taskRepo, instRepo.fakeTaskInstanceRepo, discardLogger(), 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+	_, err = app.NewScheduler(gen, instRepo, nil, discardLogger(), time.Minute)
+	if err == nil {
+		t.Error("NewScheduler(nil enqueuer) error = nil, want non-nil")
 	}
 }
 
@@ -136,7 +180,7 @@ func TestNewScheduler_NilLogger_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, nil, time.Minute)
+	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), nil, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil logger) error = nil, want non-nil")
 	}
@@ -149,7 +193,7 @@ func TestNewScheduler_NonPositivePollInterval_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, discardLogger(), 0)
+	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), 0)
 	if err == nil {
 		t.Error("NewScheduler(pollInterval=0) error = nil, want non-nil")
 	}
@@ -190,7 +234,7 @@ func TestScheduler_RunOnce_OverdueSweepRunsEvenWhenGenerateFails(t *testing.T) {
 	}
 
 	instRepo := newCallCountingInstanceRepo()
-	s, err := app.NewScheduler(gen, instRepo, discardLogger(), time.Minute)
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), time.Minute)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -235,7 +279,7 @@ func TestScheduler_RunOnce_GenerateFailFirst_ReturnsGenerateError(t *testing.T) 
 	instRepo := newCallCountingInstanceRepo()
 	instRepo.overdueAllErr = errors.New("db: sweep also failed")
 
-	s, err := app.NewScheduler(gen, instRepo, discardLogger(), time.Minute)
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), time.Minute)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -301,7 +345,7 @@ func TestScheduler_Run_InFlightTickCompletesBeforeStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	s, err := app.NewScheduler(gen, blockRepo, discardLogger(), 10*time.Millisecond)
+	s, err := app.NewScheduler(gen, blockRepo, newFakeEnqueuer(), discardLogger(), 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}

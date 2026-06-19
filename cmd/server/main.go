@@ -117,7 +117,10 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create task generator: %w", err)
 	}
-	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, logger, taskSchedulerPollInterval)
+	// outboxRepo satisfies notifydomain.Enqueuer (it embeds Enqueue); passing it
+	// here lets the scheduler emit due-soon and overdue reminders via the same
+	// outbox the dispatcher already consumes (NES-34).
+	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, outboxRepo, logger, taskSchedulerPollInterval)
 	if err != nil {
 		return fmt.Errorf("create task scheduler: %w", err)
 	}
