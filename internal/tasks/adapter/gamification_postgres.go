@@ -280,6 +280,133 @@ func (r *RewardPostgresRepository) Redeem(ctx context.Context, redemption *domai
 	return nil
 }
 
+// RedeemWithDebit atomically records a reward redemption and debits the
+// member's point balance in a single database transaction. It is the NES-37
+// write-path that guarantees the balance check and the debit are race-safe.
+//
+// Protocol:
+//  1. Begin a transaction.
+//  2. Acquire pg_advisory_xact_lock(hashtext(householdID || ':' || memberID)).
+//     The lock serialises concurrent redeems for the same (household, member)
+//     pair within the same Postgres instance, eliminating the TOCTOU window
+//     between reading the balance and inserting the debit row. The lock is
+//     transaction-scoped and released automatically on commit/rollback.
+//  3. Compute the member's current balance inside the transaction so the read
+//     is protected by the advisory lock.
+//  4. If balance < costPoints → rollback, return [domain.ErrInsufficientPoints].
+//  5. INSERT the reward_redemption row (status = 'requested').
+//     A 23503 FK violation on the reward column → rollback,
+//     return [domain.ErrRewardNotFound].
+//  6. INSERT a negative point_ledger row
+//     (source_type = 'redemption', points = -costPoints).
+//  7. Commit.
+//
+// Error contracts:
+//   - Returns [domain.ErrInsufficientPoints] when balance < costPoints.
+//   - Returns [domain.ErrRewardNotFound] when redemption.RewardID does not
+//     exist within the household (FK violation on reward_redemption_reward_fk).
+func (r *RewardPostgresRepository) RedeemWithDebit(
+	ctx context.Context,
+	redemption *domain.RewardRedemption,
+	costPoints int,
+) error {
+	if redemption == nil {
+		return errors.New("adapter: redeem with debit: nil redemption")
+	}
+
+	beginner, ok := r.dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return errors.New("redeem with debit: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("redeem with debit: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Step 2: serialize concurrent redeems for this (household, member) pair.
+	// pg_advisory_xact_lock takes a single int8 key; hashtext produces a 32-bit
+	// hash of the string, which fits in int8 safely. Concatenating both IDs with a
+	// separator prevents collisions between a householdID that is a prefix of a
+	// memberID.
+	const lockQ = `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2))`
+	if _, err := tx.Exec(ctx, lockQ,
+		redemption.HouseholdID.String(),
+		redemption.MemberID.String(),
+	); err != nil {
+		return fmt.Errorf("redeem with debit: advisory lock: %w", err)
+	}
+
+	// Step 3: read the current balance inside the transaction.
+	const balQ = `
+		SELECT COALESCE(SUM(points), 0)
+		  FROM point_ledger
+		 WHERE household_id = $1
+		   AND member_id    = $2`
+	var balance int
+	if err := tx.QueryRow(ctx, balQ,
+		redemption.HouseholdID.String(),
+		redemption.MemberID.String(),
+	).Scan(&balance); err != nil {
+		return fmt.Errorf("redeem with debit: read balance: %w", err)
+	}
+
+	// Step 4: guard insufficient funds.
+	if balance < costPoints {
+		return domain.ErrInsufficientPoints
+	}
+
+	// Step 5: insert the redemption row.
+	const redemptionQ = `
+		INSERT INTO reward_redemption
+			(id, household_id, reward_id, member_id, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err = tx.Exec(ctx, redemptionQ,
+		redemption.ID.String(),
+		redemption.HouseholdID.String(),
+		redemption.RewardID.String(),
+		redemption.MemberID.String(),
+		redemption.Status.String(),
+		redemption.CreatedAt,
+		redemption.UpdatedAt,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) &&
+			pgErr.Code == sqlstateForeignKeyViolation &&
+			pgErr.ConstraintName == constraintRewardRedemptionRewardFK {
+			return domain.ErrRewardNotFound
+		}
+		return fmt.Errorf("redeem with debit: insert redemption: %w", err)
+	}
+
+	// Step 6: append the debit ledger entry.
+	// source_type = 'redemption', points is negative to represent a debit.
+	// The id is generated app-side as UUIDv7 for index locality, matching all
+	// other point entry creation sites in this codebase.
+	redemptionUUID := redemption.ID.String()
+	const debitQ = `
+		INSERT INTO point_ledger
+			(id, household_id, member_id, source_type, source_id, points, created_at)
+		VALUES ($1::uuid, $2, $3, 'redemption', $4::uuid, $5, now())`
+	if _, err := tx.Exec(ctx, debitQ,
+		domain.NewPointEntryID().String(),
+		redemption.HouseholdID.String(),
+		redemption.MemberID.String(),
+		redemptionUUID,
+		-costPoints,
+	); err != nil {
+		return fmt.Errorf("redeem with debit: insert ledger debit: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("redeem with debit: commit: %w", err)
+	}
+	return nil
+}
+
 // scanReward scans a reward row from r into a new [domain.Reward].
 func scanReward(r row) (*domain.Reward, error) {
 	var (

@@ -1,0 +1,193 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// View models
+// ---------------------------------------------------------------------------
+
+// LeaderboardRow is the view model for one member in the scoreboard.
+type LeaderboardRow struct {
+	// MemberID is the string form of the member's UUID (used as a stable key).
+	MemberID string
+	// Name is the member's display name.
+	Name string
+	// Color is the A·Hearth palette key for the member's avatar tint.
+	Color string
+	// Points is the member's all-time point total.
+	Points int
+	// Streak is the member's current consecutive-day streak (0 = no streak).
+	Streak int
+	// IsCurrentMember is true for the authenticated member viewing the page.
+	IsCurrentMember bool
+}
+
+// RewardItem is the view model for one reward in the rewards catalog.
+type RewardItem struct {
+	// ID is the string form of the RewardID UUID; used in the redeem form URL.
+	ID string
+	// Name is the human-readable reward name.
+	Name string
+	// CostPoints is the point cost to redeem this reward.
+	CostPoints int
+	// Affordable is true when the current member's balance >= CostPoints, i.e.
+	// the Redeem button should be active.
+	Affordable bool
+}
+
+// RewardsPage is the view model for the /rewards page.
+type RewardsPage struct {
+	// Leaderboard is the household-wide ranking, ordered by points descending.
+	Leaderboard []LeaderboardRow
+	// Balance is the current member's point total, displayed prominently.
+	Balance int
+	// Rewards is the active reward catalogue.
+	Rewards []RewardItem
+	// CSRFToken is the per-session CSRF token embedded in every redeem form.
+	CSRFToken string
+	// InsufficientMessage is set when the previous redeem attempt was rejected
+	// due to insufficient points; empty means no error banner is shown.
+	InsufficientMessage string
+}
+
+// ---------------------------------------------------------------------------
+// Top-level page
+// ---------------------------------------------------------------------------
+
+// RewardsPageComponent renders the scoreboard + rewards catalog inside the
+// A·Hearth app shell. The layout wrapper is supplied by the caller.
+templ RewardsPageComponent(page RewardsPage) {
+	<div class="p-6">
+		<div class="mb-6">
+			<h1 class="text-2xl font-semibold">Rewards &amp; Scoreboard</h1>
+			<p class="mt-1 text-sm text-ink-muted">Earn points by completing tasks and redeem them for rewards.</p>
+		</div>
+		<!-- Insufficient points error banner -->
+		if page.InsufficientMessage != "" {
+			<div role="alert" class="mb-4 rounded-card border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+				{ page.InsufficientMessage }
+			</div>
+		}
+		<div class="grid gap-6 lg:grid-cols-2">
+			<!-- Left: balance + leaderboard -->
+			<div class="flex flex-col gap-4">
+				@BalanceCard(page.Balance)
+				@Leaderboard(page.Leaderboard)
+			</div>
+			<!-- Right: rewards catalog -->
+			@RewardsCatalog(page.Rewards, page.CSRFToken)
+		</div>
+	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Balance card
+// ---------------------------------------------------------------------------
+
+// BalanceCard renders the current member's point total prominently.
+templ BalanceCard(balance int) {
+	<div class="rounded-card bg-surface p-6 shadow-warm">
+		<h2 class="mb-1 text-sm font-semibold uppercase tracking-wide text-ink-muted">Your Balance</h2>
+		<p class="text-4xl font-bold text-sage">{ fmt.Sprintf("%d", balance) } <span class="text-xl font-medium text-ink-muted">pts</span></p>
+	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Leaderboard
+// ---------------------------------------------------------------------------
+
+// Leaderboard renders the household-wide point ranking with streak badges.
+// Members with the same point total appear in the order supplied by the handler
+// (secondary sort by member_id, as defined in the Leaderboard query).
+templ Leaderboard(rows []LeaderboardRow) {
+	<div class="rounded-card bg-surface p-4 shadow-warm">
+		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Leaderboard</h2>
+		if len(rows) == 0 {
+			<p class="text-sm text-ink-muted">No points yet — complete some tasks to get started!</p>
+		} else {
+			<ol class="flex flex-col gap-2">
+				for i, row := range rows {
+					@leaderboardRow(i+1, row)
+				}
+			</ol>
+		}
+	</div>
+}
+
+// leaderboardRow renders one entry in the leaderboard.
+templ leaderboardRow(rank int, row LeaderboardRow) {
+	<li
+		class={
+			"flex items-center gap-3 rounded-control px-3 py-2",
+			templ.KV("bg-sage-tint", row.IsCurrentMember),
+		}
+	>
+		<span class="w-5 text-right text-sm font-semibold text-ink-muted">{ fmt.Sprintf("%d", rank) }</span>
+		<span
+			class={ "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold", memberTintClass(row.Color) }
+			aria-hidden="true"
+		></span>
+		<span class="flex-1 truncate text-sm font-medium text-ink">{ row.Name }</span>
+		if row.Streak > 0 {
+			@StreakBadge(row.Streak)
+		}
+		<span class="text-sm font-semibold text-ink">{ fmt.Sprintf("%d pts", row.Points) }</span>
+	</li>
+}
+
+// ---------------------------------------------------------------------------
+// Streak badge
+// ---------------------------------------------------------------------------
+
+// StreakBadge renders a "N day streak" badge for a member who has completed at
+// least one task on each of N consecutive days ending at or immediately before
+// today (see CurrentStreak in internal/tasks/domain/streak.go for the rule).
+templ StreakBadge(days int) {
+	<span class="inline-flex items-center gap-1 rounded-control bg-member-ochre-tint px-2 py-0.5 text-xs font-medium text-member-ochre-fg">
+		{ fmt.Sprintf("%d day streak", days) }
+	</span>
+}
+
+// ---------------------------------------------------------------------------
+// Rewards catalog
+// ---------------------------------------------------------------------------
+
+// RewardsCatalog renders the list of redeemable rewards.
+templ RewardsCatalog(rewards []RewardItem, csrfToken string) {
+	<div class="rounded-card bg-surface p-4 shadow-warm">
+		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Rewards</h2>
+		if len(rewards) == 0 {
+			<p class="text-sm text-ink-muted">No rewards are available right now.</p>
+		} else {
+			<ul class="flex flex-col gap-3">
+				for _, r := range rewards {
+					@RewardCard(r, csrfToken)
+				}
+			</ul>
+		}
+	</div>
+}
+
+// RewardCard renders a single reward with its name, point cost, and a Redeem
+// button that is disabled when the current member cannot afford it.
+templ RewardCard(r RewardItem, csrfToken string) {
+	<li class="flex items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface-warm px-4 py-3">
+		<div class="min-w-0 flex-1">
+			<p class="truncate font-medium text-ink">{ r.Name }</p>
+			<p class="text-sm text-ink-muted">{ fmt.Sprintf("%d pts", r.CostPoints) }</p>
+		</div>
+		if r.Affordable {
+			<form method="post" action={ templ.SafeURL(fmt.Sprintf("/rewards/%s/redeem", r.ID)) }>
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				@Button("Redeem", ButtonPrimary, "submit")
+			</form>
+		} else {
+			<button
+				type="button"
+				disabled
+				aria-disabled="true"
+				class="inline-flex cursor-not-allowed items-center justify-center rounded-control px-4 py-2 font-medium opacity-40 bg-sage text-white shadow-warm"
+			>Redeem</button>
+		}
+	</li>
+}

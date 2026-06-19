@@ -100,6 +100,12 @@ type RecurringTaskRepository interface {
 // RecurringTaskID that belongs to a different household is treated as unknown
 // (yields [ErrInstanceNotFound]).
 //
+// NES-37 addition:
+//   - CompletionDays returns the distinct calendar days (midnight UTC) on which
+//     the given member completed at least one task within the household, filtered
+//     to rows with completed_at >= since. The result is ordered ascending and is
+//     used by the streak calculation ([CurrentStreak]).
+//
 // Persistence contracts:
 //   - Insert expects inst.ID, inst.RecurringTaskID, inst.HouseholdID, inst.DueOn,
 //     inst.Status, and optionally inst.AssigneeID set. The store sets CreatedAt
@@ -227,4 +233,11 @@ type TaskInstanceRepository interface {
 	// system-process recovery method reserved for the background scheduler
 	// (NES-34) and must not be called from user-facing request handlers.
 	ClearDueSoonReminder(ctx context.Context, id TaskInstanceID) error
+
+	// CompletionDays returns the distinct calendar days (midnight UTC) on which
+	// member completed at least one task within the household, restricted to rows
+	// whose completed_at is at or after since.  Results are ordered ascending.
+	// Returns an empty slice (not an error) when no completions match.
+	// Used by the NES-37 streak calculation.
+	CompletionDays(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, since time.Time) ([]time.Time, error)
 }

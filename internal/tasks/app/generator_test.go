@@ -303,6 +303,13 @@ func (r *fakeTaskInstanceRepo) ClearDueSoonReminder(_ context.Context, _ domain.
 	return nil
 }
 
+func (r *fakeTaskInstanceRepo) CompletionDays(_ context.Context, _ household.HouseholdID, _ household.MemberID, _ time.Time) ([]time.Time, error) {
+	return nil, nil
+}
+
+// Compile-time assertion.
+var _ domain.TaskInstanceRepository = (*fakeTaskInstanceRepo)(nil)
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

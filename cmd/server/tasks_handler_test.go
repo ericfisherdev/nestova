@@ -123,6 +123,10 @@ func (f *fakeTaskInstanceRepo) ClearDueSoonReminder(_ context.Context, _ tasksdo
 	return nil
 }
 
+func (f *fakeTaskInstanceRepo) CompletionDays(_ context.Context, _ household.HouseholdID, _ household.MemberID, _ time.Time) ([]time.Time, error) {
+	return nil, nil
+}
+
 // Compile-time assertion.
 var _ tasksdomain.TaskInstanceRepository = (*fakeTaskInstanceRepo)(nil)
 
@@ -146,9 +150,10 @@ func buildTaskTestHandler(instanceRepo *fakeTaskInstanceRepo) http.Handler {
 		panic("buildTaskTestHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger)
+	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationHandlers)
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

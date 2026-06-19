@@ -20,6 +20,7 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
+	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
 
 // testCredRepo is a no-op CredentialRepository used in unit tests that have no
@@ -86,6 +87,78 @@ func (testProvisioner) ProvisionMember(_ context.Context, _ *household.Member, _
 // Compile-time assertion.
 var _ authadapter.Provisioner = testProvisioner{}
 
+// ---------------------------------------------------------------------------
+// Gamification fakes — no-op implementations of the gamification ports used
+// to construct a GamificationWebHandlers in tests that do not exercise those
+// routes.
+// ---------------------------------------------------------------------------
+
+// fakePointLedgerRepo is a no-op PointLedgerRepository for unit tests.
+type fakePointLedgerRepo struct{}
+
+func (fakePointLedgerRepo) Append(_ context.Context, _ *tasksdomain.PointEntry) error {
+	return nil
+}
+
+func (fakePointLedgerRepo) Balance(_ context.Context, _ household.HouseholdID, _ household.MemberID) (int, error) {
+	return 0, nil
+}
+
+func (fakePointLedgerRepo) Leaderboard(_ context.Context, _ household.HouseholdID, _ time.Time) ([]tasksdomain.MemberPoints, error) {
+	return nil, nil
+}
+
+// Compile-time assertion.
+var _ tasksdomain.PointLedgerRepository = fakePointLedgerRepo{}
+
+// fakeRewardRepo is a no-op RewardRepository for unit tests.
+type fakeRewardRepo struct{}
+
+func (fakeRewardRepo) CreateReward(_ context.Context, _ *tasksdomain.Reward) error { return nil }
+
+func (fakeRewardRepo) GetReward(_ context.Context, _ household.HouseholdID, _ tasksdomain.RewardID) (*tasksdomain.Reward, error) {
+	return nil, tasksdomain.ErrRewardNotFound
+}
+
+func (fakeRewardRepo) ListActiveRewards(_ context.Context, _ household.HouseholdID) ([]*tasksdomain.Reward, error) {
+	return nil, nil
+}
+
+func (fakeRewardRepo) Redeem(_ context.Context, _ *tasksdomain.RewardRedemption) error {
+	return nil
+}
+
+// RedeemWithDebit satisfies the tasksapp.RewardRedeemer interface so this fake
+// can be passed to NewRewardService.
+func (fakeRewardRepo) RedeemWithDebit(_ context.Context, _ *tasksdomain.RewardRedemption, _ int) error {
+	return nil
+}
+
+// Compile-time assertion.
+var _ tasksdomain.RewardRepository = fakeRewardRepo{}
+
+// newTestGamificationHandlers builds a GamificationWebHandlers wired with all
+// no-op fakes. Used by tests that need registerWebRoutes to compile but do not
+// exercise /rewards routes.
+func newTestGamificationHandlers(
+	instanceRepo tasksdomain.TaskInstanceRepository,
+	householdRepo household.HouseholdRepository,
+	sm *scs.SessionManager,
+	logger *slog.Logger,
+) *tasksadapter.GamificationWebHandlers {
+	rewardRepo := fakeRewardRepo{}
+	rewardSvc := tasksapp.NewRewardService(rewardRepo, logger)
+	return tasksadapter.NewGamificationWebHandlers(
+		fakePointLedgerRepo{},
+		rewardRepo,
+		rewardSvc,
+		instanceRepo,
+		householdRepo,
+		sm,
+		logger,
+	)
+}
+
 func newTestSessionManager() *scs.SessionManager {
 	sm := scs.New()
 	sm.Store = memstore.New()
@@ -112,9 +185,10 @@ func buildTestHandler() http.Handler {
 		panic("buildTestHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, taskRecurringRepo, taskInstanceRepo, repo, sm, logger)
+	gamificationHandlers := newTestGamificationHandlers(taskInstanceRepo, repo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo, taskWebHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo, taskWebHandlers, gamificationHandlers)
 
 	// Apply the session middleware so CSRF tokens and member lookups work.
 	return sm.LoadAndSave(
