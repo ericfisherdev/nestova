@@ -42,6 +42,11 @@ type fakeInstanceRepoWithDueSoon struct {
 	*fakeTaskInstanceRepo
 	dueSoonTargets []domain.ReminderTarget
 	dueSoonErr     error
+	// clearedIDs records the instance IDs passed to ClearDueSoonReminder so
+	// recovery tests can assert the un-stamp path ran.
+	clearedIDs []domain.TaskInstanceID
+	// clearErr, when set, makes ClearDueSoonReminder fail.
+	clearErr error
 }
 
 func (r *fakeInstanceRepoWithDueSoon) ClaimDueSoonReminders(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
@@ -53,6 +58,11 @@ func (r *fakeInstanceRepoWithDueSoon) ClaimDueSoonReminders(_ context.Context, _
 
 func (r *fakeInstanceRepoWithDueSoon) MarkPendingOverdueAll(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
 	return nil, nil
+}
+
+func (r *fakeInstanceRepoWithDueSoon) ClearDueSoonReminder(_ context.Context, id domain.TaskInstanceID) error {
+	r.clearedIDs = append(r.clearedIDs, id)
+	return r.clearErr
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +118,8 @@ func TestNewReminders_NilLogger_ReturnsError(t *testing.T) {
 
 // TestEmitOverdue_EnqueuesOneNotificationPerTarget verifies that EmitOverdue
 // calls Enqueue once for each target with the correct SourceID, MemberID,
-// Channel, SourceType, and an overdue Title prefix.
+// Channel, SourceType, an overdue Title prefix, and the immediate-delivery
+// contract (ScheduledFor == asOf, Status == StatusPending).
 func TestEmitOverdue_EnqueuesOneNotificationPerTarget(t *testing.T) {
 	enqueuer := newFakeEnqueuer()
 	r, err := app.NewReminders(newFakeTaskInstanceRepo(), enqueuer, discardLogger())
@@ -116,10 +127,15 @@ func TestEmitOverdue_EnqueuesOneNotificationPerTarget(t *testing.T) {
 		t.Fatalf("NewReminders: %v", err)
 	}
 
+	// asOf differs from the targets' DueOn so the ScheduledFor==asOf check is
+	// meaningful (DueOn is 2025-03-10; asOf is a distinct, later instant).
+	asOf := time.Date(2025, 4, 1, 9, 30, 0, 0, time.UTC)
 	tgt1 := newReminderTarget(domain.ReminderOverdue, true)
 	tgt2 := newReminderTarget(domain.ReminderOverdue, false) // no assignee → household-wide
 
-	r.EmitOverdue(context.Background(), time.Now(), []domain.ReminderTarget{tgt1, tgt2})
+	if emitErr := r.EmitOverdue(context.Background(), asOf, []domain.ReminderTarget{tgt1, tgt2}); emitErr != nil {
+		t.Fatalf("EmitOverdue returned error on all-success batch: %v", emitErr)
+	}
 
 	if len(enqueuer.notifications) != 2 {
 		t.Fatalf("enqueued %d notifications, want 2", len(enqueuer.notifications))
@@ -143,9 +159,20 @@ func TestEmitOverdue_EnqueuesOneNotificationPerTarget(t *testing.T) {
 	if n1.HouseholdID != tgt1.HouseholdID {
 		t.Errorf("n1.HouseholdID = %v, want %v", n1.HouseholdID, tgt1.HouseholdID)
 	}
-	// Title must contain "overdue".
+	// Title must be populated.
 	if n1.Title == "" {
 		t.Error("n1.Title is empty")
+	}
+	// Immediate-delivery contract: ScheduledFor is asOf (not the due date), and
+	// the notification is enqueued pending.
+	if !n1.ScheduledFor.Equal(asOf) {
+		t.Errorf("n1.ScheduledFor = %v, want asOf %v", n1.ScheduledFor, asOf)
+	}
+	if n1.ScheduledFor.Equal(tgt1.DueOn) {
+		t.Error("n1.ScheduledFor == DueOn, want it set to asOf for immediate delivery")
+	}
+	if n1.Status != notifydomain.StatusPending {
+		t.Errorf("n1.Status = %v, want StatusPending", n1.Status)
 	}
 
 	// Verify target 2 — household-wide (no member).
@@ -153,11 +180,18 @@ func TestEmitOverdue_EnqueuesOneNotificationPerTarget(t *testing.T) {
 	if n2.MemberID != nil {
 		t.Errorf("n2.MemberID = %v, want nil for unassigned target", n2.MemberID)
 	}
+	if !n2.ScheduledFor.Equal(asOf) {
+		t.Errorf("n2.ScheduledFor = %v, want asOf %v", n2.ScheduledFor, asOf)
+	}
+	if n2.Status != notifydomain.StatusPending {
+		t.Errorf("n2.Status = %v, want StatusPending", n2.Status)
+	}
 }
 
 // TestEmitOverdue_OneEnqueueErrorDoesNotAbortBatch verifies that when the
-// second of three enqueue calls fails, the third target is still processed and
-// two total notifications are enqueued.
+// second of three enqueue calls fails, the third target is still processed
+// (two total notifications enqueued) AND EmitOverdue returns a non-nil
+// aggregated error so the failure is surfaced rather than masked.
 func TestEmitOverdue_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
 	enqueuer := &fakeEnqueuerWithError{errOnCall: 2}
 	r, err := app.NewReminders(newFakeTaskInstanceRepo(), enqueuer, discardLogger())
@@ -171,7 +205,10 @@ func TestEmitOverdue_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
 		newReminderTarget(domain.ReminderOverdue, false),
 	}
 
-	r.EmitOverdue(context.Background(), time.Now(), targets)
+	emitErr := r.EmitOverdue(context.Background(), time.Now(), targets)
+	if emitErr == nil {
+		t.Error("EmitOverdue error = nil, want non-nil when an enqueue failed")
+	}
 
 	// errOnCall=2 means the second call errors, so only 2 succeed.
 	if len(enqueuer.notifications) != 2 {
@@ -180,7 +217,7 @@ func TestEmitOverdue_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
 }
 
 // TestEmitOverdue_EmptyTargets_EnqueuesNothing verifies that EmitOverdue with
-// an empty slice performs no enqueue calls.
+// an empty slice performs no enqueue calls and returns nil.
 func TestEmitOverdue_EmptyTargets_EnqueuesNothing(t *testing.T) {
 	enqueuer := newFakeEnqueuer()
 	r, err := app.NewReminders(newFakeTaskInstanceRepo(), enqueuer, discardLogger())
@@ -188,7 +225,9 @@ func TestEmitOverdue_EmptyTargets_EnqueuesNothing(t *testing.T) {
 		t.Fatalf("NewReminders: %v", err)
 	}
 
-	r.EmitOverdue(context.Background(), time.Now(), nil)
+	if emitErr := r.EmitOverdue(context.Background(), time.Now(), nil); emitErr != nil {
+		t.Errorf("EmitOverdue(empty) error = %v, want nil", emitErr)
+	}
 
 	if len(enqueuer.notifications) != 0 {
 		t.Errorf("enqueued %d notifications for empty targets, want 0", len(enqueuer.notifications))
@@ -216,7 +255,8 @@ func TestEmitDueSoon_EnqueuesOneNotificationPerClaimedTarget(t *testing.T) {
 		t.Fatalf("NewReminders: %v", err)
 	}
 
-	if err := r.EmitDueSoon(context.Background(), time.Now()); err != nil {
+	asOf := time.Date(2025, 3, 8, 7, 15, 0, 0, time.UTC) // distinct from tgt.DueOn
+	if err := r.EmitDueSoon(context.Background(), asOf); err != nil {
 		t.Fatalf("EmitDueSoon: %v", err)
 	}
 
@@ -240,6 +280,22 @@ func TestEmitDueSoon_EnqueuesOneNotificationPerClaimedTarget(t *testing.T) {
 	}
 	if n.Title == "" {
 		t.Error("Title is empty")
+	}
+	// Immediate-delivery contract: ScheduledFor is asOf (not the due date), and
+	// the notification is enqueued pending.
+	if !n.ScheduledFor.Equal(asOf) {
+		t.Errorf("ScheduledFor = %v, want asOf %v", n.ScheduledFor, asOf)
+	}
+	if n.ScheduledFor.Equal(tgt.DueOn) {
+		t.Error("ScheduledFor == DueOn, want it set to asOf for immediate delivery")
+	}
+	if n.Status != notifydomain.StatusPending {
+		t.Errorf("Status = %v, want StatusPending", n.Status)
+	}
+
+	// Happy path must NOT clear any reminders.
+	if len(instRepo.clearedIDs) != 0 {
+		t.Errorf("ClearDueSoonReminder called %d times on success, want 0", len(instRepo.clearedIDs))
 	}
 }
 
@@ -268,15 +324,16 @@ func TestEmitDueSoon_ClaimError_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestEmitDueSoon_OneEnqueueErrorDoesNotAbortBatch verifies that a failing
-// enqueue for one due-soon target does not prevent remaining targets from
-// being enqueued. The error is logged but EmitDueSoon returns nil.
-func TestEmitDueSoon_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
+// TestEmitDueSoon_OneEnqueueErrorClearsAndSurfaces verifies that a failing
+// enqueue for one due-soon target (a) does not prevent remaining targets from
+// being enqueued, (b) calls ClearDueSoonReminder for the failed target so the
+// reminder is retried next tick, and (c) returns a non-nil aggregated error so
+// the failure is surfaced rather than masked.
+func TestEmitDueSoon_OneEnqueueErrorClearsAndSurfaces(t *testing.T) {
 	enqueuer := &fakeEnqueuerWithError{errOnCall: 1} // first call errors
-	targets := []domain.ReminderTarget{
-		newReminderTarget(domain.ReminderDueSoon, false),
-		newReminderTarget(domain.ReminderDueSoon, false),
-	}
+	failedTarget := newReminderTarget(domain.ReminderDueSoon, false)
+	okTarget := newReminderTarget(domain.ReminderDueSoon, false)
+	targets := []domain.ReminderTarget{failedTarget, okTarget}
 
 	instRepo := &fakeInstanceRepoWithDueSoon{
 		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
@@ -288,13 +345,50 @@ func TestEmitDueSoon_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
 		t.Fatalf("NewReminders: %v", err)
 	}
 
-	if err := r.EmitDueSoon(context.Background(), time.Now()); err != nil {
-		t.Fatalf("EmitDueSoon returned error for mid-batch enqueue failure: %v", err)
+	emitErr := r.EmitDueSoon(context.Background(), time.Now())
+	if emitErr == nil {
+		t.Error("EmitDueSoon error = nil, want non-nil when an enqueue failed")
 	}
 
 	// Only 1 of 2 enqueues succeeded (first errored, second succeeded).
 	if len(enqueuer.notifications) != 1 {
 		t.Errorf("enqueued %d notifications, want 1 (second target succeeded)", len(enqueuer.notifications))
+	}
+
+	// The failed target's reminded_at must have been cleared for retry.
+	if len(instRepo.clearedIDs) != 1 {
+		t.Fatalf("ClearDueSoonReminder called %d times, want 1", len(instRepo.clearedIDs))
+	}
+	if instRepo.clearedIDs[0] != failedTarget.InstanceID {
+		t.Errorf("cleared instance = %v, want failed target %v", instRepo.clearedIDs[0], failedTarget.InstanceID)
+	}
+}
+
+// TestEmitDueSoon_ClearFailureStillSurfacesEnqueueError verifies that when both
+// the enqueue and the recovery clear fail, EmitDueSoon still returns a non-nil
+// error (the enqueue failure is what matters; the clear failure is only logged).
+func TestEmitDueSoon_ClearFailureStillSurfacesEnqueueError(t *testing.T) {
+	enqueuer := &fakeEnqueuerWithError{errOnCall: 1}
+	tgt := newReminderTarget(domain.ReminderDueSoon, false)
+
+	instRepo := &fakeInstanceRepoWithDueSoon{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		dueSoonTargets:       []domain.ReminderTarget{tgt},
+		clearErr:             errors.New("db: clear failed"),
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	emitErr := r.EmitDueSoon(context.Background(), time.Now())
+	if emitErr == nil {
+		t.Error("EmitDueSoon error = nil, want non-nil when enqueue failed (even though clear also failed)")
+	}
+	// The clear was still attempted.
+	if len(instRepo.clearedIDs) != 1 {
+		t.Errorf("ClearDueSoonReminder called %d times, want 1", len(instRepo.clearedIDs))
 	}
 }
 
@@ -346,7 +440,9 @@ func TestReminders_Integration_EmitsOverdueAndDueSoon(t *testing.T) {
 	}
 
 	// Emit overdue for the 2 overdue targets.
-	reminders.EmitOverdue(context.Background(), time.Now(), repo.overdueTargets)
+	if err := reminders.EmitOverdue(context.Background(), time.Now(), repo.overdueTargets); err != nil {
+		t.Fatalf("EmitOverdue: %v", err)
+	}
 	// Emit due-soon (calls ClaimDueSoonReminders on repo which returns 1 target).
 	if err := reminders.EmitDueSoon(context.Background(), time.Now()); err != nil {
 		t.Fatalf("EmitDueSoon: %v", err)

@@ -180,16 +180,36 @@ type TaskInstanceRepository interface {
 	// here as for [RecurringTaskRepository.ListAllActive].
 	MarkPendingOverdueAll(ctx context.Context, asOf time.Time) ([]ReminderTarget, error)
 
-	// ClaimDueSoonReminders atomically selects pending instances that have
-	// entered their lead-time window (due_on - lead_time_days <= asOf) and have
+	// ClaimDueSoonReminders atomically selects pending instances inside the
+	// closed due-soon window (asOf <= due_on <= asOf + lead_time_days) that have
 	// not yet been reminded (reminded_at IS NULL), marks reminded_at = now() on
 	// each, and returns them as [ReminderTarget] values (Kind=[ReminderDueSoon]).
 	// Because reminded_at is set atomically, a row is returned at most once
 	// across concurrent or repeated calls — the idempotency guarantee.
+	//
+	// The lower bound (due_on >= asOf) excludes past-due pending rows: those are
+	// overdue and belong to the [MarkPendingOverdueAll] path, so an overdue-sweep
+	// failure in the same tick cannot leak a past-due row into the due-soon
+	// stream.
 	//
 	// WARNING: this method is intentionally NOT household-scoped. It is a
 	// system-process method reserved for the background scheduler (NES-34) and
 	// must not be called from user-facing request handlers. The same precedent
 	// applies here as for [RecurringTaskRepository.ListAllActive].
 	ClaimDueSoonReminders(ctx context.Context, asOf time.Time) ([]ReminderTarget, error)
+
+	// ClearDueSoonReminder resets reminded_at to NULL for the instance, making it
+	// eligible for re-claim by [ClaimDueSoonReminders] on a later tick. It is the
+	// recovery counterpart to ClaimDueSoonReminders: when the caller fails to
+	// enqueue a due-soon notification after the row was claimed (reminded_at
+	// stamped), clearing reminded_at prevents the reminder from being lost
+	// permanently.
+	//
+	// It is a no-op (nil error) when id is unknown — recovery must be idempotent
+	// and tolerant of a row deleted between claim and clear.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process recovery method reserved for the background scheduler
+	// (NES-34) and must not be called from user-facing request handlers.
+	ClearDueSoonReminder(ctx context.Context, id TaskInstanceID) error
 }
