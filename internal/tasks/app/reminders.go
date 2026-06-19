@@ -62,48 +62,87 @@ func NewReminders(
 // called by [Scheduler.RunOnce] with the targets returned by
 // [domain.TaskInstanceRepository.MarkPendingOverdueAll].
 //
-// One failing enqueue is logged and does not abort the batch.
-func (r *Reminders) EmitOverdue(ctx context.Context, asOf time.Time, targets []domain.ReminderTarget) {
+// A single failing enqueue is logged and does not abort the batch — every
+// target is attempted. It returns a non-nil aggregated error when any enqueue
+// failed, so the caller can surface the failure rather than silently succeed.
+//
+// Unlike due-soon, an overdue reminder cannot be "un-transitioned": the row is
+// already overdue and stays visibly overdue in the UI, so the user is not left
+// unaware even when the notification enqueue fails. The returned error exists
+// only to make the failure observable upstream.
+func (r *Reminders) EmitOverdue(ctx context.Context, asOf time.Time, targets []domain.ReminderTarget) error {
+	var failures int
 	for _, tgt := range targets {
-		r.enqueueReminder(ctx, asOf, tgt)
+		if err := r.enqueueReminder(ctx, asOf, tgt); err != nil {
+			failures++
+		}
 	}
+	if failures > 0 {
+		return fmt.Errorf("reminders: %d of %d overdue enqueues failed", failures, len(targets))
+	}
+	return nil
 }
 
 // EmitDueSoon calls [domain.TaskInstanceRepository.ClaimDueSoonReminders] to
-// atomically claim pending instances that have entered their lead-time window
-// and not yet been reminded, then enqueues one in-app notification per claimed
-// target.
+// atomically claim pending instances inside the due-soon window that have not
+// yet been reminded, then enqueues one in-app notification per claimed target.
 //
-// Returns any error from ClaimDueSoonReminders. Individual enqueue failures
-// are logged but do not abort the batch or contribute to the returned error.
+// Recovery: ClaimDueSoonReminders stamps reminded_at BEFORE this method
+// enqueues, so a failed enqueue would otherwise drop the reminder permanently.
+// To make it recoverable, a failed enqueue triggers
+// [domain.TaskInstanceRepository.ClearDueSoonReminder] to reset reminded_at to
+// NULL, so the next tick re-claims and retries the row. A failed clear is
+// logged (the reminder is then lost until the row's state changes, which is the
+// best we can do).
+//
+// Returns a non-nil error when ClaimDueSoonReminders fails OR when any enqueue
+// failed, so the scheduler surfaces the failure instead of masking it.
 func (r *Reminders) EmitDueSoon(ctx context.Context, asOf time.Time) error {
 	targets, err := r.instanceRepo.ClaimDueSoonReminders(ctx, asOf)
 	if err != nil {
 		return fmt.Errorf("reminders: claim due-soon: %w", err)
 	}
+
+	var failures int
 	for _, tgt := range targets {
-		r.enqueueReminder(ctx, asOf, tgt)
+		if enqErr := r.enqueueReminder(ctx, asOf, tgt); enqErr != nil {
+			failures++
+			// Un-stamp reminded_at so the row is re-claimed and retried next tick.
+			if clearErr := r.instanceRepo.ClearDueSoonReminder(ctx, tgt.InstanceID); clearErr != nil {
+				r.logger.Error("reminders: clear due-soon reminder failed; reminder may be lost until row changes",
+					"instance_id", tgt.InstanceID.String(),
+					"error", clearErr,
+				)
+			}
+		}
 	}
-	r.logger.Info("reminders: due-soon emitted", "count", len(targets))
+
+	r.logger.Info("reminders: due-soon emitted",
+		"count", len(targets), "failures", failures)
+
+	if failures > 0 {
+		return fmt.Errorf("reminders: %d of %d due-soon enqueues failed", failures, len(targets))
+	}
 	return nil
 }
 
-// enqueueReminder builds and enqueues a single notification for the target. A
-// failing enqueue is logged and ignored so the caller's batch is never aborted
-// by one notification failure.
+// enqueueReminder builds and enqueues a single notification for the target. It
+// returns the enqueue error (nil on success) so callers can take recovery
+// action; the error is also logged here. A blank-title target or unknown kind
+// is logged and skipped, returning nil (nothing to retry).
 //
 // ScheduledFor is set to asOf (the reminder's emission time) so the dispatcher
 // delivers it immediately — a due-soon reminder is an advance heads-up and an
 // overdue reminder is already late, so neither should wait until the due date.
 // No PII is logged — only task instance ID and kind.
-func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt domain.ReminderTarget) {
+func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt domain.ReminderTarget) error {
 	// A target with no title means its recurring_task could not be resolved
 	// (should be impossible given the ON DELETE CASCADE FK). Skip rather than
-	// enqueue a blank-content notification.
+	// enqueue a blank-content notification; there is nothing to retry.
 	if tgt.Title == "" {
 		r.logger.Warn("reminders: skipping target with no resolved task title",
 			"instance_id", tgt.InstanceID.String(), "kind", tgt.Kind.String())
-		return
+		return nil
 	}
 
 	label := categoryLabel(tgt.Category)
@@ -121,7 +160,7 @@ func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt dom
 			"kind", tgt.Kind,
 			"instance_id", tgt.InstanceID.String(),
 		)
-		return
+		return nil
 	}
 
 	instUUID := uuid.UUID(tgt.InstanceID)
@@ -144,5 +183,7 @@ func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt dom
 			"kind", tgt.Kind.String(),
 			"error", err,
 		)
+		return fmt.Errorf("reminders: enqueue instance %s: %w", tgt.InstanceID.String(), err)
 	}
+	return nil
 }

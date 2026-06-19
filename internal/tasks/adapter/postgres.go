@@ -748,10 +748,16 @@ func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf
 	return scanReminderRows(ctx, rows, domain.ReminderOverdue, "mark pending overdue all", r)
 }
 
-// ClaimDueSoonReminders atomically selects pending instances that have entered
-// their lead-time window (due_on - lead_time_days <= asOf) and have not yet
+// ClaimDueSoonReminders atomically selects pending instances inside the closed
+// due-soon window (asOf <= due_on <= asOf + lead_time_days) that have not yet
 // been reminded (reminded_at IS NULL), stamps reminded_at = now() on each, and
 // returns them as [domain.ReminderTarget] values (Kind=[domain.ReminderDueSoon]).
+//
+// The lower bound (due_on >= asOf) deliberately excludes already-past-due rows:
+// a pending row with due_on < asOf is overdue (or about to be transitioned by
+// the overdue sweep) and must be handled by the overdue path, not the due-soon
+// path. Without the lower bound, an overdue sweep failure in the same tick would
+// leak a past-due pending row into the due-soon stream.
 //
 // A CTE with SELECT … FOR UPDATE SKIP LOCKED + UPDATE keeps the claim atomic
 // and safe for concurrent callers. Because reminded_at is set in the same
@@ -761,10 +767,12 @@ func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf
 // system-process method reserved for the background scheduler (NES-34) and
 // must not be called from user-facing request handlers.
 func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf time.Time) ([]domain.ReminderTarget, error) {
-	// The lead-time condition: due_on - lead_time_days <= asOf means the
-	// instance has entered its visibility window. Expressed as
+	// Closed due-soon window: asOf <= due_on <= asOf + lead_time_days. The upper
+	// bound is expressed as
 	//   ti.due_on <= $1::date + make_interval(days => rt.lead_time_days)
-	// so Postgres can use the partial index on due_on.
+	// so Postgres can use the partial index on due_on; the lower bound
+	// (ti.due_on >= $1::date) excludes past-due pending rows from the due-soon
+	// stream.
 	const q = `
 		WITH due AS (
 			SELECT ti.id
@@ -772,6 +780,7 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 			  JOIN recurring_task rt ON rt.id = ti.recurring_task_id
 			 WHERE ti.status       = 'pending'
 			   AND ti.reminded_at IS NULL
+			   AND ti.due_on      >= $1::date
 			   AND ti.due_on      <= $1::date + make_interval(days => rt.lead_time_days)
 			   FOR UPDATE OF ti SKIP LOCKED
 		)
@@ -789,6 +798,25 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 	defer rows.Close()
 
 	return scanReminderRows(ctx, rows, domain.ReminderDueSoon, "claim due-soon reminders", r)
+}
+
+// ClearDueSoonReminder resets reminded_at to NULL for the instance so a later
+// [ClaimDueSoonReminders] call can re-claim it. It is the recovery counterpart
+// to ClaimDueSoonReminders: the caller invokes it when a due-soon enqueue fails
+// after the row was claimed, so the reminder is retried instead of lost.
+//
+// An unknown id is a no-op (nil error): recovery must be idempotent and
+// tolerant of a row deleted between claim and clear.
+//
+// WARNING: this method is intentionally NOT household-scoped. It is a
+// system-process recovery method reserved for the background scheduler (NES-34)
+// and must not be called from user-facing request handlers.
+func (r *TaskInstanceRepository) ClearDueSoonReminder(ctx context.Context, id domain.TaskInstanceID) error {
+	const q = `UPDATE task_instance SET reminded_at = NULL WHERE id = $1`
+	if _, err := r.dbtx.Exec(ctx, q, id.String()); err != nil {
+		return fmt.Errorf("clear due-soon reminder: %w", err)
+	}
+	return nil
 }
 
 // reminderRow is the intermediate representation for a single row returned by

@@ -276,6 +276,10 @@ func (r *fakeTaskInstanceRepo) ClaimDueSoonReminders(_ context.Context, _ time.T
 	return nil, nil
 }
 
+func (r *fakeTaskInstanceRepo) ClearDueSoonReminder(_ context.Context, _ domain.TaskInstanceID) error {
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------

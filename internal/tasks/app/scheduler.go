@@ -110,7 +110,12 @@ func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 		}
 	} else {
 		s.logger.Info("scheduler: marked overdue", "count", len(overdueTargets))
-		s.reminders.EmitOverdue(ctx, asOf, overdueTargets)
+		if emitErr := s.reminders.EmitOverdue(ctx, asOf, overdueTargets); emitErr != nil {
+			s.logger.Error("scheduler: overdue reminders failed", "error", emitErr)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("scheduler: overdue reminders: %w", emitErr)
+			}
+		}
 	}
 
 	if dueSoonErr := s.reminders.EmitDueSoon(ctx, asOf); dueSoonErr != nil {

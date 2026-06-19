@@ -114,6 +114,10 @@ func (f *fakeTaskInstanceRepo) ClaimDueSoonReminders(_ context.Context, _ time.T
 	return nil, nil
 }
 
+func (f *fakeTaskInstanceRepo) ClearDueSoonReminder(_ context.Context, _ tasksdomain.TaskInstanceID) error {
+	return nil
+}
+
 // Compile-time assertion.
 var _ tasksdomain.TaskInstanceRepository = (*fakeTaskInstanceRepo)(nil)
 
