@@ -64,7 +64,7 @@ func ResolutionCandidates(raw string) []string {
 	}
 	candidates := []string{n}
 	for _, sg := range singularCandidates(n) {
-		if !contains(candidates, sg) {
+		if sg != "" && !contains(candidates, sg) {
 			candidates = append(candidates, sg)
 		}
 	}
@@ -81,11 +81,14 @@ func singularCandidates(s string) []string {
 	if len(s) < 2 || !strings.HasSuffix(s, "s") || strings.HasSuffix(s, "ss") {
 		return nil // "flour" is not plural; "glass"/"grass" end in -ss, also not plurals
 	}
+	// Each slice below is length-guarded so it can never yield the empty string
+	// (e.g. "es" must not produce ""), which would be a meaningless candidate.
+	//
 	// Drop the trailing "s": eggs -> egg, cookies -> cookie, houses -> house.
 	out := []string{s[:len(s)-1]}
 	// "...es" frequently drops the whole "es": boxes -> box, dishes -> dish,
-	// tomatoes -> tomato, glasses -> glass.
-	if strings.HasSuffix(s, "es") {
+	// tomatoes -> tomato, glasses -> glass. Requires >2 chars so the stem survives.
+	if strings.HasSuffix(s, "es") && len(s) > 2 {
 		out = append(out, s[:len(s)-2])
 	}
 	// Consonant+"ies" -> "y": berries -> berry, cherries -> cherry. ("cookie"

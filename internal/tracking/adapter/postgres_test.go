@@ -127,6 +127,52 @@ func TestResolveByCanonicalAliasAndPlural(t *testing.T) {
 	}
 }
 
+func TestResolvePrefersExactCanonicalOverPluralAndAlias(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewIngredientRepository(pool)
+	ctx := testCtx(t)
+
+	// Two distinct canonical rows whose names collide under plural folding:
+	// resolving the exact plural input must return the plural row, not the
+	// singular one reachable only via a singularized candidate.
+	singular, err := repo.EnsureIngredient(ctx, "tomato")
+	if err != nil {
+		t.Fatalf("EnsureIngredient singular: %v", err)
+	}
+	plural, err := repo.EnsureIngredient(ctx, "tomatoes")
+	if err != nil {
+		t.Fatalf("EnsureIngredient plural: %v", err)
+	}
+
+	if got, err := repo.Resolve(ctx, "Tomatoes"); err != nil {
+		t.Fatalf("Resolve(Tomatoes): %v", err)
+	} else if got.ID != plural.ID {
+		t.Errorf("Resolve(Tomatoes) id = %v, want plural row %v (exact input beats singular guess)", got.ID, plural.ID)
+	}
+	if got, err := repo.Resolve(ctx, "Tomato"); err != nil {
+		t.Fatalf("Resolve(Tomato): %v", err)
+	} else if got.ID != singular.ID {
+		t.Errorf("Resolve(Tomato) id = %v, want singular row %v", got.ID, singular.ID)
+	}
+
+	// A canonical-name match must beat an alias-only match for the same query.
+	if _, err := pool.Exec(ctx,
+		`UPDATE ingredient SET aliases = $1 WHERE id = $2`,
+		[]string{"basil"}, singular.ID.String(),
+	); err != nil {
+		t.Fatalf("seed alias: %v", err)
+	}
+	basil, err := repo.EnsureIngredient(ctx, "basil")
+	if err != nil {
+		t.Fatalf("EnsureIngredient basil: %v", err)
+	}
+	if got, err := repo.Resolve(ctx, "basil"); err != nil {
+		t.Fatalf("Resolve(basil): %v", err)
+	} else if got.ID != basil.ID {
+		t.Errorf("Resolve(basil) id = %v, want canonical row %v (canonical beats alias)", got.ID, basil.ID)
+	}
+}
+
 func TestResolveErrors(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewIngredientRepository(pool)

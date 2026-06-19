@@ -6,7 +6,15 @@
 -- holds additional normalized names that resolve to the same ingredient.
 CREATE TABLE ingredient (
     id             uuid        PRIMARY KEY,
-    canonical_name text        NOT NULL UNIQUE,
+    -- Enforce the domain's NormalizeName invariant at the schema layer so no
+    -- path (direct SQL included) can persist a non-canonical name the resolver
+    -- could never reach: lower-cased, internal whitespace collapsed to single
+    -- spaces, trimmed, and non-empty.
+    canonical_name text        NOT NULL UNIQUE
+        CHECK (
+            canonical_name <> ''
+            AND canonical_name = btrim(regexp_replace(lower(canonical_name), '\s+', ' ', 'g'))
+        ),
     aliases        text[]      NOT NULL DEFAULT '{}',
     created_at     timestamptz NOT NULL DEFAULT now()
 );

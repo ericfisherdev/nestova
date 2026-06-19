@@ -43,13 +43,19 @@ func (r *IngredientRepository) Resolve(ctx context.Context, name string) (*domai
 	if len(candidates) == 0 {
 		return nil, domain.ErrInvalidIngredient
 	}
-	// canonical_name = ANY orders ahead of an aliases-only hit so an exact
-	// primary-name match wins when both a canonical row and an alias row match.
+	// Ordering, most-preferred first:
+	//  1. a canonical-name match beats an alias-only match, and
+	//  2. among canonical matches, the earliest candidate wins — candidates are
+	//     ordered [normalized input, singular forms...], so the exact input form
+	//     is preferred over a singularized guess (e.g. an explicit "tomatoes"
+	//     ingredient is chosen over a separate "tomato" one).
+	// array_position is NULL for alias-only matches, so COALESCE pushes them last.
 	const q = `
 		SELECT id, canonical_name, aliases
 		  FROM ingredient
 		 WHERE canonical_name = ANY($1::text[]) OR aliases && $1::text[]
-		 ORDER BY (canonical_name = ANY($1::text[])) DESC
+		 ORDER BY (canonical_name = ANY($1::text[])) DESC,
+		          COALESCE(array_position($1::text[], canonical_name), 2147483647) ASC
 		 LIMIT 1`
 	ing, err := scanIngredient(r.dbtx.QueryRow(ctx, q, candidates))
 	if err != nil {
