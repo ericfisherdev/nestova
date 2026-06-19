@@ -18,4 +18,10 @@ const (
 	// restock_prediction.tracked_item_id -> tracked_item.id; a violation means
 	// the tracked item does not exist.
 	restockPredictionTrackedItemFK = "restock_prediction_tracked_item_id_fkey"
+	// pantryItemHouseholdFK is the auto-named FK pantry_item.household_id ->
+	// household.id; a violation means the household does not exist.
+	pantryItemHouseholdFK = "pantry_item_household_id_fkey"
+	// pantryItemIngredientFK is the auto-named FK pantry_item.ingredient_id ->
+	// ingredient.id; a violation means the ingredient does not exist.
+	pantryItemIngredientFK = "pantry_item_ingredient_id_fkey"
 )
