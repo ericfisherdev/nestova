@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -65,9 +66,15 @@ func (f *fakeRestockShoppingRepo) ListByStatus(context.Context, household.Househ
 	return nil, nil
 }
 
-type fakeEnqueuer struct{ enqueued []*notifydomain.Notification }
+type fakeEnqueuer struct {
+	enqueued []*notifydomain.Notification
+	err      error
+}
 
 func (f *fakeEnqueuer) Enqueue(_ context.Context, n *notifydomain.Notification) error {
+	if f.err != nil {
+		return f.err
+	}
 	f.enqueued = append(f.enqueued, n)
 	return nil
 }
@@ -90,7 +97,7 @@ func dueSetup(t *testing.T, leadDays int) (*domain.TrackedItem, *app.Predictor) 
 
 func mustRestockScheduler(t *testing.T, items domain.TrackedItemRepository, predictor *app.Predictor, ing domain.IngredientEnsurer, shop domain.ShoppingListRepository, enq notifydomain.Enqueuer) *app.RestockScheduler {
 	t.Helper()
-	s, err := app.NewRestockScheduler(items, predictor, ing, shop, enq, discardLogger(), time.Hour)
+	s, err := app.NewRestockScheduler(items, predictor, ing, shop, enq, discardLogger(), time.Hour, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRestockScheduler: %v", err)
 	}
@@ -139,6 +146,23 @@ func TestRestockRunOnceNoDuplicateNotificationOnRerun(t *testing.T) {
 	}
 	if len(enq.enqueued) != 0 {
 		t.Errorf("enqueued %d notifications, want 0 (no duplicate notification)", len(enq.enqueued))
+	}
+}
+
+func TestRestockRunOnceKeepsEntryWhenNotificationFails(t *testing.T) {
+	item, predictor := dueSetup(t, 0)
+	items := &fakeTrackedItemRepo{active: []*domain.TrackedItem{item}}
+	shop := &fakeRestockShoppingRepo{inserted: true}
+	// Enqueue fails, but the restock entry was already created.
+	enq := &fakeEnqueuer{err: errors.New("outbox down")}
+	sched := mustRestockScheduler(t, items, predictor, &fakeIngredientEnsurer{id: domain.NewIngredientID()}, shop, enq)
+
+	generated, err := sched.RunOnce(context.Background(), baseDay.AddDate(0, 0, 25))
+	if err != nil {
+		t.Fatalf("RunOnce returned error %v, want nil (notification is best-effort)", err)
+	}
+	if generated != 1 || shop.addCalls != 1 {
+		t.Errorf("generated=%d addCalls=%d, want 1 and 1 (entry kept despite notify failure)", generated, shop.addCalls)
 	}
 }
 
@@ -192,31 +216,35 @@ func TestNewRestockSchedulerValidatesDeps(t *testing.T) {
 	enq := &fakeEnqueuer{}
 	log := discardLogger()
 	interval := time.Hour
+	tick := time.Minute
 
 	tests := []struct {
 		name string
 		call func() (*app.RestockScheduler, error)
 	}{
 		{"nil items", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(nil, predictor, ing, shop, enq, log, interval)
+			return app.NewRestockScheduler(nil, predictor, ing, shop, enq, log, interval, tick)
 		}},
 		{"nil predictor", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, nil, ing, shop, enq, log, interval)
+			return app.NewRestockScheduler(items, nil, ing, shop, enq, log, interval, tick)
 		}},
 		{"nil ingredient ensurer", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, nil, shop, enq, log, interval)
+			return app.NewRestockScheduler(items, predictor, nil, shop, enq, log, interval, tick)
 		}},
 		{"nil shopping repo", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, nil, enq, log, interval)
+			return app.NewRestockScheduler(items, predictor, ing, nil, enq, log, interval, tick)
 		}},
 		{"nil enqueuer", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, nil, log, interval)
+			return app.NewRestockScheduler(items, predictor, ing, shop, nil, log, interval, tick)
 		}},
 		{"nil logger", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, enq, nil, interval)
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, nil, interval, tick)
 		}},
 		{"zero interval", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, 0)
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, 0, tick)
+		}},
+		{"zero tick timeout", func() (*app.RestockScheduler, error) {
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, interval, 0)
 		}},
 	}
 	for _, tt := range tests {
@@ -242,7 +270,7 @@ func TestRestockRunOnceEndToEnd(t *testing.T) {
 		t.Fatalf("NewPredictor: %v", err)
 	}
 	outbox := notifyadapter.NewOutboxRepository(pool)
-	sched, err := app.NewRestockScheduler(trackedRepo, predictor, ingredientRepo, shoppingRepo, outbox, discardLogger(), time.Hour)
+	sched, err := app.NewRestockScheduler(trackedRepo, predictor, ingredientRepo, shoppingRepo, outbox, discardLogger(), time.Hour, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRestockScheduler: %v", err)
 	}

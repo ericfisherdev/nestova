@@ -32,10 +32,14 @@ type RestockScheduler struct {
 	enqueuer     notifydomain.Enqueuer
 	logger       *slog.Logger
 	pollInterval time.Duration
+	tickTimeout  time.Duration
 }
 
 // NewRestockScheduler constructs the scheduler with injected dependencies.
-// pollInterval must be positive.
+// pollInterval is how often Run polls; tickTimeout bounds a single cycle's work
+// (and therefore how long an in-flight cycle can delay shutdown). Both must be
+// positive. Keeping them separate lets the poll cadence be long (restock is
+// slow-moving) without making shutdown wait a full interval for a stalled tick.
 func NewRestockScheduler(
 	items domain.TrackedItemRepository,
 	predictor *Predictor,
@@ -44,6 +48,7 @@ func NewRestockScheduler(
 	enqueuer notifydomain.Enqueuer,
 	logger *slog.Logger,
 	pollInterval time.Duration,
+	tickTimeout time.Duration,
 ) (*RestockScheduler, error) {
 	if items == nil {
 		return nil, errors.New("app: NewRestockScheduler requires a non-nil tracked item repository")
@@ -66,6 +71,9 @@ func NewRestockScheduler(
 	if pollInterval <= 0 {
 		return nil, fmt.Errorf("app: NewRestockScheduler pollInterval must be positive, got %v", pollInterval)
 	}
+	if tickTimeout <= 0 {
+		return nil, fmt.Errorf("app: NewRestockScheduler tickTimeout must be positive, got %v", tickTimeout)
+	}
 	return &RestockScheduler{
 		items:        items,
 		predictor:    predictor,
@@ -74,6 +82,7 @@ func NewRestockScheduler(
 		enqueuer:     enqueuer,
 		logger:       logger,
 		pollInterval: pollInterval,
+		tickTimeout:  tickTimeout,
 	}, nil
 }
 
@@ -92,6 +101,11 @@ func (s *RestockScheduler) RunOnce(ctx context.Context, asOf time.Time) (int, er
 		firstErr  error
 	)
 	for _, item := range items {
+		// Stop early if the cycle's context is cancelled or timed out, rather than
+		// pushing the remaining items through a dead context.
+		if err := ctx.Err(); err != nil {
+			return generated, err
+		}
 		created, itemErr := s.processItem(ctx, item, asOf)
 		if itemErr != nil {
 			s.logger.Error("restock: process item failed",
@@ -208,7 +222,7 @@ func (s *RestockScheduler) Run(ctx context.Context) {
 // lifecycle context, so an in-flight cycle finishes its writes during shutdown
 // while the timeout still caps how long a stalled cycle delays shutdown.
 func (s *RestockScheduler) runTick() {
-	runCtx, cancel := context.WithTimeout(context.Background(), s.pollInterval)
+	runCtx, cancel := context.WithTimeout(context.Background(), s.tickTimeout)
 	defer cancel()
 
 	generated, err := s.RunOnce(runCtx, time.Now())
