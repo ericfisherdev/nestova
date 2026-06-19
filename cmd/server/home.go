@@ -14,12 +14,17 @@ import (
 	"github.com/ericfisherdev/nestova/web/components"
 )
 
+// rewardsNavHref is the canonical href for the rewards / scoreboard nav item.
+// Defined as a constant so home.go and tests reference the same value.
+const rewardsNavHref = "/rewards"
+
 // primaryNav returns the fixed sidebar navigation, marking the item whose href
 // equals active (empty selects none).
 func primaryNav(active string) []components.NavItem {
 	defs := []components.NavItem{
 		{Label: "Calendar", Href: "/calendar"},
 		{Label: "Chores", Href: "/tasks"},
+		{Label: "Rewards", Href: rewardsNavHref},
 		{Label: "Meals & Recipes", Href: "/meals"},
 		{Label: "Groceries", Href: "/groceries"},
 		{Label: "Photos", Href: "/photos"},
@@ -56,6 +61,7 @@ func registerWebRoutes(
 	onboardingHandlers *authadapter.OnboardingHandlers,
 	households household.HouseholdRepository,
 	taskHandlers *tasksadapter.WebHandlers,
+	gamificationHandlers *tasksadapter.GamificationWebHandlers,
 ) {
 	// Auth routes — public.
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -134,6 +140,28 @@ func registerWebRoutes(
 	mux.Handle("POST /tasks/{id}/complete", requireMember(http.HandlerFunc(taskHandlers.Complete)))
 	mux.Handle("POST /tasks/{id}/skip", requireMember(http.HandlerFunc(taskHandlers.Skip)))
 	mux.Handle("POST /tasks/{id}/claim", requireMember(http.HandlerFunc(taskHandlers.Claim)))
+
+	// Rewards / scoreboard routes — RequireMember-gated.
+	// GET /rewards            renders the scoreboard + rewards catalog.
+	// POST /rewards/{id}/redeem exchanges the current member's points for a reward.
+	mux.Handle("GET /rewards", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref)
+				return components.Layout(props, nav, c)
+			}
+		}
+		gamificationHandlers.RewardsPage(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /rewards/{id}/redeem", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref)
+				return components.Layout(props, nav, c)
+			}
+		}
+		gamificationHandlers.Redeem(layoutFn)(w, r)
+	})))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

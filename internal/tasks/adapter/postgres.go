@@ -902,6 +902,56 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 	return scanReminderRows(ctx, rows, domain.ReminderDueSoon, "claim due-soon reminders", r)
 }
 
+// CompletionDays returns the distinct calendar days (midnight UTC) on which
+// member completed at least one task within the household, restricted to rows
+// with completed_at >= since. Results are ordered ascending.
+// Returns an empty slice (not an error) when no completions match.
+//
+// completed_at is a timestamptz, so a plain ::date cast would bucket using the
+// session TimeZone and mis-attribute completions to the wrong calendar day on a
+// non-UTC server. The query therefore converts to UTC first with
+// (completed_at AT TIME ZONE 'UTC')::date, pinning the day boundary to UTC per
+// the NES-37 streak rule. The >= since cutoff is a point-in-time timestamptz
+// comparison and is timezone-independent. DateOf is applied on every scanned
+// value for defence-in-depth so the returned values are always midnight UTC.
+func (r *TaskInstanceRepository) CompletionDays(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+	since time.Time,
+) ([]time.Time, error) {
+	const q = `
+		SELECT DISTINCT (completed_at AT TIME ZONE 'UTC')::date
+		  FROM task_instance
+		 WHERE household_id  = $1
+		   AND completed_by  = $2
+		   AND status        = 'done'
+		   AND completed_at >= $3
+		 ORDER BY 1`
+	rows, err := r.dbtx.Query(ctx, q,
+		householdID.String(),
+		memberID.String(),
+		since.UTC(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("completion days: %w", err)
+	}
+	defer rows.Close()
+
+	days := make([]time.Time, 0)
+	for rows.Next() {
+		var d time.Time
+		if err := rows.Scan(&d); err != nil {
+			return nil, fmt.Errorf("completion days: scan: %w", err)
+		}
+		days = append(days, domain.DateOf(d))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("completion days: %w", err)
+	}
+	return days, nil
+}
+
 // ClearDueSoonReminder resets reminded_at to NULL for the instance so a later
 // [ClaimDueSoonReminders] call can re-claim it. It is the recovery counterpart
 // to ClaimDueSoonReminders: the caller invokes it when a due-soon enqueue fails

@@ -133,6 +133,20 @@ func run(logger *slog.Logger) error {
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringTaskRepo, taskInstanceRepo, householdRepo, sm, logger)
 
+	// NES-37: gamification UI wiring — scoreboard, streaks, and reward redemption.
+	pointLedgerRepo := tasksadapter.NewPointLedgerPostgresRepository(pool)
+	rewardRepo := tasksadapter.NewRewardPostgresRepository(pool)
+	rewardService := tasksapp.NewRewardService(rewardRepo, logger)
+	gamificationWebHandlers := tasksadapter.NewGamificationWebHandlers(
+		pointLedgerRepo,
+		rewardRepo,
+		rewardService,
+		taskInstanceRepo,
+		householdRepo,
+		sm,
+		logger,
+	)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -145,7 +159,7 @@ func run(logger *slog.Logger) error {
 			authadapter.Authenticate(sm, householdRepo),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers)
 		},
 	})
 
