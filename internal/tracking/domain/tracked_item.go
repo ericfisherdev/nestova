@@ -44,6 +44,10 @@ type TrackedItemRepository interface {
 	Get(ctx context.Context, id TrackedItemID) (*TrackedItem, error)
 	Update(ctx context.Context, item *TrackedItem) error
 	ListActiveByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*TrackedItem, error)
+	// ListAllActive returns every active tracked item across all households,
+	// ordered by household then name. The restock scheduler iterates these to
+	// recompute predictions and raise restock entries.
+	ListAllActive(ctx context.Context) ([]*TrackedItem, error)
 	// ListDueForRestock returns active items in the household whose cached
 	// prediction puts predicted depletion within the item's lead window of asOf
 	// (predicted_depletion_on <= asOf + RestockLeadDays). asOf is injected so the

@@ -25,6 +25,8 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
+	trackingadapter "github.com/ericfisherdev/nestova/internal/tracking/adapter"
+	trackingapp "github.com/ericfisherdev/nestova/internal/tracking/app"
 )
 
 // shutdownTimeout bounds how long in-flight requests have to drain on shutdown.
@@ -50,6 +52,15 @@ const (
 	// generation+overdue-sweep cycle. Five minutes is sufficient; the
 	// overdue sweep is idempotent so occasional double-runs are harmless.
 	taskSchedulerPollInterval = 5 * time.Minute
+)
+
+// Restock scheduler tuning (NES-44).
+const (
+	// restockSchedulerPollInterval is how often the restock scheduler recomputes
+	// predictions and raises restock entries. Restock is a slow-moving,
+	// idempotent signal (depletion intervals are measured in days), so hourly is
+	// ample and keeps load low.
+	restockSchedulerPollInterval = time.Hour
 )
 
 func main() {
@@ -125,6 +136,25 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("create task scheduler: %w", err)
 	}
 
+	// NES-44: restock automation. The scheduler recomputes predictions, raises
+	// idempotent restock shopping entries, and emits notifications via the same
+	// outbox the dispatcher consumes.
+	trackedItemRepo := trackingadapter.NewTrackedItemRepository(pool)
+	usageEventRepo := trackingadapter.NewUsageEventRepository(pool)
+	restockPredictionRepo := trackingadapter.NewRestockPredictionRepository(pool)
+	ingredientRepo := trackingadapter.NewIngredientRepository(pool)
+	shoppingListRepo := trackingadapter.NewShoppingListRepository(pool)
+	predictor, err := trackingapp.NewPredictor(usageEventRepo, restockPredictionRepo)
+	if err != nil {
+		return fmt.Errorf("create restock predictor: %w", err)
+	}
+	restockScheduler, err := trackingapp.NewRestockScheduler(
+		trackedItemRepo, predictor, ingredientRepo, shoppingListRepo, outboxRepo, logger, restockSchedulerPollInterval,
+	)
+	if err != nil {
+		return fmt.Errorf("create restock scheduler: %w", err)
+	}
+
 	// NES-32: task UI wiring — TaskService + HTTP handlers for the tasks list
 	// and the three mutation actions (complete, skip, claim).
 	taskService, err := tasksapp.NewTaskService(recurringTaskRepo, taskInstanceRepo)
@@ -193,6 +223,16 @@ func run(logger *slog.Logger) error {
 		taskScheduler.Run(ctx)
 	}()
 
+	// NES-44: the restock scheduler is a third independent background worker on
+	// the same signal-cancelled ctx. Each tick runs under its own bounded context,
+	// so an in-flight recompute+restock cycle finishes its writes before Run
+	// returns; restockSchedulerDone is awaited below before pool.Close.
+	restockSchedulerDone := make(chan struct{})
+	go func() {
+		defer close(restockSchedulerDone)
+		restockScheduler.Run(ctx)
+	}()
+
 	var runErr error
 	select {
 	case err := <-serverErr:
@@ -217,6 +257,7 @@ func run(logger *slog.Logger) error {
 	// pool.Close.
 	<-dispatcherDone
 	<-schedulerDone
+	<-restockSchedulerDone
 
 	if shutdownErr != nil {
 		return errors.Join(runErr, shutdownErr)
