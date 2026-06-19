@@ -28,3 +28,41 @@ func ParseIngredientID(s string) (IngredientID, error) {
 	}
 	return IngredientID(u), nil
 }
+
+// TrackedItemID uniquely identifies a tracked consumable item within a household.
+type TrackedItemID uuid.UUID
+
+// NewTrackedItemID returns a new time-ordered (UUIDv7) tracked-item id. See
+// NewIngredientID for why Must is appropriate.
+func NewTrackedItemID() TrackedItemID { return TrackedItemID(uuid.Must(uuid.NewV7())) }
+
+// String returns the canonical UUID string.
+func (id TrackedItemID) String() string { return uuid.UUID(id).String() }
+
+// ParseTrackedItemID parses a canonical UUID string into a TrackedItemID.
+func ParseTrackedItemID(s string) (TrackedItemID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return TrackedItemID{}, fmt.Errorf("parse tracked item id: %w", err)
+	}
+	return TrackedItemID(u), nil
+}
+
+// UsageEventID uniquely identifies a single usage event.
+type UsageEventID uuid.UUID
+
+// NewUsageEventID returns a new time-ordered (UUIDv7) usage-event id. See
+// NewIngredientID for why Must is appropriate.
+func NewUsageEventID() UsageEventID { return UsageEventID(uuid.Must(uuid.NewV7())) }
+
+// String returns the canonical UUID string.
+func (id UsageEventID) String() string { return uuid.UUID(id).String() }
+
+// ParseUsageEventID parses a canonical UUID string into a UsageEventID.
+func ParseUsageEventID(s string) (UsageEventID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return UsageEventID{}, fmt.Errorf("parse usage event id: %w", err)
+	}
+	return UsageEventID(u), nil
+}
