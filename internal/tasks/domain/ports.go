@@ -158,6 +158,20 @@ type TaskInstanceRepository interface {
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Complete(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
 
+	// CompleteAndAward atomically transitions the instance from pending or
+	// overdue to done and appends a point_ledger credit for the completing
+	// member. Both writes run inside a single database transaction so the award
+	// is never separated from the state change. The ledger INSERT uses ON
+	// CONFLICT DO NOTHING so a duplicate award for the same instance is silently
+	// skipped (belt-and-suspenders: the status guard already prevents
+	// re-completion). Tasks with points = 0 produce no ledger row.
+	//
+	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another
+	// household.
+	// Returns [ErrInstanceInTerminalState] when the instance is already done or
+	// skipped (no award is made).
+	CompleteAndAward(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
+
 	// Skip transitions the instance from pending or overdue to skipped.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.

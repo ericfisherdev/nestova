@@ -97,6 +97,11 @@ func (f *fakeTaskInstanceRepo) Complete(_ context.Context, _ household.Household
 	return f.completeErr
 }
 
+func (f *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, _ household.HouseholdID, _ tasksdomain.TaskInstanceID, _ household.MemberID, _ time.Time) error {
+	f.completeCalls++
+	return f.completeErr
+}
+
 func (f *fakeTaskInstanceRepo) Skip(_ context.Context, _ household.HouseholdID, _ tasksdomain.TaskInstanceID) error {
 	f.skipCalls++
 	return f.skipErr
