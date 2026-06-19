@@ -105,6 +105,16 @@ func (r *TrackedItemRepository) ListActiveByHousehold(ctx context.Context, house
 	return r.queryItems(ctx, "list active tracked items", q, householdID.String())
 }
 
+// ListAllActive returns every active tracked item across all households.
+func (r *TrackedItemRepository) ListAllActive(ctx context.Context) ([]*domain.TrackedItem, error) {
+	const q = `
+		SELECT id, household_id, name, category, restock_lead_days, active, created_at, updated_at
+		FROM tracked_item
+		WHERE active = true
+		ORDER BY household_id, name, id`
+	return r.queryItems(ctx, "list all active tracked items", q)
+}
+
 // ListDueForRestock returns active items whose cached prediction puts predicted
 // depletion within the item's lead window of asOf
 // (predicted_depletion_on <= asOf::date + restock_lead_days).
