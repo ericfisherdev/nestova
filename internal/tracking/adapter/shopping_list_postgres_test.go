@@ -154,7 +154,6 @@ func TestShoppingAddFKSentinels(t *testing.T) {
 	repo := adapter.NewShoppingListRepository(pool)
 	ctx := testCtx(t)
 	hh := seedHousehold(t, pool)
-	ing := seedIngredient(t, pool, "flour")
 
 	badHousehold := adHocItem(household.NewHouseholdID(), "ghost", nil)
 	if err := repo.Add(ctx, badHousehold); !errors.Is(err, household.ErrHouseholdNotFound) {
@@ -168,7 +167,6 @@ func TestShoppingAddFKSentinels(t *testing.T) {
 	if err := repo.Add(ctx, badIngredient); !errors.Is(err, domain.ErrIngredientNotFound) {
 		t.Errorf("Add(bad ingredient) = %v, want ErrIngredientNotFound", err)
 	}
-	_ = ing
 
 	badMember := household.NewMemberID()
 	badAdder := adHocItem(hh, "note", &badMember)

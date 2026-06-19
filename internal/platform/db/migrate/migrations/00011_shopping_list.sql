@@ -21,6 +21,12 @@ CREATE TABLE shopping_list_item (
     created_at    timestamptz NOT NULL DEFAULT now(),
     -- Exactly one of ingredient_id / name identifies the item.
     CONSTRAINT shopping_list_item_identity_chk CHECK ((ingredient_id IS NULL) <> (name IS NULL)),
+    -- Restock entries are always ingredient-based. A name-only restock row would
+    -- have a NULL ingredient_id, and because UNIQUE treats NULLs as distinct it
+    -- would slip past the open-restock partial index below, breaking the
+    -- "one open restock per ingredient" invariant — so forbid it at the schema.
+    CONSTRAINT shopping_list_item_restock_identity_chk
+        CHECK (source <> 'restock' OR ingredient_id IS NOT NULL),
     -- Tenant consistency for the optional adder; SET NULL (added_by) preserves the
     -- item (and household_id, which is NOT NULL) when the member is removed.
     CONSTRAINT shopping_list_item_added_by_fk FOREIGN KEY (household_id, added_by)
