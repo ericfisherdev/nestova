@@ -220,6 +220,9 @@ func TestNamesByIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NamesByIDs(nil): %v", err)
 	}
+	if empty == nil {
+		t.Error("NamesByIDs(nil) = nil map, want a non-nil empty map")
+	}
 	if len(empty) != 0 {
 		t.Errorf("NamesByIDs(nil) = %v, want empty map", empty)
 	}

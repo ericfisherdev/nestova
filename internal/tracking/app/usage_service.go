@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,15 +21,18 @@ type UsageService struct {
 	items     domain.TrackedItemRepository
 	events    domain.UsageEventRepository
 	predictor *Predictor
+	logger    *slog.Logger
 }
 
-// NewUsageService constructs the service with injected repositories and the
-// restock predictor. It returns an error when any dependency is nil so a
-// misconfigured composition root fails at startup rather than at first use.
+// NewUsageService constructs the service with injected repositories, the restock
+// predictor, and a logger (used to record best-effort prediction-recompute
+// failures). It returns an error when any dependency is nil so a misconfigured
+// composition root fails at startup rather than at first use.
 func NewUsageService(
 	items domain.TrackedItemRepository,
 	events domain.UsageEventRepository,
 	predictor *Predictor,
+	logger *slog.Logger,
 ) (*UsageService, error) {
 	if items == nil {
 		return nil, errors.New("app: NewUsageService requires a non-nil tracked item repository")
@@ -39,7 +43,10 @@ func NewUsageService(
 	if predictor == nil {
 		return nil, errors.New("app: NewUsageService requires a non-nil predictor")
 	}
-	return &UsageService{items: items, events: events, predictor: predictor}, nil
+	if logger == nil {
+		return nil, errors.New("app: NewUsageService requires a non-nil logger")
+	}
+	return &UsageService{items: items, events: events, predictor: predictor, logger: logger}, nil
 }
 
 // RegisterItem creates a new active tracked item. It trims and rejects an empty
@@ -99,9 +106,14 @@ func (s *UsageService) LogEvent(
 	if err := s.events.Append(ctx, event); err != nil {
 		return nil, err
 	}
+	// Recompute is best-effort: the event is already committed, so returning a
+	// recompute error would make the caller retry and append a duplicate event,
+	// skewing the prediction. Log the failure instead — the next depletion event
+	// or the hourly restock scheduler (NES-44) recomputes the prediction anyway.
 	if usageType == domain.UsageDepleted {
 		if _, err := s.predictor.Recompute(ctx, itemID); err != nil {
-			return nil, err
+			s.logger.Error("usage: recompute prediction after depletion failed (event still logged)",
+				"tracked_item_id", itemID.String(), "error", err)
 		}
 	}
 	return event, nil

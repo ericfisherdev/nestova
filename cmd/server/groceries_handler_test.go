@@ -126,9 +126,9 @@ func (f *fakeGroceryPantryRepo) Get(_ context.Context, id trackingdomain.PantryI
 	return item, nil
 }
 
-func (f *fakeGroceryPantryRepo) Adjust(_ context.Context, _ household.HouseholdID, id trackingdomain.PantryItemID, delta household.Quantity) (*trackingdomain.PantryItem, error) {
+func (f *fakeGroceryPantryRepo) Adjust(_ context.Context, householdID household.HouseholdID, id trackingdomain.PantryItemID, delta household.Quantity) (*trackingdomain.PantryItem, error) {
 	item, ok := f.items[id]
-	if !ok {
+	if !ok || item.HouseholdID != householdID {
 		return nil, trackingdomain.ErrPantryItemNotFound
 	}
 	updated, err := item.Quantity.Add(delta)
@@ -139,9 +139,9 @@ func (f *fakeGroceryPantryRepo) Adjust(_ context.Context, _ household.HouseholdI
 	return item, nil
 }
 
-func (f *fakeGroceryPantryRepo) Consume(_ context.Context, _ household.HouseholdID, id trackingdomain.PantryItemID, amount household.Quantity) (*trackingdomain.PantryItem, error) {
+func (f *fakeGroceryPantryRepo) Consume(_ context.Context, householdID household.HouseholdID, id trackingdomain.PantryItemID, amount household.Quantity) (*trackingdomain.PantryItem, error) {
 	item, ok := f.items[id]
-	if !ok {
+	if !ok || item.HouseholdID != householdID {
 		return nil, trackingdomain.ErrPantryItemNotFound
 	}
 	updated, err := item.Quantity.Subtract(amount)
@@ -180,9 +180,9 @@ func (f *fakeShoppingRepo) AddRestockIfAbsent(_ context.Context, _ *trackingdoma
 	return true, nil
 }
 
-func (f *fakeShoppingRepo) UpdateStatus(_ context.Context, _ household.HouseholdID, id trackingdomain.ShoppingListItemID, status trackingdomain.ItemStatus) (*trackingdomain.ShoppingListItem, error) {
+func (f *fakeShoppingRepo) UpdateStatus(_ context.Context, householdID household.HouseholdID, id trackingdomain.ShoppingListItemID, status trackingdomain.ItemStatus) (*trackingdomain.ShoppingListItem, error) {
 	for _, item := range f.items {
-		if item.ID == id {
+		if item.ID == id && item.HouseholdID == householdID {
 			item.Status = status
 			return item, nil
 		}
@@ -282,7 +282,7 @@ func buildGroceryHandlers(
 	if err != nil {
 		panic("buildGroceryHandlers: " + err.Error())
 	}
-	usageSvc, err := trackingapp.NewUsageService(fakes.tracked, fakes.events, predictor)
+	usageSvc, err := trackingapp.NewUsageService(fakes.tracked, fakes.events, predictor, logger)
 	if err != nil {
 		panic("buildGroceryHandlers: " + err.Error())
 	}

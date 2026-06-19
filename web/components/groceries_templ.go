@@ -1304,7 +1304,7 @@ func unitSelect(id string, units []UnitOption, selected string) templ.Component 
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "\" name=\"unit\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "\" name=\"unit\" aria-label=\"Unit\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1316,7 +1316,7 @@ func unitSelect(id string, units []UnitOption, selected string) templ.Component 
 			var templ_7745c5c3_Var49 string
 			templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(u.Value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 474, Col: 26}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 475, Col: 26}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 			if templ_7745c5c3_Err != nil {
@@ -1339,7 +1339,7 @@ func unitSelect(id string, units []UnitOption, selected string) templ.Component 
 			var templ_7745c5c3_Var50 string
 			templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(u.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 474, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 475, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 			if templ_7745c5c3_Err != nil {

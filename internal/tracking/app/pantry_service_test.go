@@ -44,17 +44,18 @@ func (f *fakePantryRepo) Get(_ context.Context, id domain.PantryItemID) (*domain
 	return clonePantryItem(item), nil
 }
 
-func (f *fakePantryRepo) Adjust(_ context.Context, _ household.HouseholdID, id domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
-	return f.mutate(id, func(current household.Quantity) (household.Quantity, error) { return current.Add(delta) })
+func (f *fakePantryRepo) Adjust(_ context.Context, householdID household.HouseholdID, id domain.PantryItemID, delta household.Quantity) (*domain.PantryItem, error) {
+	return f.mutate(householdID, id, func(current household.Quantity) (household.Quantity, error) { return current.Add(delta) })
 }
 
-func (f *fakePantryRepo) Consume(_ context.Context, _ household.HouseholdID, id domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
-	return f.mutate(id, func(current household.Quantity) (household.Quantity, error) { return current.Subtract(amount) })
+func (f *fakePantryRepo) Consume(_ context.Context, householdID household.HouseholdID, id domain.PantryItemID, amount household.Quantity) (*domain.PantryItem, error) {
+	return f.mutate(householdID, id, func(current household.Quantity) (household.Quantity, error) { return current.Subtract(amount) })
 }
 
-func (f *fakePantryRepo) mutate(id domain.PantryItemID, op func(household.Quantity) (household.Quantity, error)) (*domain.PantryItem, error) {
+func (f *fakePantryRepo) mutate(householdID household.HouseholdID, id domain.PantryItemID, op func(household.Quantity) (household.Quantity, error)) (*domain.PantryItem, error) {
 	item, ok := f.items[id]
-	if !ok {
+	if !ok || item.HouseholdID != householdID {
+		// Scope by household like the real adapter: a foreign household sees not-found.
 		return nil, domain.ErrPantryItemNotFound
 	}
 	updated, err := op(item.Quantity)
