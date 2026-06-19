@@ -66,11 +66,19 @@ func (f *fakePantryRepo) mutate(id domain.PantryItemID, op func(household.Quanti
 }
 
 func (f *fakePantryRepo) ListByHousehold(context.Context, household.HouseholdID) ([]*domain.PantryItem, error) {
-	return nil, nil
+	return f.all(), nil
 }
 
 func (f *fakePantryRepo) ListExpiringWithin(context.Context, household.HouseholdID, time.Time, int) ([]*domain.PantryItem, error) {
-	return nil, nil
+	return f.all(), nil
+}
+
+func (f *fakePantryRepo) all() []*domain.PantryItem {
+	out := make([]*domain.PantryItem, 0, len(f.items))
+	for _, item := range f.items {
+		out = append(out, clonePantryItem(item))
+	}
+	return out
 }
 
 func mustQty(t *testing.T, amount float64, unit household.Unit) household.Quantity {
@@ -89,6 +97,40 @@ func mustService(t *testing.T, repo domain.PantryRepository) *app.PantryService 
 		t.Fatalf("NewPantryService: %v", err)
 	}
 	return s
+}
+
+func TestNewPantryServiceRejectsNilRepo(t *testing.T) {
+	if _, err := app.NewPantryService(nil); err == nil {
+		t.Error("NewPantryService(nil) = nil error, want error")
+	}
+}
+
+func TestPantryListDelegatesToRepository(t *testing.T) {
+	repo := newFakePantryRepo()
+	svc := mustService(t, repo)
+	ctx := context.Background()
+	hh := household.NewHouseholdID()
+	if _, err := svc.Add(ctx, hh, domain.NewIngredientID(), mustQty(t, 1, household.UnitCount), nil); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := svc.Add(ctx, hh, domain.NewIngredientID(), mustQty(t, 2, household.UnitCount), nil); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	listed, err := svc.List(ctx, hh)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Errorf("List returned %d items, want 2", len(listed))
+	}
+	expiring, err := svc.ListExpiringWithin(ctx, hh, time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC), 7)
+	if err != nil {
+		t.Fatalf("ListExpiringWithin: %v", err)
+	}
+	if len(expiring) != 2 {
+		t.Errorf("ListExpiringWithin returned %d items, want 2 (delegated)", len(expiring))
+	}
 }
 
 func TestPantryAddRejectsInvalidQuantity(t *testing.T) {
