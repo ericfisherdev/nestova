@@ -96,6 +96,9 @@ func TestCompleteAndAward_CreditsPoints(t *testing.T) {
 	if got.CompletedBy == nil || *got.CompletedBy != m1 {
 		t.Errorf("CompletedBy = %v, want %v", got.CompletedBy, m1)
 	}
+	if got.CompletedAt == nil || got.CompletedAt.IsZero() {
+		t.Errorf("CompletedAt = %v, want a non-zero timestamp", got.CompletedAt)
+	}
 
 	// Balance must reflect exactly one award.
 	balance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)

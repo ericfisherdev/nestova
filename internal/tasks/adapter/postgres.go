@@ -33,6 +33,13 @@ const (
 	// constraintTaskInstanceDuplicateUniq is the unique constraint on
 	// (recurring_task_id, due_on) whose violation maps to ErrDuplicateInstance.
 	constraintTaskInstanceDuplicateUniq = "task_instance_task_due_uniq"
+
+	// constraintRewardRedemptionRewardFK is the composite foreign key on
+	// reward_redemption (household_id, reward_id) → reward whose violation maps
+	// to ErrRewardNotFound. The sibling reward_redemption_member_fk must NOT map
+	// to that sentinel — a missing member is a distinct failure with no
+	// gamification sentinel, so it falls through to a wrapped generic error.
+	constraintRewardRedemptionRewardFK = "reward_redemption_reward_fk"
 )
 
 // row abstracts pgx.Row and pgx.Rows so scan helpers can accept either.
@@ -724,6 +731,7 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		SELECT $1::uuid, $2, $3, 'task_instance', $4::uuid, rt.points, now()
 		  FROM recurring_task rt
 		 WHERE rt.id     = $5::uuid
+		   AND rt.household_id = $2
 		   AND rt.points > 0
 		ON CONFLICT (source_id) WHERE source_type = 'task_instance'
 		DO NOTHING`

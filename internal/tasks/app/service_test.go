@@ -71,6 +71,60 @@ func TestService_CompleteInstance_CallsCompleteAndAward(t *testing.T) {
 	}
 }
 
+// TestService_CompleteInstance_OverdueAccepted verifies that an overdue
+// instance is still completable: CompleteInstance succeeds and transitions it
+// to done (an overdue chore can be completed late).
+func TestService_CompleteInstance_OverdueAccepted(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	h := household.NewHouseholdID()
+	m := household.NewMemberID()
+
+	// Seed a recurring task and an OVERDUE instance.
+	rt := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: h,
+		Points:      10,
+		Active:      true,
+	}
+	if err := taskRepo.Create(t.Context(), rt); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	inst := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h,
+		DueOn:           time.Now().AddDate(0, 0, -1),
+		Status:          domain.StatusOverdue,
+	}
+	if err := instRepo.Insert(t.Context(), inst); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	at := time.Now()
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, at); err != nil {
+		t.Fatalf("CompleteInstance(overdue): %v", err)
+	}
+
+	got, err := instRepo.Get(t.Context(), h, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after CompleteInstance(overdue): %v", err)
+	}
+	if got.Status != domain.StatusDone {
+		t.Errorf("Status = %v, want done", got.Status)
+	}
+	if got.CompletedBy == nil || *got.CompletedBy != m {
+		t.Errorf("CompletedBy = %v, want %v", got.CompletedBy, m)
+	}
+}
+
 // TestService_CompleteInstance_TerminalStatePropagated verifies that when the
 // instance is already done (terminal state), CompleteInstance returns
 // ErrInstanceInTerminalState without performing a second award.

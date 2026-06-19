@@ -267,11 +267,15 @@ func (r *RewardPostgresRepository) Redeem(ctx context.Context, redemption *domai
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == sqlstateForeignKeyViolation {
-			// FK violation — the reward_id does not exist in this household.
+		if errors.As(err, &pgErr) &&
+			pgErr.Code == sqlstateForeignKeyViolation &&
+			pgErr.ConstraintName == constraintRewardRedemptionRewardFK {
+			// Reward-FK violation — the reward_id does not exist in this household.
+			// A member-FK violation is a distinct failure (no member sentinel in
+			// gamification) and falls through to the wrapped generic error below.
 			return domain.ErrRewardNotFound
 		}
-		return fmt.Errorf("redeem: %w", err)
+		return fmt.Errorf("redeem reward: %w", err)
 	}
 	return nil
 }
