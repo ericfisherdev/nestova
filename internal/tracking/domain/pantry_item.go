@@ -49,8 +49,11 @@ type PantryRepository interface {
 	Adjust(ctx context.Context, id PantryItemID, delta household.Quantity) (*PantryItem, error)
 	Consume(ctx context.Context, id PantryItemID, amount household.Quantity) (*PantryItem, error)
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*PantryItem, error)
-	// ListExpiringWithin returns items in the household whose ExpiresOn falls on
-	// or before asOf + days (only items that have an expiry), ordered by ExpiresOn
-	// ascending. asOf is injected so the query is deterministic and testable.
+	// ListExpiringWithin returns items in the household whose ExpiresOn falls in
+	// the window [asOf, asOf + days] — items that have an expiry and are expiring
+	// soon but not already expired before asOf — ordered by ExpiresOn ascending.
+	// asOf is injected so the query is deterministic and testable. Already-expired
+	// items are out of scope here; callers wanting those derive them from
+	// ListByHousehold.
 	ListExpiringWithin(ctx context.Context, householdID household.HouseholdID, asOf time.Time, days int) ([]*PantryItem, error)
 }

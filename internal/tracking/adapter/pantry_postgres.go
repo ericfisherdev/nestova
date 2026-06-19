@@ -158,6 +158,7 @@ func (r *PantryRepository) ListExpiringWithin(ctx context.Context, householdID h
 		FROM pantry_item
 		WHERE household_id = $1
 		  AND expires_on IS NOT NULL
+		  AND expires_on >= $2::date
 		  AND expires_on <= ($2::date + $3::int)
 		ORDER BY expires_on, id`
 	return r.queryItems(ctx, "list expiring pantry items", q, householdID.String(), asOf, days)

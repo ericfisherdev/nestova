@@ -182,10 +182,12 @@ func TestPantryListExpiringWithin(t *testing.T) {
 	ing := seedIngredient(t, pool, "yogurt")
 
 	asOf := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	expired := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)   // before asOf — excluded
 	soon := time.Date(2026, 6, 23, 0, 0, 0, 0, time.UTC)     // within window
 	boundary := time.Date(2026, 6, 27, 0, 0, 0, 0, time.UTC) // exactly asOf + 7 days (inclusive)
 	later := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)    // beyond window
 
+	createPantryItem(t, repo, hh, ing, qty(t, 1, household.UnitCount), &expired)
 	createPantryItem(t, repo, hh, ing, qty(t, 1, household.UnitCount), &soon)
 	createPantryItem(t, repo, hh, ing, qty(t, 1, household.UnitCount), &boundary)
 	createPantryItem(t, repo, hh, ing, qty(t, 1, household.UnitCount), &later)
