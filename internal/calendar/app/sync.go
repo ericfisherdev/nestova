@@ -68,6 +68,9 @@ func (s *SyncService) RunOnce(ctx context.Context) (int, error) {
 		firstErr  error
 	)
 	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return processed, err
 		}

@@ -40,6 +40,9 @@ func TestMapEventAllDay(t *testing.T) {
 	if !ev.StartsAt.Equal(time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("all-day start = %s, want 2026-07-04", ev.StartsAt)
 	}
+	if !ev.EndsAt.Equal(time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("all-day end = %s, want 2026-07-05 (exclusive)", ev.EndsAt)
+	}
 }
 
 func TestMapEventCancelled(t *testing.T) {
@@ -59,6 +62,8 @@ func TestMapEventSkipsUnusable(t *testing.T) {
 		{"no start/end", &calendar.Event{Id: "x"}},
 		{"start without time or date", &calendar.Event{Id: "x", Start: &calendar.EventDateTime{}, End: &calendar.EventDateTime{}}},
 		{"unparseable datetime", &calendar.Event{Id: "x", Start: &calendar.EventDateTime{DateTime: "nope"}, End: &calendar.EventDateTime{DateTime: "nope"}}},
+		{"unparseable all-day start", &calendar.Event{Id: "x", Start: &calendar.EventDateTime{Date: "not-a-date"}, End: &calendar.EventDateTime{Date: "2026-07-05"}}},
+		{"unparseable all-day end", &calendar.Event{Id: "x", Start: &calendar.EventDateTime{Date: "2026-07-04"}, End: &calendar.EventDateTime{Date: "bad"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
