@@ -189,7 +189,7 @@ func buildTestHandler() http.Handler {
 	groceryHandlers := newTestGroceryHandlers(repo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo, taskWebHandlers, gamificationHandlers, groceryHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, repo, taskWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger))
 
 	// Apply the session middleware so CSRF tokens and member lookups work.
 	return sm.LoadAndSave(

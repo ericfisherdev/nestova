@@ -9,6 +9,7 @@ import (
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	trackingadapter "github.com/ericfisherdev/nestova/internal/tracking/adapter"
@@ -23,6 +24,9 @@ const groceriesNavHref = "/groceries"
 // Defined as a constant so home.go and tests reference the same value.
 const rewardsNavHref = "/rewards"
 
+// mealsNavHref is the canonical href for the meals & recipes nav item.
+const mealsNavHref = "/meals"
+
 // primaryNav returns the fixed sidebar navigation, marking the item whose href
 // equals active (empty selects none).
 func primaryNav(active string) []components.NavItem {
@@ -30,7 +34,7 @@ func primaryNav(active string) []components.NavItem {
 		{Label: "Calendar", Href: "/calendar"},
 		{Label: "Chores", Href: "/tasks"},
 		{Label: "Rewards", Href: rewardsNavHref},
-		{Label: "Meals & Recipes", Href: "/meals"},
+		{Label: "Meals & Recipes", Href: mealsNavHref},
 		{Label: "Groceries", Href: groceriesNavHref},
 		{Label: "Photos", Href: "/photos"},
 	}
@@ -68,6 +72,7 @@ func registerWebRoutes(
 	taskHandlers *tasksadapter.WebHandlers,
 	gamificationHandlers *tasksadapter.GamificationWebHandlers,
 	groceryHandlers *trackingadapter.WebHandlers,
+	mealsHandlers *mealsadapter.WebHandlers,
 ) {
 	// Auth routes — public.
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -198,6 +203,34 @@ func registerWebRoutes(
 	mux.Handle("POST /groceries/pantry/{id}/adjust", requireMember(http.HandlerFunc(groceryHandlers.PantryAdjust)))
 	mux.Handle("POST /groceries/shopping", requireMember(http.HandlerFunc(groceryHandlers.ShoppingAdd)))
 	mux.Handle("POST /groceries/shopping/{id}/status", requireMember(http.HandlerFunc(groceryHandlers.ShoppingTransition)))
+
+	// Meals routes — RequireMember-gated (NES-62).
+	// GET  /meals                       renders the recipe box, planner, and finder
+	//                                   (the finder reads ?source / ?ingredients).
+	// POST /meals/recipes               creates a box recipe.
+	// POST /meals/recipes/{id}          edits a box recipe.
+	// POST /meals/recipes/{id}/delete   deletes a box recipe.
+	// POST /meals/plan                  assigns a recipe to a (date, meal) slot.
+	// POST /meals/plan/clear            clears a slot.
+	// POST /meals/plan/generate         generates the shopping list from the week.
+	//
+	// The layout callback is constructed per-request so the request context (CSRF
+	// token, member list) is always available, mirroring the groceries routes.
+	mux.Handle("GET /meals", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, mealsNavHref)
+				return components.Layout(props, nav, c)
+			}
+		}
+		mealsHandlers.Page(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /meals/recipes", requireMember(http.HandlerFunc(mealsHandlers.CreateRecipe)))
+	mux.Handle("POST /meals/recipes/{id}", requireMember(http.HandlerFunc(mealsHandlers.EditRecipe)))
+	mux.Handle("POST /meals/recipes/{id}/delete", requireMember(http.HandlerFunc(mealsHandlers.DeleteRecipe)))
+	mux.Handle("POST /meals/plan", requireMember(http.HandlerFunc(mealsHandlers.AssignMeal)))
+	mux.Handle("POST /meals/plan/clear", requireMember(http.HandlerFunc(mealsHandlers.ClearMeal)))
+	mux.Handle("POST /meals/plan/generate", requireMember(http.HandlerFunc(mealsHandlers.GenerateGroceries)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected
