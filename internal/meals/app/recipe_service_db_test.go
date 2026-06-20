@@ -26,11 +26,16 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the meals app DB-gated tests")
 	}
-	// migrate.Reset drops the schema, so refuse to run against a DSN that does not
-	// look like a dedicated test database — a guard against a misconfigured URL
-	// wiping real data.
-	if !strings.Contains(strings.ToLower(dsn), "test") {
-		t.Fatal("NESTOVA_TEST_DATABASE_URL must name a test database (contain \"test\") — refusing to reset a non-test schema")
+	// migrate.Reset drops the schema, so refuse to run against anything but a
+	// dedicated test database — a guard against a misconfigured URL wiping real
+	// data. Check the parsed database name (not a substring of the whole DSN, which
+	// a host or password could satisfy by accident).
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("invalid NESTOVA_TEST_DATABASE_URL: %v", err)
+	}
+	if name := strings.ToLower(cfg.ConnConfig.Database); name != "test" && !strings.HasSuffix(name, "_test") {
+		t.Fatalf("NESTOVA_TEST_DATABASE_URL must target a dedicated test database (name %q is neither \"test\" nor *_test) — refusing to reset it", cfg.ConnConfig.Database)
 	}
 
 	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

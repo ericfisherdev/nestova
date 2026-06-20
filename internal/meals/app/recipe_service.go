@@ -110,16 +110,18 @@ func (s *RecipeService) buildRecipe(ctx context.Context, id domain.RecipeID, hou
 	return recipe, nil
 }
 
-// normalizeLines resolves each free-text ingredient name to a catalogue id (a
-// race-safe upsert) and pairs it with a validated Quantity.
+// normalizeLines pairs each line with a validated Quantity and resolves its
+// free-text name to a catalogue id (a race-safe upsert). Quantity is validated
+// before EnsureIngredient so a rejected line never mutates the shared catalogue;
+// a blank name is rejected by EnsureIngredient itself without a catalogue write.
 func (s *RecipeService) normalizeLines(ctx context.Context, lines []IngredientLine) ([]domain.RecipeIngredient, error) {
 	out := make([]domain.RecipeIngredient, 0, len(lines))
 	for _, line := range lines {
-		ingredient, err := s.ingredients.EnsureIngredient(ctx, line.Name)
+		quantity, err := household.NewQuantity(line.Amount, line.Unit)
 		if err != nil {
 			return nil, err
 		}
-		quantity, err := household.NewQuantity(line.Amount, line.Unit)
+		ingredient, err := s.ingredients.EnsureIngredient(ctx, line.Name)
 		if err != nil {
 			return nil, err
 		}
