@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
@@ -12,6 +13,7 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
+	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	trackingadapter "github.com/ericfisherdev/nestova/internal/tracking/adapter"
 	"github.com/ericfisherdev/nestova/web/components"
@@ -37,6 +39,7 @@ func primaryNav(active string) []components.NavItem {
 		{Label: "Rewards", Href: rewardsNavHref},
 		{Label: "Meals & Recipes", Href: mealsNavHref},
 		{Label: "Groceries", Href: groceriesNavHref},
+		{Label: "Subscriptions", Href: "/subscriptions"},
 		{Label: "Photos", Href: "/photos"},
 	}
 	for i := range defs {
@@ -249,6 +252,41 @@ func registerWebRoutes(
 	// callback path must match GOOGLE_REDIRECT_URL.
 	mux.Handle("POST /calendar/google/connect", requireMember(http.HandlerFunc(calendarHandlers.Connect)))
 	mux.Handle("GET /calendar/google/callback", requireMember(http.HandlerFunc(calendarHandlers.Callback)))
+}
+
+// registerCalendarSubscriptionPages wires the NES-70 calendar view and
+// subscriptions UI. It is separate from registerWebRoutes so those routes can be
+// added without changing the shared route builder's signature.
+func registerCalendarSubscriptionPages(
+	mux *http.ServeMux,
+	logger *slog.Logger,
+	sm *scs.SessionManager,
+	households household.HouseholdRepository,
+	calendarView *calendaradapter.ViewHandlers,
+	subscriptionHandlers *subscriptionsadapter.WebHandlers,
+) {
+	requireMember := authadapter.RequireMember(sm)
+	layoutFor := func(r *http.Request, active string) func(member *household.Member) func(templ.Component) templ.Component {
+		return func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, active)
+				return components.Layout(props, nav, c)
+			}
+		}
+	}
+
+	// Unified calendar page (NES-69/70).
+	mux.Handle("GET /calendar", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calendarView.Page(layoutFor(r, "/calendar"), time.Now)(w, r)
+	})))
+
+	// Subscriptions UI (NES-70) — list + rollup and the add/edit/deactivate actions.
+	mux.Handle("GET /subscriptions", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		subscriptionHandlers.Page(layoutFor(r, "/subscriptions"))(w, r)
+	})))
+	mux.Handle("POST /subscriptions", requireMember(http.HandlerFunc(subscriptionHandlers.Add)))
+	mux.Handle("POST /subscriptions/{id}", requireMember(http.HandlerFunc(subscriptionHandlers.Edit)))
+	mux.Handle("POST /subscriptions/{id}/deactivate", requireMember(http.HandlerFunc(subscriptionHandlers.Deactivate)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

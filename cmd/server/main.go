@@ -336,6 +336,19 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("create calendar sync scheduler: %w", err)
 	}
 
+	// NES-70: subscriptions UI and the unified calendar view.
+	subscriptionService, err := subscriptionsapp.NewSubscriptionService(subscriptionRepo)
+	if err != nil {
+		return fmt.Errorf("create subscription service: %w", err)
+	}
+	subscriptionCostService := subscriptionsapp.NewCostService(subscriptionRepo)
+	subscriptionWebHandlers := subscriptionsadapter.NewWebHandlers(subscriptionService, subscriptionCostService, householdRepo, sm, logger)
+	unifiedCalendarService, err := calendarapp.NewUnifiedCalendarService(externalEventRepo, taskInstanceRepo, recurringTaskRepo, subscriptionRepo, householdRepo, logger)
+	if err != nil {
+		return fmt.Errorf("create unified calendar service: %w", err)
+	}
+	calendarViewHandlers := calendaradapter.NewViewHandlers(unifiedCalendarService, calendarAccountRepo, householdRepo, sm, logger)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -349,6 +362,7 @@ func run(logger *slog.Logger) error {
 		},
 		Routes: func(mux *http.ServeMux) {
 			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
+			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 		},
 	})
 
