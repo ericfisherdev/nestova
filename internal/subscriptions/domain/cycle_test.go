@@ -9,6 +9,18 @@ import (
 	subscriptions "github.com/ericfisherdev/nestova/internal/subscriptions/domain"
 )
 
+// mustMoney constructs a Money for tests, failing the test if the value is not
+// valid so an unexpected constructor error never masquerades as the behavior
+// under test.
+func mustMoney(t *testing.T, cents int64, currency string) household.Money {
+	t.Helper()
+	m, err := household.NewMoney(cents, currency)
+	if err != nil {
+		t.Fatalf("NewMoney(%d, %q) error = %v", cents, currency, err)
+	}
+	return m
+}
+
 func TestCycleValidAndParse(t *testing.T) {
 	for _, c := range subscriptions.Cycles() {
 		if !c.Valid() {
@@ -44,7 +56,7 @@ func TestNormalizeMonthly(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			amount, _ := household.NewMoney(tc.cents, "USD")
+			amount := mustMoney(t, tc.cents, "USD")
 			got, err := subscriptions.NormalizeMonthly(amount, tc.cycle)
 			if err != nil {
 				t.Fatalf("NormalizeMonthly() error = %v", err)
@@ -60,21 +72,21 @@ func TestNormalizeMonthly(t *testing.T) {
 }
 
 func TestNormalizeMonthlyCustomUnsupported(t *testing.T) {
-	amount, _ := household.NewMoney(1000, "USD")
+	amount := mustMoney(t, 1000, "USD")
 	if _, err := subscriptions.NormalizeMonthly(amount, subscriptions.CycleCustom); !errors.Is(err, subscriptions.ErrUnsupportedCycle) {
 		t.Fatalf("NormalizeMonthly(custom) error = %v, want ErrUnsupportedCycle", err)
 	}
 }
 
 func TestNormalizeMonthlyUnknownUnsupported(t *testing.T) {
-	amount, _ := household.NewMoney(1000, "USD")
+	amount := mustMoney(t, 1000, "USD")
 	if _, err := subscriptions.NormalizeMonthly(amount, subscriptions.Cycle("daily")); !errors.Is(err, subscriptions.ErrUnsupportedCycle) {
 		t.Fatalf("NormalizeMonthly(unknown) error = %v, want ErrUnsupportedCycle", err)
 	}
 }
 
 func TestNormalizeMonthlyWeeklyOverflow(t *testing.T) {
-	amount, _ := household.NewMoney(math.MaxInt64, "USD")
+	amount := mustMoney(t, math.MaxInt64, "USD")
 	if _, err := subscriptions.NormalizeMonthly(amount, subscriptions.CycleWeekly); !errors.Is(err, household.ErrInvalidMoney) {
 		t.Fatalf("NormalizeMonthly(weekly overflow) error = %v, want ErrInvalidMoney", err)
 	}

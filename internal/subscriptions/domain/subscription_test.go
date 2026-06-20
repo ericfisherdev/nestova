@@ -35,7 +35,7 @@ func TestSubscriptionValidate(t *testing.T) {
 }
 
 func TestSubscriptionValidateRejects(t *testing.T) {
-	zeroAmount, _ := household.NewMoney(0, "USD")
+	zeroAmount := mustMoney(t, 0, "USD")
 	cases := []struct {
 		name   string
 		mutate func(*subscriptions.Subscription)
