@@ -15,6 +15,7 @@ var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
 	"SESSION_SECRET", "SESSION_LIFETIME",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
+	"RECIPES_EXTERNAL_ENABLED", "RECIPES_API_KEY", "RECIPES_API_BASE_URL",
 }
 
 // devDSN mirrors the package default; declared here so black-box assertions do
@@ -120,6 +121,21 @@ func TestLoadValid(t *testing.T) {
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 			},
 		},
+		{
+			name: "external recipes enabled with credentials",
+			env: map[string]string{
+				"RECIPES_EXTERNAL_ENABLED": "true",
+				"RECIPES_API_KEY":          "spoon-key",
+				"RECIPES_API_BASE_URL":     "https://api.spoonacular.com",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +185,31 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "invalid duration",
 			env:          map[string]string{"DB_CONNECT_TIMEOUT": "5x"},
 			wantContains: []string{"DB_CONNECT_TIMEOUT"},
+		},
+		{
+			name:         "external enabled without api key",
+			env:          map[string]string{"RECIPES_EXTERNAL_ENABLED": "true", "RECIPES_API_BASE_URL": "https://api"},
+			wantContains: []string{"RECIPES_API_KEY"},
+		},
+		{
+			name:         "external enabled without base url",
+			env:          map[string]string{"RECIPES_EXTERNAL_ENABLED": "true", "RECIPES_API_KEY": "k"},
+			wantContains: []string{"RECIPES_API_BASE_URL"},
+		},
+		{
+			name:         "non-boolean RECIPES_EXTERNAL_ENABLED",
+			env:          map[string]string{"RECIPES_EXTERNAL_ENABLED": "yes-please"},
+			wantContains: []string{"RECIPES_EXTERNAL_ENABLED"},
+		},
+		{
+			name:         "malformed RECIPES_API_BASE_URL",
+			env:          map[string]string{"RECIPES_EXTERNAL_ENABLED": "true", "RECIPES_API_KEY": "k", "RECIPES_API_BASE_URL": "not-a-url"},
+			wantContains: []string{"RECIPES_API_BASE_URL"},
+		},
+		{
+			name:         "relative RECIPES_API_BASE_URL is rejected",
+			env:          map[string]string{"RECIPES_EXTERNAL_ENABLED": "true", "RECIPES_API_KEY": "k", "RECIPES_API_BASE_URL": "/api/recipes"},
+			wantContains: []string{"RECIPES_API_BASE_URL", "absolute"},
 		},
 		{
 			name:         "non-positive connect timeout",

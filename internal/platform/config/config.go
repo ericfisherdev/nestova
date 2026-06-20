@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -44,6 +45,7 @@ type Config struct {
 	DB      DBConfig
 	Session SessionConfig
 	OAuth   OAuthConfig
+	Recipes RecipesConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
 }
@@ -84,6 +86,16 @@ type OAuthConfig struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
+}
+
+// RecipesConfig configures the external recipe provider behind the "discover
+// more" finder (NES-59). External lookups are off unless ExternalEnabled is set,
+// in which case APIKey and BaseURL are required (a swappable provider, so no
+// secret lives in code). When disabled, the finder serves recipe-box results only.
+type RecipesConfig struct {
+	ExternalEnabled bool
+	APIKey          string
+	BaseURL         string
 }
 
 // Load reads configuration from the environment and validates it. In
@@ -130,6 +142,8 @@ func Load() (Config, error) {
 	collect(err)
 	sessionLifetime, err := getduration("SESSION_LIFETIME", 12*time.Hour)
 	collect(err)
+	recipesExternalEnabled, err := getbool("RECIPES_EXTERNAL_ENABLED", false)
+	collect(err)
 
 	// PORT is conventionally a bare port number; tolerate a leading colon
 	// (e.g. PORT=":8080") so it does not produce a malformed "::8080" address.
@@ -161,6 +175,13 @@ func Load() (Config, error) {
 			GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 			GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 			GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+		},
+		Recipes: RecipesConfig{
+			ExternalEnabled: recipesExternalEnabled,
+			// Trim at read: BaseURL is consumed directly by the HTTP client, so a
+			// stray-whitespace value must not survive past validation.
+			APIKey:  strings.TrimSpace(os.Getenv("RECIPES_API_KEY")),
+			BaseURL: strings.TrimSpace(os.Getenv("RECIPES_API_BASE_URL")),
 		},
 	}
 
@@ -198,6 +219,22 @@ func (c Config) validate() []error {
 	}
 	if c.Session.Lifetime <= 0 {
 		errs = append(errs, fmt.Errorf("SESSION_LIFETIME must be positive, got %v", c.Session.Lifetime))
+	}
+
+	// External recipe lookups must not be enabled without the credentials to make
+	// them, in any environment (enabling them with no key is a config mistake).
+	if c.Recipes.ExternalEnabled {
+		// APIKey and BaseURL are trimmed at read, so an empty check suffices here.
+		if c.Recipes.APIKey == "" {
+			errs = append(errs, errors.New("RECIPES_API_KEY is required when RECIPES_EXTERNAL_ENABLED is true"))
+		}
+		if c.Recipes.BaseURL == "" {
+			errs = append(errs, errors.New("RECIPES_API_BASE_URL is required when RECIPES_EXTERNAL_ENABLED is true"))
+		} else if u, err := url.Parse(c.Recipes.BaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			// Fail fast on a malformed base URL rather than surfacing it as an opaque
+			// request error at the first lookup; require an absolute http(s) URL.
+			errs = append(errs, fmt.Errorf("RECIPES_API_BASE_URL must be an absolute http(s) URL, got %q", c.Recipes.BaseURL))
+		}
 	}
 
 	if c.Env == EnvProd {
@@ -259,4 +296,22 @@ func getduration(key string, fallback time.Duration) (time.Duration, error) {
 		return fallback, fmt.Errorf("%s must be a duration (e.g. 30s, 5m): %w", key, err)
 	}
 	return d, nil
+}
+
+// getbool parses a boolean environment variable (strconv.ParseBool: 1/t/true,
+// 0/f/false, case-insensitive), returning fallback when unset or empty and an
+// error when present but invalid.
+func getbool(key string, fallback bool) (bool, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		// Return the fallback alongside the error so the resulting Config still
+		// holds a sane value and downstream validation does not double-report
+		// this field.
+		return fallback, fmt.Errorf("%s must be a boolean (true/false): %w", key, err)
+	}
+	return b, nil
 }
