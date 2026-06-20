@@ -293,6 +293,16 @@ func TestRecipeExternalUpsertReplacesByExternalRef(t *testing.T) {
 	}
 }
 
+func TestUpsertExternalRequiresExternalRef(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecipeRepository(pool)
+	ctx := testCtx(t)
+	noRef := &domain.Recipe{ID: domain.NewRecipeID(), Title: "X", Source: domain.SourceExternal, Servings: 2}
+	if _, err := repo.UpsertExternal(ctx, noRef); err == nil {
+		t.Error("UpsertExternal(no external_ref) = nil error, want error (external_ref is the cache key)")
+	}
+}
+
 func TestRecipeCreateMapsForeignKeySentinels(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewRecipeRepository(pool)
@@ -404,7 +414,10 @@ func TestMealPlanListOrdersByDateThenMeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListByDateRange: %v", err)
 	}
-	if len(week) != 2 || week[0].Meal != domain.MealBreakfast || week[1].Meal != domain.MealDinner {
+	if len(week) != 2 {
+		t.Fatalf("week entries = %d, want 2", len(week))
+	}
+	if week[0].Meal != domain.MealBreakfast || week[1].Meal != domain.MealDinner {
 		t.Errorf("order = %v, want [breakfast, dinner]", []domain.Meal{week[0].Meal, week[1].Meal})
 	}
 }
