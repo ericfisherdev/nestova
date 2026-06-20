@@ -6,6 +6,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -36,6 +37,11 @@ const (
 	// It satisfies the length check in dev but is rejected in prod, forcing a
 	// real secret in production.
 	devSessionSecret = "dev-only-insecure-session-secret-change-me"
+
+	// devEncryptionKey is a known, insecure 32-byte (64-hex) default used only in
+	// development so the app starts without configuration. It is rejected in prod,
+	// forcing a real key (generated with `openssl rand -hex 32`) there.
+	devEncryptionKey = "00000000000000000000000000000000000000000000000000000000deadbeef"
 )
 
 // Config holds the validated runtime configuration, grouped by concern so each
@@ -45,6 +51,7 @@ type Config struct {
 	DB      DBConfig
 	Session SessionConfig
 	OAuth   OAuthConfig
+	Crypto  CryptoConfig
 	Recipes RecipesConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
@@ -87,6 +94,33 @@ type OAuthConfig struct {
 	GoogleClientSecret string
 	GoogleRedirectURL  string
 }
+
+// CryptoConfig holds the at-rest encryption key used to protect stored secrets
+// (e.g. OAuth tokens, NES-67). EncryptionKey is a 64-character hex string
+// (32 bytes), produced by `openssl rand -hex 32`. Required in prod; when set in
+// any environment it must be valid. Key decodes and validates it.
+type CryptoConfig struct {
+	EncryptionKey string
+}
+
+// Key decodes the configured hex EncryptionKey into its 32 raw bytes, returning
+// an error when it is unset or not exactly 32 bytes of hex.
+func (c CryptoConfig) Key() ([]byte, error) {
+	if c.EncryptionKey == "" {
+		return nil, errors.New("ENCRYPTION_KEY is not set")
+	}
+	key, err := hex.DecodeString(c.EncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("ENCRYPTION_KEY must be hex: %w", err)
+	}
+	if len(key) != encryptionKeyLen {
+		return nil, fmt.Errorf("ENCRYPTION_KEY must decode to %d bytes, got %d", encryptionKeyLen, len(key))
+	}
+	return key, nil
+}
+
+// encryptionKeyLen is the required decoded key length (AES-256).
+const encryptionKeyLen = 32
 
 // RecipesConfig configures the external recipe provider behind the "discover
 // more" finder (NES-59). External lookups are off unless ExternalEnabled is set,
@@ -176,6 +210,9 @@ func Load() (Config, error) {
 			GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 			GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
 		},
+		Crypto: CryptoConfig{
+			EncryptionKey: strings.TrimSpace(getenv("ENCRYPTION_KEY", devEncryptionKey)),
+		},
 		Recipes: RecipesConfig{
 			ExternalEnabled: recipesExternalEnabled,
 			// Trim at read: BaseURL is consumed directly by the HTTP client, so a
@@ -237,6 +274,14 @@ func (c Config) validate() []error {
 		}
 	}
 
+	// When an encryption key is provided, it must be valid in any environment so
+	// a malformed key fails fast at startup rather than at the first encrypt.
+	if c.Crypto.EncryptionKey != "" {
+		if _, err := c.Crypto.Key(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
 	if c.Env == EnvProd {
 		if c.Session.Secret == devSessionSecret {
 			errs = append(errs, errors.New("SESSION_SECRET must be set to a non-default value in prod"))
@@ -249,6 +294,9 @@ func (c Config) validate() []error {
 		}
 		if strings.TrimSpace(c.OAuth.GoogleRedirectURL) == "" {
 			errs = append(errs, errors.New("GOOGLE_REDIRECT_URL is required in prod"))
+		}
+		if c.Crypto.EncryptionKey == devEncryptionKey {
+			errs = append(errs, errors.New("ENCRYPTION_KEY must be set to a non-default value in prod"))
 		}
 	}
 

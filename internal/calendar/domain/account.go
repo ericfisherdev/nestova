@@ -91,8 +91,14 @@ type CalendarAccountRepository interface {
 	// it (the (member_id, provider) unique key). Returns ErrCalendarAccountNotFound
 	// when the member has no account for that provider.
 	GetByMemberProvider(ctx context.Context, memberID household.MemberID, provider Provider) (*CalendarAccount, error)
+	// UpdateTokens rewrites the full token set after a (re)connect — the encrypted
+	// access and refresh tokens, the expiry, and the selected calendar ids — and
+	// resets the sync token to NULL so the next sync starts fresh. It returns
+	// ErrCalendarAccountNotFound when the id is unknown.
+	UpdateTokens(ctx context.Context, id CalendarAccountID, accessTokenEnc, refreshTokenEnc []byte, tokenExpiry time.Time, calendarIDs []string) error
 	// UpdateSyncState persists a refreshed access token + expiry and the latest
-	// sync token for the account.
+	// sync token for the account (the refresh-token rotation and sync paths). It
+	// does not touch the refresh token or the selected calendar ids.
 	UpdateSyncState(ctx context.Context, id CalendarAccountID, accessTokenEnc []byte, tokenExpiry time.Time, syncToken *string) error
 	// ListByHousehold returns the household's connected accounts.
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*CalendarAccount, error)

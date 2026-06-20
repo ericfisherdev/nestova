@@ -15,6 +15,8 @@ import (
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
+	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
+	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
@@ -23,6 +25,7 @@ import (
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
+	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
@@ -282,6 +285,31 @@ func run(logger *slog.Logger) error {
 		recipeService, plannerService, finderService, groceryFromPlanService, ingredientRepo, sm, logger,
 	)
 
+	// NES-67: Google OAuth calendar connection. The cipher protects stored tokens
+	// at rest; the state signer (keyed by the session secret) protects the OAuth
+	// round trip. The encryption key is validated at config load.
+	encryptionKey, err := cfg.Crypto.Key()
+	if err != nil {
+		return fmt.Errorf("load encryption key: %w", err)
+	}
+	tokenCipher, err := crypto.NewCipher(encryptionKey)
+	if err != nil {
+		return fmt.Errorf("create token cipher: %w", err)
+	}
+	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
+	if err != nil {
+		return fmt.Errorf("create oauth state signer: %w", err)
+	}
+	calendarAccountRepo := calendaradapter.NewCalendarAccountRepository(pool)
+	googleOAuthClient := calendaradapter.NewGoogleOAuthClient(
+		cfg.OAuth.GoogleClientID, cfg.OAuth.GoogleClientSecret, cfg.OAuth.GoogleRedirectURL,
+	)
+	accountService, err := calendarapp.NewAccountService(calendarAccountRepo, tokenCipher, googleOAuthClient, oauthStateSigner, logger)
+	if err != nil {
+		return fmt.Errorf("create calendar account service: %w", err)
+	}
+	calendarWebHandlers := calendaradapter.NewWebHandlers(accountService, sm, logger)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -294,7 +322,7 @@ func run(logger *slog.Logger) error {
 			authadapter.Authenticate(sm, householdRepo),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 		},
 	})
 
