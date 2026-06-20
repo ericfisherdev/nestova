@@ -282,8 +282,9 @@ templ assignMealForm(week MealWeekView, options []MealRecipeOption, csrfToken st
 
 templ finderSection(finder *MealFinderView, csrfToken string) {
 	@Card("What can I make?") {
-		<form method="get" action="/meals" class="flex flex-col gap-2">
-			<p class="text-sm text-ink-muted">Search your recipes by what you have on hand. A read-only search, so no CSRF token is needed.</p>
+		<form method="post" action="/meals/finder" class="flex flex-col gap-2">
+			<input type="hidden" name="csrf_token" value={ csrfToken }/>
+			<p class="text-sm text-ink-muted">Search your recipes by what you have on hand.</p>
 			<div class="flex flex-wrap items-end gap-2">
 				<button type="submit" name="source" value="pantry" class="rounded-control bg-sage px-3 py-2 text-sm font-medium text-sage-fg">Use my pantry</button>
 			</div>
