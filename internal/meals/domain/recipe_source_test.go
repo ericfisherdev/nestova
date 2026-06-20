@@ -96,6 +96,15 @@ func TestMatchByIngredientsRanksAndExcludesZero(t *testing.T) {
 	}
 }
 
+func TestMatchByIngredientsSkipsNilRecipe(t *testing.T) {
+	flour := tracking.NewIngredientID()
+	good := recipeWith("Bread", req(flour))
+	matches := domain.MatchByIngredients([]*domain.Recipe{nil, good}, []tracking.IngredientID{flour})
+	if len(matches) != 1 || matches[0].Recipe.Title != "Bread" {
+		t.Errorf("matches = %+v, want one match (nil entry skipped)", matches)
+	}
+}
+
 func TestMatchByIngredientsNoRequiredScoresFull(t *testing.T) {
 	herbs := tracking.NewIngredientID()
 	recipe := recipeWith("Garnish", opt(herbs)) // only optional lines

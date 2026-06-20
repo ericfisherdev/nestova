@@ -42,6 +42,9 @@ func MatchByIngredients(recipes []*Recipe, have []tracking.IngredientID) []Recip
 
 	matches := make([]RecipeMatch, 0, len(recipes))
 	for _, recipe := range recipes {
+		if recipe == nil {
+			continue
+		}
 		required := 0
 		matched := 0
 		missing := make([]tracking.IngredientID, 0, len(recipe.Ingredients))
