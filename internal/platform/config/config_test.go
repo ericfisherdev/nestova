@@ -278,6 +278,17 @@ func TestLoadInvalid(t *testing.T) {
 			wantContains: []string{"ENCRYPTION_KEY must decode to 32 bytes"},
 		},
 		{
+			name: "prod rejects a whitespace-only encryption key",
+			env: map[string]string{
+				"APP_ENV": "prod", "SESSION_SECRET": validSecret,
+				"DATABASE_URL":     "postgres://u:p@db:5432/app",
+				"GOOGLE_CLIENT_ID": "id", "GOOGLE_CLIENT_SECRET": "secret",
+				"GOOGLE_REDIRECT_URL": "https://app/callback",
+				"ENCRYPTION_KEY":      "   ", // trimmed to empty -> Key() fails fast in prod
+			},
+			wantContains: []string{"ENCRYPTION_KEY is not set"},
+		},
+		{
 			name: "prod rejects the default encryption key",
 			env: map[string]string{
 				"APP_ENV": "prod", "SESSION_SECRET": validSecret,

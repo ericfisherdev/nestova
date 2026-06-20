@@ -39,6 +39,7 @@ type fakeAccountRepo struct {
 	syncCalled     bool
 	syncAccessEnc  []byte
 	syncRefreshEnc []byte
+	syncExpiry     time.Time
 }
 
 func (f *fakeAccountRepo) Create(_ context.Context, a *calendardomain.CalendarAccount) error {
@@ -65,10 +66,11 @@ func (f *fakeAccountRepo) UpdateTokens(context.Context, calendardomain.CalendarA
 	return nil
 }
 
-func (f *fakeAccountRepo) UpdateSyncState(_ context.Context, _ calendardomain.CalendarAccountID, accessTokenEnc, refreshTokenEnc []byte, _ time.Time, _ *string) error {
+func (f *fakeAccountRepo) UpdateSyncState(_ context.Context, _ calendardomain.CalendarAccountID, accessTokenEnc, refreshTokenEnc []byte, tokenExpiry time.Time, _ *string) error {
 	f.syncCalled = true
 	f.syncAccessEnc = accessTokenEnc
 	f.syncRefreshEnc = refreshTokenEnc
+	f.syncExpiry = tokenExpiry
 	return nil
 }
 
@@ -268,6 +270,27 @@ func TestValidAccessTokenAccountNotFound(t *testing.T) {
 	svc := mustService(t, repo, &fakeExchanger{}, testCipher(t))
 	if _, err := svc.ValidAccessToken(context.Background(), calendardomain.NewCalendarAccountID()); !errors.Is(err, calendardomain.ErrCalendarAccountNotFound) {
 		t.Fatalf("ValidAccessToken(unknown) = %v, want ErrCalendarAccountNotFound", err)
+	}
+}
+
+func TestValidAccessTokenPersistsExtendedExpiry(t *testing.T) {
+	cipher := testCipher(t)
+	oldExpiry := time.Now().Add(time.Minute)
+	account := storedAccount(t, cipher, "same-access", "refresh", oldExpiry)
+	repo := &fakeAccountRepo{getResult: account}
+	// Same access token, but a later expiry (the refresh extended the lifetime).
+	newExpiry := oldExpiry.Add(time.Hour)
+	exch := &fakeExchanger{sourceTok: &oauth2.Token{AccessToken: "same-access", RefreshToken: "refresh", Expiry: newExpiry}}
+	svc := mustService(t, repo, exch, cipher)
+
+	if _, err := svc.ValidAccessToken(context.Background(), account.ID); err != nil {
+		t.Fatalf("ValidAccessToken: %v", err)
+	}
+	if !repo.syncCalled {
+		t.Fatal("extended expiry was not persisted via UpdateSyncState")
+	}
+	if !repo.syncExpiry.Equal(newExpiry) {
+		t.Fatalf("persisted expiry = %s, want %s", repo.syncExpiry, newExpiry)
 	}
 }
 

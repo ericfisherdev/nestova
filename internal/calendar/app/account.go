@@ -175,7 +175,10 @@ func (s *AccountService) ValidAccessToken(ctx context.Context, accountID domain.
 		return "", fmt.Errorf("obtain valid access token: %w", err)
 	}
 
-	if fresh.AccessToken != stored.AccessToken {
+	// Re-persist when the access token rotated OR its expiry moved forward, so a
+	// refresh that only extends the expiry is not lost (which would otherwise
+	// trigger a refresh on every call).
+	if fresh.AccessToken != stored.AccessToken || fresh.Expiry.After(stored.Expiry) {
 		newAccessEnc, err := s.cipher.Encrypt([]byte(fresh.AccessToken))
 		if err != nil {
 			return "", fmt.Errorf("encrypt refreshed access token: %w", err)
