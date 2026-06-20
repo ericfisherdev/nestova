@@ -102,6 +102,10 @@ type CalendarAccountRepository interface {
 	// value replaces it (some providers rotate the refresh token on refresh). It
 	// does not touch the selected calendar ids.
 	UpdateSyncState(ctx context.Context, id CalendarAccountID, accessTokenEnc, refreshTokenEnc []byte, tokenExpiry time.Time, syncToken *string) error
+	// SetSyncToken persists only the incremental-sync cursor after a sync pass,
+	// leaving the tokens untouched. A nil value clears it (forcing a full resync
+	// next time). It returns ErrCalendarAccountNotFound when the id is unknown.
+	SetSyncToken(ctx context.Context, id CalendarAccountID, syncToken *string) error
 	// ListByHousehold returns the household's connected accounts.
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*CalendarAccount, error)
 	// ListAll returns every connected account across all households; the sync

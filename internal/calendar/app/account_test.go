@@ -74,6 +74,10 @@ func (f *fakeAccountRepo) UpdateSyncState(_ context.Context, _ calendardomain.Ca
 	return nil
 }
 
+func (f *fakeAccountRepo) SetSyncToken(context.Context, calendardomain.CalendarAccountID, *string) error {
+	return nil
+}
+
 func (f *fakeAccountRepo) ListByHousehold(context.Context, household.HouseholdID) ([]*calendardomain.CalendarAccount, error) {
 	return nil, nil
 }
