@@ -130,13 +130,15 @@ func (r *SubscriptionRepository) ListActiveByHousehold(ctx context.Context, hous
 
 // ListDueForRenewal returns active, non-custom subscriptions whose next renewal
 // falls within their reminder lead window of asOf
-// (next_renewal_on - reminder_lead_days <= asOf::date). asOf is injected so the
-// query is deterministic; the comparison is on calendar dates.
+// (next_renewal_on - reminder_lead_days <= the UTC calendar date of asOf). asOf
+// is injected so the query is deterministic. The date is taken in UTC via
+// AT TIME ZONE 'UTC' so the comparison does not depend on the database session's
+// timezone, matching the date-only (UTC midnight) convention of next_renewal_on.
 func (r *SubscriptionRepository) ListDueForRenewal(ctx context.Context, asOf time.Time) ([]*domain.Subscription, error) {
 	const q = selectColumns + `
 		WHERE active = true
 		  AND cycle <> 'custom'
-		  AND next_renewal_on - reminder_lead_days <= $1::date
+		  AND next_renewal_on - reminder_lead_days <= ($1 AT TIME ZONE 'UTC')::date
 		ORDER BY next_renewal_on, id`
 	return r.querySubscriptions(ctx, "list due-for-renewal subscriptions", q, asOf)
 }
