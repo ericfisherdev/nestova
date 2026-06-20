@@ -16,6 +16,9 @@ import (
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
+	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
+	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
+	mealsdomain "github.com/ericfisherdev/nestova/internal/meals/domain"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
@@ -209,6 +212,49 @@ func run(logger *slog.Logger) error {
 		logger,
 	)
 
+	// NES-62: meals UI wiring — recipe box, weekly planner, and ingredient finder.
+	recipeRepo := mealsadapter.NewRecipeRepository(pool)
+	mealPlanRepo := mealsadapter.NewMealPlanRepository(pool)
+	recipeService, err := mealsapp.NewRecipeService(recipeRepo, ingredientRepo)
+	if err != nil {
+		return fmt.Errorf("create recipe service: %w", err)
+	}
+	plannerService, err := mealsapp.NewPlannerService(mealPlanRepo, recipeRepo)
+	if err != nil {
+		return fmt.Errorf("create planner service: %w", err)
+	}
+	groceryFromPlanService, err := mealsapp.NewGroceryFromPlanService(mealPlanRepo, recipeRepo, shoppingListRepo)
+	if err != nil {
+		return fmt.Errorf("create grocery-from-plan service: %w", err)
+	}
+	localRecipeSource, err := mealsadapter.NewLocalRecipeSource(recipeRepo)
+	if err != nil {
+		return fmt.Errorf("create local recipe source: %w", err)
+	}
+	// The external "discover more" source is built only when configured; otherwise
+	// the finder serves recipe-box results alone (DIP: callers see only the port).
+	var externalRecipeSource mealsdomain.RecipeSource
+	if cfg.Recipes.ExternalEnabled {
+		externalRecipeSource, err = mealsadapter.NewExternalRecipeSource(
+			&http.Client{Timeout: mealsadapter.ExternalRequestTimeout},
+			cfg.Recipes.BaseURL, cfg.Recipes.APIKey, recipeRepo, ingredientRepo, ingredientRepo,
+		)
+		if err != nil {
+			return fmt.Errorf("create external recipe source: %w", err)
+		}
+	}
+	recipeSource, err := mealsapp.SelectRecipeSource(cfg.Recipes.ExternalEnabled, localRecipeSource, externalRecipeSource)
+	if err != nil {
+		return fmt.Errorf("select recipe source: %w", err)
+	}
+	finderService, err := mealsapp.NewFinderService(recipeSource, pantryRepo, ingredientRepo)
+	if err != nil {
+		return fmt.Errorf("create finder service: %w", err)
+	}
+	mealsWebHandlers := mealsadapter.NewWebHandlers(
+		recipeService, plannerService, finderService, groceryFromPlanService, ingredientRepo, sm, logger,
+	)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -221,7 +267,7 @@ func run(logger *slog.Logger) error {
 			authadapter.Authenticate(sm, householdRepo),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers)
 		},
 	})
 
