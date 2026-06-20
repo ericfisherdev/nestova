@@ -143,6 +143,44 @@ func (r *SubscriptionRepository) ListDueForRenewal(ctx context.Context, asOf tim
 	return r.querySubscriptions(ctx, "list due-for-renewal subscriptions", q, asOf)
 }
 
+// MarkReminded atomically claims the renewal reminder for the given occurrence
+// (a next_renewal_on date). It returns true when this call claimed it — set
+// reminded_for to occurrence because no reminder had yet been emitted for that
+// occurrence — and false when a reminder was already emitted for it (idempotent
+// across repeated ticks). It only acts on active subscriptions. The compare uses
+// the occurrence date directly so it does not depend on the session timezone.
+func (r *SubscriptionRepository) MarkReminded(ctx context.Context, id domain.SubscriptionID, occurrence time.Time) (bool, error) {
+	const q = `
+		UPDATE subscription
+		   SET reminded_for = $2, updated_at = now()
+		 WHERE id = $1
+		   AND active = true
+		   AND (reminded_for IS NULL OR reminded_for <> $2)`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), occurrence)
+	if err != nil {
+		return false, fmt.Errorf("mark subscription reminded: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// AdvanceRenewal sets next_renewal_on to newNext and clears reminded_for, so the
+// next occurrence starts un-reminded. It returns domain.ErrSubscriptionNotFound
+// when the id is unknown.
+func (r *SubscriptionRepository) AdvanceRenewal(ctx context.Context, id domain.SubscriptionID, newNext time.Time) error {
+	const q = `
+		UPDATE subscription
+		   SET next_renewal_on = $2, reminded_for = NULL, updated_at = now()
+		 WHERE id = $1`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), newNext)
+	if err != nil {
+		return fmt.Errorf("advance subscription renewal: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrSubscriptionNotFound
+	}
+	return nil
+}
+
 // selectColumns is the shared column list for subscription reads, in scan order.
 const selectColumns = `
 	SELECT id, household_id, name, amount_cents, currency, cycle, next_renewal_on,

@@ -26,6 +26,8 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
+	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
+	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	trackingadapter "github.com/ericfisherdev/nestova/internal/tracking/adapter"
@@ -68,6 +70,19 @@ const (
 	// how long an in-flight cycle can delay shutdown). It is decoupled from the
 	// long poll interval so graceful shutdown is not held up for an hour.
 	restockSchedulerTickTimeout = 5 * time.Minute
+)
+
+// Renewal scheduler tuning (NES-65).
+const (
+	// renewalSchedulerPollInterval is how often the renewal scheduler raises
+	// subscription reminders and advances past-due renewals. Renewals move on a
+	// daily granularity (next_renewal_on is a date), so hourly polling is ample
+	// and keeps load low.
+	renewalSchedulerPollInterval = time.Hour
+	// renewalSchedulerTickTimeout bounds a single reminder+advance cycle (and so
+	// how long an in-flight cycle can delay shutdown), decoupled from the long
+	// poll interval so graceful shutdown is not held up for an hour.
+	renewalSchedulerTickTimeout = 5 * time.Minute
 )
 
 func main() {
@@ -162,6 +177,18 @@ func run(logger *slog.Logger) error {
 	)
 	if err != nil {
 		return fmt.Errorf("create restock scheduler: %w", err)
+	}
+
+	// NES-65: subscription renewal automation. The scheduler raises one reminder
+	// per renewal occurrence (idempotent) and rolls past-due renewals forward,
+	// emitting reminders via the same outbox the dispatcher consumes.
+	subscriptionRepo := subscriptionsadapter.NewSubscriptionRepository(pool)
+	renewalScheduler, err := subscriptionsapp.NewRenewalScheduler(
+		subscriptionRepo, outboxRepo, logger,
+		renewalSchedulerPollInterval, renewalSchedulerTickTimeout,
+	)
+	if err != nil {
+		return fmt.Errorf("create renewal scheduler: %w", err)
 	}
 
 	// NES-32: task UI wiring — TaskService + HTTP handlers for the tasks list
@@ -311,6 +338,16 @@ func run(logger *slog.Logger) error {
 		restockScheduler.Run(ctx)
 	}()
 
+	// NES-65: the renewal scheduler is a fourth independent background worker on
+	// the same signal-cancelled ctx. Each tick runs under its own bounded context,
+	// so an in-flight reminder+advance cycle finishes its writes before Run
+	// returns; renewalSchedulerDone is awaited below before pool.Close.
+	renewalSchedulerDone := make(chan struct{})
+	go func() {
+		defer close(renewalSchedulerDone)
+		renewalScheduler.Run(ctx)
+	}()
+
 	var runErr error
 	select {
 	case err := <-serverErr:
@@ -336,6 +373,7 @@ func run(logger *slog.Logger) error {
 	<-dispatcherDone
 	<-schedulerDone
 	<-restockSchedulerDone
+	<-renewalSchedulerDone
 
 	if shutdownErr != nil {
 		return errors.Join(runErr, shutdownErr)
