@@ -150,12 +150,14 @@ func (r *SubscriptionRepository) ListDueForRenewal(ctx context.Context, asOf tim
 // across repeated ticks). It only acts on active subscriptions. The compare uses
 // the occurrence date directly so it does not depend on the session timezone.
 func (r *SubscriptionRepository) MarkReminded(ctx context.Context, id domain.SubscriptionID, occurrence time.Time) (bool, error) {
+	// Cast the timestamp parameter to a UTC date so the stored value and the
+	// comparison do not depend on the session timezone (matching ListDueForRenewal).
 	const q = `
 		UPDATE subscription
-		   SET reminded_for = $2, updated_at = now()
+		   SET reminded_for = ($2 AT TIME ZONE 'UTC')::date, updated_at = now()
 		 WHERE id = $1
 		   AND active = true
-		   AND (reminded_for IS NULL OR reminded_for <> $2)`
+		   AND (reminded_for IS NULL OR reminded_for <> ($2 AT TIME ZONE 'UTC')::date)`
 	tag, err := r.dbtx.Exec(ctx, q, id.String(), occurrence)
 	if err != nil {
 		return false, fmt.Errorf("mark subscription reminded: %w", err)
@@ -167,9 +169,11 @@ func (r *SubscriptionRepository) MarkReminded(ctx context.Context, id domain.Sub
 // next occurrence starts un-reminded. It returns domain.ErrSubscriptionNotFound
 // when the id is unknown.
 func (r *SubscriptionRepository) AdvanceRenewal(ctx context.Context, id domain.SubscriptionID, newNext time.Time) error {
+	// Cast to a UTC date so the stored next_renewal_on does not depend on the
+	// session timezone (matching ListDueForRenewal and MarkReminded).
 	const q = `
 		UPDATE subscription
-		   SET next_renewal_on = $2, reminded_for = NULL, updated_at = now()
+		   SET next_renewal_on = ($2 AT TIME ZONE 'UTC')::date, reminded_for = NULL, updated_at = now()
 		 WHERE id = $1`
 	tag, err := r.dbtx.Exec(ctx, q, id.String(), newNext)
 	if err != nil {
