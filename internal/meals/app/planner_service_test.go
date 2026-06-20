@@ -171,11 +171,15 @@ func TestPlanForWeekReturnsOrderedWindow(t *testing.T) {
 	svc := mustPlanner(t, plans, recipes)
 	ctx := context.Background()
 
-	// Two entries within the week (out of order) and one outside it.
+	// Entries within the week assigned out of order (including two on the same day
+	// to exercise the daily meal order), plus one outside the window.
 	if err := svc.AssignMeal(ctx, hh, planDate(23), domain.MealBreakfast, recipeID, 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.AssignMeal(ctx, hh, planDate(22), domain.MealDinner, recipeID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AssignMeal(ctx, hh, planDate(22), domain.MealBreakfast, recipeID, 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.AssignMeal(ctx, hh, planDate(30), domain.MealDinner, recipeID, 2); err != nil { // outside the week
@@ -186,11 +190,15 @@ func TestPlanForWeekReturnsOrderedWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanForWeek: %v", err)
 	}
-	if len(week) != 2 {
-		t.Fatalf("week entries = %d, want 2 (the 30th is out of window)", len(week))
+	if len(week) != 3 {
+		t.Fatalf("week entries = %d, want 3 (the 30th is out of window)", len(week))
 	}
-	if !week[0].Date.Equal(planDate(22)) || !week[1].Date.Equal(planDate(23)) {
-		t.Errorf("week order = [%v, %v], want [22nd, 23rd]", week[0].Date, week[1].Date)
+	// Ordered by date, then by daily meal order within a date.
+	if !week[0].Date.Equal(planDate(22)) || week[0].Meal != domain.MealBreakfast ||
+		!week[1].Date.Equal(planDate(22)) || week[1].Meal != domain.MealDinner ||
+		!week[2].Date.Equal(planDate(23)) || week[2].Meal != domain.MealBreakfast {
+		t.Errorf("week order = [%v/%s, %v/%s, %v/%s], want [22 breakfast, 22 dinner, 23 breakfast]",
+			week[0].Date, week[0].Meal, week[1].Date, week[1].Meal, week[2].Date, week[2].Meal)
 	}
 }
 
