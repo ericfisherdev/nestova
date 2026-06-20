@@ -86,10 +86,17 @@ func TestExternalEventPersistsAllDayAndColor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListByHouseholdRange: %v", err)
 	}
+	var foundNoColor bool
 	for _, e := range got {
-		if e.ExternalID == "no-color" && e.Color != "" {
-			t.Fatalf("no-color event Color = %q, want empty", e.Color)
+		if e.ExternalID == "no-color" {
+			foundNoColor = true
+			if e.Color != "" {
+				t.Fatalf("no-color event Color = %q, want empty", e.Color)
+			}
 		}
+	}
+	if !foundNoColor {
+		t.Fatal("no-color event missing from the range results")
 	}
 }
 

@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,6 +33,9 @@ func NewExternalEventRepository(dbtx db.TX) *ExternalEventRepository {
 // (calendar_account_id, external_id). It is idempotent and preserves the
 // existing row's id on conflict.
 func (r *ExternalEventRepository) UpsertByExternalID(ctx context.Context, event *domain.ExternalEvent) error {
+	if event == nil {
+		return errors.New("adapter: upsert external event: nil event")
+	}
 	const q = `
 		INSERT INTO external_event
 			(id, calendar_account_id, external_id, title, starts_at, ends_at, all_day, color)

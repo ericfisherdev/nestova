@@ -117,11 +117,14 @@ func mapEvent(item *calendar.Event) (domain.SyncedEvent, bool) {
 		}
 		ev.StartsAt, ev.EndsAt, ev.AllDay = start, end, false
 	case item.Start.Date != "":
-		start, err := time.Parse(dateOnlyLayout, item.Start.Date)
+		// All-day dates are parsed at UTC midnight to match the app-wide date-only
+		// convention (task due dates and subscription renewals are likewise stored
+		// as UTC midnight), keeping the unified calendar's day boundaries aligned.
+		start, err := time.ParseInLocation(dateOnlyLayout, item.Start.Date, time.UTC)
 		if err != nil {
 			return domain.SyncedEvent{}, false
 		}
-		end, err := time.Parse(dateOnlyLayout, item.End.Date)
+		end, err := time.ParseInLocation(dateOnlyLayout, item.End.Date, time.UTC)
 		if err != nil {
 			return domain.SyncedEvent{}, false
 		}
