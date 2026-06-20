@@ -84,7 +84,13 @@ func (s *AccountService) VerifyState(state string, now time.Time) (household.Mem
 	if err != nil {
 		return household.MemberID{}, err
 	}
-	return household.ParseMemberID(memberStr)
+	memberID, err := household.ParseMemberID(memberStr)
+	if err != nil {
+		// A signed state with a malformed member id is treated as invalid so
+		// callers can rely on ErrInvalidState for any state-rejection.
+		return household.MemberID{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	return memberID, nil
 }
 
 // Connect exchanges an authorization code for tokens and stores them encrypted
@@ -174,8 +180,19 @@ func (s *AccountService) ValidAccessToken(ctx context.Context, accountID domain.
 		if err != nil {
 			return "", fmt.Errorf("encrypt refreshed access token: %w", err)
 		}
-		// Re-persist only the access token + expiry; the sync token is unchanged.
-		if err := s.repo.UpdateSyncState(ctx, account.ID, newAccessEnc, fresh.Expiry, account.SyncToken); err != nil {
+		// Persist a rotated refresh token too if the provider issued one (Google
+		// usually does not, but some configurations rotate it); a nil value leaves
+		// the stored refresh token unchanged.
+		var newRefreshEnc []byte
+		if fresh.RefreshToken != "" && fresh.RefreshToken != stored.RefreshToken {
+			newRefreshEnc, err = s.cipher.Encrypt([]byte(fresh.RefreshToken))
+			if err != nil {
+				return "", fmt.Errorf("encrypt rotated refresh token: %w", err)
+			}
+		}
+		// Re-persist the access token + expiry (and rotated refresh token); the
+		// sync token is unchanged.
+		if err := s.repo.UpdateSyncState(ctx, account.ID, newAccessEnc, newRefreshEnc, fresh.Expiry, account.SyncToken); err != nil {
 			return "", fmt.Errorf("persist refreshed access token: %w", err)
 		}
 		s.logger.InfoContext(ctx, "calendar access token refreshed", "account_id", account.ID.String())

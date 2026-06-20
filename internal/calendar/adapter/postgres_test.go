@@ -195,7 +195,7 @@ func TestUpdateTokensResetsSyncToken(t *testing.T) {
 	}
 	// Give it a sync token first.
 	tok := "sync-123"
-	if err := repo.UpdateSyncState(testCtx(t), acc.ID, []byte{0x09}, time.Now(), &tok); err != nil {
+	if err := repo.UpdateSyncState(testCtx(t), acc.ID, []byte{0x09}, nil, time.Now(), &tok); err != nil {
 		t.Fatalf("UpdateSyncState: %v", err)
 	}
 
@@ -216,6 +216,9 @@ func TestUpdateTokensResetsSyncToken(t *testing.T) {
 	if !got.TokenExpiry.Equal(newExpiry) {
 		t.Fatalf("TokenExpiry = %s, want %s", got.TokenExpiry, newExpiry)
 	}
+	if len(got.CalendarIDs) != 1 || got.CalendarIDs[0] != "primary" {
+		t.Fatalf("CalendarIDs = %v, want [primary]", got.CalendarIDs)
+	}
 
 	if err := repo.UpdateTokens(testCtx(t), domain.NewCalendarAccountID(), []byte{0x1}, []byte{0x2}, newExpiry, nil); !errors.Is(err, domain.ErrCalendarAccountNotFound) {
 		t.Fatalf("UpdateTokens(unknown) = %v, want ErrCalendarAccountNotFound", err)
@@ -232,7 +235,8 @@ func TestUpdateSyncState(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	tok := "next-sync"
-	if err := repo.UpdateSyncState(testCtx(t), acc.ID, []byte{0xCC}, time.Now().Add(time.Hour), &tok); err != nil {
+	// A nil refresh token leaves the stored one unchanged.
+	if err := repo.UpdateSyncState(testCtx(t), acc.ID, []byte{0xCC}, nil, time.Now().Add(time.Hour), &tok); err != nil {
 		t.Fatalf("UpdateSyncState: %v", err)
 	}
 	got, err := repo.Get(testCtx(t), acc.ID)
@@ -245,12 +249,24 @@ func TestUpdateSyncState(t *testing.T) {
 	if got.SyncToken == nil || *got.SyncToken != "next-sync" {
 		t.Fatalf("SyncToken = %v, want next-sync", got.SyncToken)
 	}
-	// The refresh token must be untouched.
+	// The refresh token must be untouched when nil is passed.
 	if string(got.RefreshTokenEnc) != string(acc.RefreshTokenEnc) {
-		t.Fatal("UpdateSyncState must not change the refresh token")
+		t.Fatal("UpdateSyncState must not change the refresh token when nil is passed")
 	}
 
-	if err := repo.UpdateSyncState(testCtx(t), domain.NewCalendarAccountID(), []byte{0x1}, time.Now(), nil); !errors.Is(err, domain.ErrCalendarAccountNotFound) {
+	// A non-nil refresh token replaces the stored one (provider rotation).
+	if err := repo.UpdateSyncState(testCtx(t), acc.ID, []byte{0xCC}, []byte{0xDD}, time.Now(), &tok); err != nil {
+		t.Fatalf("UpdateSyncState (rotate refresh): %v", err)
+	}
+	got, err = repo.Get(testCtx(t), acc.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got.RefreshTokenEnc) != string([]byte{0xDD}) {
+		t.Fatal("UpdateSyncState did not rotate the refresh token when a value was passed")
+	}
+
+	if err := repo.UpdateSyncState(testCtx(t), domain.NewCalendarAccountID(), []byte{0x1}, nil, time.Now(), nil); !errors.Is(err, domain.ErrCalendarAccountNotFound) {
 		t.Fatalf("UpdateSyncState(unknown) = %v, want ErrCalendarAccountNotFound", err)
 	}
 }

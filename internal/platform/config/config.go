@@ -295,6 +295,11 @@ func (c Config) validate() []error {
 		if strings.TrimSpace(c.OAuth.GoogleRedirectURL) == "" {
 			errs = append(errs, errors.New("GOOGLE_REDIRECT_URL is required in prod"))
 		}
+		// Validate the key unconditionally in prod so a whitespace-only or
+		// otherwise malformed key fails fast at startup, not at the first encrypt.
+		if _, err := c.Crypto.Key(); err != nil {
+			errs = append(errs, err)
+		}
 		if c.Crypto.EncryptionKey == devEncryptionKey {
 			errs = append(errs, errors.New("ENCRYPTION_KEY must be set to a non-default value in prod"))
 		}

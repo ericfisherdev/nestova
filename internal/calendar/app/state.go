@@ -41,7 +41,9 @@ func NewOAuthStateSigner(key []byte) (*OAuthStateSigner, error) {
 
 // Sign returns a signed state binding memberID, valid until now+stateTTL. The
 // format is base64url(payload) "." base64url(hmac), where payload is
-// "memberID|expiryUnix".
+// "memberID|expiryUnix". memberID must not contain the "|" delimiter; callers
+// pass a UUID string, so this holds. A memberID containing "|" would simply fail
+// to round-trip through Verify (a safe failure: ErrInvalidState).
 func (s *OAuthStateSigner) Sign(memberID string, now time.Time) string {
 	payload := []byte(memberID + "|" + strconv.FormatInt(now.Add(stateTTL).Unix(), 10))
 	return encode(payload) + "." + encode(s.mac(payload))

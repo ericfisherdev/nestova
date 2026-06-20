@@ -59,7 +59,7 @@ func (f *fakeCalAccountRepo) UpdateTokens(context.Context, calendardomain.Calend
 	return nil
 }
 
-func (f *fakeCalAccountRepo) UpdateSyncState(context.Context, calendardomain.CalendarAccountID, []byte, time.Time, *string) error {
+func (f *fakeCalAccountRepo) UpdateSyncState(context.Context, calendardomain.CalendarAccountID, []byte, []byte, time.Time, *string) error {
 	f.updatedSync++
 	return nil
 }
@@ -203,6 +203,28 @@ func TestCalendarCallbackRejectsBadState(t *testing.T) {
 	}
 }
 
+func TestCalendarCallbackHandlesDeniedConsent(t *testing.T) {
+	member := testMember()
+	repo := &fakeCalAccountRepo{}
+	handler, sm := buildCalendarTestHandler(t, member, repo, &fakeOAuthExchanger{})
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	req := httptest.NewRequest(http.MethodGet, "/calendar/google/callback?error=access_denied", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("denied callback: status = %d, want 303", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "connect=denied") {
+		t.Fatalf("denied callback Location = %q, want connect=denied", loc)
+	}
+	if len(repo.created) != 0 {
+		t.Errorf("denied callback must not persist an account, got %d", len(repo.created))
+	}
+}
+
 func TestCalendarCallbackPersistsAccount(t *testing.T) {
 	member := testMember()
 	repo := &fakeCalAccountRepo{}
@@ -229,8 +251,8 @@ func TestCalendarCallbackPersistsAccount(t *testing.T) {
 	if len(repo.created) != 1 {
 		t.Fatalf("callback persisted %d accounts, want 1", len(repo.created))
 	}
-	if got := repo.created[0]; got.MemberID != member.ID || got.Provider != calendardomain.ProviderGoogle {
-		t.Fatalf("persisted account = %+v, want member %s / google", got, member.ID)
+	if got := repo.created[0]; got.MemberID != member.ID || got.HouseholdID != member.HouseholdID || got.Provider != calendardomain.ProviderGoogle {
+		t.Fatalf("persisted account = %+v, want member %s household %s / google", got, member.ID, member.HouseholdID)
 	}
 	if len(repo.created[0].AccessTokenEnc) == 0 || len(repo.created[0].RefreshTokenEnc) == 0 {
 		t.Error("persisted account is missing encrypted tokens")
