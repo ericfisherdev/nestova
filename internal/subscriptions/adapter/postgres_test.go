@@ -286,9 +286,8 @@ func TestListDueForRenewal(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewSubscriptionRepository(pool)
 	hh := seedHousehold(t, pool)
-	asOf := dateUTC(2026, 7, 10)
 
-	// due: renews on the 12th with a 2-day lead -> window opens on the 10th (== asOf).
+	// due: renews on the 12th with a 2-day lead -> window opens on the 10th.
 	due := newSubscription(t, hh, "Due", 100, domain.CycleMonthly, dateUTC(2026, 7, 12), nil, 2)
 	// not due: renews on the 20th with no lead.
 	future := newSubscription(t, hh, "Future", 100, domain.CycleMonthly, dateUTC(2026, 7, 20), nil, 0)
@@ -300,15 +299,42 @@ func TestListDueForRenewal(t *testing.T) {
 		}
 	}
 
-	got, err := repo.ListDueForRenewal(testCtx(t), asOf)
-	if err != nil {
-		t.Fatalf("ListDueForRenewal: %v", err)
+	pst := time.FixedZone("PST", -8*3600)
+	cases := []struct {
+		name    string
+		asOf    time.Time
+		wantDue bool // whether "Due" is in the window
+	}{
+		{"midnight UTC on the window-open date", dateUTC(2026, 7, 10), true},
+		{"late UTC on the window-open date (time component ignored)", time.Date(2026, 7, 10, 23, 59, 59, 0, time.UTC), true},
+		{"day before the window opens", time.Date(2026, 7, 9, 23, 59, 59, 0, time.UTC), false},
+		// PST 2026-07-09T20:00 == 2026-07-10T04:00Z, whose UTC date is the 10th,
+		// so the window is open: confirms the comparison uses the UTC date.
+		{"non-UTC instant whose UTC date is the window-open date", time.Date(2026, 7, 9, 20, 0, 0, 0, pst), true},
 	}
-	if len(got) != 1 || got[0].ID != due.ID {
-		ids := make([]string, len(got))
-		for i, s := range got {
-			ids[i] = s.Name
-		}
-		t.Fatalf("ListDueForRenewal returned %v, want only [Due]", ids)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repo.ListDueForRenewal(testCtx(t), tc.asOf)
+			if err != nil {
+				t.Fatalf("ListDueForRenewal: %v", err)
+			}
+			names := make([]string, len(got))
+			for i, s := range got {
+				names[i] = s.Name
+				if s.Cycle == domain.CycleCustom {
+					t.Fatalf("ListDueForRenewal returned a custom-cycle subscription %q", s.Name)
+				}
+				if s.ID == future.ID {
+					t.Fatalf("ListDueForRenewal returned the not-yet-due subscription %q", s.Name)
+				}
+			}
+			wantLen := 0
+			if tc.wantDue {
+				wantLen = 1
+			}
+			if len(got) != wantLen || (tc.wantDue && got[0].ID != due.ID) {
+				t.Fatalf("ListDueForRenewal(%s) returned %v, wantDue=%v", tc.name, names, tc.wantDue)
+			}
+		})
 	}
 }
