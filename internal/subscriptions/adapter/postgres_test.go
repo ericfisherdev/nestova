@@ -3,18 +3,23 @@ package adapter_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
+	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/domain"
 )
 
@@ -338,3 +343,128 @@ func TestListDueForRenewal(t *testing.T) {
 		})
 	}
 }
+
+func TestMarkReminded(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewSubscriptionRepository(pool)
+	hh := seedHousehold(t, pool)
+	sub := newSubscription(t, hh, "Streaming", 100, domain.CycleMonthly, dateUTC(2026, 7, 12), nil, 3)
+	if err := repo.Create(testCtx(t), sub); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	occ := dateUTC(2026, 7, 12)
+
+	// First claim succeeds; a second claim for the same occurrence is idempotent.
+	if claimed, err := repo.MarkReminded(testCtx(t), sub.ID, occ); err != nil || !claimed {
+		t.Fatalf("MarkReminded first = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if claimed, err := repo.MarkReminded(testCtx(t), sub.ID, occ); err != nil || claimed {
+		t.Fatalf("MarkReminded repeat = (%v, %v), want (false, nil)", claimed, err)
+	}
+	// A different occurrence (after an advance) is claimable again.
+	if claimed, err := repo.MarkReminded(testCtx(t), sub.ID, dateUTC(2026, 8, 12)); err != nil || !claimed {
+		t.Fatalf("MarkReminded new occurrence = (%v, %v), want (true, nil)", claimed, err)
+	}
+}
+
+func TestMarkRemindedSkipsInactiveAndUnknown(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewSubscriptionRepository(pool)
+	hh := seedHousehold(t, pool)
+	sub := newSubscription(t, hh, "Inactive", 100, domain.CycleMonthly, dateUTC(2026, 7, 12), nil, 3)
+	if err := repo.Create(testCtx(t), sub); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := repo.Deactivate(testCtx(t), sub.ID); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if claimed, err := repo.MarkReminded(testCtx(t), sub.ID, dateUTC(2026, 7, 12)); err != nil || claimed {
+		t.Fatalf("MarkReminded(inactive) = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if claimed, err := repo.MarkReminded(testCtx(t), domain.NewSubscriptionID(), dateUTC(2026, 7, 12)); err != nil || claimed {
+		t.Fatalf("MarkReminded(unknown) = (%v, %v), want (false, nil)", claimed, err)
+	}
+}
+
+func TestAdvanceRenewalClearsReminder(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewSubscriptionRepository(pool)
+	hh := seedHousehold(t, pool)
+	sub := newSubscription(t, hh, "Streaming", 100, domain.CycleMonthly, dateUTC(2026, 7, 12), nil, 3)
+	if err := repo.Create(testCtx(t), sub); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if claimed, err := repo.MarkReminded(testCtx(t), sub.ID, dateUTC(2026, 7, 12)); err != nil || !claimed {
+		t.Fatalf("MarkReminded = (%v, %v)", claimed, err)
+	}
+
+	newNext := dateUTC(2026, 8, 12)
+	if err := repo.AdvanceRenewal(testCtx(t), sub.ID, newNext); err != nil {
+		t.Fatalf("AdvanceRenewal: %v", err)
+	}
+	got, err := repo.Get(testCtx(t), sub.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.NextRenewalOn.Equal(newNext) {
+		t.Fatalf("NextRenewalOn = %s, want %s", got.NextRenewalOn.Format(time.DateOnly), newNext.Format(time.DateOnly))
+	}
+	// reminded_for was cleared, so the new occurrence is claimable.
+	if claimed, err := repo.MarkReminded(testCtx(t), sub.ID, newNext); err != nil || !claimed {
+		t.Fatalf("MarkReminded(after advance) = (%v, %v), want (true, nil)", claimed, err)
+	}
+
+	if err := repo.AdvanceRenewal(testCtx(t), domain.NewSubscriptionID(), newNext); !errors.Is(err, domain.ErrSubscriptionNotFound) {
+		t.Fatalf("AdvanceRenewal(unknown) error = %v, want ErrSubscriptionNotFound", err)
+	}
+}
+
+// TestRenewalSchedulerEndToEnd runs the scheduler against the real subscription
+// repository and notification outbox: a due subscription raises exactly one
+// reminder, and a second run does not duplicate it.
+func TestRenewalSchedulerEndToEnd(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewSubscriptionRepository(pool)
+	outbox := notifyadapter.NewOutboxRepository(pool)
+	hh := seedHousehold(t, pool)
+	payer := seedMember(t, pool, hh, "Alex")
+
+	now := time.Now().UTC()
+	today := dateUTC(now.Year(), now.Month(), now.Day())
+	// Due: renews in two days with a 3-day lead, so the window is open today.
+	sub := newSubscription(t, hh, "Streaming", 1299, domain.CycleMonthly, today.AddDate(0, 0, 2), &payer, 3)
+	if err := repo.Create(testCtx(t), sub); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	scheduler, err := subscriptionsapp.NewRenewalScheduler(repo, outbox, discardTestLogger(), time.Hour, time.Minute)
+	if err != nil {
+		t.Fatalf("NewRenewalScheduler: %v", err)
+	}
+
+	asOf := time.Now()
+	if n, err := scheduler.RunOnce(testCtx(t), asOf); err != nil || n != 1 {
+		t.Fatalf("first RunOnce = (%d, %v), want (1, nil)", n, err)
+	}
+	// A second run within the same occurrence must not raise another reminder.
+	if n, err := scheduler.RunOnce(testCtx(t), asOf); err != nil || n != 0 {
+		t.Fatalf("second RunOnce = (%d, %v), want (0, nil)", n, err)
+	}
+
+	claimed, err := outbox.ClaimDue(testCtx(t), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("outbox holds %d reminders, want exactly 1 (no duplicate)", len(claimed))
+	}
+	n := claimed[0]
+	if n.SourceType != "subscription" || n.SourceID == nil || *n.SourceID != uuid.UUID(sub.ID) {
+		t.Fatalf("reminder source = (%q, %v), want subscription / %s", n.SourceType, n.SourceID, sub.ID)
+	}
+	if n.MemberID == nil || *n.MemberID != payer {
+		t.Fatalf("reminder MemberID = %v, want payer %v", n.MemberID, payer)
+	}
+}
+
+func discardTestLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

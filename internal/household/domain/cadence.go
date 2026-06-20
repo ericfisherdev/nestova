@@ -188,6 +188,12 @@ func (c Cadence) nextWeeklyByWeekday(t time.Time) time.Time {
 	return c.Anchor
 }
 
+// AddMonthsClamped adds m calendar months to t, clamping the day to the last day
+// of the target month so e.g. Jan 31 + 1 month yields Feb 28/29, not Mar 3. It is
+// the exported entry point to the shared month arithmetic the Cadence recurrence
+// engine uses, reused by renewal date math (e.g. subscription cycles).
+func AddMonthsClamped(t time.Time, m int) time.Time { return addMonthsClamped(t, m) }
+
 // addMonthsClamped adds m calendar months to base, clamping the day to the last
 // day of the target month so e.g. Jan 31 + 1 month yields Feb 28/29, not Mar 3.
 func addMonthsClamped(base time.Time, m int) time.Time {
