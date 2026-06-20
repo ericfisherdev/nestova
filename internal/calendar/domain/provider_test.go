@@ -7,7 +7,20 @@ import (
 )
 
 func TestProviderValidAndParse(t *testing.T) {
-	for _, p := range calendar.Providers() {
+	providers := calendar.Providers()
+	if len(providers) == 0 {
+		t.Fatal("Providers() is empty; the loop-based checks below would pass vacuously")
+	}
+	var hasGoogle bool
+	for _, p := range providers {
+		if p == calendar.ProviderGoogle {
+			hasGoogle = true
+		}
+	}
+	if !hasGoogle {
+		t.Error("Providers() does not include ProviderGoogle")
+	}
+	for _, p := range providers {
 		if !p.Valid() {
 			t.Errorf("Providers() returned invalid provider %q", p)
 		}

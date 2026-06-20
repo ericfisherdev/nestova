@@ -13,8 +13,9 @@ CREATE TABLE calendar_account (
     household_id       uuid        NOT NULL REFERENCES household (id) ON DELETE CASCADE,
     provider           text        NOT NULL CHECK (provider IN ('google')),
     -- Encrypted OAuth material (AES-GCM ciphertext); never stored in plaintext.
-    access_token_enc   bytea       NOT NULL,
-    refresh_token_enc  bytea       NOT NULL,
+    -- Non-empty mirrors CalendarAccount.Validate, which rejects empty ciphertext.
+    access_token_enc   bytea       NOT NULL CHECK (length(access_token_enc) > 0),
+    refresh_token_enc  bytea       NOT NULL CHECK (length(refresh_token_enc) > 0),
     token_expiry       timestamptz NOT NULL,
     -- Google incremental-sync cursor; NULL until the first sync completes.
     sync_token         text,
@@ -42,7 +43,9 @@ CREATE TABLE external_event (
     calendar_account_id uuid        NOT NULL
         REFERENCES calendar_account (id) ON DELETE CASCADE,
     -- The provider's event id; the unique key below makes sync upserts idempotent.
-    external_id         text        NOT NULL CHECK (external_id <> ''),
+    -- Reject empty AND whitespace-only ids to match ExternalEvent.Validate, which
+    -- trims before the blank check.
+    external_id         text        NOT NULL CHECK (external_id !~ '^[[:space:]]*$'),
     title               text        NOT NULL DEFAULT '',
     starts_at           timestamptz NOT NULL,
     ends_at             timestamptz NOT NULL,
