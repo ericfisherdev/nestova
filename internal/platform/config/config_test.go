@@ -15,8 +15,12 @@ var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
 	"SESSION_SECRET", "SESSION_LIFETIME",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
+	"ENCRYPTION_KEY",
 	"RECIPES_EXTERNAL_ENABLED", "RECIPES_API_KEY", "RECIPES_API_BASE_URL",
 }
+
+// validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
+const validEncryptionKey = "0101010101010101010101010101010101010101010101010101010101010101"
 
 // devDSN mirrors the package default; declared here so black-box assertions do
 // not hard-code the literal in many places.
@@ -24,6 +28,9 @@ const devDSN = "postgres://nestova:nestova@localhost:5432/nestova?sslmode=disabl
 
 // devSecret mirrors the package's dev default session secret.
 const devSecret = "dev-only-insecure-session-secret-change-me"
+
+// devEncKey mirrors the package's dev default encryption key (64 hex chars).
+const devEncKey = "00000000000000000000000000000000000000000000000000000000deadbeef"
 
 // validSecret is a 32-byte secret distinct from the dev default, used by the
 // prod happy-path case.
@@ -58,6 +65,7 @@ func TestLoadValid(t *testing.T) {
 				Server:  config.ServerConfig{Addr: ":8080"},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 			},
 		},
 		{
@@ -71,6 +79,7 @@ func TestLoadValid(t *testing.T) {
 				Server:  config.ServerConfig{Addr: ":9090"},
 				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 			},
 		},
 		{
@@ -81,6 +90,7 @@ func TestLoadValid(t *testing.T) {
 				Server:  config.ServerConfig{Addr: ":3000"},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 			},
 		},
 		{
@@ -91,6 +101,7 @@ func TestLoadValid(t *testing.T) {
 				Server:  config.ServerConfig{Addr: ":8080"},
 				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 			},
 		},
 		{
@@ -103,6 +114,7 @@ func TestLoadValid(t *testing.T) {
 				Server:  config.ServerConfig{Addr: ":8080"},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 48 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 			},
 		},
 		{
@@ -112,6 +124,7 @@ func TestLoadValid(t *testing.T) {
 				"DATABASE_URL":     "postgres://u:p@db:5432/app",
 				"GOOGLE_CLIENT_ID": "id", "GOOGLE_CLIENT_SECRET": "secret",
 				"GOOGLE_REDIRECT_URL": "https://app/callback",
+				"ENCRYPTION_KEY":      validEncryptionKey,
 			},
 			want: config.Config{
 				Env:     config.EnvProd,
@@ -119,6 +132,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: validSecret, Secure: true, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
+				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
 			},
 		},
 		{
@@ -133,6 +147,7 @@ func TestLoadValid(t *testing.T) {
 				Server:  config.ServerConfig{Addr: ":8080"},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
 			},
 		},
@@ -251,6 +266,27 @@ func TestLoadInvalid(t *testing.T) {
 				"GOOGLE_REDIRECT_URL": "https://app/callback",
 			},
 			wantContains: []string{"DATABASE_URL", "GOOGLE_CLIENT_ID"},
+		},
+		{
+			name:         "non-hex encryption key is rejected in any env",
+			env:          map[string]string{"ENCRYPTION_KEY": "not-hex!!"},
+			wantContains: []string{"ENCRYPTION_KEY must be hex"},
+		},
+		{
+			name:         "wrong-length encryption key is rejected",
+			env:          map[string]string{"ENCRYPTION_KEY": "abcdef"},
+			wantContains: []string{"ENCRYPTION_KEY must decode to 32 bytes"},
+		},
+		{
+			name: "prod rejects the default encryption key",
+			env: map[string]string{
+				"APP_ENV": "prod", "SESSION_SECRET": validSecret,
+				"DATABASE_URL":     "postgres://u:p@db:5432/app",
+				"GOOGLE_CLIENT_ID": "id", "GOOGLE_CLIENT_SECRET": "secret",
+				"GOOGLE_REDIRECT_URL": "https://app/callback",
+				// ENCRYPTION_KEY unset -> falls back to the dev default, which prod rejects.
+			},
+			wantContains: []string{"ENCRYPTION_KEY must be set to a non-default value in prod"},
 		},
 		{
 			name: "multiple problems are all reported",

@@ -8,6 +8,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
+	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
@@ -73,6 +74,7 @@ func registerWebRoutes(
 	gamificationHandlers *tasksadapter.GamificationWebHandlers,
 	groceryHandlers *trackingadapter.WebHandlers,
 	mealsHandlers *mealsadapter.WebHandlers,
+	calendarHandlers *calendaradapter.WebHandlers,
 ) {
 	// Auth routes — public.
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -241,6 +243,12 @@ func registerWebRoutes(
 	mux.Handle("POST /meals/plan", requireMember(http.HandlerFunc(mealsHandlers.AssignMeal)))
 	mux.Handle("POST /meals/plan/clear", requireMember(http.HandlerFunc(mealsHandlers.ClearMeal)))
 	mux.Handle("POST /meals/plan/generate", requireMember(http.HandlerFunc(mealsHandlers.GenerateGroceries)))
+
+	// Calendar Google-account connection (NES-67) — RequireMember-gated. Connect
+	// starts the OAuth flow (CSRF-verified POST); the callback completes it. The
+	// callback path must match GOOGLE_REDIRECT_URL.
+	mux.Handle("POST /calendar/google/connect", requireMember(http.HandlerFunc(calendarHandlers.Connect)))
+	mux.Handle("GET /calendar/google/callback", requireMember(http.HandlerFunc(calendarHandlers.Callback)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected
