@@ -54,6 +54,11 @@ CREATE TABLE recipe_ingredient (
     PRIMARY KEY (recipe_id, ingredient_id)
 );
 
+-- Supports ingredient-driven recipe discovery (NES-58: find recipes that use
+-- ingredient X). The composite PK leads with recipe_id, so reverse lookups by
+-- ingredient_id need their own index.
+CREATE INDEX recipe_ingredient_ingredient_idx ON recipe_ingredient (ingredient_id);
+
 -- Weekly meal planner (NES-5): assigns one household recipe to a (date, meal) slot.
 CREATE TABLE meal_plan_entry (
     id            uuid        PRIMARY KEY,
@@ -76,6 +81,11 @@ CREATE TABLE meal_plan_entry (
 
 -- Supports reading a household's plan for a week (date-range scan).
 CREATE INDEX meal_plan_entry_household_date_idx ON meal_plan_entry (household_id, plan_date);
+
+-- Backs the recipe composite-FK ON DELETE CASCADE (deleting a recipe clears its
+-- planned slots) and "which plans use this recipe" lookups; Postgres does not
+-- auto-index the referencing columns.
+CREATE INDEX meal_plan_entry_recipe_idx ON meal_plan_entry (recipe_id);
 
 -- +goose Down
 DROP TABLE IF EXISTS meal_plan_entry;
