@@ -184,9 +184,13 @@ func (s *ExternalRecipeSource) cacheAndMap(ctx context.Context, result providerR
 	for _, ingredient := range result.MissedIngredients {
 		normalized, err := s.ensurer.EnsureIngredient(ctx, ingredient.Name)
 		if err != nil {
-			// A provider ingredient that does not normalize (e.g. blank) is skipped
-			// rather than failing the whole discovery result.
-			continue
+			// Skip only an invalid provider value (e.g. a blank name); a real failure
+			// (a catalogue/DB error) must surface rather than silently dropping a
+			// missing ingredient and returning understated results.
+			if errors.Is(err, tracking.ErrInvalidIngredient) {
+				continue
+			}
+			return domain.RecipeMatch{}, fmt.Errorf("external recipe source: normalize missing ingredient %q: %w", ingredient.Name, err)
 		}
 		missing = append(missing, normalized.ID)
 	}

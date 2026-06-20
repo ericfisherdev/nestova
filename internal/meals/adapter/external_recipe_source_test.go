@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,6 +169,29 @@ func TestExternalRecipeSourceMalformedJSONPropagates(t *testing.T) {
 		fakeNamer{names: map[tracking.IngredientID]string{flour: "flour"}})
 	if _, err := src.FindByIngredients(context.Background(), household.NewHouseholdID(), []tracking.IngredientID{flour}); err == nil {
 		t.Error("FindByIngredients with malformed JSON = nil error, want decode error")
+	}
+}
+
+// erroringEnsurer fails every normalization with a non-validation error.
+type erroringEnsurer struct{ err error }
+
+func (e erroringEnsurer) EnsureIngredient(context.Context, string) (*tracking.Ingredient, error) {
+	return nil, e.err
+}
+
+func TestExternalRecipeSourcePropagatesNormalizationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":1,"title":"R","usedIngredients":[{"name":"flour"}],"missedIngredients":[{"name":"eggs"}]}]`))
+	}))
+	defer server.Close()
+
+	flour := tracking.NewIngredientID()
+	sentinel := errors.New("catalogue unavailable")
+	src := newExternalSource(t, server.URL, &capturingRecipeRepo{}, erroringEnsurer{err: sentinel},
+		fakeNamer{names: map[tracking.IngredientID]string{flour: "flour"}})
+	if _, err := src.FindByIngredients(context.Background(), household.NewHouseholdID(), []tracking.IngredientID{flour}); !errors.Is(err, sentinel) {
+		t.Errorf("FindByIngredients = %v, want wrapped %v (real normalization errors must surface)", err, sentinel)
 	}
 }
 
