@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -69,6 +70,13 @@ func TestNormalizeMonthlyUnknownUnsupported(t *testing.T) {
 	amount, _ := household.NewMoney(1000, "USD")
 	if _, err := subscriptions.NormalizeMonthly(amount, subscriptions.Cycle("daily")); !errors.Is(err, subscriptions.ErrUnsupportedCycle) {
 		t.Fatalf("NormalizeMonthly(unknown) error = %v, want ErrUnsupportedCycle", err)
+	}
+}
+
+func TestNormalizeMonthlyWeeklyOverflow(t *testing.T) {
+	amount, _ := household.NewMoney(math.MaxInt64, "USD")
+	if _, err := subscriptions.NormalizeMonthly(amount, subscriptions.CycleWeekly); !errors.Is(err, household.ErrInvalidMoney) {
+		t.Fatalf("NormalizeMonthly(weekly overflow) error = %v, want ErrInvalidMoney", err)
 	}
 }
 

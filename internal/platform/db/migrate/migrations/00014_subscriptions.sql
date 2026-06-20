@@ -8,7 +8,9 @@
 CREATE TABLE subscription (
     id                 uuid        PRIMARY KEY,
     household_id       uuid        NOT NULL REFERENCES household (id) ON DELETE CASCADE,
-    name               text        NOT NULL CHECK (name <> ''),
+    -- Reject empty AND whitespace-only names so the schema matches
+    -- Subscription.Validate, which trims before the blank check.
+    name               text        NOT NULL CHECK (name !~ '^[[:space:]]*$'),
     -- Per-cycle cost in the currency's minor unit; strictly positive (a
     -- subscription with no cost is not a subscription). Mirrors the domain
     -- Subscription.Validate amount > 0 rule; Money alone permits zero.

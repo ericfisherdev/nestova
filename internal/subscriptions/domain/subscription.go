@@ -27,11 +27,14 @@ var (
 // subscriptions are retained but excluded from active listings, the cost
 // rollup, and renewal runs.
 type Subscription struct {
-	ID               SubscriptionID
-	HouseholdID      household.HouseholdID
-	Name             string
-	Amount           household.Money
-	Cycle            Cycle
+	ID          SubscriptionID
+	HouseholdID household.HouseholdID
+	Name        string
+	Amount      household.Money
+	Cycle       Cycle
+	// NextRenewalOn is the calendar date of the next expected charge. It is a
+	// date-only value (midnight in its location); Validate rejects a time
+	// component because the next_renewal_on column is a SQL date.
 	NextRenewalOn    time.Time
 	PayerID          *household.MemberID
 	Category         string
@@ -62,6 +65,14 @@ func (s Subscription) Validate() error {
 	}
 	if s.NextRenewalOn.IsZero() {
 		return fmt.Errorf("%w: next renewal date is required", ErrInvalidSubscription)
+	}
+	// next_renewal_on is a SQL date, so any time-of-day would be silently
+	// truncated on write (and could drift across time zones). Require a
+	// date-only value — midnight in its location — so the domain owns the
+	// invariant the column enforces. Checking the clock components is
+	// zone-agnostic: midnight has a zero clock in every location.
+	if h, m, sec := s.NextRenewalOn.Clock(); h != 0 || m != 0 || sec != 0 || s.NextRenewalOn.Nanosecond() != 0 {
+		return fmt.Errorf("%w: next renewal date must be a date-only value (midnight), got %s", ErrInvalidSubscription, s.NextRenewalOn)
 	}
 	if s.ReminderLeadDays < 0 {
 		return fmt.Errorf("%w: reminder lead days must be non-negative, got %d", ErrInvalidSubscription, s.ReminderLeadDays)

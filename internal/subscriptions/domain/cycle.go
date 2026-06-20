@@ -61,11 +61,23 @@ func ParseCycle(s string) (Cycle, error) {
 // Callers treat such subscriptions as a zero contribution to a cost rollup.
 var ErrUnsupportedCycle = errors.New("subscriptions: unsupported cycle for monthly normalization")
 
+// Normalization constants: a year is treated as exactly 52 weeks and 12 months.
+const (
+	weeksPerYear  = 52
+	monthsPerYear = 12
+)
+
 // NormalizeMonthly converts a subscription's per-cycle amount to an equivalent
 // monthly figure: weekly is scaled by 52/12, monthly is unchanged, and yearly
-// is divided by 12. The result is rounded to the nearest minor unit (half away
-// from zero). The custom cycle (and any unknown value) has no defined monthly
-// figure and returns ErrUnsupportedCycle. amount must be valid.
+// is divided by 12. The result is rounded to the nearest minor unit (half up;
+// equivalently half away from zero, as Money.Cents is non-negative). The custom
+// cycle (and any unknown value) has no defined monthly figure and returns
+// ErrUnsupportedCycle. amount must be valid.
+//
+// The arithmetic is integer-only: a float64 round-trip would lose precision for
+// large Cents values, and an out-of-range float64->int64 conversion is
+// implementation-dependent per the Go spec. The weekly multiplication is
+// guarded against int64 overflow and returns ErrInvalidMoney if it would wrap.
 //
 // This lives in the subscriptions domain rather than on Money so the shared
 // kernel stays free of the Cycle concept (and the import stays one-directional:
@@ -77,11 +89,21 @@ func NormalizeMonthly(amount household.Money, cycle Cycle) (household.Money, err
 	var cents int64
 	switch cycle {
 	case CycleWeekly:
-		cents = int64(math.Round(float64(amount.Cents) * 52.0 / 12.0))
+		// round(cents * 52 / 12); add half the divisor before the integer
+		// division to round half up. Guard the multiplication against overflow.
+		if amount.Cents > (math.MaxInt64-monthsPerYear/2)/weeksPerYear {
+			return household.Money{}, fmt.Errorf("%w: weekly amount too large to normalize", household.ErrInvalidMoney)
+		}
+		cents = (amount.Cents*weeksPerYear + monthsPerYear/2) / monthsPerYear
 	case CycleMonthly:
 		cents = amount.Cents
 	case CycleYearly:
-		cents = int64(math.Round(float64(amount.Cents) / 12.0))
+		// round(cents / 12); amount.Cents + 6 cannot overflow because a valid
+		// Money's Cents is well below MaxInt64-6, but the check is cheap insurance.
+		if amount.Cents > math.MaxInt64-monthsPerYear/2 {
+			return household.Money{}, fmt.Errorf("%w: yearly amount too large to normalize", household.ErrInvalidMoney)
+		}
+		cents = (amount.Cents + monthsPerYear/2) / monthsPerYear
 	case CycleCustom:
 		return household.Money{}, ErrUnsupportedCycle
 	default:

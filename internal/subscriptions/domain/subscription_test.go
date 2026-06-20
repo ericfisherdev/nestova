@@ -47,6 +47,9 @@ func TestSubscriptionValidateRejects(t *testing.T) {
 		{"invalid money", func(s *subscriptions.Subscription) { s.Amount = household.Money{Cents: -1, Currency: "USD"} }, household.ErrInvalidMoney},
 		{"unknown cycle", func(s *subscriptions.Subscription) { s.Cycle = subscriptions.Cycle("daily") }, subscriptions.ErrInvalidSubscription},
 		{"zero renewal date", func(s *subscriptions.Subscription) { s.NextRenewalOn = time.Time{} }, subscriptions.ErrInvalidSubscription},
+		{"renewal date with time component", func(s *subscriptions.Subscription) {
+			s.NextRenewalOn = time.Date(2026, 7, 1, 9, 30, 0, 0, time.UTC)
+		}, subscriptions.ErrInvalidSubscription},
 		{"negative lead days", func(s *subscriptions.Subscription) { s.ReminderLeadDays = -1 }, subscriptions.ErrInvalidSubscription},
 	}
 	for _, tc := range cases {
