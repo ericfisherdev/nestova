@@ -71,8 +71,11 @@ func (i *ShoppingListItem) Validate() error {
 //     requires Source == SourceMealPlan and a non-nil IngredientID (an error is
 //     returned otherwise, as for a database failure), and inserts only when no open
 //     (non-purchased) meal_plan entry already exists for that (household,
-//     ingredient). It reports whether a new row was inserted, so a week's
-//     plan-to-grocery generation can be re-run without duplicating items.
+//     ingredient, unit). The unit is part of the key so the same ingredient in
+//     different units coexists as separate aggregated lines (Quantity does no unit
+//     conversion) while each line still de-duplicates. It reports whether a new row
+//     was inserted, so a week's plan-to-grocery generation can be re-run without
+//     duplicating items.
 //   - UpdateStatus transitions an item's status within householdID and returns
 //     the updated item, or ErrShoppingListItemNotFound when the id is unknown in
 //     that household (so a member cannot transition another household's item).
