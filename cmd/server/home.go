@@ -205,8 +205,9 @@ func registerWebRoutes(
 	mux.Handle("POST /groceries/shopping/{id}/status", requireMember(http.HandlerFunc(groceryHandlers.ShoppingTransition)))
 
 	// Meals routes — RequireMember-gated (NES-62).
-	// GET  /meals                       renders the recipe box, planner, and finder
-	//                                   (the finder reads ?source / ?ingredients).
+	// GET  /meals                       renders the recipe box, planner, and finder.
+	// POST /meals/finder                runs the finder (CSRF-verified because the
+	//                                   ad-hoc path can create catalogue ingredients).
 	// POST /meals/recipes               creates a box recipe.
 	// POST /meals/recipes/{id}          edits a box recipe.
 	// POST /meals/recipes/{id}/delete   deletes a box recipe.
@@ -224,6 +225,15 @@ func registerWebRoutes(
 			}
 		}
 		mealsHandlers.Page(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /meals/finder", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, mealsNavHref)
+				return components.Layout(props, nav, c)
+			}
+		}
+		mealsHandlers.Finder(layoutFn)(w, r)
 	})))
 	mux.Handle("POST /meals/recipes", requireMember(http.HandlerFunc(mealsHandlers.CreateRecipe)))
 	mux.Handle("POST /meals/recipes/{id}", requireMember(http.HandlerFunc(mealsHandlers.EditRecipe)))

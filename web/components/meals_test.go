@@ -75,10 +75,11 @@ func TestMealsPagePostFormsCarryHTMXAndCSRF(t *testing.T) {
 	}
 }
 
-func TestMealsPageFinderIsReadOnlyGet(t *testing.T) {
+func TestMealsPageFinderIsCSRFProtectedPost(t *testing.T) {
 	out := renderString(t, components.MealsPage(sampleMealsView()))
-	// The finder is a read-only GET to /meals, so its form posts no CSRF token.
-	if !strings.Contains(out, `method="get" action="/meals"`) {
-		t.Error("finder form should be a GET to /meals")
+	// The ad-hoc finder normalizes names via EnsureIngredient (a write), so it must
+	// be a CSRF-verified POST, not a state-changing GET.
+	if !strings.Contains(out, `method="post" action="/meals/finder"`) {
+		t.Error("finder form should be a POST to /meals/finder")
 	}
 }

@@ -35,10 +35,13 @@ var mealSlots = []mealSlot{
 	{domain.MealSnack, "snack", "Snack"},
 }
 
-// buildView loads the recipe box, the current week's plan, and (when finder query
-// params are present) the finder results, resolving every ingredient id to its
-// catalogue name for display.
-func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (components.MealsView, error) {
+// buildView loads the recipe box, the current week's plan, and — when a finder
+// search was requested (finderSource set) — the finder results, resolving every
+// ingredient id to its catalogue name for display. The finder input is passed
+// explicitly (from the CSRF-verified finder POST), never read from the GET page
+// request, because the ad-hoc path normalizes names via EnsureIngredient, which
+// writes to the catalogue and must not run on a read-only GET.
+func (h *WebHandlers) buildView(r *http.Request, member *household.Member, finderSource, finderIngredients string) (components.MealsView, error) {
 	ctx := r.Context()
 	hh := member.HouseholdID
 
@@ -47,9 +50,7 @@ func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (comp
 		return components.MealsView{}, err
 	}
 
-	source := r.URL.Query().Get("source")
-	rawIngredients := r.URL.Query().Get("ingredients")
-	matches, ran, err := h.runFinder(ctx, hh, source, rawIngredients)
+	matches, ran, err := h.runFinder(ctx, hh, finderSource, finderIngredients)
 	if err != nil {
 		// The finder is optional: a failure must not take down the recipe box and
 		// planner, so log it and render the page without finder results.
@@ -92,8 +93,8 @@ func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (comp
 	var finder *components.MealFinderView
 	if ran {
 		finder = &components.MealFinderView{
-			Source:  source,
-			Query:   rawIngredients,
+			Source:  finderSource,
+			Query:   finderIngredients,
 			Matches: buildMatchViews(matches, names),
 		}
 	}

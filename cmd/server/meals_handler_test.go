@@ -252,8 +252,7 @@ func TestMealsPageRendersForAuthedMember(t *testing.T) {
 	handler, sm := buildMealsTestHandler(fakes, member)
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
-	// Include a finder query to exercise the read-only finder path through buildView.
-	req := httptest.NewRequest(http.MethodGet, "/meals?source=ingredients&ingredients=flour", nil)
+	req := httptest.NewRequest(http.MethodGet, "/meals", nil)
 	req.Header.Set("Cookie", cookie)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -266,6 +265,51 @@ func TestMealsPageRendersForAuthedMember(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("GET /meals body missing %q", want)
 		}
+	}
+}
+
+func TestMealsFinderRejectsMissingCSRF(t *testing.T) {
+	member := testMember()
+	handler, sm := buildMealsTestHandler(newMealsFakes(), member)
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	req := httptest.NewRequest(http.MethodPost, "/meals/finder", strings.NewReader("source=ingredients&ingredients=flour"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("POST /meals/finder without CSRF: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestMealsFinderPostRendersResults(t *testing.T) {
+	member := testMember()
+	fakes := newMealsFakes()
+	// A recipe that needs only flour, so a flour-only search fully matches it.
+	flour, _ := fakes.catalog.EnsureIngredient(context.Background(), "flour")
+	recipeID := mealsdomain.NewRecipeID()
+	fakes.recipes.recipes[recipeID] = &mealsdomain.Recipe{
+		ID: recipeID, HouseholdID: &member.HouseholdID, Title: "Flatbread", Source: mealsdomain.SourceLocal, Servings: 2,
+		Ingredients: []mealsdomain.RecipeIngredient{{IngredientID: flour.ID, Quantity: household.Quantity{Amount: 200, Unit: household.UnitGram}}},
+	}
+	handler, sm := buildMealsTestHandler(fakes, member)
+	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	body := "csrf_token=" + csrf + "&source=ingredients&ingredients=flour"
+	req := httptest.NewRequest(http.MethodPost, "/meals/finder", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /meals/finder: status = %d, want 200", rec.Code)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "Flatbread") || !strings.Contains(out, "100% match") {
+		t.Errorf("finder result missing matched recipe; body has Flatbread=%v match=%v",
+			strings.Contains(out, "Flatbread"), strings.Contains(out, "100% match"))
 	}
 }
 

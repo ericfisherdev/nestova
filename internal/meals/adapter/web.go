@@ -62,27 +62,49 @@ func NewWebHandlers(recipes *app.RecipeService, planner *app.PlannerService, fin
 	return &WebHandlers{recipes: recipes, planner: planner, finder: finder, grocery: grocery, namer: namer, sm: sm, logger: logger}
 }
 
-// Page handles GET /meals. It builds the recipe box, the current week's plan, and
-// — when the finder query params are present — the finder results, then renders
-// MealsPage into the app shell. The finder is a read-only GET, so it carries no
-// CSRF token.
+// Page handles GET /meals. It builds the recipe box and the current week's plan and
+// renders MealsPage into the app shell. The finder is never run here: the ad-hoc
+// search normalizes names via EnsureIngredient (a write), so it must go through the
+// CSRF-verified Finder POST rather than a state-changing GET.
 func (h *WebHandlers) Page(layoutFn LayoutFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		member, ok := authadapter.CurrentMember(r.Context())
+		h.renderPage(w, r, layoutFn, "", "")
+	}
+}
+
+// Finder handles POST /meals/finder. CSRF-verified because the ad-hoc path can
+// create catalogue ingredients; it renders the meals page with the ranked results.
+func (h *WebHandlers) Finder(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		member, ok := h.beginMutation(w, r)
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		view, err := h.buildView(r, member)
-		if err != nil {
-			h.logger.ErrorContext(r.Context(), "meals: build view", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		content := components.MealsPage(view)
-		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
-			h.logger.ErrorContext(r.Context(), "meals: render page", "error", err)
-		}
+		h.renderPageForMember(w, r, layoutFn, member, r.FormValue("source"), r.FormValue("ingredients"))
+	}
+}
+
+// renderPage resolves the current member, then renders the meals page (optionally
+// with finder results).
+func (h *WebHandlers) renderPage(w http.ResponseWriter, r *http.Request, layoutFn LayoutFunc, finderSource, finderIngredients string) {
+	member, ok := authadapter.CurrentMember(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	h.renderPageForMember(w, r, layoutFn, member, finderSource, finderIngredients)
+}
+
+func (h *WebHandlers) renderPageForMember(w http.ResponseWriter, r *http.Request, layoutFn LayoutFunc, member *household.Member, finderSource, finderIngredients string) {
+	view, err := h.buildView(r, member, finderSource, finderIngredients)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "meals: build view", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	content := components.MealsPage(view)
+	if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
+		h.logger.ErrorContext(r.Context(), "meals: render page", "error", err)
 	}
 }
 
