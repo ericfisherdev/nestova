@@ -92,6 +92,9 @@ func (r *RecipeRepository) UpsertExternal(ctx context.Context, recipe *domain.Re
 	if recipe == nil {
 		return nil, errors.New("adapter: upsert external recipe: nil recipe")
 	}
+	if recipe.ExternalRef == nil || *recipe.ExternalRef == "" {
+		return nil, errors.New("adapter: upsert external recipe: requires a non-empty external_ref (the cache key)")
+	}
 	err := r.inTx(ctx, "upsert external recipe", func(tx pgx.Tx) error {
 		const q = `
 			INSERT INTO recipe (id, household_id, title, source, external_ref, servings, instructions)
