@@ -32,12 +32,13 @@ func testCipher(t *testing.T) *crypto.Cipher {
 }
 
 type fakeAccountRepo struct {
-	created       *calendardomain.CalendarAccount
-	existing      *calendardomain.CalendarAccount // GetByMemberProvider result
-	getResult     *calendardomain.CalendarAccount // Get result
-	updatedTokens bool
-	syncCalled    bool
-	syncAccessEnc []byte
+	created        *calendardomain.CalendarAccount
+	existing       *calendardomain.CalendarAccount // GetByMemberProvider result
+	getResult      *calendardomain.CalendarAccount // Get result
+	updatedTokens  bool
+	syncCalled     bool
+	syncAccessEnc  []byte
+	syncRefreshEnc []byte
 }
 
 func (f *fakeAccountRepo) Create(_ context.Context, a *calendardomain.CalendarAccount) error {
@@ -64,9 +65,10 @@ func (f *fakeAccountRepo) UpdateTokens(context.Context, calendardomain.CalendarA
 	return nil
 }
 
-func (f *fakeAccountRepo) UpdateSyncState(_ context.Context, _ calendardomain.CalendarAccountID, accessTokenEnc []byte, _ time.Time, _ *string) error {
+func (f *fakeAccountRepo) UpdateSyncState(_ context.Context, _ calendardomain.CalendarAccountID, accessTokenEnc, refreshTokenEnc []byte, _ time.Time, _ *string) error {
 	f.syncCalled = true
 	f.syncAccessEnc = accessTokenEnc
+	f.syncRefreshEnc = refreshTokenEnc
 	return nil
 }
 
@@ -209,6 +211,63 @@ func TestValidAccessTokenRefreshesAndRepersists(t *testing.T) {
 	got, err := cipher.Decrypt(repo.syncAccessEnc)
 	if err != nil || string(got) != "new-access" {
 		t.Fatalf("re-persisted access = %q, %v; want new-access", got, err)
+	}
+}
+
+func TestValidAccessTokenPersistsRotatedRefreshToken(t *testing.T) {
+	cipher := testCipher(t)
+	account := storedAccount(t, cipher, "old-access", "old-refresh", time.Now().Add(-time.Hour))
+	repo := &fakeAccountRepo{getResult: account}
+	// Both the access and refresh token rotate during refresh.
+	exch := &fakeExchanger{sourceTok: &oauth2.Token{AccessToken: "new-access", RefreshToken: "new-refresh", Expiry: time.Now().Add(time.Hour)}}
+	svc := mustService(t, repo, exch, cipher)
+
+	if _, err := svc.ValidAccessToken(context.Background(), account.ID); err != nil {
+		t.Fatalf("ValidAccessToken: %v", err)
+	}
+	if !repo.syncCalled {
+		t.Fatal("UpdateSyncState was not called")
+	}
+	if repo.syncRefreshEnc == nil {
+		t.Fatal("rotated refresh token was not persisted")
+	}
+	got, err := cipher.Decrypt(repo.syncRefreshEnc)
+	if err != nil || string(got) != "new-refresh" {
+		t.Fatalf("re-persisted refresh = %q, %v; want new-refresh", got, err)
+	}
+}
+
+func TestVerifyStateRejectsMalformedMember(t *testing.T) {
+	svc := mustService(t, &fakeAccountRepo{}, &fakeExchanger{}, testCipher(t))
+	// mustService signs with key "state-key"; mint a validly-signed state whose
+	// member id is not a UUID so ParseMemberID fails.
+	signer, err := app.NewOAuthStateSigner([]byte("state-key"))
+	if err != nil {
+		t.Fatalf("NewOAuthStateSigner: %v", err)
+	}
+	state := signer.Sign("not-a-uuid", time.Now())
+	if _, err := svc.VerifyState(state, time.Now()); !errors.Is(err, app.ErrInvalidState) {
+		t.Fatalf("VerifyState(malformed member) = %v, want ErrInvalidState", err)
+	}
+}
+
+func TestConnectExchangeFailure(t *testing.T) {
+	repo := &fakeAccountRepo{}
+	exch := &fakeExchanger{exchangeErr: errors.New("google rejected the code")}
+	svc := mustService(t, repo, exch, testCipher(t))
+	if _, err := svc.Connect(context.Background(), household.NewMemberID(), household.NewHouseholdID(), "bad-code"); err == nil {
+		t.Fatal("Connect with an exchange failure error = nil, want non-nil")
+	}
+	if repo.created != nil {
+		t.Error("Connect must not persist an account when the exchange fails")
+	}
+}
+
+func TestValidAccessTokenAccountNotFound(t *testing.T) {
+	repo := &fakeAccountRepo{} // Get returns ErrCalendarAccountNotFound
+	svc := mustService(t, repo, &fakeExchanger{}, testCipher(t))
+	if _, err := svc.ValidAccessToken(context.Background(), calendardomain.NewCalendarAccountID()); !errors.Is(err, calendardomain.ErrCalendarAccountNotFound) {
+		t.Fatalf("ValidAccessToken(unknown) = %v, want ErrCalendarAccountNotFound", err)
 	}
 }
 

@@ -106,13 +106,17 @@ func (r *CalendarAccountRepository) UpdateTokens(ctx context.Context, id domain.
 }
 
 // UpdateSyncState persists a refreshed access token + expiry and the latest sync
-// token. It returns domain.ErrCalendarAccountNotFound when the id is unknown.
-func (r *CalendarAccountRepository) UpdateSyncState(ctx context.Context, id domain.CalendarAccountID, accessTokenEnc []byte, tokenExpiry time.Time, syncToken *string) error {
+// token. A nil refreshTokenEnc leaves the stored refresh token unchanged (via
+// COALESCE); a non-nil value replaces it. It returns
+// domain.ErrCalendarAccountNotFound when the id is unknown.
+func (r *CalendarAccountRepository) UpdateSyncState(ctx context.Context, id domain.CalendarAccountID, accessTokenEnc, refreshTokenEnc []byte, tokenExpiry time.Time, syncToken *string) error {
 	const q = `
 		UPDATE calendar_account
-		   SET access_token_enc = $2, token_expiry = $3, sync_token = $4, updated_at = now()
+		   SET access_token_enc = $2,
+		       refresh_token_enc = COALESCE($3::bytea, refresh_token_enc),
+		       token_expiry = $4, sync_token = $5, updated_at = now()
 		 WHERE id = $1`
-	tag, err := r.dbtx.Exec(ctx, q, id.String(), accessTokenEnc, tokenExpiry, syncToken)
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), accessTokenEnc, refreshTokenEnc, tokenExpiry, syncToken)
 	if err != nil {
 		return fmt.Errorf("update calendar account sync state: %w", err)
 	}
