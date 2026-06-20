@@ -180,6 +180,10 @@ func (f *fakeShoppingRepo) AddRestockIfAbsent(_ context.Context, _ *trackingdoma
 	return true, nil
 }
 
+func (f *fakeShoppingRepo) AddMealPlanIfAbsent(_ context.Context, _ *trackingdomain.ShoppingListItem) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeShoppingRepo) UpdateStatus(_ context.Context, householdID household.HouseholdID, id trackingdomain.ShoppingListItemID, status trackingdomain.ItemStatus) (*trackingdomain.ShoppingListItem, error) {
 	for _, item := range f.items {
 		if item.ID == id && item.HouseholdID == householdID {

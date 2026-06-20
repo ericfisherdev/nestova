@@ -58,6 +58,10 @@ func (f *fakeRestockShoppingRepo) AddRestockIfAbsent(context.Context, *domain.Sh
 	return f.inserted, nil
 }
 
+func (f *fakeRestockShoppingRepo) AddMealPlanIfAbsent(context.Context, *domain.ShoppingListItem) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeRestockShoppingRepo) UpdateStatus(context.Context, household.HouseholdID, domain.ShoppingListItemID, domain.ItemStatus) (*domain.ShoppingListItem, error) {
 	return nil, domain.ErrShoppingListItemNotFound
 }
