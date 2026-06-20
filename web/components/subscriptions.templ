@@ -1,0 +1,196 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// View models
+//
+// Every value the template renders is pre-formatted by the handler (money,
+// dates) so the component stays free of domain types and the wall clock.
+// ---------------------------------------------------------------------------
+
+// SubscriptionsView is the view model for the /subscriptions page.
+type SubscriptionsView struct {
+	// MonthlyCost is the pre-formatted monthly-normalized total (e.g. "68.33 USD").
+	MonthlyCost string
+	// Subscriptions are the active subscriptions, ordered by next renewal.
+	Subscriptions []SubscriptionRow
+	// Members are the household members offered as the optional payer.
+	Members []SubscriptionMemberOption
+	// Cycles are the selectable billing cycles.
+	Cycles []SubscriptionCycleOption
+	// CSRFToken is embedded as a hidden field in every form.
+	CSRFToken string
+}
+
+// SubscriptionRow is one active subscription with both display and raw-edit values.
+type SubscriptionRow struct {
+	ID          string
+	Name        string
+	AmountLabel string // display, e.g. "9.99 USD"
+	CycleLabel  string // display, e.g. "monthly"
+	NextRenewal string // display, e.g. "Jul 20, 2026"
+	PayerName   string // "" when unattributed
+	PayerColor  string // member color infix (e.g. "plum"), "" when unattributed
+	Category    string
+
+	// Raw values used to pre-fill the edit form.
+	AmountValue      string // e.g. "9.99"
+	CurrencyValue    string // e.g. "USD"
+	CycleValue       string // e.g. "monthly"
+	NextRenewalValue string // e.g. "2026-07-20"
+	PayerValue       string // member id, "" when unattributed
+	ReminderLeadDays int
+}
+
+// SubscriptionMemberOption is a selectable payer.
+type SubscriptionMemberOption struct {
+	ID    string
+	Name  string
+	Color string
+}
+
+// SubscriptionCycleOption is a selectable billing cycle.
+type SubscriptionCycleOption struct {
+	Value string
+	Label string
+}
+
+const subscriptionsPath = "/subscriptions"
+
+templ SubscriptionsPage(view SubscriptionsView) {
+	<div class="p-6">
+		<div class="mb-6 flex items-baseline justify-between">
+			<div>
+				<h1 class="text-2xl font-semibold">Subscriptions</h1>
+				<p class="mt-1 text-sm text-ink-muted">Track recurring costs and what they add up to each month.</p>
+			</div>
+			<div class="text-right">
+				<p class="text-xs font-medium uppercase tracking-wide text-ink-muted">Monthly cost</p>
+				<p class="text-2xl font-semibold" data-testid="monthly-rollup">{ view.MonthlyCost }</p>
+			</div>
+		</div>
+		<div class="grid gap-6 lg:grid-cols-3">
+			<section class="rounded-card bg-surface p-4 shadow-warm lg:col-span-1">
+				<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Add subscription</h2>
+				@subscriptionForm("add", "add", subscriptionsPath, SubscriptionRow{}, view.Members, view.Cycles, view.CSRFToken)
+			</section>
+			<section class="rounded-card bg-surface p-4 shadow-warm lg:col-span-2">
+				<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Active subscriptions</h2>
+				if len(view.Subscriptions) == 0 {
+					<p class="text-sm text-ink-muted">No active subscriptions yet — add one to start tracking.</p>
+				} else {
+					<ul class="flex flex-col gap-3">
+						for _, row := range view.Subscriptions {
+							@subscriptionRow(row, view.Members, view.Cycles, view.CSRFToken)
+						}
+					</ul>
+				}
+			</section>
+		</div>
+	</div>
+}
+
+// subscriptionRow renders one subscription's summary plus a collapsed edit form
+// and a deactivate action.
+templ subscriptionRow(row SubscriptionRow, members []SubscriptionMemberOption, cycles []SubscriptionCycleOption, csrfToken string) {
+	<li class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<p class="font-medium text-ink">{ row.Name }</p>
+				<p class="text-sm text-ink-muted">{ row.AmountLabel } · { row.CycleLabel } · renews { row.NextRenewal }</p>
+				if row.Category != "" {
+					<p class="text-xs text-ink-muted">{ row.Category }</p>
+				}
+				if row.PayerName != "" {
+					<span class={ "mt-1 inline-block rounded-full px-2 py-0.5 text-xs", payerChipClass(row.PayerColor) }>{ row.PayerName }</span>
+				}
+			</div>
+			<form method="post" action={ templ.URL(subscriptionsPath + "/" + row.ID + "/deactivate") } hx-post={ subscriptionsPath + "/" + row.ID + "/deactivate" }>
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				@Button("Deactivate", ButtonSecondary, "submit")
+			</form>
+		</div>
+		<details class="mt-2">
+			<summary class="cursor-pointer text-xs font-medium text-ink-muted">Edit</summary>
+			<div class="mt-2">
+				@subscriptionForm("edit", "edit-"+row.ID, subscriptionsPath+"/"+row.ID, row, members, cycles, csrfToken)
+			</div>
+		</details>
+	</li>
+}
+
+// subscriptionForm renders the add or edit form. mode is "add" or "edit" and
+// drives the button label; idPrefix makes the field/label ids unique per form
+// (e.g. "edit-<subscriptionID>") so multiple rows on one page never collide.
+// row supplies pre-filled values when editing (empty for add).
+templ subscriptionForm(mode, idPrefix, action string, row SubscriptionRow, members []SubscriptionMemberOption, cycles []SubscriptionCycleOption, csrfToken string) {
+	<form
+		method="post"
+		action={ templ.URL(action) }
+		hx-post={ action }
+		class="flex flex-col gap-2 rounded-control border border-sidebar-border bg-surface p-3"
+	>
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-name" }>Name</label>
+		<input id={ idPrefix + "-name" } type="text" name="name" required value={ row.Name } placeholder="e.g. Streaming" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-category" }>Category (optional)</label>
+		<input id={ idPrefix + "-category" } type="text" name="category" value={ row.Category } placeholder="e.g. entertainment" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		<div class="flex gap-2">
+			<div class="flex-1">
+				<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-amount" }>Amount</label>
+				<input id={ idPrefix + "-amount" } type="number" name="amount" min="0.01" step="0.01" required value={ row.AmountValue } placeholder="9.99" class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+			</div>
+			<div>
+				<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-currency" }>Currency</label>
+				<input id={ idPrefix + "-currency" } type="text" name="currency" value={ currencyOrDefault(row.CurrencyValue) } maxlength="3" class="w-20 rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm uppercase text-ink"/>
+			</div>
+		</div>
+		<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-cycle" }>Cycle</label>
+		<select id={ idPrefix + "-cycle" } name="cycle" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink">
+			for _, c := range cycles {
+				if c.Value == row.CycleValue {
+					<option value={ c.Value } selected>{ c.Label }</option>
+				} else {
+					<option value={ c.Value }>{ c.Label }</option>
+				}
+			}
+		</select>
+		<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-next" }>Next renewal</label>
+		<input id={ idPrefix + "-next" } type="date" name="next_renewal_on" required value={ row.NextRenewalValue } class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-payer" }>Payer (optional)</label>
+		<select id={ idPrefix + "-payer" } name="payer_id" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink">
+			<option value="">Household</option>
+			for _, m := range members {
+				if m.ID == row.PayerValue {
+					<option value={ m.ID } selected>{ m.Name }</option>
+				} else {
+					<option value={ m.ID }>{ m.Name }</option>
+				}
+			}
+		</select>
+		<label class="text-xs font-medium text-ink-muted" for={ idPrefix + "-lead" }>Reminder lead days</label>
+		<input id={ idPrefix + "-lead" } type="number" name="reminder_lead_days" min="0" value={ fmt.Sprintf("%d", row.ReminderLeadDays) } class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		if mode == "add" {
+			@Button("Add subscription", ButtonPrimary, "submit")
+		} else {
+			@Button("Save", ButtonPrimary, "submit")
+		}
+	</form>
+}
+
+// payerChipClass builds the member-colored chip class for a payer.
+func payerChipClass(color string) string {
+	if color == "" {
+		return "bg-surface text-ink-muted"
+	}
+	return fmt.Sprintf("bg-member-%s-tint text-member-%s-fg", color, color)
+}
+
+// currencyOrDefault returns the currency or USD when empty (the add form default).
+func currencyOrDefault(currency string) string {
+	if currency == "" {
+		return "USD"
+	}
+	return currency
+}
