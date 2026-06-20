@@ -82,6 +82,38 @@ func (r *ShoppingListRepository) AddRestockIfAbsent(ctx context.Context, item *d
 	return true, nil
 }
 
+// AddMealPlanIfAbsent inserts a meal-plan-sourced item only when no open
+// (non-purchased) meal_plan entry already exists for its (household, ingredient,
+// unit), reporting whether a new row was inserted. It relies on the partial unique
+// index shopping_list_item_open_meal_plan_uniq, so it requires Source ==
+// SourceMealPlan and a non-nil IngredientID. The unit is part of the key so the
+// same ingredient in different units (kept as separate aggregated lines) can
+// coexist while each line still de-duplicates.
+func (r *ShoppingListRepository) AddMealPlanIfAbsent(ctx context.Context, item *domain.ShoppingListItem) (bool, error) {
+	if item == nil {
+		return false, errors.New("adapter: add meal plan item: nil item")
+	}
+	if item.Source != domain.SourceMealPlan || item.IngredientID == nil {
+		return false, errors.New("adapter: add meal plan item: requires meal_plan source and an ingredient id")
+	}
+	const q = `
+		INSERT INTO shopping_list_item
+		    (id, household_id, ingredient_id, name, quantity, unit, source, status, added_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (household_id, ingredient_id, unit) WHERE source = 'meal_plan' AND status <> 'purchased'
+		DO NOTHING
+		RETURNING created_at`
+	err := r.dbtx.QueryRow(ctx, q, r.insertArgs(item)...).Scan(&item.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// An open meal_plan entry already exists; nothing inserted.
+		return false, nil
+	}
+	if err != nil {
+		return false, r.mapInsertError("add meal plan item", err)
+	}
+	return true, nil
+}
+
 // UpdateStatus transitions an item's status and returns the updated item, or
 // domain.ErrShoppingListItemNotFound when the id is unknown in the household. The
 // household scope stops a member transitioning another household's item by id.

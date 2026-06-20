@@ -67,6 +67,12 @@ func (i *ShoppingListItem) Validate() error {
 //     Source == SourceRestock and a non-nil IngredientID, and inserts only when
 //     no open (non-purchased) restock entry already exists for that
 //     (household, ingredient). It reports whether a new row was inserted.
+//   - AddMealPlanIfAbsent inserts a meal-plan-sourced item idempotently: it
+//     requires Source == SourceMealPlan and a non-nil IngredientID (an error is
+//     returned otherwise, as for a database failure), and inserts only when no open
+//     (non-purchased) meal_plan entry already exists for that (household,
+//     ingredient). It reports whether a new row was inserted, so a week's
+//     plan-to-grocery generation can be re-run without duplicating items.
 //   - UpdateStatus transitions an item's status within householdID and returns
 //     the updated item, or ErrShoppingListItemNotFound when the id is unknown in
 //     that household (so a member cannot transition another household's item).
@@ -75,6 +81,7 @@ func (i *ShoppingListItem) Validate() error {
 type ShoppingListRepository interface {
 	Add(ctx context.Context, item *ShoppingListItem) error
 	AddRestockIfAbsent(ctx context.Context, item *ShoppingListItem) (inserted bool, err error)
+	AddMealPlanIfAbsent(ctx context.Context, item *ShoppingListItem) (inserted bool, err error)
 	UpdateStatus(ctx context.Context, householdID household.HouseholdID, id ShoppingListItemID, status ItemStatus) (*ShoppingListItem, error)
 	ListByStatus(ctx context.Context, householdID household.HouseholdID, status ItemStatus) ([]*ShoppingListItem, error)
 }

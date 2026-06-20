@@ -26,6 +26,10 @@ func (f *fakeShoppingListRepo) AddRestockIfAbsent(context.Context, *domain.Shopp
 	return true, nil
 }
 
+func (f *fakeShoppingListRepo) AddMealPlanIfAbsent(context.Context, *domain.ShoppingListItem) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeShoppingListRepo) UpdateStatus(_ context.Context, householdID household.HouseholdID, id domain.ShoppingListItemID, status domain.ItemStatus) (*domain.ShoppingListItem, error) {
 	for _, item := range f.items {
 		// Scope by household like the real adapter: a foreign household sees not-found.
