@@ -34,7 +34,15 @@ func TestVerifyRejectsTampered(t *testing.T) {
 	s := mustSigner(t, "the-hmac-key")
 	now := time.Now()
 	state := s.Sign("member-123", now)
-	tampered := state[:len(state)-1] + "X"
+	// Flip the first character (the start of the base64url payload). The first
+	// char encodes a full 6-bit group, so changing it always changes the decoded
+	// payload — unlike the last char, whose padding bits can alias to the same
+	// bytes. The altered payload no longer matches the appended MAC.
+	repl := byte('A')
+	if state[0] == 'A' {
+		repl = 'B'
+	}
+	tampered := string(repl) + state[1:]
 	if _, err := s.Verify(tampered, now); !errors.Is(err, app.ErrInvalidState) {
 		t.Fatalf("Verify(tampered) = %v, want ErrInvalidState", err)
 	}
