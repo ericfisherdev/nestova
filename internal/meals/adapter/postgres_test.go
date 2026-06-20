@@ -297,9 +297,20 @@ func TestUpsertExternalRequiresExternalRef(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewRecipeRepository(pool)
 	ctx := testCtx(t)
-	noRef := &domain.Recipe{ID: domain.NewRecipeID(), Title: "X", Source: domain.SourceExternal, Servings: 2}
-	if _, err := repo.UpsertExternal(ctx, noRef); err == nil {
-		t.Error("UpsertExternal(no external_ref) = nil error, want error (external_ref is the cache key)")
+	empty := ""
+	cases := []struct {
+		name   string
+		recipe *domain.Recipe
+	}{
+		{"nil external_ref", &domain.Recipe{ID: domain.NewRecipeID(), Title: "X", Source: domain.SourceExternal, Servings: 2}},
+		{"empty external_ref", &domain.Recipe{ID: domain.NewRecipeID(), Title: "X", Source: domain.SourceExternal, ExternalRef: &empty, Servings: 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := repo.UpsertExternal(ctx, tc.recipe); err == nil {
+				t.Fatalf("UpsertExternal(%s) = nil error, want error (external_ref is the cache key)", tc.name)
+			}
+		})
 	}
 }
 
