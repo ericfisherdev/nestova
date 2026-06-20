@@ -126,6 +126,20 @@ func (r *CalendarAccountRepository) UpdateSyncState(ctx context.Context, id doma
 	return nil
 }
 
+// SetSyncToken persists only the incremental-sync cursor. It returns
+// domain.ErrCalendarAccountNotFound when the id is unknown.
+func (r *CalendarAccountRepository) SetSyncToken(ctx context.Context, id domain.CalendarAccountID, syncToken *string) error {
+	const q = `UPDATE calendar_account SET sync_token = $2, updated_at = now() WHERE id = $1`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), syncToken)
+	if err != nil {
+		return fmt.Errorf("set calendar account sync token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrCalendarAccountNotFound
+	}
+	return nil
+}
+
 // ListByHousehold returns the household's connected accounts ordered by member.
 func (r *CalendarAccountRepository) ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*domain.CalendarAccount, error) {
 	const q = selectAccountColumns + ` WHERE household_id = $1 ORDER BY member_id, provider`

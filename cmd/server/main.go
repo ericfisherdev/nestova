@@ -88,6 +88,18 @@ const (
 	renewalSchedulerTickTimeout = 5 * time.Minute
 )
 
+// Calendar sync scheduler tuning (NES-68).
+const (
+	// calendarSyncPollInterval is how often the sync engine pulls each connected
+	// account's events. Incremental sync via the sync token keeps each pass cheap,
+	// so a 15-minute cadence keeps the cache reasonably fresh without heavy load.
+	calendarSyncPollInterval = 15 * time.Minute
+	// calendarSyncTickTimeout bounds a single sync cycle across all accounts (and
+	// so how long an in-flight cycle can delay shutdown), decoupled from the poll
+	// interval.
+	calendarSyncTickTimeout = 5 * time.Minute
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(logger); err != nil {
@@ -310,6 +322,20 @@ func run(logger *slog.Logger) error {
 	}
 	calendarWebHandlers := calendaradapter.NewWebHandlers(accountService, sm, logger)
 
+	// NES-68: Google Calendar sync. The sync service pulls each connected
+	// account's events into the external-event cache, obtaining a valid access
+	// token via the account service (which refreshes transparently).
+	externalEventRepo := calendaradapter.NewExternalEventRepository(pool)
+	googleCalendarClient := calendaradapter.NewGoogleCalendarClient()
+	calendarSyncService, err := calendarapp.NewSyncService(calendarAccountRepo, externalEventRepo, googleCalendarClient, accountService, logger)
+	if err != nil {
+		return fmt.Errorf("create calendar sync service: %w", err)
+	}
+	calendarSyncScheduler, err := calendarapp.NewSyncScheduler(calendarSyncService, logger, calendarSyncPollInterval, calendarSyncTickTimeout)
+	if err != nil {
+		return fmt.Errorf("create calendar sync scheduler: %w", err)
+	}
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -376,6 +402,15 @@ func run(logger *slog.Logger) error {
 		renewalScheduler.Run(ctx)
 	}()
 
+	// NES-68: the calendar sync scheduler is a fifth background worker on the
+	// same signal-cancelled ctx; each tick runs under its own bounded context, so
+	// an in-flight sync cycle finishes its writes before Run returns.
+	calendarSyncSchedulerDone := make(chan struct{})
+	go func() {
+		defer close(calendarSyncSchedulerDone)
+		calendarSyncScheduler.Run(ctx)
+	}()
+
 	var runErr error
 	select {
 	case err := <-serverErr:
@@ -402,6 +437,7 @@ func run(logger *slog.Logger) error {
 	<-schedulerDone
 	<-restockSchedulerDone
 	<-renewalSchedulerDone
+	<-calendarSyncSchedulerDone
 
 	if shutdownErr != nil {
 		return errors.Join(runErr, shutdownErr)
