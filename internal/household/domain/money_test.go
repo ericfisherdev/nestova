@@ -8,6 +8,18 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
 
+// mustMoney constructs a Money for tests, failing the test if the value is not
+// valid so an unexpected constructor error never masquerades as the behavior
+// under test.
+func mustMoney(t *testing.T, cents int64, currency string) household.Money {
+	t.Helper()
+	m, err := household.NewMoney(cents, currency)
+	if err != nil {
+		t.Fatalf("NewMoney(%d, %q) error = %v", cents, currency, err)
+	}
+	return m
+}
+
 func TestNewMoneyValid(t *testing.T) {
 	m, err := household.NewMoney(1299, "USD")
 	if err != nil {
@@ -48,8 +60,8 @@ func TestNewMoneyInvalid(t *testing.T) {
 }
 
 func TestMoneyAdd(t *testing.T) {
-	a, _ := household.NewMoney(150, "USD")
-	b, _ := household.NewMoney(250, "USD")
+	a := mustMoney(t, 150, "USD")
+	b := mustMoney(t, 250, "USD")
 	sum, err := a.Add(b)
 	if err != nil {
 		t.Fatalf("Add() error = %v", err)
@@ -60,16 +72,16 @@ func TestMoneyAdd(t *testing.T) {
 }
 
 func TestMoneyAddOverflow(t *testing.T) {
-	a, _ := household.NewMoney(math.MaxInt64, "USD")
-	b, _ := household.NewMoney(1, "USD")
+	a := mustMoney(t, math.MaxInt64, "USD")
+	b := mustMoney(t, 1, "USD")
 	if _, err := a.Add(b); !errors.Is(err, household.ErrInvalidMoney) {
 		t.Fatalf("Add() overflow error = %v, want ErrInvalidMoney", err)
 	}
 }
 
 func TestMoneyAddCurrencyMismatch(t *testing.T) {
-	a, _ := household.NewMoney(150, "USD")
-	b, _ := household.NewMoney(250, "EUR")
+	a := mustMoney(t, 150, "USD")
+	b := mustMoney(t, 250, "EUR")
 	if _, err := a.Add(b); !errors.Is(err, household.ErrCurrencyMismatch) {
 		t.Fatalf("Add() error = %v, want ErrCurrencyMismatch", err)
 	}
@@ -87,7 +99,7 @@ func TestMoneyString(t *testing.T) {
 		{1299, "12.99 USD"},
 	}
 	for _, tc := range cases {
-		m, _ := household.NewMoney(tc.cents, "USD")
+		m := mustMoney(t, tc.cents, "USD")
 		if got := m.String(); got != tc.want {
 			t.Errorf("Money{%d}.String() = %q, want %q", tc.cents, got, tc.want)
 		}
