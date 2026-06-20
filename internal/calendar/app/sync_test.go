@@ -165,6 +165,19 @@ func TestRunOnceFullResyncOnInvalidToken(t *testing.T) {
 	}
 }
 
+func TestRunOnceSyncsOnlyPrimaryCalendar(t *testing.T) {
+	// An account with several calendar ids syncs only the first (primary); per-
+	// calendar sync tokens for the rest are future work.
+	store := &fakeSyncAccountStore{accounts: []*calendardomain.CalendarAccount{account("", "primary", "secondary")}}
+	source := &fakeEventSource{fullEvents: []calendardomain.SyncedEvent{event("a")}, nextSyncToken: "t"}
+	if _, err := mustSyncService(t, store, &fakeEventRepo{}, source, &fakeTokenProvider{}).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(source.calls) != 1 || source.calls[0].calendarID != "primary" {
+		t.Fatalf("source calls = %+v, want a single call for the primary calendar", source.calls)
+	}
+}
+
 func TestRunOnceSkipsAccountWithoutCalendars(t *testing.T) {
 	store := &fakeSyncAccountStore{accounts: []*calendardomain.CalendarAccount{account("")}} // no calendar ids
 	source := &fakeEventSource{}
