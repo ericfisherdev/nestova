@@ -75,17 +75,35 @@ func (f *fakeMediaPhotoRepo) Delete(_ context.Context, id mediadomain.PhotoID) e
 	return nil
 }
 
-type fakeMediaAlbumRepo struct{}
+type fakeMediaAlbumRepo struct {
+	store map[mediadomain.AlbumID]*mediadomain.Album
+}
 
-func (fakeMediaAlbumRepo) Create(context.Context, *mediadomain.Album) error { return nil }
-func (fakeMediaAlbumRepo) Get(context.Context, mediadomain.AlbumID) (*mediadomain.Album, error) {
+func newFakeMediaAlbumRepo() *fakeMediaAlbumRepo {
+	return &fakeMediaAlbumRepo{store: map[mediadomain.AlbumID]*mediadomain.Album{}}
+}
+
+func (f *fakeMediaAlbumRepo) Create(_ context.Context, a *mediadomain.Album) error {
+	f.store[a.ID] = a
+	return nil
+}
+
+func (f *fakeMediaAlbumRepo) Get(_ context.Context, id mediadomain.AlbumID) (*mediadomain.Album, error) {
+	if a, ok := f.store[id]; ok {
+		return a, nil
+	}
 	return nil, mediadomain.ErrAlbumNotFound
 }
-func (fakeMediaAlbumRepo) Update(context.Context, *mediadomain.Album) error { return nil }
-func (fakeMediaAlbumRepo) ListByHousehold(context.Context, household.HouseholdID) ([]*mediadomain.Album, error) {
+
+func (f *fakeMediaAlbumRepo) Update(_ context.Context, a *mediadomain.Album) error {
+	f.store[a.ID] = a
+	return nil
+}
+
+func (f *fakeMediaAlbumRepo) ListByHousehold(context.Context, household.HouseholdID) ([]*mediadomain.Album, error) {
 	return nil, nil
 }
-func (fakeMediaAlbumRepo) Delete(context.Context, mediadomain.AlbumID) error { return nil }
+func (f *fakeMediaAlbumRepo) Delete(context.Context, mediadomain.AlbumID) error { return nil }
 
 type fakeMediaAlbumPhotoRepo struct{}
 
@@ -105,18 +123,19 @@ func (fakeMediaAlbumPhotoRepo) ListByAlbumOrdered(context.Context, mediadomain.A
 	return nil, nil
 }
 
-func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMediaStore, photoRepo *fakeMediaPhotoRepo) (http.Handler, *scs.SessionManager) {
+func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMediaStore, photoRepo *fakeMediaPhotoRepo) (http.Handler, *scs.SessionManager, *fakeMediaAlbumRepo) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), logger)
 
+	albumRepo := newFakeMediaAlbumRepo()
 	photoService, err := mediaapp.NewPhotoService(store, fakeMediaExif{}, photoRepo)
 	if err != nil {
 		t.Fatalf("NewPhotoService: %v", err)
 	}
-	albumService, err := mediaapp.NewAlbumService(fakeMediaAlbumRepo{}, photoRepo, fakeMediaAlbumPhotoRepo{})
+	albumService, err := mediaapp.NewAlbumService(albumRepo, photoRepo, fakeMediaAlbumPhotoRepo{})
 	if err != nil {
 		t.Fatalf("NewAlbumService: %v", err)
 	}
@@ -131,7 +150,8 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 	mux.Handle("GET /photos", requireMember(http.HandlerFunc(handlers.Page(layoutFn))))
 	mux.Handle("POST /photos", requireMember(http.HandlerFunc(handlers.Upload)))
 	mux.Handle("GET /photos/{id}/raw", requireMember(http.HandlerFunc(handlers.Raw)))
-	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm
+	mux.Handle("GET /album/{id}", requireMember(http.HandlerFunc(handlers.AlbumViewer)))
+	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm, albumRepo
 }
 
 // multipartUpload builds a multipart body with a csrf field and a "photo" part.
@@ -154,7 +174,7 @@ func TestMediaUploadPersistsAndRedirects(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	ct, body := multipartUpload(t, csrf, []byte("imgbytes"))
@@ -180,7 +200,7 @@ func TestMediaUploadRejectsBadCSRF(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	ct, body := multipartUpload(t, "wrong", []byte("x"))
@@ -199,7 +219,7 @@ func TestMediaUploadRejectsBadCSRF(t *testing.T) {
 }
 
 func TestMediaUploadRequiresMember(t *testing.T) {
-	handler, _ := buildMediaTestHandler(t, testMember(), &fakeMediaStore{}, newFakeMediaPhotoRepo())
+	handler, _, _ := buildMediaTestHandler(t, testMember(), &fakeMediaStore{}, newFakeMediaPhotoRepo())
 	ct, body := multipartUpload(t, "x", []byte("x"))
 	req := httptest.NewRequest(http.MethodPost, "/photos", body)
 	req.Header.Set("Content-Type", ct)
@@ -215,7 +235,7 @@ func TestMediaRawStreamsToOwnerAndRejectsOthers(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{bytes: []byte("the-image-bytes")}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	// Owned photo: streams the bytes.
@@ -245,5 +265,38 @@ func TestMediaRawStreamsToOwnerAndRejectsOthers(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-household raw: status=%d, want 404", rec.Code)
+	}
+}
+
+func TestAlbumViewerOwnershipAndRender(t *testing.T) {
+	member := testMember()
+	handler, sm, albumRepo := buildMediaTestHandler(t, member, &fakeMediaStore{}, newFakeMediaPhotoRepo())
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	rot, _ := mediadomain.NewRotationInterval(8)
+	owned := mediadomain.NewAlbumID()
+	albumRepo.store[owned] = &mediadomain.Album{ID: owned, HouseholdID: member.HouseholdID, Name: "Family", Rotation: rot}
+
+	// Owned album renders the standalone viewer page.
+	req := httptest.NewRequest(http.MethodGet, "/album/"+owned.String(), nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owned album viewer: status=%d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "/static/js/album.js") || !strings.Contains(rec.Body.String(), "Family") {
+		t.Fatalf("viewer page missing expected content")
+	}
+
+	// Cross-household album: 404.
+	foreign := mediadomain.NewAlbumID()
+	albumRepo.store[foreign] = &mediadomain.Album{ID: foreign, HouseholdID: household.NewHouseholdID(), Name: "Theirs", Rotation: rot}
+	req = httptest.NewRequest(http.MethodGet, "/album/"+foreign.String(), nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-household album viewer: status=%d, want 404", rec.Code)
 	}
 }

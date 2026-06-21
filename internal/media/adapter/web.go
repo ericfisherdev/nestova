@@ -88,6 +88,71 @@ func (h *WebHandlers) Page(layoutFn LayoutFunc) http.HandlerFunc {
 	}
 }
 
+// AlbumViewer handles GET /album/{id}: the full-screen rotating slideshow. It is
+// a standalone page (not the dashboard shell) built for the entryway display.
+func (h *WebHandlers) AlbumViewer(w http.ResponseWriter, r *http.Request) {
+	member, ok := authadapter.CurrentMember(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id, err := domain.ParseAlbumID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid album id", http.StatusBadRequest)
+		return
+	}
+	view, err := h.buildViewerView(r, member, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrAlbumNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		h.logger.ErrorContext(r.Context(), "album viewer: build view", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.AlbumViewerPage(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "album viewer: render", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (h *WebHandlers) buildViewerView(r *http.Request, member *household.Member, albumID domain.AlbumID) (components.AlbumViewerView, error) {
+	album, err := h.albums.Album(r.Context(), member.HouseholdID, albumID)
+	if err != nil {
+		return components.AlbumViewerView{}, err
+	}
+	items, err := h.albums.Playlist(r.Context(), member.HouseholdID, albumID)
+	if err != nil {
+		return components.AlbumViewerView{}, err
+	}
+	members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.AlbumViewerView{}, err
+	}
+	colorByID := make(map[household.MemberID]string, len(members))
+	for _, m := range members {
+		colorByID[m.ID] = m.Color.String()
+	}
+
+	slides := make([]components.SlideView, 0, len(items))
+	for _, it := range items {
+		slide := components.SlideView{
+			RawURL:  photosPath + "/" + it.PhotoID.String() + "/raw",
+			Caption: it.Caption,
+		}
+		if it.UploadedBy != nil {
+			slide.UploaderColor = colorByID[*it.UploadedBy]
+		}
+		slides = append(slides, slide)
+	}
+	return components.AlbumViewerView{
+		AlbumName:       album.Name,
+		RotationSeconds: album.Rotation.Seconds(),
+		Slides:          slides,
+	}, nil
+}
+
 // Upload handles POST /photos: a multipart photo upload.
 func (h *WebHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 	// Hard-cap the request body before parsing so a huge upload cannot exhaust

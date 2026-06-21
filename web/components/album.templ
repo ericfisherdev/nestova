@@ -1,0 +1,69 @@
+package components
+
+import "fmt"
+
+// AlbumViewerView is the view model for the full-screen rotating slideshow.
+type AlbumViewerView struct {
+	AlbumName       string
+	RotationSeconds int
+	Slides          []SlideView
+}
+
+// SlideView is one slide: the image to show and its caption/attribution.
+type SlideView struct {
+	RawURL        string
+	Caption       string
+	UploaderColor string // member color infix, "" when unattributed
+}
+
+// AlbumViewerPage is a standalone full-bleed document (not the dashboard shell)
+// for the entryway touchscreen: a GSAP-driven Ken Burns + crossfade slideshow.
+templ AlbumViewerPage(view AlbumViewerView) {
+	<!DOCTYPE html>
+	<html lang="en" class="h-full bg-black">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+			<title>{ view.AlbumName } — Nestova</title>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+			<script src="/static/js/gsap.min.js" defer></script>
+			<script src="/static/js/alpine.min.js" defer></script>
+			<script src="/static/js/album.js" defer></script>
+		</head>
+		<body class="h-full overflow-hidden bg-black text-white">
+			if len(view.Slides) == 0 {
+				<div class="flex h-full flex-col items-center justify-center gap-2 text-center" data-testid="album-empty">
+					<p class="text-2xl font-semibold">{ view.AlbumName }</p>
+					<p class="text-sm text-white/60">No photos yet — add some from the Photos page.</p>
+				</div>
+			} else {
+				<div
+					class="relative h-full w-full"
+					data-testid="album-viewer"
+					x-data="albumViewer"
+					data-rotation-seconds={ fmt.Sprintf("%d", view.RotationSeconds) }
+				>
+					for i, slide := range view.Slides {
+						@albumSlide(slide, i)
+					}
+					<!-- Caption / attribution bar -->
+					<div class="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/70 to-transparent p-6">
+						<span class="h-3 w-3 shrink-0 rounded-full" x-show="caption" :class="colorClass" aria-hidden="true"></span>
+						<p class="text-lg font-medium drop-shadow" x-text="caption"></p>
+					</div>
+				</div>
+			}
+		</body>
+	</html>
+}
+
+templ albumSlide(slide SlideView, index int) {
+	<figure
+		class="album-slide absolute inset-0 h-full w-full opacity-0"
+		data-index={ fmt.Sprintf("%d", index) }
+		data-caption={ slide.Caption }
+		data-color={ slide.UploaderColor }
+	>
+		<img src={ slide.RawURL } alt={ slide.Caption } class="h-full w-full object-cover"/>
+	</figure>
+}
