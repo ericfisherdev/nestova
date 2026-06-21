@@ -134,6 +134,16 @@ Migrations are numbered sequentially (`NNNNN_name.sql`) with `-- +goose Up` /
 `-- +goose Down` sections. The baseline (`00001_baseline.sql`) creates the
 `household`, `member`, and `notification` tables.
 
+Migrations target `DATABASE_URL` by default. Set **`MIGRATE_DATABASE_URL`** to run
+them against a different connection than the app server uses — required for
+Supabase, where DDL and goose's version bookkeeping need a **session** connection
+(direct connection or session pooler, port 5432) while the app server may point at
+the transaction pooler (port 6543). Point `MIGRATE_DATABASE_URL` at the
+direct/session connection. If migrations must run through the transaction pooler
+(no separate `MIGRATE_DATABASE_URL` and `DB_PROVIDER=supabase` with
+`DB_POOL_MODE=transaction`), the tool automatically falls back to the simple query
+protocol so goose's bookkeeping does not rely on named prepared statements.
+
 > **Run migrations serially.** Sequential numbering assumes migrations are
 > created and applied one at a time. Create new migrations serially (`create`
 > refuses to overwrite an existing file). In a multi-instance deployment, apply

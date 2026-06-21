@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ericfisherdev/nestova/internal/platform/config"
 )
 
 func TestNextVersion(t *testing.T) {
@@ -82,6 +84,63 @@ func TestRunNoArgs(t *testing.T) {
 	if err := run(nil); err == nil {
 		t.Error("run() = nil error, want usage error for no args")
 	}
+}
+
+func TestMigrateSettings(t *testing.T) {
+	const appDSN = "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require"
+	const migrateDSN = "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require"
+
+	t.Run("defaults to DATABASE_URL with no pooler-safe option", func(t *testing.T) {
+		dsn, opts := migrateSettings(config.Config{DB: config.DBConfig{DSN: appDSN}})
+		if dsn != appDSN {
+			t.Errorf("dsn = %q, want %q", dsn, appDSN)
+		}
+		if len(opts) != 0 {
+			t.Errorf("opts = %d, want 0 (postgres / no override)", len(opts))
+		}
+	})
+
+	t.Run("MIGRATE_DATABASE_URL wins and stays normal protocol", func(t *testing.T) {
+		// A dedicated migrate DSN is assumed to be a session/direct connection, so
+		// the pooler-safe simple protocol is not forced even in transaction mode.
+		dsn, opts := migrateSettings(config.Config{DB: config.DBConfig{
+			DSN:        appDSN,
+			MigrateDSN: migrateDSN,
+			Provider:   config.DBProviderSupabase,
+			PoolMode:   config.DBPoolModeTransaction,
+		}})
+		if dsn != migrateDSN {
+			t.Errorf("dsn = %q, want %q", dsn, migrateDSN)
+		}
+		if len(opts) != 0 {
+			t.Errorf("opts = %d, want 0 (dedicated migrate DSN)", len(opts))
+		}
+	})
+
+	t.Run("transaction pooler without a migrate DSN enables pooler-safe", func(t *testing.T) {
+		dsn, opts := migrateSettings(config.Config{DB: config.DBConfig{
+			DSN:      appDSN,
+			Provider: config.DBProviderSupabase,
+			PoolMode: config.DBPoolModeTransaction,
+		}})
+		if dsn != appDSN {
+			t.Errorf("dsn = %q, want %q", dsn, appDSN)
+		}
+		if len(opts) != 1 {
+			t.Errorf("opts = %d, want 1 (pooler-safe)", len(opts))
+		}
+	})
+
+	t.Run("supabase session mode does not force pooler-safe", func(t *testing.T) {
+		_, opts := migrateSettings(config.Config{DB: config.DBConfig{
+			DSN:      appDSN,
+			Provider: config.DBProviderSupabase,
+			PoolMode: config.DBPoolModeSession,
+		}})
+		if len(opts) != 0 {
+			t.Errorf("opts = %d, want 0 (session mode)", len(opts))
+		}
+	})
 }
 
 func TestRunRejectsTrailingArgs(t *testing.T) {

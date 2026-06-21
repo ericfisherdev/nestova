@@ -13,7 +13,7 @@ import (
 // environment, not just from each other.
 var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
-	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT",
+	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT", "MIGRATE_DATABASE_URL",
 	"SESSION_SECRET", "SESSION_LIFETIME",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
@@ -189,6 +189,25 @@ func TestLoadValid(t *testing.T) {
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080"},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full", MaxConns: 5, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, SSLRootCert: "/etc/ssl/supabase-ca.crt"},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+			},
+		},
+		{
+			// MIGRATE_DATABASE_URL is captured separately so migrations can target a
+			// session/direct connection while the app uses the transaction pooler.
+			name: "separate migrate DSN is captured",
+			env: map[string]string{
+				"DB_PROVIDER":          "supabase",
+				"DB_POOL_MODE":         "transaction",
+				"DATABASE_URL":         "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require",
+				"MIGRATE_DATABASE_URL": "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, MigrateDSN: "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require"},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},

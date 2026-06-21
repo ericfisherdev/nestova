@@ -15,7 +15,8 @@ import (
 	"embed"
 	"fmt"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver + OpenDB
 	"github.com/pressly/goose/v3"
 )
 
@@ -38,24 +39,50 @@ func init() {
 	}
 }
 
+// options configures how a migration command connects.
+type options struct {
+	poolerSafe bool
+}
+
+// Option customizes a migration run.
+type Option func(*options)
+
+// PoolerSafe configures the migration connection to use the simple query
+// protocol so goose's version-bookkeeping queries do not rely on named
+// server-side prepared statements, which a transaction pooler (PgBouncer /
+// Supabase Supavisor) cannot keep across multiplexed transactions. Prefer
+// pointing the DSN at a direct/session connection over enabling this.
+func PoolerSafe() Option { return func(o *options) { o.poolerSafe = true } }
+
 // Up applies all pending migrations.
-func Up(ctx context.Context, dsn string) error { return run(ctx, "up", dsn) }
+func Up(ctx context.Context, dsn string, opts ...Option) error { return run(ctx, "up", dsn, opts...) }
 
 // Down rolls back the most recently applied migration.
-func Down(ctx context.Context, dsn string) error { return run(ctx, "down", dsn) }
+func Down(ctx context.Context, dsn string, opts ...Option) error {
+	return run(ctx, "down", dsn, opts...)
+}
 
 // Status prints the migration status to stdout.
-func Status(ctx context.Context, dsn string) error { return run(ctx, "status", dsn) }
+func Status(ctx context.Context, dsn string, opts ...Option) error {
+	return run(ctx, "status", dsn, opts...)
+}
 
 // Reset rolls back every applied migration. Intended for tests and local resets.
-func Reset(ctx context.Context, dsn string) error { return run(ctx, "reset", dsn) }
+func Reset(ctx context.Context, dsn string, opts ...Option) error {
+	return run(ctx, "reset", dsn, opts...)
+}
 
 // run opens a database/sql handle via the pgx stdlib driver and executes the
 // goose command against the embedded migrations.
-func run(ctx context.Context, command, dsn string) error {
-	db, err := sql.Open("pgx", dsn)
+func run(ctx context.Context, command, dsn string, opts ...Option) error {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	db, err := openDB(dsn, o.poolerSafe)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
 	defer func() { _ = db.Close() }()
 
@@ -79,4 +106,35 @@ func run(ctx context.Context, command, dsn string) error {
 		return fmt.Errorf("goose %s: %w", command, err)
 	}
 	return nil
+}
+
+// openDB returns a database/sql handle over the pgx driver. The default path
+// uses the registered "pgx" driver unchanged. The pooler-safe path opens a
+// connection configured for the simple protocol so it works through a
+// transaction pooler.
+func openDB(dsn string, poolerSafe bool) (*sql.DB, error) {
+	if !poolerSafe {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("open database: %w", err)
+		}
+		return db, nil
+	}
+	connCfg, err := poolerSafeConnConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return stdlib.OpenDB(*connCfg), nil
+}
+
+// poolerSafeConnConfig parses dsn and selects the simple query protocol, which
+// carries no named server-side prepared statements and so survives a
+// transaction pooler's per-transaction connection multiplexing.
+func poolerSafeConnConfig(dsn string) (*pgx.ConnConfig, error) {
+	connCfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse database dsn: %w", err)
+	}
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return connCfg, nil
 }
