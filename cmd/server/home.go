@@ -320,6 +320,8 @@ func registerMediaPages(
 	mux.Handle("POST /albums/{id}", requireMember(http.HandlerFunc(mediaHandlers.ConfigureAlbum)))
 	mux.Handle("POST /albums/{id}/photos/{photoID}/remove", requireMember(http.HandlerFunc(mediaHandlers.RemovePhoto)))
 	mux.Handle("POST /albums/{id}/photos/{photoID}/move", requireMember(http.HandlerFunc(mediaHandlers.MovePhoto)))
+	// Full-screen rotating slideshow (NES-76) — a standalone page, not the shell.
+	mux.Handle("GET /album/{id}", requireMember(http.HandlerFunc(mediaHandlers.AlbumViewer)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

@@ -130,6 +130,12 @@ func (s *AlbumService) List(ctx context.Context, householdID household.Household
 	return s.albums.ListByHousehold(ctx, householdID)
 }
 
+// Album returns a household's album (rotation, name, filter), ownership-checked.
+// It returns domain.ErrAlbumNotFound for an unknown or cross-household id.
+func (s *AlbumService) Album(ctx context.Context, householdID household.HouseholdID, id domain.AlbumID) (*domain.Album, error) {
+	return s.ownedAlbum(ctx, householdID, id)
+}
+
 // AlbumPhotos returns the album's full ordered membership (unfiltered), for the
 // management UI. Ownership-checked.
 func (s *AlbumService) AlbumPhotos(ctx context.Context, householdID household.HouseholdID, albumID domain.AlbumID) ([]*domain.Photo, error) {
