@@ -43,6 +43,7 @@ environment variables always take precedence over `.env`.
 | `APP_ENV` | no | `dev` | Deployment environment: `dev`, `test`, or `prod`. |
 | `PORT` | no | `8080` | HTTP listen port (a leading colon is tolerated). |
 | `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Override in prod. |
+| `MIGRATE_DATABASE_URL` | no | `DATABASE_URL` | Separate DSN for the migration tool; point at a session/direct connection for Supabase (see [Database migrations](#database-migrations)). |
 | `DB_MAX_CONNS` | no | `0` | Connection pool cap; `0` lets the pool choose. |
 | `DB_CONNECT_TIMEOUT` | no | `5s` | Bounds the startup connectivity check (Go duration). |
 | `SESSION_SECRET` | yes in prod | dev-only default | Signs session cookies; ≥ 32 bytes. The dev default is rejected in prod. |
