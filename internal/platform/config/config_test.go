@@ -66,6 +66,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 		{
@@ -80,6 +81,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 		{
@@ -91,6 +93,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 		{
@@ -102,6 +105,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 		{
@@ -115,6 +119,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 48 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 		{
@@ -133,6 +138,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: validSecret, Secure: true, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 		{
@@ -148,6 +154,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
 			},
 		},

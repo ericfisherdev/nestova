@@ -16,7 +16,9 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/joho/godotenv v1.5.1
 	github.com/pressly/goose/v3 v3.27.1
+	github.com/xor-gate/goexif2 v1.1.0
 	golang.org/x/crypto v0.53.0
+	golang.org/x/image v0.43.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.285.0
 )
