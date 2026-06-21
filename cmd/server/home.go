@@ -12,6 +12,7 @@ import (
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
+	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
@@ -287,6 +288,38 @@ func registerCalendarSubscriptionPages(
 	mux.Handle("POST /subscriptions", requireMember(http.HandlerFunc(subscriptionHandlers.Add)))
 	mux.Handle("POST /subscriptions/{id}", requireMember(http.HandlerFunc(subscriptionHandlers.Edit)))
 	mux.Handle("POST /subscriptions/{id}/deactivate", requireMember(http.HandlerFunc(subscriptionHandlers.Deactivate)))
+}
+
+// registerMediaPages wires the NES-75 photo management UI: the /photos page, the
+// upload and album-management actions, and the tenant-checked raw-bytes endpoint.
+func registerMediaPages(
+	mux *http.ServeMux,
+	logger *slog.Logger,
+	sm *scs.SessionManager,
+	households household.HouseholdRepository,
+	mediaHandlers *mediaadapter.WebHandlers,
+) {
+	requireMember := authadapter.RequireMember(sm)
+	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
+		return func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "/photos")
+				return components.Layout(props, nav, c)
+			}
+		}
+	}
+
+	mux.Handle("GET /photos", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mediaHandlers.Page(layoutFor(r))(w, r)
+	})))
+	mux.Handle("POST /photos", requireMember(http.HandlerFunc(mediaHandlers.Upload)))
+	mux.Handle("GET /photos/{id}/raw", requireMember(http.HandlerFunc(mediaHandlers.Raw)))
+	mux.Handle("POST /photos/{id}/delete", requireMember(http.HandlerFunc(mediaHandlers.DeletePhoto)))
+	mux.Handle("POST /photos/{id}/add-to-album", requireMember(http.HandlerFunc(mediaHandlers.AddPhoto)))
+	mux.Handle("POST /albums", requireMember(http.HandlerFunc(mediaHandlers.CreateAlbum)))
+	mux.Handle("POST /albums/{id}", requireMember(http.HandlerFunc(mediaHandlers.ConfigureAlbum)))
+	mux.Handle("POST /albums/{id}/photos/{photoID}/remove", requireMember(http.HandlerFunc(mediaHandlers.RemovePhoto)))
+	mux.Handle("POST /albums/{id}/photos/{photoID}/move", requireMember(http.HandlerFunc(mediaHandlers.MovePhoto)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
+	"path/filepath"
 	"strings"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -87,6 +89,39 @@ func (s *PhotoService) cleanupBytes(ctx context.Context, ref domain.StorageRef) 
 // List returns the household's photos.
 func (s *PhotoService) List(ctx context.Context, householdID household.HouseholdID) ([]*domain.Photo, error) {
 	return s.photos.ListByHousehold(ctx, householdID)
+}
+
+// OpenBytes streams a household photo's stored bytes after verifying ownership,
+// returning domain.ErrPhotoNotFound for an unknown or cross-household id. It also
+// returns the image content type (derived from the stored extension, which was
+// set from the validated format at upload) so the web layer can serve the bytes
+// with an explicit Content-Type instead of letting the browser sniff them. The
+// web layer uses it to serve a photo only to its owning household.
+func (s *PhotoService) OpenBytes(ctx context.Context, householdID household.HouseholdID, id domain.PhotoID) (io.ReadCloser, string, error) {
+	photo, err := s.ownedPhoto(ctx, householdID, id)
+	if err != nil {
+		return nil, "", err
+	}
+	rc, err := s.store.Open(ctx, photo.StorageRef)
+	if err != nil {
+		return nil, "", err
+	}
+	return rc, contentTypeForRef(photo.StorageRef), nil
+}
+
+// contentTypeForRef maps a stored ref's extension to its image content type,
+// falling back to application/octet-stream for an unexpected extension.
+func contentTypeForRef(ref domain.StorageRef) string {
+	switch strings.ToLower(filepath.Ext(ref.String())) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // ownedPhoto fetches a photo and confirms it belongs to householdID, returning

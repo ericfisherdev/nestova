@@ -21,6 +21,8 @@ import (
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
 	mealsdomain "github.com/ericfisherdev/nestova/internal/meals/domain"
+	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
+	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
@@ -349,6 +351,24 @@ func run(logger *slog.Logger) error {
 	}
 	calendarViewHandlers := calendaradapter.NewViewHandlers(unifiedCalendarService, calendarAccountRepo, householdRepo, sm, logger)
 
+	// NES-7: media (rotating photo album) — storage, services, and the /photos UI.
+	photoStore, err := mediaadapter.NewLocalPhotoStore(cfg.Media.Root, cfg.Media.MaxUploadBytes)
+	if err != nil {
+		return fmt.Errorf("create photo store: %w", err)
+	}
+	albumRepo := mediaadapter.NewAlbumRepository(pool)
+	photoRepo := mediaadapter.NewPhotoRepository(pool)
+	albumPhotoRepo := mediaadapter.NewAlbumPhotoRepository(pool)
+	photoService, err := mediaapp.NewPhotoService(photoStore, mediaadapter.NewExifReader(), photoRepo)
+	if err != nil {
+		return fmt.Errorf("create photo service: %w", err)
+	}
+	albumService, err := mediaapp.NewAlbumService(albumRepo, photoRepo, albumPhotoRepo)
+	if err != nil {
+		return fmt.Errorf("create album service: %w", err)
+	}
+	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -363,6 +383,7 @@ func run(logger *slog.Logger) error {
 		Routes: func(mux *http.ServeMux) {
 			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
+			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 		},
 	})
 
