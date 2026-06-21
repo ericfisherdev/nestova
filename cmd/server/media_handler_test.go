@@ -100,10 +100,20 @@ func (f *fakeMediaAlbumRepo) Update(_ context.Context, a *mediadomain.Album) err
 	return nil
 }
 
-func (f *fakeMediaAlbumRepo) ListByHousehold(context.Context, household.HouseholdID) ([]*mediadomain.Album, error) {
-	return nil, nil
+func (f *fakeMediaAlbumRepo) ListByHousehold(_ context.Context, householdID household.HouseholdID) ([]*mediadomain.Album, error) {
+	var out []*mediadomain.Album
+	for _, a := range f.store {
+		if a.HouseholdID == householdID {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
-func (f *fakeMediaAlbumRepo) Delete(context.Context, mediadomain.AlbumID) error { return nil }
+
+func (f *fakeMediaAlbumRepo) Delete(_ context.Context, id mediadomain.AlbumID) error {
+	delete(f.store, id)
+	return nil
+}
 
 type fakeMediaAlbumPhotoRepo struct{}
 
