@@ -123,3 +123,12 @@ func TestMemberAvatar(t *testing.T) {
 		t.Errorf("unknown color should fall back to sage: %q", fallback)
 	}
 }
+
+func TestLayoutLoadsMotionScriptsDeferred(t *testing.T) {
+	props := components.ShellProps{CSRFToken: "t"}
+	out := renderString(t, components.Layout(props, nil, templ.Raw("<p>x</p>")))
+	// The GSAP + motion scripts load deferred so they never block first paint.
+	if !strings.Contains(out, `src="/static/js/gsap.min.js" defer`) || !strings.Contains(out, `src="/static/js/dashboard-motion.js" defer`) {
+		t.Errorf("motion scripts should be deferred: %q", out)
+	}
+}
