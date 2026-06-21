@@ -62,7 +62,7 @@ templ PhotosPage(view PhotosView) {
 					@Button("Upload", ButtonPrimary, "submit")
 				</form>
 				<h2 class="mb-3 mt-6 text-sm font-semibold uppercase tracking-wide text-ink-muted">New album</h2>
-				@albumForm("create", "/albums", view.CSRFToken, view.Members)
+				@albumForm("create", "/albums", view.CSRFToken, "", 8, view.Members)
 			</section>
 			<section class="rounded-card bg-surface p-4 shadow-warm lg:col-span-2">
 				<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Albums</h2>
@@ -120,7 +120,7 @@ templ albumRow(album AlbumView, csrfToken string) {
 		<details class="mt-2">
 			<summary class="cursor-pointer text-xs font-medium text-ink-muted">Configure</summary>
 			<div class="mt-2">
-				@albumForm("configure", "/albums/"+album.ID, csrfToken, nil)
+				@albumForm("configure", "/albums/"+album.ID, csrfToken, album.Name, album.RotationSeconds, nil)
 			</div>
 		</details>
 	</li>
@@ -131,9 +131,9 @@ templ moveButton(albumID, photoID, direction string, disabled bool, csrfToken st
 		<input type="hidden" name="csrf_token" value={ csrfToken }/>
 		<input type="hidden" name="direction" value={ direction }/>
 		if disabled {
-			<button type="submit" disabled class="cursor-not-allowed text-xs text-sidebar-border">{ arrow(direction) }</button>
+			<button type="submit" disabled aria-label={ "Move " + direction } class="cursor-not-allowed text-xs text-sidebar-border">{ arrow(direction) }</button>
 		} else {
-			<button type="submit" class="text-xs text-ink-muted">{ arrow(direction) }</button>
+			<button type="submit" aria-label={ "Move " + direction } class="text-xs text-ink-muted">{ arrow(direction) }</button>
 		}
 	</form>
 }
@@ -156,7 +156,7 @@ templ photoCard(photo PhotoView, albums []AlbumView, csrfToken string) {
 			if len(albums) > 0 {
 				<form method="post" action={ templ.URL(photosPath + "/" + photo.ID + "/add-to-album") } hx-post={ photosPath + "/" + photo.ID + "/add-to-album" } class="flex gap-1">
 					<input type="hidden" name="csrf_token" value={ csrfToken }/>
-					<select name="album_id" class="w-full rounded-control border border-sidebar-border bg-surface px-1 py-1 text-xs text-ink">
+					<select name="album_id" aria-label="Add to album" class="w-full rounded-control border border-sidebar-border bg-surface px-1 py-1 text-xs text-ink">
 						for _, a := range albums {
 							<option value={ a.ID }>{ a.Name }</option>
 						}
@@ -172,15 +172,16 @@ templ photoCard(photo PhotoView, albums []AlbumView, csrfToken string) {
 	</figure>
 }
 
-// albumForm renders the create/configure album form. members is non-nil only for
-// the create form (the filter member picker); configure changes name/rotation.
-templ albumForm(mode, action, csrfToken string, members []MediaMemberOption) {
+// albumForm renders the create/configure album form. nameValue/rotationValue
+// pre-fill the inputs (empty/default for create, the album's current values for
+// configure). members is non-nil only for the create form's filter picker.
+templ albumForm(mode, action, csrfToken, nameValue string, rotationValue int, members []MediaMemberOption) {
 	<form method="post" action={ templ.URL(action) } hx-post={ action } class="flex flex-col gap-2">
 		<input type="hidden" name="csrf_token" value={ csrfToken }/>
 		<label class="text-xs font-medium text-ink-muted" for={ mode + "-album-name" }>Album name</label>
-		<input id={ mode + "-album-name" } type="text" name="name" required placeholder="Album name" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		<input id={ mode + "-album-name" } type="text" name="name" required value={ nameValue } placeholder="Album name" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
 		<label class="text-xs font-medium text-ink-muted" for={ mode + "-rotation" }>Seconds per photo</label>
-		<input id={ mode + "-rotation" } type="number" name="rotation_seconds" min="1" value="8" required class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		<input id={ mode + "-rotation" } type="number" name="rotation_seconds" min="1" value={ fmt.Sprintf("%d", rotationValue) } required class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
 		if len(members) > 0 {
 			<span class="text-xs font-medium text-ink-muted">Only show photos from (optional)</span>
 			for _, m := range members {
