@@ -83,9 +83,17 @@ func TestPhotosPageAlbumConfigureAndMoveControls(t *testing.T) {
 	if !strings.Contains(out, `hx-post="/albums/alb-1"`) {
 		t.Errorf("missing album configure form: %q", out)
 	}
+	// Configure pre-fills the album's current name (not reset to a default).
+	if !strings.Contains(out, `value="Family"`) {
+		t.Errorf("configure form did not pre-fill the album name: %q", out)
+	}
 	// Move controls render a disabled button at the ends (the first photo cannot
 	// move up), so reordering never runs off the boundary.
 	if !strings.Contains(out, "disabled") {
 		t.Errorf("expected a disabled move button at an album boundary: %q", out)
+	}
+	// Icon-only and unlabeled controls carry accessible names.
+	if !strings.Contains(out, `aria-label="Move up"`) || !strings.Contains(out, `aria-label="Add to album"`) {
+		t.Errorf("missing accessible names on move/add controls: %q", out)
 	}
 }

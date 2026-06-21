@@ -33,6 +33,10 @@ const displayDateLayout = "Jan 2, 2006"
 // parts spill to temp files. The PhotoStore enforces the real per-upload cap.
 const uploadMemoryLimit = 32 << 20
 
+// maxUploadRequestBytes is the hard cap on a /photos request body — a DoS guard
+// above the PhotoStore's per-photo limit, not the per-photo limit itself.
+const maxUploadRequestBytes = 32 << 20
+
 // LayoutFunc wraps page content in the app shell; home.go provides it.
 type LayoutFunc func(member *household.Member) func(templ.Component) templ.Component
 
@@ -86,10 +90,19 @@ func (h *WebHandlers) Page(layoutFn LayoutFunc) http.HandlerFunc {
 
 // Upload handles POST /photos: a multipart photo upload.
 func (h *WebHandlers) Upload(w http.ResponseWriter, r *http.Request) {
+	// Hard-cap the request body before parsing so a huge upload cannot exhaust
+	// memory/disk; the PhotoStore still enforces the real per-photo size limit.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
 	if err := r.ParseMultipartForm(uploadMemoryLimit); err != nil {
-		http.Error(w, "bad upload", http.StatusBadRequest)
+		http.Error(w, "upload too large or malformed", http.StatusRequestEntityTooLarge)
 		return
 	}
+	// ParseMultipartForm may spill large parts to temp files; remove them on exit.
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 	if !authadapter.VerifyCSRF(r, h.sm) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
@@ -241,8 +254,12 @@ func (h *WebHandlers) MovePhoto(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid photo id", http.StatusBadRequest)
 		return
 	}
-	up := r.FormValue("direction") != "down"
-	if err := h.albums.MovePhoto(r.Context(), member.HouseholdID, albumID, photoID, up); err != nil {
+	direction := r.FormValue("direction")
+	if direction != "up" && direction != "down" {
+		http.Error(w, "direction must be up or down", http.StatusBadRequest)
+		return
+	}
+	if err := h.albums.MovePhoto(r.Context(), member.HouseholdID, albumID, photoID, direction == "up"); err != nil {
 		h.handleMutationError(w, r, err)
 		return
 	}
