@@ -40,3 +40,16 @@ func TestAlbumViewerPageEmptyState(t *testing.T) {
 		t.Errorf("missing empty viewer state: %q", out)
 	}
 }
+
+func TestAlbumViewerSlideHasImageDimensionsClass(t *testing.T) {
+	view := components.AlbumViewerView{
+		AlbumName:       "X",
+		RotationSeconds: 5,
+		Slides:          []components.SlideView{{RawURL: "/photos/p/raw", Caption: "c"}},
+	}
+	out := renderString(t, components.AlbumViewerPage(view))
+	// Each slide image fills the frame (object-cover) for the entryway display.
+	if !strings.Contains(out, "object-cover") {
+		t.Errorf("slide image missing object-cover: %q", out)
+	}
+}
