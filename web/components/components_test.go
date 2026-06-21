@@ -77,18 +77,20 @@ func TestLayoutRendersShell(t *testing.T) {
 
 	for _, want := range []string{
 		"<!doctype html>",
-		`href="/static/css/app.css"`,     // styled
-		`src="/static/js/htmx.min.js"`,   // htmx wired
-		`src="/static/js/alpine.min.js"`, // alpine wired
-		`id="sidebar"`,                   // fixed sidebar
-		`aria-label="Primary"`,           // nav landmark
-		"Skip to content",                // a11y skip link
-		`aria-controls="sidebar"`,        // drawer toggle wiring
-		`aria-current="page"`,            // active nav pill
-		"Maya",                           // family list
-		`id="body"`,                      // content slot rendered
-		`action="/logout"`,               // logout form
-		`value="csrf-test-token"`,        // csrf token threaded into the logout form
+		`href="/static/css/app.css"`,           // styled
+		`src="/static/js/htmx.min.js"`,         // htmx wired
+		`src="/static/js/alpine.min.js"`,       // alpine wired
+		`src="/static/js/gsap.min.js"`,         // gsap loaded for the motion pass
+		`src="/static/js/dashboard-motion.js"`, // dashboard entrance/transition polish
+		`id="sidebar"`,                         // fixed sidebar
+		`aria-label="Primary"`,                 // nav landmark
+		"Skip to content",                      // a11y skip link
+		`aria-controls="sidebar"`,              // drawer toggle wiring
+		`aria-current="page"`,                  // active nav pill
+		"Maya",                                 // family list
+		`id="body"`,                            // content slot rendered
+		`action="/logout"`,                     // logout form
+		`value="csrf-test-token"`,              // csrf token threaded into the logout form
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("layout missing %q", want)
