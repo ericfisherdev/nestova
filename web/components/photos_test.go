@@ -76,3 +76,16 @@ func TestPhotosPageEmptyStates(t *testing.T) {
 		t.Errorf("empty state missing upload form")
 	}
 }
+
+func TestPhotosPageAlbumConfigureAndMoveControls(t *testing.T) {
+	out := renderString(t, components.PhotosPage(photosView()))
+	// Each album exposes a configure form posting to /albums/{id}.
+	if !strings.Contains(out, `hx-post="/albums/alb-1"`) {
+		t.Errorf("missing album configure form: %q", out)
+	}
+	// Move controls render a disabled button at the ends (the first photo cannot
+	// move up), so reordering never runs off the boundary.
+	if !strings.Contains(out, "disabled") {
+		t.Errorf("expected a disabled move button at an album boundary: %q", out)
+	}
+}
