@@ -58,14 +58,17 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	if deps.Logger == nil {
 		panic("httpserver: Deps.Logger is required")
 	}
-	// Canonical middleware order (outermost first): request id and logging wrap
-	// everything so every request is logged with an id even on panic; recovery
-	// turns panics into 500s; the per-request timeout comes next so its deadline
-	// also bounds the session/auth feature middleware (which do database work),
-	// not just the final handler; feature middleware (session/auth) runs last
-	// before the route handler.
+	// Canonical middleware order (outermost first): request id wraps everything so
+	// every request is logged with an id even on panic; ForwardedHeaders resolves
+	// the effective scheme/client IP from a trusted proxy before logging and any
+	// feature middleware read them; logging records the request; recovery turns
+	// panics into 500s; the per-request timeout comes next so its deadline also
+	// bounds the session/auth feature middleware (which do database work), not just
+	// the final handler; feature middleware (session/auth) runs last before the
+	// route handler.
 	chain := []middleware.Middleware{
 		middleware.RequestID,
+		middleware.ForwardedHeaders(cfg.Server.TrustedProxyPrefixes()),
 		middleware.RequestLogger(deps.Logger),
 		middleware.Recoverer(deps.Logger),
 		middleware.Timeout(requestTimeout),
