@@ -64,6 +64,39 @@ type ServerConfig struct {
 	Addr string
 }
 
+// DBProvider selects the database backend. Both are Postgres; the provider only
+// changes connectivity (TLS and pooler-safe statement handling), never the
+// schema or queries.
+type DBProvider string
+
+const (
+	// DBProviderPostgres is the default self-hosted Postgres backend (NES-16).
+	DBProviderPostgres DBProvider = "postgres"
+	// DBProviderSupabase targets Supabase: Postgres reached through the Supavisor
+	// connection pooler, requiring TLS and pooler-safe statement handling.
+	DBProviderSupabase DBProvider = "supabase"
+)
+
+// DBPoolMode declares which Supabase pooler endpoint the DSN targets. It is
+// consulted only when Provider is DBProviderSupabase.
+type DBPoolMode string
+
+const (
+	// DBPoolModeSession targets the session pooler or a direct connection, where
+	// a backend connection is not multiplexed mid-transaction, so pgx's default
+	// cached server-side prepared statements are safe.
+	DBPoolModeSession DBPoolMode = "session"
+	// DBPoolModeTransaction targets the transaction pooler (Supavisor port 6543),
+	// which multiplexes a backend connection per transaction and is incompatible
+	// with cached server-side prepared statements.
+	DBPoolModeTransaction DBPoolMode = "transaction"
+)
+
+// supabaseDefaultMaxConns is the modest pool cap applied when DB_MAX_CONNS is
+// unset and Provider is Supabase, because the pooler is a shared resource and
+// pgx's NumCPU-based default can be too aggressive behind it.
+const supabaseDefaultMaxConns int32 = 10
+
 // DBConfig configures Postgres connectivity (consumed by NES-16/17).
 type DBConfig struct {
 	// DSN is the Postgres connection string.
@@ -72,6 +105,16 @@ type DBConfig struct {
 	MaxConns int32
 	// ConnTimeout bounds the initial connectivity check at startup.
 	ConnTimeout time.Duration
+	// Provider selects the database backend (default DBProviderPostgres). The
+	// Postgres path is byte-for-byte identical to before this field existed.
+	Provider DBProvider
+	// PoolMode declares the Supabase pooler endpoint the DSN targets; consulted
+	// only when Provider is DBProviderSupabase (default DBPoolModeSession).
+	PoolMode DBPoolMode
+	// SSLRootCert is an optional path to a CA bundle. When set, the connection
+	// upgrades to sslmode=verify-full and verifies the server certificate against
+	// this CA (pgx reads sslrootcert from the DSN and builds the TLS config).
+	SSLRootCert string
 }
 
 // SessionConfig configures sessions (consumed by NES-23).
@@ -211,6 +254,19 @@ func Load() (Config, error) {
 		dsn = devDSN
 	}
 
+	// Database backend selection (NES-46). Both default to the existing
+	// self-hosted Postgres behavior; values are normalized so casing/whitespace
+	// in the environment does not defeat the enum validation below.
+	dbProvider := DBProvider(strings.ToLower(strings.TrimSpace(getenv("DB_PROVIDER", string(DBProviderPostgres)))))
+	dbPoolMode := DBPoolMode(strings.ToLower(strings.TrimSpace(getenv("DB_POOL_MODE", string(DBPoolModeSession)))))
+	dbSSLRootCert := strings.TrimSpace(os.Getenv("DB_SSL_ROOT_CERT"))
+
+	// Supabase connects through a shared pooler, so default to a modest pool cap
+	// when the operator has not set one. Postgres keeps deferring to pgx (zero).
+	if dbProvider == DBProviderSupabase && maxConns == 0 {
+		maxConns = supabaseDefaultMaxConns
+	}
+
 	cfg := Config{
 		Env:    env,
 		Server: ServerConfig{Addr: ":" + port},
@@ -218,6 +274,9 @@ func Load() (Config, error) {
 			DSN:         dsn,
 			MaxConns:    maxConns,
 			ConnTimeout: connTimeout,
+			Provider:    dbProvider,
+			PoolMode:    dbPoolMode,
+			SSLRootCert: dbSSLRootCert,
 		},
 		Session: SessionConfig{
 			Secret:   getenv("SESSION_SECRET", devSessionSecret),
@@ -269,6 +328,18 @@ func (c Config) validate() []error {
 	}
 	if c.DB.MaxConns < 0 {
 		errs = append(errs, fmt.Errorf("DB_MAX_CONNS must be >= 0, got %d", c.DB.MaxConns))
+	}
+	switch c.DB.Provider {
+	case DBProviderPostgres, DBProviderSupabase:
+	default:
+		errs = append(errs, fmt.Errorf("DB_PROVIDER must be one of %s|%s, got %q",
+			DBProviderPostgres, DBProviderSupabase, c.DB.Provider))
+	}
+	switch c.DB.PoolMode {
+	case DBPoolModeSession, DBPoolModeTransaction:
+	default:
+		errs = append(errs, fmt.Errorf("DB_POOL_MODE must be one of %s|%s, got %q",
+			DBPoolModeSession, DBPoolModeTransaction, c.DB.PoolMode))
 	}
 	if c.DB.ConnTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("DB_CONNECT_TIMEOUT must be positive, got %v", c.DB.ConnTimeout))

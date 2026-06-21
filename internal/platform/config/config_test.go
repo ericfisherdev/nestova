@@ -13,6 +13,7 @@ import (
 // environment, not just from each other.
 var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
+	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT",
 	"SESSION_SECRET", "SESSION_LIFETIME",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
@@ -63,7 +64,7 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080"},
-				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
@@ -78,7 +79,7 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvTest,
 				Server:  config.ServerConfig{Addr: ":9090"},
-				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second},
+				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
@@ -90,7 +91,7 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":3000"},
-				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
@@ -102,7 +103,7 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080"},
-				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second},
+				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
@@ -116,7 +117,7 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080"},
-				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 48 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
@@ -134,7 +135,7 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvProd,
 				Server:  config.ServerConfig{Addr: ":8080"},
-				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second},
+				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: validSecret, Secure: true, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
@@ -151,11 +152,46 @@ func TestLoadValid(t *testing.T) {
 			want: config.Config{
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080"},
-				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
+			},
+		},
+		{
+			name: "supabase provider applies a default pool cap and session mode",
+			env: map[string]string{
+				"DB_PROVIDER":  "supabase",
+				"DATABASE_URL": "postgres://u:p@pooler.supabase.com:5432/postgres?sslmode=require",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:5432/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+			},
+		},
+		{
+			// Case-insensitive provider, transaction pool mode, an explicit pool
+			// cap that overrides the supabase default, and a root cert path.
+			name: "supabase transaction mode with explicit cap and root cert",
+			env: map[string]string{
+				"DB_PROVIDER":      "Supabase",
+				"DB_POOL_MODE":     "transaction",
+				"DB_MAX_CONNS":     "5",
+				"DB_SSL_ROOT_CERT": "/etc/ssl/supabase-ca.crt",
+				"DATABASE_URL":     "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full", MaxConns: 5, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, SSLRootCert: "/etc/ssl/supabase-ca.crt"},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
 	}
@@ -197,6 +233,16 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "non-integer DB_MAX_CONNS",
 			env:          map[string]string{"DB_MAX_CONNS": "abc"},
 			wantContains: []string{"DB_MAX_CONNS"},
+		},
+		{
+			name:         "invalid DB_PROVIDER",
+			env:          map[string]string{"DB_PROVIDER": "mysql"},
+			wantContains: []string{"DB_PROVIDER"},
+		},
+		{
+			name:         "invalid DB_POOL_MODE",
+			env:          map[string]string{"DB_POOL_MODE": "statement"},
+			wantContains: []string{"DB_POOL_MODE"},
 		},
 		{
 			name:         "negative DB_MAX_CONNS",
