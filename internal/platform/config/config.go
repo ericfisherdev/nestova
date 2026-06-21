@@ -53,6 +53,7 @@ type Config struct {
 	OAuth   OAuthConfig
 	Crypto  CryptoConfig
 	Recipes RecipesConfig
+	Media   MediaConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
 }
@@ -132,6 +133,22 @@ type RecipesConfig struct {
 	BaseURL         string
 }
 
+// MediaConfig configures photo storage for the rotating album (NES-72): where
+// the local PhotoStore writes photo bytes and the per-upload size cap. The root
+// has a safe default in every environment (no secret), so it is never required.
+type MediaConfig struct {
+	// Root is the directory the local PhotoStore writes photo bytes under.
+	Root string
+	// MaxUploadBytes caps a single photo upload (bytes).
+	MaxUploadBytes int64
+}
+
+// devMediaRoot is the default photo-storage directory when MEDIA_ROOT is unset.
+const devMediaRoot = "./.localdata/media"
+
+// defaultMaxUploadBytes is the default per-upload size cap (10 MiB).
+const defaultMaxUploadBytes int64 = 10 << 20
+
 // Load reads configuration from the environment and validates it. In
 // development it first loads an optional .env file (real environment variables
 // always take precedence). It returns an aggregated error enumerating every
@@ -178,6 +195,8 @@ func Load() (Config, error) {
 	collect(err)
 	recipesExternalEnabled, err := getbool("RECIPES_EXTERNAL_ENABLED", false)
 	collect(err)
+	maxUploadBytes, err := getint64("MEDIA_MAX_UPLOAD_BYTES", defaultMaxUploadBytes)
+	collect(err)
 
 	// PORT is conventionally a bare port number; tolerate a leading colon
 	// (e.g. PORT=":8080") so it does not produce a malformed "::8080" address.
@@ -220,6 +239,10 @@ func Load() (Config, error) {
 			APIKey:  strings.TrimSpace(os.Getenv("RECIPES_API_KEY")),
 			BaseURL: strings.TrimSpace(os.Getenv("RECIPES_API_BASE_URL")),
 		},
+		Media: MediaConfig{
+			Root:           strings.TrimSpace(getenv("MEDIA_ROOT", devMediaRoot)),
+			MaxUploadBytes: maxUploadBytes,
+		},
 	}
 
 	errs = append(errs, cfg.validate()...)
@@ -256,6 +279,12 @@ func (c Config) validate() []error {
 	}
 	if c.Session.Lifetime <= 0 {
 		errs = append(errs, fmt.Errorf("SESSION_LIFETIME must be positive, got %v", c.Session.Lifetime))
+	}
+	if strings.TrimSpace(c.Media.Root) == "" {
+		errs = append(errs, errors.New("MEDIA_ROOT must not be empty"))
+	}
+	if c.Media.MaxUploadBytes <= 0 {
+		errs = append(errs, fmt.Errorf("MEDIA_MAX_UPLOAD_BYTES must be positive, got %d", c.Media.MaxUploadBytes))
 	}
 
 	// External recipe lookups must not be enabled without the credentials to make
@@ -332,6 +361,23 @@ func getint32(key string, fallback int32) (int32, error) {
 		return fallback, fmt.Errorf("%s must be an integer: %w", key, err)
 	}
 	return int32(n), nil
+}
+
+// getint64 parses an int64 environment variable, returning fallback when unset
+// or empty and an error when present but not a valid integer.
+func getint64(key string, fallback int64) (int64, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		// Return the fallback alongside the error so the resulting Config still
+		// holds a sane value and downstream validation does not double-report
+		// this field.
+		return fallback, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return n, nil
 }
 
 // getduration parses a duration environment variable (e.g. "30s", "5m"),
