@@ -160,6 +160,20 @@ func TestAlbumRepositoryCRUD(t *testing.T) {
 	}
 }
 
+func TestAlbumUpdateAndDeleteUnknown(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewAlbumRepository(pool)
+	ctx := testCtx(t)
+	// Update/Delete on an id that was never created report not-found.
+	ghost := newAlbum(t, seedHousehold(t, pool), "Ghost", 5, domain.AlbumFilter{})
+	if err := repo.Update(ctx, ghost); !errors.Is(err, domain.ErrAlbumNotFound) {
+		t.Fatalf("Update unknown = %v, want ErrAlbumNotFound", err)
+	}
+	if err := repo.Delete(ctx, ghost.ID); !errors.Is(err, domain.ErrAlbumNotFound) {
+		t.Fatalf("Delete unknown = %v, want ErrAlbumNotFound", err)
+	}
+}
+
 func TestAlbumCreateUnknownHousehold(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewAlbumRepository(pool)
