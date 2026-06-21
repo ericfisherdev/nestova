@@ -110,6 +110,18 @@ func main() {
 	}
 }
 
+// listenAndServe starts srv with app-terminated TLS when cert+key are configured
+// (NES-54), otherwise plain HTTP. Both paths return http.ErrServerClosed on a
+// graceful Shutdown, which the caller treats as a clean exit. The branch is a
+// thin wrapper so the cert-configured decision (TLSConfig.Enabled) stays unit
+// testable without binding a socket.
+func listenAndServe(srv *http.Server, tlsCfg config.TLSConfig) error {
+	if tlsCfg.Enabled() {
+		return srv.ListenAndServeTLS(tlsCfg.CertFile, tlsCfg.KeyFile)
+	}
+	return srv.ListenAndServe()
+}
+
 // run starts the HTTP server and blocks until an interrupt signal triggers a
 // graceful shutdown. It is separated from main so the lifecycle has a single
 // error return that is straightforward to test.
@@ -390,8 +402,10 @@ func run(logger *slog.Logger) error {
 	// Surface listen errors from the background goroutine to the main flow.
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("starting http server", "addr", cfg.Server.Addr, "env", cfg.Env)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// NES-54: terminate TLS in-process when cert+key are configured; otherwise
+		// serve plain HTTP and rely on a reverse proxy for TLS (the default).
+		logger.Info("starting http server", "addr", cfg.Server.Addr, "env", cfg.Env, "tls", cfg.TLS.Enabled())
+		if err := listenAndServe(srv, cfg.TLS); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()

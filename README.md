@@ -54,6 +54,8 @@ environment variables always take precedence over `.env`.
 | `GOOGLE_CLIENT_ID` | yes in prod | — | Google OAuth client ID (Google Calendar sync). |
 | `GOOGLE_CLIENT_SECRET` | yes in prod | — | Google OAuth client secret. |
 | `GOOGLE_REDIRECT_URL` | yes in prod | — | Google OAuth redirect URL. |
+| `TLS_CERT_FILE` | no | — | PEM certificate for app-terminated TLS; set with `TLS_KEY_FILE` (see [App-terminated TLS](#app-terminated-tls)). |
+| `TLS_KEY_FILE` | no | — | PEM private key paired with `TLS_CERT_FILE` (see [App-terminated TLS](#app-terminated-tls)). |
 
 In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
 `SESSION_SECRET`, and the Google OAuth credentials must be supplied explicitly
@@ -140,6 +142,37 @@ Supabase plan's connection limits.
 make migrate-up    # applies migrations via MIGRATE_DATABASE_URL (direct/session)
 make run
 ```
+
+### App-terminated TLS
+
+By default Nestova serves plain HTTP and relies on a reverse proxy (Caddy /
+`tailscale serve`) for TLS. For environments without a proxy, the server can
+terminate TLS itself: set **`TLS_CERT_FILE`** and **`TLS_KEY_FILE`** (both, or
+neither — a half-configured pair fails fast at startup) and it listens with
+`ListenAndServeTLS` at `MinVersion` TLS 1.2 (negotiating 1.3 when available).
+On the direct-TLS path the effective scheme is `https`, so Secure cookies and
+HSTS engage without a proxy.
+
+Generate a locally-trusted certificate with [mkcert](https://github.com/FiloSottile/mkcert)
+(no browser warning once its root CA is trusted on each device):
+
+```sh
+mkcert -install
+mkcert nestova.local            # writes nestova.local.pem + nestova.local-key.pem
+TLS_CERT_FILE=nestova.local.pem TLS_KEY_FILE=nestova.local-key.pem make run
+```
+
+Or a self-signed certificate with OpenSSL (must be trusted manually on clients):
+
+```sh
+openssl req -x509 -newkey rsa:4096 -nodes -days 365 \
+  -keyout key.pem -out cert.pem \
+  -subj "/CN=nestova.local" \
+  -addext "subjectAltName=DNS:nestova.local"
+```
+
+For LAN/Tailscale, publicly-trusted certificates are easier via the proxy or the
+`tailscale cert` path than via app-terminated TLS.
 
 ### Front-end assets
 

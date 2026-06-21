@@ -22,6 +22,7 @@ var allKeys = []string{
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
 	"RECIPES_EXTERNAL_ENABLED", "RECIPES_API_KEY", "RECIPES_API_BASE_URL",
+	"TLS_CERT_FILE", "TLS_KEY_FILE",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -283,6 +284,23 @@ func TestLoadValid(t *testing.T) {
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
+		{
+			// Both TLS files set enables app-terminated TLS.
+			name: "TLS cert and key enable app-terminated TLS",
+			env: map[string]string{
+				"TLS_CERT_FILE": "/etc/nestova/tls/cert.pem",
+				"TLS_KEY_FILE":  "/etc/nestova/tls/key.pem",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+				TLS:     config.TLSConfig{CertFile: "/etc/nestova/tls/cert.pem", KeyFile: "/etc/nestova/tls/key.pem"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -342,6 +360,16 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "invalid SESSION_COOKIE_SECURE",
 			env:          map[string]string{"SESSION_COOKIE_SECURE": "maybe"},
 			wantContains: []string{"SESSION_COOKIE_SECURE"},
+		},
+		{
+			name:         "TLS cert without key",
+			env:          map[string]string{"TLS_CERT_FILE": "/etc/nestova/tls/cert.pem"},
+			wantContains: []string{"TLS_CERT_FILE", "TLS_KEY_FILE"},
+		},
+		{
+			name:         "TLS key without cert",
+			env:          map[string]string{"TLS_KEY_FILE": "/etc/nestova/tls/key.pem"},
+			wantContains: []string{"TLS_CERT_FILE", "TLS_KEY_FILE"},
 		},
 		{
 			name:         "negative DB_MAX_CONNS",
@@ -524,4 +552,26 @@ func TestTrustedProxies(t *testing.T) {
 			t.Errorf("TrustedProxyPrefixes() = %v, want %v", got, want)
 		}
 	})
+}
+
+// TestTLSConfigEnabled covers the listener-selection decision (NES-54) without
+// binding a socket: TLS is enabled only when both files are present.
+func TestTLSConfigEnabled(t *testing.T) {
+	cases := []struct {
+		name string
+		tls  config.TLSConfig
+		want bool
+	}{
+		{"both set", config.TLSConfig{CertFile: "c.pem", KeyFile: "k.pem"}, true},
+		{"neither set", config.TLSConfig{}, false},
+		{"cert only", config.TLSConfig{CertFile: "c.pem"}, false},
+		{"key only", config.TLSConfig{KeyFile: "k.pem"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.tls.Enabled(); got != tc.want {
+				t.Errorf("Enabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

@@ -67,8 +67,24 @@ type Config struct {
 	Crypto  CryptoConfig
 	Recipes RecipesConfig
 	Media   MediaConfig
+	TLS     TLSConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
+}
+
+// TLSConfig configures optional app-terminated TLS (NES-54). When both files are
+// set, the server listens with TLS (ListenAndServeTLS); otherwise it serves plain
+// HTTP and relies on a reverse proxy for TLS. Both-or-neither is enforced at Load.
+type TLSConfig struct {
+	// CertFile is the path to the PEM server certificate (chain).
+	CertFile string
+	// KeyFile is the path to the PEM private key for CertFile.
+	KeyFile string
+}
+
+// Enabled reports whether app-terminated TLS is configured (both files present).
+func (t TLSConfig) Enabled() bool {
+	return t.CertFile != "" && t.KeyFile != ""
 }
 
 // ServerConfig configures the HTTP listener.
@@ -362,6 +378,10 @@ func Load() (Config, error) {
 			Root:           strings.TrimSpace(getenv("MEDIA_ROOT", devMediaRoot)),
 			MaxUploadBytes: maxUploadBytes,
 		},
+		TLS: TLSConfig{
+			CertFile: strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
+			KeyFile:  strings.TrimSpace(os.Getenv("TLS_KEY_FILE")),
+		},
 	}
 
 	errs = append(errs, cfg.validate()...)
@@ -413,6 +433,11 @@ func (c Config) validate() []error {
 	}
 	if strings.TrimSpace(c.Media.Root) == "" {
 		errs = append(errs, errors.New("MEDIA_ROOT must not be empty"))
+	}
+	// App-terminated TLS (NES-54): both files or neither, so a half-configured
+	// listener can never start.
+	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
+		errs = append(errs, errors.New("TLS_CERT_FILE and TLS_KEY_FILE must be set together (or both unset)"))
 	}
 	if c.Media.MaxUploadBytes <= 0 {
 		errs = append(errs, fmt.Errorf("MEDIA_MAX_UPLOAD_BYTES must be positive, got %d", c.Media.MaxUploadBytes))
