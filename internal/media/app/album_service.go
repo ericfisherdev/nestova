@@ -130,6 +130,50 @@ func (s *AlbumService) List(ctx context.Context, householdID household.Household
 	return s.albums.ListByHousehold(ctx, householdID)
 }
 
+// AlbumPhotos returns the album's full ordered membership (unfiltered), for the
+// management UI. Ownership-checked.
+func (s *AlbumService) AlbumPhotos(ctx context.Context, householdID household.HouseholdID, albumID domain.AlbumID) ([]*domain.Photo, error) {
+	if _, err := s.ownedAlbum(ctx, householdID, albumID); err != nil {
+		return nil, err
+	}
+	return s.albumPhotos.ListByAlbumOrdered(ctx, albumID)
+}
+
+// MovePhoto shifts a photo one slot earlier (up) or later (down) within its
+// album. Moving past either end is a no-op. Ownership-checked.
+func (s *AlbumService) MovePhoto(ctx context.Context, householdID household.HouseholdID, albumID domain.AlbumID, photoID domain.PhotoID, up bool) error {
+	if _, err := s.ownedAlbum(ctx, householdID, albumID); err != nil {
+		return err
+	}
+	photos, err := s.albumPhotos.ListByAlbumOrdered(ctx, albumID)
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, p := range photos {
+		if p.ID == photoID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return domain.ErrPhotoNotFound
+	}
+	swap := idx - 1
+	if !up {
+		swap = idx + 1
+	}
+	if swap < 0 || swap >= len(photos) {
+		return nil // already at the end in that direction
+	}
+	order := make([]domain.PhotoID, len(photos))
+	for i, p := range photos {
+		order[i] = p.ID
+	}
+	order[idx], order[swap] = order[swap], order[idx]
+	return s.albumPhotos.Reorder(ctx, albumID, order)
+}
+
 // Playlist returns the album's photos in display order, narrowed by the album's
 // filter — the sequence the rotating viewer shows. Ownership-checked.
 func (s *AlbumService) Playlist(ctx context.Context, householdID household.HouseholdID, albumID domain.AlbumID) ([]PlaylistItem, error) {
