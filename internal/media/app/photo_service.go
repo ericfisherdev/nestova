@@ -49,12 +49,12 @@ func (s *PhotoService) Upload(ctx context.Context, householdID household.Househo
 		UploadedBy:  &uploader,
 	}
 	if err := photo.Validate(); err != nil {
-		_ = s.store.Delete(ctx, ref)
+		s.cleanupBytes(ctx, ref)
 		return nil, err
 	}
 	if err := s.photos.Create(ctx, photo); err != nil {
 		// Roll back the stored bytes so a failed insert does not orphan a file.
-		_ = s.store.Delete(ctx, ref)
+		s.cleanupBytes(ctx, ref)
 		return nil, err
 	}
 	return photo, nil
@@ -72,8 +72,16 @@ func (s *PhotoService) Delete(ctx context.Context, householdID household.Househo
 	}
 	// The row (and its album memberships, via cascade) is gone; remove the bytes
 	// best-effort so a storage hiccup does not resurrect the metadata.
-	_ = s.store.Delete(ctx, photo.StorageRef)
+	s.cleanupBytes(ctx, photo.StorageRef)
 	return nil
+}
+
+// cleanupBytes deletes stored bytes best-effort during rollback/cleanup. It uses
+// a context detached from cancellation so the cleanup still runs when the request
+// context is already canceled or timed out (often the very reason cleanup is
+// needed), avoiding an orphaned file.
+func (s *PhotoService) cleanupBytes(ctx context.Context, ref domain.StorageRef) {
+	_ = s.store.Delete(context.WithoutCancel(ctx), ref)
 }
 
 // List returns the household's photos.

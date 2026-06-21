@@ -264,6 +264,24 @@ func TestAlbumServiceAddPhotoRejectsCrossHousehold(t *testing.T) {
 	}
 }
 
+func TestAlbumServiceRemoveAndReorderCheckPhotoOwnership(t *testing.T) {
+	albums := newFakeAlbumRepo()
+	photos := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+	album := &domain.Album{ID: domain.NewAlbumID(), HouseholdID: hh, Name: "A", Rotation: rotation(t, 5)}
+	albums.store[album.ID] = album
+	foreign := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: household.NewHouseholdID(), StorageRef: "x.jpg"}
+	photos.store[foreign.ID] = foreign
+	svc, _ := app.NewAlbumService(albums, photos, &fakeAlbumPhotoRepo{})
+
+	if err := svc.RemovePhoto(context.Background(), hh, album.ID, foreign.ID); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("cross-household RemovePhoto = %v, want ErrPhotoNotFound", err)
+	}
+	if err := svc.Reorder(context.Background(), hh, album.ID, []domain.PhotoID{foreign.ID}); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("cross-household Reorder = %v, want ErrPhotoNotFound", err)
+	}
+}
+
 func TestAlbumServicePlaylistAppliesFilterAndOrder(t *testing.T) {
 	albums := newFakeAlbumRepo()
 	photos := newFakePhotoRepo()

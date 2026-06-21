@@ -74,13 +74,16 @@ func (s *AlbumService) Configure(ctx context.Context, householdID household.Hous
 	if err != nil {
 		return err
 	}
-	album.Name = in.Name
-	album.Rotation = in.Rotation
-	album.Filter = in.Filter
-	if err := album.Validate(); err != nil {
+	// Validate a candidate copy before mutating the loaded album, so a rejected
+	// Configure never leaves the in-memory album in an invalid state.
+	candidate := *album
+	candidate.Name = in.Name
+	candidate.Rotation = in.Rotation
+	candidate.Filter = in.Filter
+	if err := candidate.Validate(); err != nil {
 		return err
 	}
-	return s.albums.Update(ctx, album)
+	return s.albums.Update(ctx, &candidate)
 }
 
 // AddPhoto appends a household photo to one of its albums (both ownership-checked).
@@ -94,18 +97,30 @@ func (s *AlbumService) AddPhoto(ctx context.Context, householdID household.House
 	return s.albumPhotos.Add(ctx, albumID, photoID)
 }
 
-// RemovePhoto drops a photo from one of the household's albums (ownership-checked).
+// RemovePhoto drops a photo from one of the household's albums. Both the album
+// and the photo are ownership-checked so a cross-household id is normalized to a
+// not-found error rather than silently no-opping.
 func (s *AlbumService) RemovePhoto(ctx context.Context, householdID household.HouseholdID, albumID domain.AlbumID, photoID domain.PhotoID) error {
 	if _, err := s.ownedAlbum(ctx, householdID, albumID); err != nil {
+		return err
+	}
+	if _, err := s.ownedPhoto(ctx, householdID, photoID); err != nil {
 		return err
 	}
 	return s.albumPhotos.Remove(ctx, albumID, photoID)
 }
 
-// Reorder sets the album's full photo order (ownership-checked).
+// Reorder sets the album's full photo order. The album and every photo id in
+// order are ownership-checked, so a foreign id is rejected as not-found instead
+// of silently corrupting the order.
 func (s *AlbumService) Reorder(ctx context.Context, householdID household.HouseholdID, albumID domain.AlbumID, order []domain.PhotoID) error {
 	if _, err := s.ownedAlbum(ctx, householdID, albumID); err != nil {
 		return err
+	}
+	for _, photoID := range order {
+		if _, err := s.ownedPhoto(ctx, householdID, photoID); err != nil {
+			return err
+		}
 	}
 	return s.albumPhotos.Reorder(ctx, albumID, order)
 }
