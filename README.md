@@ -44,8 +44,11 @@ environment variables always take precedence over `.env`.
 | `PORT` | no | `8080` | HTTP listen port (a leading colon is tolerated). |
 | `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Override in prod. |
 | `MIGRATE_DATABASE_URL` | no | `DATABASE_URL` | Separate DSN for the migration tool; point at a session/direct connection for Supabase (see [Database migrations](#database-migrations)). |
-| `DB_MAX_CONNS` | no | `0` | Connection pool cap; `0` lets the pool choose. |
+| `DB_MAX_CONNS` | no | `0` | Connection pool cap; `0` lets the pool choose (Supabase defaults to `10`). |
 | `DB_CONNECT_TIMEOUT` | no | `5s` | Bounds the startup connectivity check (Go duration). |
+| `DB_PROVIDER` | no | `postgres` | Database backend: `postgres` or `supabase` (see [Using Supabase](#using-supabase)). |
+| `DB_POOL_MODE` | no | `session` | Supabase pooler endpoint the DSN targets: `session` or `transaction`. Consulted only for `supabase`. |
+| `DB_SSL_ROOT_CERT` | no | — | Path to a CA bundle; enables `sslmode=verify-full`. |
 | `SESSION_SECRET` | yes in prod | dev-only default | Signs session cookies; ≥ 32 bytes. The dev default is rejected in prod. |
 | `SESSION_LIFETIME` | no | `12h` | Maximum session duration (Go duration). |
 | `GOOGLE_CLIENT_ID` | yes in prod | — | Google OAuth client ID (Google Calendar sync). |
@@ -81,6 +84,62 @@ check is bounded by `DB_CONNECT_TIMEOUT` (see [Configuration](#configuration)).
 
 The database-backed tests are skipped unless `NESTOVA_TEST_DATABASE_URL` points
 at a reachable test database, so `make test` stays hermetic by default.
+
+### Using Supabase
+
+[Supabase](https://supabase.com) is managed Postgres, so Nestova runs on it with
+**no schema or query changes** — only connectivity differs. The bundled
+docker-compose Postgres remains the default; Supabase is opt-in via configuration.
+
+> **Scope:** this covers the **Postgres database** only. Supabase Auth, Storage,
+> Realtime, and PostgREST are not used — Nestova brings its own auth/session stack
+> (NES-23).
+
+**1. Get the connection strings.** In the Supabase dashboard under *Project
+Settings → Database*, three connection strings are offered:
+
+| Connection | Port | Use it for |
+| --- | --- | --- |
+| Direct connection | 5432 | Migrations, and a long-running server where a direct route is available. |
+| Session pooler | 5432 | A long-running server (Nestova): one backend connection per client, so cached prepared statements are safe. |
+| Transaction pooler | 6543 | Short-lived/serverless clients. Multiplexes per transaction — set `DB_POOL_MODE=transaction` so Nestova uses the pooler-safe exec mode. |
+
+Nestova is a long-running server, so prefer the **session pooler** or **direct
+connection** for `DATABASE_URL`. If you must use the **transaction pooler** (port
+6543), set `DB_POOL_MODE=transaction`; Nestova then disables cached server-side
+prepared statements, which Supabase's Supavisor pooler cannot keep across
+multiplexed transactions.
+
+**2. Require TLS.** Supabase accepts only TLS connections. Keep `sslmode=require`
+in the DSN — Supabase rejects `sslmode=disable`, and so does Nestova when
+`DB_PROVIDER=supabase`. For full certificate verification, download Supabase's CA
+bundle and set `DB_SSL_ROOT_CERT=/path/to/ca.crt`; Nestova then upgrades the
+connection to `sslmode=verify-full`.
+
+**3. Configure Nestova.**
+
+```sh
+DB_PROVIDER=supabase
+# Set transaction only when DATABASE_URL targets the :6543 pooler; otherwise session.
+DB_POOL_MODE=transaction
+DATABASE_URL=postgres://postgres.<ref>:<password>@<region>.pooler.supabase.com:6543/postgres?sslmode=require
+# DDL and goose version bookkeeping need a session connection, so point the
+# migration tool at the direct/session connection (port 5432):
+MIGRATE_DATABASE_URL=postgres://postgres.<ref>:<password>@<region>.pooler.supabase.com:5432/postgres?sslmode=require
+# Optional: verify the server certificate against Supabase's CA (enables verify-full):
+# DB_SSL_ROOT_CERT=/path/to/supabase-ca.crt
+```
+
+When `DB_PROVIDER=supabase` and `DB_MAX_CONNS` is unset, Nestova defaults to a
+modest pool cap (`10`) appropriate behind the shared pooler; adjust it to fit your
+Supabase plan's connection limits.
+
+**4. Migrate and run.**
+
+```sh
+make migrate-up    # applies migrations via MIGRATE_DATABASE_URL (direct/session)
+make run
+```
 
 ### Front-end assets
 
