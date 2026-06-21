@@ -56,8 +56,9 @@ CREATE TABLE album_photo (
     household_id uuid    NOT NULL,
     album_id     uuid    NOT NULL,
     photo_id     uuid    NOT NULL,
-    -- Display order within the album; 0-based, gap-free, and unique per album.
-    -- The reorder path updates positions inside a single transaction.
+    -- Display order within the album. The schema enforces non-negative and
+    -- unique-per-album positions; the application keeps them 0-based and
+    -- contiguous (the reorder path rewrites positions in one transaction).
     position     integer NOT NULL CHECK (position >= 0),
     PRIMARY KEY (album_id, photo_id),
     CONSTRAINT album_photo_position_uniq UNIQUE (album_id, position),
