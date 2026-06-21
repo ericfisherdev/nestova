@@ -139,7 +139,10 @@ func TestAlbumRepositoryCRUD(t *testing.T) {
 	if err := repo.Update(ctx, album); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	got, _ = repo.Get(ctx, album.ID)
+	got, err = repo.Get(ctx, album.ID)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
 	if got.Name != "Holidays" || got.Rotation.Seconds() != 12 || len(got.Filter.MemberIDs) != 0 {
 		t.Fatalf("Update not applied: %+v", got)
 	}
@@ -274,16 +277,25 @@ func TestAlbumPhotoOrderingAndCascade(t *testing.T) {
 	if err := members.Reorder(ctx, album.ID, []domain.PhotoID{ids[2], ids[1], ids[0]}); err != nil {
 		t.Fatalf("Reorder: %v", err)
 	}
-	ordered, _ = members.ListByAlbumOrdered(ctx, album.ID)
+	ordered, err = members.ListByAlbumOrdered(ctx, album.ID)
+	if err != nil {
+		t.Fatalf("ListByAlbumOrdered after reorder: %v", err)
+	}
 	if ordered[0].ID != ids[2] || ordered[1].ID != ids[1] || ordered[2].ID != ids[0] {
 		t.Fatalf("order after reorder = [%s %s %s]", ordered[0].ID, ordered[1].ID, ordered[2].ID)
 	}
 
-	// Remove one; it leaves the album.
+	// Remove one; it leaves the album. A second Remove of the same photo is a no-op.
 	if err := members.Remove(ctx, album.ID, ids[1]); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	ordered, _ = members.ListByAlbumOrdered(ctx, album.ID)
+	if err := members.Remove(ctx, album.ID, ids[1]); err != nil {
+		t.Fatalf("second Remove must be a no-op, got: %v", err)
+	}
+	ordered, err = members.ListByAlbumOrdered(ctx, album.ID)
+	if err != nil {
+		t.Fatalf("ListByAlbumOrdered after remove: %v", err)
+	}
 	if len(ordered) != 2 {
 		t.Fatalf("after Remove = %d photos, want 2", len(ordered))
 	}
@@ -292,9 +304,56 @@ func TestAlbumPhotoOrderingAndCascade(t *testing.T) {
 	if err := photos.Delete(ctx, ids[2]); err != nil {
 		t.Fatalf("Delete photo: %v", err)
 	}
-	ordered, _ = members.ListByAlbumOrdered(ctx, album.ID)
+	ordered, err = members.ListByAlbumOrdered(ctx, album.ID)
+	if err != nil {
+		t.Fatalf("ListByAlbumOrdered after delete: %v", err)
+	}
 	if len(ordered) != 1 || ordered[0].ID != ids[0] {
 		t.Fatalf("after photo delete = %v, want only the first photo", ordered)
+	}
+}
+
+func TestAddToUnknownAlbumReportsNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	members := adapter.NewAlbumPhotoRepository(pool)
+	if err := members.Add(testCtx(t), domain.NewAlbumID(), domain.NewPhotoID()); !errors.Is(err, domain.ErrAlbumNotFound) {
+		t.Fatalf("Add to unknown album = %v, want ErrAlbumNotFound", err)
+	}
+}
+
+func TestReorderRejectsIncompleteOrder(t *testing.T) {
+	pool := newTestPool(t)
+	albums := adapter.NewAlbumRepository(pool)
+	photos := adapter.NewPhotoRepository(pool)
+	members := adapter.NewAlbumPhotoRepository(pool)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	album := newAlbum(t, hh, "Slideshow", 6, domain.AlbumFilter{})
+	if err := albums.Create(ctx, album); err != nil {
+		t.Fatalf("Create album: %v", err)
+	}
+	var ids []domain.PhotoID
+	for _, ref := range []string{"hh/a/1.jpg", "hh/b/2.jpg", "hh/c/3.jpg"} {
+		p := newPhoto(hh, ref, nil)
+		if err := photos.Create(ctx, p); err != nil {
+			t.Fatalf("Create photo: %v", err)
+		}
+		ids = append(ids, p.ID)
+		if err := members.Add(ctx, album.ID, p.ID); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+	// An order missing a current member is rejected and rolls back (order unchanged).
+	if err := members.Reorder(ctx, album.ID, []domain.PhotoID{ids[2], ids[0]}); err == nil {
+		t.Fatal("incomplete Reorder should fail")
+	}
+	ordered, err := members.ListByAlbumOrdered(ctx, album.ID)
+	if err != nil {
+		t.Fatalf("ListByAlbumOrdered: %v", err)
+	}
+	if len(ordered) != 3 || ordered[0].ID != ids[0] || ordered[1].ID != ids[1] || ordered[2].ID != ids[2] {
+		t.Fatal("failed Reorder must leave the original order intact")
 	}
 }
 

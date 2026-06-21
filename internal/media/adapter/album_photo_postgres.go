@@ -27,10 +27,16 @@ func NewAlbumPhotoRepository(dbtx db.TX) *AlbumPhotoRepository {
 	return &AlbumPhotoRepository{dbtx: dbtx}
 }
 
+// addMaxRetries bounds the optimistic retry when two concurrent Adds pick the
+// same next position; each retry recomputes MAX(position)+1.
+const addMaxRetries = 5
+
 // Add appends the photo at the next position. household_id is derived from the
 // album so the composite tenant FKs bind the photo to the album's household; a
 // photo from another household raises the album_photo_photo_fk violation, mapped
-// to domain.ErrPhotoNotFound. Adding a photo already in the album is a no-op.
+// to domain.ErrPhotoNotFound. An unknown album returns domain.ErrAlbumNotFound.
+// Adding a photo already in the album is a no-op. Concurrent Adds that race on
+// the next position are retried (the loser recomputes a fresh position).
 func (r *AlbumPhotoRepository) Add(ctx context.Context, albumID domain.AlbumID, photoID domain.PhotoID) error {
 	const q = `
 		INSERT INTO album_photo (household_id, album_id, photo_id, position)
@@ -39,13 +45,42 @@ func (r *AlbumPhotoRepository) Add(ctx context.Context, albumID domain.AlbumID, 
 		  FROM album a
 		 WHERE a.id = $1
 		ON CONFLICT (album_id, photo_id) DO NOTHING`
-	if _, err := r.dbtx.Exec(ctx, q, albumID.String(), photoID.String()); err != nil {
-		if mapped := mapFKViolation(err); mapped != nil {
-			return mapped
+	for attempt := 0; attempt < addMaxRetries; attempt++ {
+		tag, err := r.dbtx.Exec(ctx, q, albumID.String(), photoID.String())
+		if err != nil {
+			// Two concurrent Adds chose the same position; the unique constraint
+			// rejected the loser. Recompute MAX(position)+1 and retry.
+			if isUniqueViolation(err, albumPhotoPositionUniq) {
+				continue
+			}
+			if mapped := mapFKViolation(err); mapped != nil {
+				return mapped
+			}
+			return fmt.Errorf("add album photo: %w", err)
 		}
-		return fmt.Errorf("add album photo: %w", err)
+		if tag.RowsAffected() == 0 {
+			// Zero rows means either the album does not exist (the SELECT found
+			// nothing) or the photo is already a member (ON CONFLICT). Disambiguate
+			// so a missing album is reported rather than silently succeeding.
+			exists, err := r.albumExists(ctx, albumID)
+			if err != nil {
+				return err
+			}
+			if !exists {
+				return domain.ErrAlbumNotFound
+			}
+		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("add album photo: position contention after %d attempts", addMaxRetries)
+}
+
+func (r *AlbumPhotoRepository) albumExists(ctx context.Context, albumID domain.AlbumID) (bool, error) {
+	var exists bool
+	if err := r.dbtx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM album WHERE id = $1)`, albumID.String()).Scan(&exists); err != nil {
+		return false, fmt.Errorf("album exists: %w", err)
+	}
+	return exists, nil
 }
 
 // Remove drops the photo from the album; removing a photo not in the album is a
@@ -92,6 +127,19 @@ func (r *AlbumPhotoRepository) Reorder(ctx context.Context, albumID domain.Album
 			 WHERE ap.album_id = $1 AND ap.photo_id = v.photo_id`
 		if _, err := tx.Exec(ctx, q, args...); err != nil {
 			return fmt.Errorf("apply order: %w", err)
+		}
+		// Enforce the complete-membership contract: every album_photo row must have
+		// received a final position in [0, len(order)). Any row still carrying a
+		// shifted (out-of-range) position means order omitted a current member, so
+		// the whole reorder is rolled back rather than left with a gap.
+		var leftover int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM album_photo WHERE album_id = $1 AND position >= $2`,
+			albumID.String(), len(order)).Scan(&leftover); err != nil {
+			return fmt.Errorf("verify reorder coverage: %w", err)
+		}
+		if leftover > 0 {
+			return fmt.Errorf("reorder: order must cover all album photos (%d left unordered)", leftover)
 		}
 		return nil
 	})
