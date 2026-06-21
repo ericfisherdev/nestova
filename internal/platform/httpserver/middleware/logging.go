@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -27,12 +28,25 @@ func RequestLogger(logger *slog.Logger) Middleware {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			// Prefer the resolved client IP (XFF-aware behind a trusted proxy) over
+			// the raw peer; fall back to RemoteAddr when ForwardedHeaders did not run
+			// (e.g. logging used outside the canonical chain). ClientIP is host-only,
+			// so strip the port from the fallback for a consistent log field.
+			clientIP := ClientIP(r.Context())
+			if clientIP == "" {
+				if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+					clientIP = host
+				} else {
+					clientIP = r.RemoteAddr // already host-only or malformed
+				}
+			}
 			logger.LogAttrs(r.Context(), slog.LevelInfo, "http request",
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", status),
 				slog.Int("bytes", rw.bytes),
 				slog.Duration("duration", time.Since(start)),
+				slog.String("client_ip", clientIP),
 				slog.String("request_id", RequestIDFromContext(r.Context())),
 			)
 		})

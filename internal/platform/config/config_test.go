@@ -1,6 +1,9 @@
 package config_test
 
 import (
+	"net/netip"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
 	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT", "MIGRATE_DATABASE_URL",
+	"TRUSTED_PROXIES",
 	"SESSION_SECRET", "SESSION_LIFETIME",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
@@ -213,6 +217,20 @@ func TestLoadValid(t *testing.T) {
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
+		{
+			// An explicit TRUSTED_PROXIES list is stored raw; TrustedProxyPrefixes
+			// parses it (see TestTrustedProxies).
+			name: "explicit trusted proxies list",
+			env:  map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, 192.168.0.0/16"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", TrustedProxies: "10.0.0.0/8, 192.168.0.0/16"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -262,6 +280,11 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "invalid DB_POOL_MODE",
 			env:          map[string]string{"DB_POOL_MODE": "statement"},
 			wantContains: []string{"DB_POOL_MODE"},
+		},
+		{
+			name:         "malformed TRUSTED_PROXIES CIDR",
+			env:          map[string]string{"TRUSTED_PROXIES": "127.0.0.0/8, not-a-cidr"},
+			wantContains: []string{"TRUSTED_PROXIES", "not-a-cidr"},
 		},
 		{
 			name:         "negative DB_MAX_CONNS",
@@ -394,4 +417,54 @@ func TestLoadInvalid(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTrustedProxies covers the unset-default vs explicit-empty distinction and
+// the TrustedProxyPrefixes parsing, which the comparable struct cases above
+// cannot fully express.
+func TestTrustedProxies(t *testing.T) {
+	t.Run("unset defaults to loopback", func(t *testing.T) {
+		setEnv(t, nil) // sets every key to "" and registers restore
+		// The loopback default applies only when TRUSTED_PROXIES is truly unset.
+		_ = os.Unsetenv("TRUSTED_PROXIES")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Server.TrustedProxies != "127.0.0.0/8,::1/128" {
+			t.Errorf("TrustedProxies = %q, want the loopback default", cfg.Server.TrustedProxies)
+		}
+		if got := cfg.Server.TrustedProxyPrefixes(); len(got) != 2 {
+			t.Errorf("TrustedProxyPrefixes() len = %d, want 2", len(got))
+		}
+	})
+
+	t.Run("explicit empty trusts nothing", func(t *testing.T) {
+		setEnv(t, map[string]string{"TRUSTED_PROXIES": ""})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Server.TrustedProxies != "" {
+			t.Errorf("TrustedProxies = %q, want empty", cfg.Server.TrustedProxies)
+		}
+		if got := cfg.Server.TrustedProxyPrefixes(); len(got) != 0 {
+			t.Errorf("TrustedProxyPrefixes() len = %d, want 0 (trust nothing)", len(got))
+		}
+	})
+
+	t.Run("prefixes are parsed and masked", func(t *testing.T) {
+		setEnv(t, map[string]string{"TRUSTED_PROXIES": "192.168.1.5/24, ::1/128"})
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		want := []netip.Prefix{
+			netip.MustParsePrefix("192.168.1.0/24"), // host bits masked off
+			netip.MustParsePrefix("::1/128"),
+		}
+		if got := cfg.Server.TrustedProxyPrefixes(); !reflect.DeepEqual(got, want) {
+			t.Errorf("TrustedProxyPrefixes() = %v, want %v", got, want)
+		}
+	})
 }

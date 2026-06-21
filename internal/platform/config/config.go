@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -42,6 +43,12 @@ const (
 	// development so the app starts without configuration. It is rejected in prod,
 	// forcing a real key (generated with `openssl rand -hex 32`) there.
 	devEncryptionKey = "00000000000000000000000000000000000000000000000000000000deadbeef"
+
+	// defaultTrustedProxies is the TRUSTED_PROXIES default: loopback only, since a
+	// same-host reverse proxy (Caddy / tailscale serve) connects over loopback.
+	// It applies only when TRUSTED_PROXIES is unset; an explicit empty value
+	// trusts no proxy and ignores forwarded headers entirely.
+	defaultTrustedProxies = "127.0.0.0/8,::1/128"
 )
 
 // Config holds the validated runtime configuration, grouped by concern so each
@@ -62,6 +69,22 @@ type Config struct {
 type ServerConfig struct {
 	// Addr is the TCP address the HTTP server listens on, e.g. ":8080".
 	Addr string
+	// TrustedProxies is the raw, comma-separated CIDR list (from TRUSTED_PROXIES)
+	// of reverse-proxy source networks whose X-Forwarded-* headers are trusted.
+	// It is validated at Load; call TrustedProxyPrefixes for the parsed form.
+	// Forwarded headers are honored only when the immediate peer falls inside one
+	// of these networks, so an external client cannot spoof a secure context. An
+	// empty value trusts no proxy.
+	TrustedProxies string
+}
+
+// TrustedProxyPrefixes parses TrustedProxies into netip prefixes for the
+// ForwardedHeaders middleware. TrustedProxies is validated during Load, so any
+// malformed entry would already have failed startup; this drops such entries
+// defensively and never returns an error.
+func (s ServerConfig) TrustedProxyPrefixes() []netip.Prefix {
+	prefixes, _ := parseTrustedProxies(s.TrustedProxies)
+	return prefixes
 }
 
 // DBProvider selects the database backend. Both are Postgres; the provider only
@@ -251,6 +274,19 @@ func Load() (Config, error) {
 	// (e.g. PORT=":8080") so it does not produce a malformed "::8080" address.
 	port := strings.TrimPrefix(getenv("PORT", "8080"), ":")
 
+	// TRUSTED_PROXIES (NES-50): CIDRs whose X-Forwarded-* headers are trusted.
+	// LookupEnv distinguishes "unset" (apply the loopback default) from an
+	// explicit empty value (trust nothing, ignoring forwarded headers). The raw
+	// value is stored on ServerConfig; validate it now so a malformed CIDR fails
+	// fast at startup.
+	trustedProxies, ok := os.LookupEnv("TRUSTED_PROXIES")
+	if !ok {
+		trustedProxies = defaultTrustedProxies
+	}
+	if _, err := parseTrustedProxies(trustedProxies); err != nil {
+		collect(err)
+	}
+
 	// The dev DSN convenience default applies only in dev. test and prod
 	// require an explicit DATABASE_URL: an empty value is left empty so
 	// validation rejects it, rather than silently connecting a non-dev run to
@@ -278,7 +314,7 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		Env:    env,
-		Server: ServerConfig{Addr: ":" + port},
+		Server: ServerConfig{Addr: ":" + port, TrustedProxies: trustedProxies},
 		DB: DBConfig{
 			DSN:         dsn,
 			MaxConns:    maxConns,
@@ -416,6 +452,34 @@ func (c Config) validate() []error {
 	}
 
 	return errs
+}
+
+// parseTrustedProxies parses a comma-separated CIDR list (e.g.
+// "127.0.0.0/8,::1/128") into masked netip prefixes. Empty or whitespace-only
+// entries are skipped, so an empty value yields no prefixes (trust nothing).
+// Every malformed entry is reported so the operator can fix them in one pass.
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	fields := strings.Split(raw, ",")
+	prefixes := make([]netip.Prefix, 0, len(fields))
+	var errs []error
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(f)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("TRUSTED_PROXIES entry %q is not a valid CIDR: %w", f, err))
+			continue
+		}
+		// Mask so host bits are zeroed: it normalizes the value for containment
+		// checks and makes the parsed result stable regardless of how it was written.
+		prefixes = append(prefixes, p.Masked())
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return prefixes, nil
 }
 
 // getenv returns the value of the environment variable named key, or fallback
