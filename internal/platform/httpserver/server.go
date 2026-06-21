@@ -5,6 +5,7 @@ package httpserver
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"time"
@@ -85,6 +86,10 @@ func New(cfg config.Config, deps Deps) *http.Server {
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		// Secure floor for the app-terminated TLS path (NES-54); unused when the
+		// server serves plain HTTP behind a TLS-terminating proxy. Go negotiates
+		// TLS 1.3 when available and falls back no lower than 1.2.
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 }
 
