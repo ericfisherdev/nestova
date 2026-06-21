@@ -18,7 +18,7 @@ var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
 	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT", "MIGRATE_DATABASE_URL",
 	"TRUSTED_PROXIES",
-	"SESSION_SECRET", "SESSION_LIFETIME",
+	"SESSION_SECRET", "SESSION_LIFETIME", "SESSION_COOKIE_SECURE",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
 	"RECIPES_EXTERNAL_ENABLED", "RECIPES_API_KEY", "RECIPES_API_BASE_URL",
@@ -231,6 +231,58 @@ func TestLoadValid(t *testing.T) {
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
 			},
 		},
+		{
+			// Explicit auto keeps the legacy behavior (Secure only in prod); in dev
+			// that means insecure. The prod side of auto is covered by the
+			// "prod with full secrets marks cookies secure" case above (auto is the
+			// default there).
+			name: "SESSION_COOKIE_SECURE=auto in dev stays insecure",
+			env:  map[string]string{"SESSION_COOKIE_SECURE": "auto"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+			},
+		},
+		{
+			// SESSION_COOKIE_SECURE=true forces Secure cookies even in dev.
+			name: "SESSION_COOKIE_SECURE=true forces secure outside prod",
+			env:  map[string]string{"SESSION_COOKIE_SECURE": "true"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: true, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+			},
+		},
+		{
+			// SESSION_COOKIE_SECURE=false disables Secure even in prod (where auto
+			// would enable it), for plain-HTTP debugging.
+			name: "SESSION_COOKIE_SECURE=false overrides prod auto",
+			env: map[string]string{
+				"APP_ENV": "prod", "SESSION_SECRET": validSecret,
+				"DATABASE_URL":          "postgres://u:p@db:5432/app",
+				"GOOGLE_CLIENT_ID":      "id",
+				"GOOGLE_CLIENT_SECRET":  "secret",
+				"GOOGLE_REDIRECT_URL":   "https://app/callback",
+				"ENCRYPTION_KEY":        validEncryptionKey,
+				"SESSION_COOKIE_SECURE": "false",
+			},
+			want: config.Config{
+				Env:     config.EnvProd,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: validSecret, Secure: false, Lifetime: 12 * time.Hour},
+				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
+				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -285,6 +337,11 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "malformed TRUSTED_PROXIES CIDR",
 			env:          map[string]string{"TRUSTED_PROXIES": "127.0.0.0/8, not-a-cidr"},
 			wantContains: []string{"TRUSTED_PROXIES", "not-a-cidr"},
+		},
+		{
+			name:         "invalid SESSION_COOKIE_SECURE",
+			env:          map[string]string{"SESSION_COOKIE_SECURE": "maybe"},
+			wantContains: []string{"SESSION_COOKIE_SECURE"},
 		},
 		{
 			name:         "negative DB_MAX_CONNS",

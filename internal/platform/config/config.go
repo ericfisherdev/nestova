@@ -49,6 +49,12 @@ const (
 	// It applies only when TRUSTED_PROXIES is unset; an explicit empty value
 	// trusts no proxy and ignores forwarded headers entirely.
 	defaultTrustedProxies = "127.0.0.0/8,::1/128"
+
+	// SESSION_COOKIE_SECURE accepted values (NES-51). auto is the default and
+	// preserves the legacy "Secure only in prod" behavior; true/false force it.
+	cookieSecureAuto  = "auto"
+	cookieSecureTrue  = "true"
+	cookieSecureFalse = "false"
 )
 
 // Config holds the validated runtime configuration, grouped by concern so each
@@ -154,7 +160,10 @@ type SessionConfig struct {
 	// random token and is not signed with Secret. Secret is validated/available
 	// for future signing needs (e.g. signed tokens).
 	Secret string
-	// Secure marks cookies Secure (HTTPS-only); derived as Env == EnvProd.
+	// Secure marks the session cookie Secure (HTTPS-only). It is resolved from
+	// SESSION_COOKIE_SECURE: auto (the default) keeps the legacy behavior of
+	// Secure only when APP_ENV=prod, while true/false force it — letting a
+	// TLS-terminated deployment emit Secure cookies regardless of APP_ENV.
 	Secure bool
 	// Lifetime is the maximum session duration.
 	Lifetime time.Duration
@@ -312,6 +321,11 @@ func Load() (Config, error) {
 		maxConns = supabaseDefaultMaxConns
 	}
 
+	// Session cookie Secure policy (NES-51), decoupled from APP_ENV so a
+	// TLS-terminated deployment can emit Secure cookies even when not prod.
+	sessionSecure, err := resolveCookieSecure(getenv("SESSION_COOKIE_SECURE", cookieSecureAuto), env)
+	collect(err)
+
 	cfg := Config{
 		Env:    env,
 		Server: ServerConfig{Addr: ":" + port, TrustedProxies: trustedProxies},
@@ -326,7 +340,7 @@ func Load() (Config, error) {
 		},
 		Session: SessionConfig{
 			Secret:   getenv("SESSION_SECRET", devSessionSecret),
-			Secure:   env == EnvProd,
+			Secure:   sessionSecure,
 			Lifetime: sessionLifetime,
 		},
 		OAuth: OAuthConfig{
@@ -452,6 +466,24 @@ func (c Config) validate() []error {
 	}
 
 	return errs
+}
+
+// resolveCookieSecure maps SESSION_COOKIE_SECURE to the session cookie's Secure
+// flag. auto (the default) preserves the legacy behavior — Secure only when
+// APP_ENV=prod — while true/false force it independently of APP_ENV. An unknown
+// value falls back to the prod-derived default and is reported.
+func resolveCookieSecure(mode, env string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case cookieSecureAuto, "":
+		return env == EnvProd, nil
+	case cookieSecureTrue:
+		return true, nil
+	case cookieSecureFalse:
+		return false, nil
+	default:
+		return env == EnvProd, fmt.Errorf("SESSION_COOKIE_SECURE must be one of %s|%s|%s, got %q",
+			cookieSecureAuto, cookieSecureTrue, cookieSecureFalse, mode)
+	}
 }
 
 // parseTrustedProxies parses a comma-separated CIDR list (e.g.

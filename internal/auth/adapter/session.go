@@ -23,8 +23,8 @@ const currentMemberKey sessionContextKey = iota
 
 // NewSessionManager constructs an scs.SessionManager backed by Postgres using
 // the pgxpool shared with the rest of the application. Cookie settings are
-// derived from cfg: Secure is set in production only, Lifetime from
-// SESSION_LIFETIME.
+// derived from cfg: Secure follows the resolved SESSION_COOKIE_SECURE policy
+// (auto → prod-only, or forced true/false), Lifetime from SESSION_LIFETIME.
 func NewSessionManager(pool *pgxpool.Pool, cfg config.SessionConfig) *scs.SessionManager {
 	sm := scs.New()
 	sm.Store = pgxstore.New(pool)
