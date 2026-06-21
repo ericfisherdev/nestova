@@ -72,16 +72,39 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	dsn, opts := migrateSettings(cfg)
+
 	switch command {
 	case "up":
-		return migrate.Up(ctx, cfg.DB.DSN)
+		return migrate.Up(ctx, dsn, opts...)
 	case "down":
-		return migrate.Down(ctx, cfg.DB.DSN)
+		return migrate.Down(ctx, dsn, opts...)
 	case "status":
-		return migrate.Status(ctx, cfg.DB.DSN)
+		return migrate.Status(ctx, dsn, opts...)
 	default: // "reset" (the only remaining validated command)
-		return migrate.Reset(ctx, cfg.DB.DSN)
+		return migrate.Reset(ctx, dsn, opts...)
 	}
+}
+
+// migrateSettings resolves the connection the migration tool should use and any
+// connection options. It prefers MIGRATE_DATABASE_URL (cfg.DB.MigrateDSN) and
+// falls back to DATABASE_URL. The pooler-safe simple protocol is enabled only
+// when migrations would otherwise run through the Supabase transaction pooler —
+// i.e. no dedicated migrate DSN was provided and the app DSN targets it; pointing
+// MIGRATE_DATABASE_URL at the direct/session connection is the preferred path.
+func migrateSettings(cfg config.Config) (string, []migrate.Option) {
+	dsn := cfg.DB.MigrateDSN
+	if dsn == "" {
+		dsn = cfg.DB.DSN
+	}
+
+	var opts []migrate.Option
+	if cfg.DB.MigrateDSN == "" &&
+		cfg.DB.Provider == config.DBProviderSupabase &&
+		cfg.DB.PoolMode == config.DBPoolModeTransaction {
+		opts = append(opts, migrate.PoolerSafe())
+	}
+	return dsn, opts
 }
 
 var (

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pressly/goose/v3"
 )
 
@@ -37,6 +38,26 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if len(migrations) != sqlFiles {
 		t.Errorf("collected %d migrations, want %d (every .sql parsed)", len(migrations), sqlFiles)
 	}
+}
+
+// TestPoolerSafeConnConfig verifies the pooler-safe path selects the simple
+// query protocol (no named prepared statements) without needing a database.
+func TestPoolerSafeConnConfig(t *testing.T) {
+	t.Run("selects the simple protocol", func(t *testing.T) {
+		cfg, err := poolerSafeConnConfig("postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require")
+		if err != nil {
+			t.Fatalf("poolerSafeConnConfig() error: %v", err)
+		}
+		if cfg.DefaultQueryExecMode != pgx.QueryExecModeSimpleProtocol {
+			t.Errorf("DefaultQueryExecMode = %v, want QueryExecModeSimpleProtocol", cfg.DefaultQueryExecMode)
+		}
+	})
+
+	t.Run("invalid DSN returns an error", func(t *testing.T) {
+		if _, err := poolerSafeConnConfig("://nope"); err == nil {
+			t.Error("poolerSafeConnConfig() = nil error, want error for invalid DSN")
+		}
+	})
 }
 
 // TestUpDownRoundTrip applies and rolls back the full migration set against a

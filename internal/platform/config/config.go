@@ -115,6 +115,12 @@ type DBConfig struct {
 	// upgrades to sslmode=verify-full and verifies the server certificate against
 	// this CA (pgx reads sslrootcert from the DSN and builds the TLS config).
 	SSLRootCert string
+	// MigrateDSN is an optional override (MIGRATE_DATABASE_URL) for the connection
+	// the migration tool uses; empty means "use DSN". Operators point this at the
+	// Supabase direct/session connection (port 5432) so DDL and goose version
+	// bookkeeping run on a session connection while the app server uses the
+	// transaction pooler (port 6543).
+	MigrateDSN string
 }
 
 // SessionConfig configures sessions (consumed by NES-23).
@@ -260,6 +266,9 @@ func Load() (Config, error) {
 	dbProvider := DBProvider(strings.ToLower(strings.TrimSpace(getenv("DB_PROVIDER", string(DBProviderPostgres)))))
 	dbPoolMode := DBPoolMode(strings.ToLower(strings.TrimSpace(getenv("DB_POOL_MODE", string(DBPoolModeSession)))))
 	dbSSLRootCert := strings.TrimSpace(os.Getenv("DB_SSL_ROOT_CERT"))
+	// Optional separate DSN for the migration tool (NES-47). Empty means "reuse
+	// DATABASE_URL"; operators set it to the Supabase direct/session connection.
+	dbMigrateDSN := strings.TrimSpace(os.Getenv("MIGRATE_DATABASE_URL"))
 
 	// Supabase connects through a shared pooler, so default to a modest pool cap
 	// when the operator has not set one. Postgres keeps deferring to pgx (zero).
@@ -277,6 +286,7 @@ func Load() (Config, error) {
 			Provider:    dbProvider,
 			PoolMode:    dbPoolMode,
 			SSLRootCert: dbSSLRootCert,
+			MigrateDSN:  dbMigrateDSN,
 		},
 		Session: SessionConfig{
 			Secret:   getenv("SESSION_SECRET", devSessionSecret),
