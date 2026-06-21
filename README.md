@@ -56,6 +56,10 @@ environment variables always take precedence over `.env`.
 | `GOOGLE_REDIRECT_URL` | yes in prod | — | Google OAuth redirect URL. |
 | `TLS_CERT_FILE` | no | — | PEM certificate for app-terminated TLS; set with `TLS_KEY_FILE` (see [App-terminated TLS](#app-terminated-tls)). |
 | `TLS_KEY_FILE` | no | — | PEM private key paired with `TLS_CERT_FILE` (see [App-terminated TLS](#app-terminated-tls)). |
+| `HSTS_ENABLED` | no | `false` | Emit Strict-Transport-Security (only over HTTPS). Enable only on a stable HTTPS hostname. |
+| `HSTS_MAX_AGE` | no | `180d` | HSTS max-age (Go duration). Unset applies the default; an explicit `0s` clears a previously-sent policy in browsers. |
+| `HSTS_INCLUDE_SUBDOMAINS` | no | `false` | Add `includeSubDomains` to the HSTS header. |
+| `HSTS_PRELOAD` | no | `false` | Add `preload` to the HSTS header. Requires `HSTS_INCLUDE_SUBDOMAINS=true` and `HSTS_MAX_AGE` ≥ 1 year (a hard-to-undo public commitment; validated at startup). |
 
 In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
 `SESSION_SECRET`, and the Google OAuth credentials must be supplied explicitly

@@ -68,9 +68,45 @@ type Config struct {
 	Recipes RecipesConfig
 	Media   MediaConfig
 	TLS     TLSConfig
+	HSTS    HSTSConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
 }
+
+// HSTSConfig configures the HTTP Strict-Transport-Security response header
+// (NES-52). HSTS is opt-in because it is sticky and hard to undo, so it must
+// only be enabled on a stable HTTPS hostname. It is emitted only over HTTPS.
+type HSTSConfig struct {
+	// Enabled turns the Strict-Transport-Security header on.
+	Enabled bool
+	// MaxAge is the max-age directive (emitted as whole seconds). It is only
+	// meaningful when MaxAgeSet is true; see EffectiveMaxAge.
+	MaxAge time.Duration
+	// MaxAgeSet records whether HSTS_MAX_AGE was explicitly provided. It lets an
+	// explicit max-age=0 (which clears a previously-sent HSTS policy in browsers)
+	// be distinguished from "unset" (apply DefaultHSTSMaxAge). A negative explicit
+	// value is invalid.
+	MaxAgeSet bool
+	// IncludeSubdomains adds the includeSubDomains directive.
+	IncludeSubdomains bool
+	// Preload adds the preload directive (requires includeSubDomains + max-age >= 1y).
+	Preload bool
+}
+
+// EffectiveMaxAge returns the max-age the header should carry: the explicit value
+// when HSTS_MAX_AGE was set (including 0 to clear HSTS), otherwise the built-in
+// default.
+func (h HSTSConfig) EffectiveMaxAge() time.Duration {
+	if !h.MaxAgeSet {
+		return DefaultHSTSMaxAge
+	}
+	return h.MaxAge
+}
+
+// DefaultHSTSMaxAge is the HSTS max-age applied when HSTS is enabled without an
+// explicit HSTS_MAX_AGE (~180 days) — long enough to be effective, short of the
+// 1-year preload-list minimum so it stays low-risk.
+const DefaultHSTSMaxAge = 180 * 24 * time.Hour
 
 // TLSConfig configures optional app-terminated TLS (NES-54). When both files are
 // set, the server listens with TLS (ListenAndServeTLS); otherwise it serves plain
@@ -294,6 +330,19 @@ func Load() (Config, error) {
 	collect(err)
 	maxUploadBytes, err := getint64("MEDIA_MAX_UPLOAD_BYTES", defaultMaxUploadBytes)
 	collect(err)
+	hstsEnabled, err := getbool("HSTS_ENABLED", false)
+	collect(err)
+	// Track whether HSTS_MAX_AGE was set explicitly so an explicit 0 (clear HSTS)
+	// is distinct from "unset" (apply the built-in default). getduration returns 0
+	// for both, so LookupEnv is what disambiguates.
+	hstsMaxAge, err := getduration("HSTS_MAX_AGE", 0)
+	collect(err)
+	hstsMaxAgeRaw, hstsMaxAgeOK := os.LookupEnv("HSTS_MAX_AGE")
+	hstsMaxAgeSet := hstsMaxAgeOK && hstsMaxAgeRaw != ""
+	hstsIncludeSubdomains, err := getbool("HSTS_INCLUDE_SUBDOMAINS", false)
+	collect(err)
+	hstsPreload, err := getbool("HSTS_PRELOAD", false)
+	collect(err)
 
 	// PORT is conventionally a bare port number; tolerate a leading colon
 	// (e.g. PORT=":8080") so it does not produce a malformed "::8080" address.
@@ -382,6 +431,13 @@ func Load() (Config, error) {
 			CertFile: strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
 			KeyFile:  strings.TrimSpace(os.Getenv("TLS_KEY_FILE")),
 		},
+		HSTS: HSTSConfig{
+			Enabled:           hstsEnabled,
+			MaxAge:            hstsMaxAge,
+			MaxAgeSet:         hstsMaxAgeSet,
+			IncludeSubdomains: hstsIncludeSubdomains,
+			Preload:           hstsPreload,
+		},
 	}
 
 	errs = append(errs, cfg.validate()...)
@@ -438,6 +494,25 @@ func (c Config) validate() []error {
 	// listener can never start.
 	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
 		errs = append(errs, errors.New("TLS_CERT_FILE and TLS_KEY_FILE must be set together (or both unset)"))
+	}
+	// HSTS (NES-52): a negative max-age is invalid; zero is allowed and means
+	// "use the built-in default". (max-age=0 to expire HSTS is achieved by simply
+	// disabling it via HSTS_ENABLED.)
+	if c.HSTS.Enabled && c.HSTS.MaxAgeSet && c.HSTS.MaxAge < 0 {
+		errs = append(errs, fmt.Errorf("HSTS_MAX_AGE must not be negative, got %v", c.HSTS.MaxAge))
+	}
+	// The preload directive is a public commitment with strict requirements: the
+	// HSTS preload list requires includeSubDomains and max-age >= 1 year. Reject a
+	// preload config that browsers' preload submission would, so it is caught at
+	// startup rather than after a hard-to-undo deployment.
+	if c.HSTS.Enabled && c.HSTS.Preload {
+		const hstsPreloadMinMaxAge = 365 * 24 * time.Hour
+		if c.HSTS.EffectiveMaxAge() < hstsPreloadMinMaxAge {
+			errs = append(errs, fmt.Errorf("HSTS_PRELOAD requires HSTS_MAX_AGE >= 1 year, got %v", c.HSTS.EffectiveMaxAge()))
+		}
+		if !c.HSTS.IncludeSubdomains {
+			errs = append(errs, errors.New("HSTS_PRELOAD requires HSTS_INCLUDE_SUBDOMAINS=true"))
+		}
 	}
 	if c.Media.MaxUploadBytes <= 0 {
 		errs = append(errs, fmt.Errorf("MEDIA_MAX_UPLOAD_BYTES must be positive, got %d", c.Media.MaxUploadBytes))

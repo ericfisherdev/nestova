@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
@@ -61,15 +62,16 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	}
 	// Canonical middleware order (outermost first): request id wraps everything so
 	// every request is logged with an id even on panic; ForwardedHeaders resolves
-	// the effective scheme/client IP from a trusted proxy before logging and any
-	// feature middleware read them; logging records the request; recovery turns
-	// panics into 500s; the per-request timeout comes next so its deadline also
-	// bounds the session/auth feature middleware (which do database work), not just
-	// the final handler; feature middleware (session/auth) runs last before the
-	// route handler.
+	// the effective scheme/client IP from a trusted proxy before anything reads
+	// them; SecurityHeaders sets baseline headers (and HSTS, gated on the resolved
+	// scheme) on every response; logging records the request; recovery turns panics
+	// into 500s; the per-request timeout comes next so its deadline also bounds the
+	// session/auth feature middleware (which do database work), not just the final
+	// handler; feature middleware (session/auth) runs last before the route handler.
 	chain := []middleware.Middleware{
 		middleware.RequestID,
 		middleware.ForwardedHeaders(cfg.Server.TrustedProxyPrefixes()),
+		middleware.SecurityHeaders(hstsHeaderValue(cfg.HSTS)),
 		middleware.RequestLogger(deps.Logger),
 		middleware.Recoverer(deps.Logger),
 		middleware.Timeout(requestTimeout),
@@ -91,6 +93,24 @@ func New(cfg config.Config, deps Deps) *http.Server {
 		// TLS 1.3 when available and falls back no lower than 1.2.
 		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
 	}
+}
+
+// hstsHeaderValue builds the Strict-Transport-Security header value from cfg, or
+// "" when HSTS is disabled. max-age is emitted as whole seconds.
+func hstsHeaderValue(c config.HSTSConfig) string {
+	if !c.Enabled {
+		return ""
+	}
+	// EffectiveMaxAge applies the built-in default only when unset; an explicit
+	// max-age=0 is emitted verbatim to clear a previously-sent HSTS policy.
+	v := "max-age=" + strconv.FormatInt(int64(c.EffectiveMaxAge().Seconds()), 10)
+	if c.IncludeSubdomains {
+		v += "; includeSubDomains"
+	}
+	if c.Preload {
+		v += "; preload"
+	}
+	return v
 }
 
 // routes registers the base HTTP routes shared across bounded contexts.

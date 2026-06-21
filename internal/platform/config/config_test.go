@@ -23,6 +23,7 @@ var allKeys = []string{
 	"ENCRYPTION_KEY",
 	"RECIPES_EXTERNAL_ENABLED", "RECIPES_API_KEY", "RECIPES_API_BASE_URL",
 	"TLS_CERT_FILE", "TLS_KEY_FILE",
+	"HSTS_ENABLED", "HSTS_MAX_AGE", "HSTS_INCLUDE_SUBDOMAINS", "HSTS_PRELOAD",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -301,6 +302,42 @@ func TestLoadValid(t *testing.T) {
 				TLS:     config.TLSConfig{CertFile: "/etc/nestova/tls/cert.pem", KeyFile: "/etc/nestova/tls/key.pem"},
 			},
 		},
+		{
+			// HSTS parameters are captured for the consumer (see TestHSTSHeaderValue).
+			// A preload config is valid only with includeSubDomains and a >= 1y
+			// max-age, so this case uses 1 year.
+			name: "HSTS parameters are captured",
+			env: map[string]string{
+				"HSTS_ENABLED":            "true",
+				"HSTS_MAX_AGE":            "8760h", // 365 days
+				"HSTS_INCLUDE_SUBDOMAINS": "true",
+				"HSTS_PRELOAD":            "true",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+				HSTS:    config.HSTSConfig{Enabled: true, MaxAge: 8760 * time.Hour, MaxAgeSet: true, IncludeSubdomains: true, Preload: true},
+			},
+		},
+		{
+			// An explicit max-age=0 is captured as set (not "unset"), so the consumer
+			// emits max-age=0 to clear a previously-sent HSTS policy.
+			name: "explicit HSTS max-age=0 is captured as set",
+			env:  map[string]string{"HSTS_ENABLED": "true", "HSTS_MAX_AGE": "0s"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 10 << 20},
+				HSTS:    config.HSTSConfig{Enabled: true, MaxAge: 0, MaxAgeSet: true},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -370,6 +407,26 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "TLS key without cert",
 			env:          map[string]string{"TLS_KEY_FILE": "/etc/nestova/tls/key.pem"},
 			wantContains: []string{"TLS_CERT_FILE", "TLS_KEY_FILE"},
+		},
+		{
+			name:         "negative HSTS_MAX_AGE when enabled",
+			env:          map[string]string{"HSTS_ENABLED": "true", "HSTS_MAX_AGE": "-1h"},
+			wantContains: []string{"HSTS_MAX_AGE"},
+		},
+		{
+			name: "HSTS_PRELOAD without includeSubDomains",
+			env: map[string]string{
+				"HSTS_ENABLED": "true", "HSTS_PRELOAD": "true", "HSTS_MAX_AGE": "8760h",
+			},
+			wantContains: []string{"HSTS_PRELOAD", "HSTS_INCLUDE_SUBDOMAINS"},
+		},
+		{
+			name: "HSTS_PRELOAD with too-short max-age",
+			env: map[string]string{
+				"HSTS_ENABLED": "true", "HSTS_PRELOAD": "true",
+				"HSTS_INCLUDE_SUBDOMAINS": "true", "HSTS_MAX_AGE": "168h",
+			},
+			wantContains: []string{"HSTS_PRELOAD", "1 year"},
 		},
 		{
 			name:         "negative DB_MAX_CONNS",
