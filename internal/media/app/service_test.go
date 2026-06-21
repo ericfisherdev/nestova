@@ -225,6 +225,26 @@ func TestAlbumServiceCreateValidates(t *testing.T) {
 	}
 }
 
+func TestAlbumServiceConfigureValidatesAndChecksOwnership(t *testing.T) {
+	albums := newFakeAlbumRepo()
+	hh := household.NewHouseholdID()
+	album := &domain.Album{ID: domain.NewAlbumID(), HouseholdID: hh, Name: "A", Rotation: rotation(t, 5)}
+	albums.store[album.ID] = album
+	svc, _ := app.NewAlbumService(albums, newFakePhotoRepo(), &fakeAlbumPhotoRepo{})
+
+	// A blank name is rejected.
+	if err := svc.Configure(context.Background(), hh, album.ID, app.AlbumInput{Name: " ", Rotation: rotation(t, 5)}); !errors.Is(err, domain.ErrInvalidAlbum) {
+		t.Fatalf("Configure blank name = %v, want ErrInvalidAlbum", err)
+	}
+	// Configuring another household's album reports not-found and does not update.
+	if err := svc.Configure(context.Background(), household.NewHouseholdID(), album.ID, app.AlbumInput{Name: "X", Rotation: rotation(t, 5)}); !errors.Is(err, domain.ErrAlbumNotFound) {
+		t.Fatalf("cross-household Configure = %v, want ErrAlbumNotFound", err)
+	}
+	if len(albums.updated) != 0 {
+		t.Fatal("invalid/cross-household Configure must not update")
+	}
+}
+
 func TestAlbumServiceAddPhotoRejectsCrossHousehold(t *testing.T) {
 	albums := newFakeAlbumRepo()
 	photos := newFakePhotoRepo()
