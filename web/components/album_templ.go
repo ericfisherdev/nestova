@@ -106,7 +106,7 @@ func AlbumViewerPage(view AlbumViewerView) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<!-- Caption / attribution bar --><div class=\"pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/70 to-transparent p-6\"><span class=\"h-3 w-3 shrink-0 rounded-full\" x-show=\"caption\" :class=\"colorClass\" aria-hidden=\"true\"></span><p class=\"text-lg font-medium drop-shadow\" x-text=\"caption\"></p></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<!-- Caption / attribution bar --><div class=\"pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/70 to-transparent p-6\"><span class=\"h-3 w-3 shrink-0 rounded-full\" x-show=\"colorClass\" :class=\"colorClass\" aria-hidden=\"true\"></span><p class=\"text-lg font-medium drop-shadow\" x-text=\"caption\"></p></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
