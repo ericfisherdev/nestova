@@ -44,7 +44,7 @@ environment variables always take precedence over `.env`.
 | `PORT` | no | `8080` | HTTP listen port (a leading colon is tolerated). |
 | `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Override in prod. |
 | `MIGRATE_DATABASE_URL` | no | `DATABASE_URL` | Separate DSN for the migration tool; point at a session/direct connection for Supabase (see [Database migrations](#database-migrations)). |
-| `DB_MAX_CONNS` | no | `0` | Connection pool cap; `0` lets the pool choose (Supabase defaults to `10`). |
+| `DB_MAX_CONNS` | no | `0` (Supabase: `10`) | Connection pool cap. `0` lets the pool choose; with `DB_PROVIDER=supabase` it defaults to `10` behind the shared pooler. |
 | `DB_CONNECT_TIMEOUT` | no | `5s` | Bounds the startup connectivity check (Go duration). |
 | `DB_PROVIDER` | no | `postgres` | Database backend: `postgres` or `supabase` (see [Using Supabase](#using-supabase)). |
 | `DB_POOL_MODE` | no | `session` | Supabase pooler endpoint the DSN targets: `session` or `transaction`. Consulted only for `supabase`. |
