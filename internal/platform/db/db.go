@@ -4,7 +4,10 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -77,7 +80,19 @@ func Health(ctx context.Context, pool *pgxpool.Pool) error {
 // the derivation is unit-testable. It parses the DSN and applies the tuning
 // overrides.
 func poolConfig(cfg config.DBConfig) (*pgxpool.Config, error) {
-	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
+	dsn := cfg.DSN
+	if cfg.SSLRootCert != "" {
+		// Let pgx own TLS construction: it reads sslrootcert from the connection
+		// string and, when present, upgrades to sslmode=verify-full and loads the
+		// CA bundle. Injecting the path is safer than hand-building a tls.Config.
+		var err error
+		dsn, err = applySSLRootCert(dsn, cfg.SSLRootCert)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse database dsn: %w", err)
 	}
@@ -91,5 +106,62 @@ func poolConfig(cfg config.DBConfig) (*pgxpool.Config, error) {
 	poolCfg.MaxConnIdleTime = maxConnIdleTime
 	poolCfg.HealthCheckPeriod = healthCheckPeriod
 
+	// Supabase-specific connectivity. The Postgres path is deliberately left
+	// untouched so DB_PROVIDER=postgres remains byte-for-byte identical.
+	if cfg.Provider == config.DBProviderSupabase {
+		if err := applySupabasePooling(poolCfg, cfg.PoolMode); err != nil {
+			return nil, err
+		}
+	}
+
 	return poolCfg, nil
+}
+
+// applySupabasePooling enforces TLS for Supabase and, for the transaction
+// pooler, switches the pool off cached server-side prepared statements — which
+// Supavisor cannot keep across multiplexed transactions — while keeping the
+// extended protocol via QueryExecModeExec.
+func applySupabasePooling(poolCfg *pgxpool.Config, mode config.DBPoolMode) error {
+	// pgx leaves ConnConfig.TLSConfig nil only for sslmode=disable, so a nil here
+	// is precisely the "TLS turned off" case Supabase must reject.
+	if poolCfg.ConnConfig.TLSConfig == nil {
+		return errors.New("DB_PROVIDER=supabase requires TLS: remove sslmode=disable from DATABASE_URL " +
+			"(use sslmode=require, or verify-full with DB_SSL_ROOT_CERT)")
+	}
+
+	if mode == config.DBPoolModeTransaction {
+		// QueryExecModeExec keeps the binary extended protocol in a single round
+		// trip without creating named server-side prepared statements (the thing
+		// the transaction pooler breaks). The caches are disabled to match — and
+		// because the CacheStatement/CacheDescribe modes refuse to run once their
+		// cache is off.
+		poolCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+		poolCfg.ConnConfig.StatementCacheCapacity = 0
+		poolCfg.ConnConfig.DescriptionCacheCapacity = 0
+	}
+	return nil
+}
+
+// applySSLRootCert injects the sslrootcert parameter into the connection string.
+// pgx reads it during ParseConfig and upgrades the connection to verify-full,
+// loading the CA bundle itself. URL-form DSNs (the project default and what
+// Supabase hands out) are parsed and re-encoded; keyword/value DSNs get the
+// parameter appended.
+func applySSLRootCert(dsn, certPath string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", fmt.Errorf("parse database dsn: %w", err)
+		}
+		q := u.Query()
+		q.Set("sslrootcert", certPath)
+		u.RawQuery = q.Encode()
+		return u.String(), nil
+	}
+	// libpq keyword/value format requires single-quoted values for paths that
+	// contain spaces or quotes; escape backslashes and single quotes per its
+	// rules so a path like "/var/certs/my app/ca.pem" is not truncated.
+	escaped := strings.ReplaceAll(certPath, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `'`, `\'`)
+	return dsn + " sslrootcert='" + escaped + "'", nil
 }
