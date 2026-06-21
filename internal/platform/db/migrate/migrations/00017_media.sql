@@ -15,7 +15,9 @@ CREATE TABLE album (
     -- the RotationInterval value-object invariant.
     rotation_seconds integer     NOT NULL CHECK (rotation_seconds > 0),
     -- AlbumFilter (member ids / taken_at range); '{}' means "all household photos".
-    filter           jsonb       NOT NULL DEFAULT '{}',
+    -- Constrained to a JSON object so a scalar/array can never reach the
+    -- AlbumFilter unmarshal (which expects an object).
+    filter           jsonb       NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(filter) = 'object'),
     created_at       timestamptz NOT NULL DEFAULT now(),
     -- Mirrors the other tables so a future composite FK on (household_id, id) is possible.
     CONSTRAINT album_household_id_uniq UNIQUE (household_id, id)
@@ -54,9 +56,9 @@ CREATE TABLE album_photo (
     household_id uuid    NOT NULL,
     album_id     uuid    NOT NULL,
     photo_id     uuid    NOT NULL,
-    -- Display order within the album; gap-free and unique per album. The reorder
-    -- path updates positions inside a single transaction.
-    position     integer NOT NULL,
+    -- Display order within the album; 0-based, gap-free, and unique per album.
+    -- The reorder path updates positions inside a single transaction.
+    position     integer NOT NULL CHECK (position >= 0),
     PRIMARY KEY (album_id, photo_id),
     CONSTRAINT album_photo_position_uniq UNIQUE (album_id, position),
     -- Tenant consistency: the album and the photo must belong to household_id.

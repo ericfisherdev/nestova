@@ -42,6 +42,20 @@ func TestAlbumValidate(t *testing.T) {
 	if !errors.Is(noRot.Validate(), domain.ErrInvalidAlbum) {
 		t.Fatal("zero rotation accepted")
 	}
+	// A reversed date range (Since after Until) is rejected.
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	reversed := ok
+	reversed.Filter = domain.AlbumFilter{Since: &t2, Until: &t1}
+	if !errors.Is(reversed.Validate(), domain.ErrInvalidAlbum) {
+		t.Fatal("reversed date bounds accepted")
+	}
+	// Equal bounds are valid (a single-instant window).
+	equal := ok
+	equal.Filter = domain.AlbumFilter{Since: &t1, Until: &t1}
+	if err := equal.Validate(); err != nil {
+		t.Fatalf("equal bounds rejected: %v", err)
+	}
 }
 
 func TestAlbumFilterJSONRoundTrip(t *testing.T) {

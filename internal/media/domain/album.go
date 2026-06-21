@@ -90,6 +90,15 @@ func (f *AlbumFilter) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Validate reports whether the filter is well-formed, wrapping ErrInvalidAlbum.
+// A Since after Until describes an empty, almost-certainly-mistaken range.
+func (f AlbumFilter) Validate() error {
+	if f.Since != nil && f.Until != nil && f.Since.After(*f.Until) {
+		return fmt.Errorf("%w: filter Since (%s) must not be after Until (%s)", ErrInvalidAlbum, f.Since, f.Until)
+	}
+	return nil
+}
+
 // Matches reports whether the photo passes the filter. It is the single source
 // of truth for album membership selection, used when composing the playlist.
 func (f AlbumFilter) Matches(p Photo) bool {
@@ -142,6 +151,9 @@ func (a Album) Validate() error {
 	// is the only way to a positive one, so guard direct struct construction.
 	if a.Rotation.Seconds() <= 0 {
 		return fmt.Errorf("%w: rotation interval must be positive", ErrInvalidAlbum)
+	}
+	if err := a.Filter.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
