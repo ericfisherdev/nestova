@@ -9,9 +9,22 @@ import (
 	"github.com/ericfisherdev/nestova/internal/media/domain"
 )
 
-// foreignKeyViolation is the Postgres SQLSTATE the media adapters map to domain
-// sentinels.
-const foreignKeyViolation = "23503"
+// Postgres SQLSTATE codes the media adapters react to.
+const (
+	foreignKeyViolation = "23503"
+	uniqueViolation     = "23505"
+)
+
+// albumPhotoPositionUniq is the UNIQUE (album_id, position) constraint; a
+// violation signals two concurrent inserts raced on the next position.
+const albumPhotoPositionUniq = "album_photo_position_uniq"
+
+// isUniqueViolation reports whether err is a unique-constraint violation on the
+// named constraint.
+func isUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == constraint
+}
 
 // FK constraint names on the media tables (00017). The household FKs are inline
 // column references, so Postgres auto-names them <table>_<column>_fkey; the
