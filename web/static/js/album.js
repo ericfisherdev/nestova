@@ -23,7 +23,22 @@ document.addEventListener('alpine:init', () => {
       if (this.slides.length > 1) {
         this.timer = setInterval(() => this.next(), this.rotationMs);
       }
-      document.addEventListener('visibilitychange', () => this.onVisibility());
+      // Keep a bound reference so destroy() can detach the listener.
+      this.onVisibilityBound = () => this.onVisibility();
+      document.addEventListener('visibilitychange', this.onVisibilityBound);
+    },
+
+    // Alpine calls destroy() when the component is torn down. Stop the timer and
+    // detach the document listener so nothing leaks if the viewer is replaced.
+    destroy() {
+      if (this.timer) {
+        clearInterval(this.timer);
+        this.timer = null;
+      }
+      if (this.onVisibilityBound) {
+        document.removeEventListener('visibilitychange', this.onVisibilityBound);
+        this.onVisibilityBound = null;
+      }
     },
 
     show(i, immediate) {
@@ -39,8 +54,10 @@ document.addEventListener('alpine:init', () => {
       });
 
       // Ken Burns: a slow zoom + drift over the slide's dwell time (skipped when
-      // the user prefers reduced motion).
+      // the user prefers reduced motion). Kill any in-flight tween on this image
+      // first so re-showing a slide never stacks overlapping animations.
       if (img && !this.reduceMotion) {
+        gsap.killTweensOf(img);
         gsap.fromTo(
           img,
           { scale: 1, xPercent: 0, yPercent: 0 },
