@@ -1,0 +1,51 @@
+# Local Supabase stack for Nestova — scoped to Postgres + the Supavisor pooler
+# (NES-49). This is an OPT-IN parity environment for exercising the pooler-safe
+# connection path locally; the default developer workflow stays on the
+# docker-compose Postgres (see README "Local Supabase via the CLI").
+#
+# Auth, Storage, Realtime, Studio, and Edge Functions are intentionally disabled:
+# Nestova brings its own auth/session stack (NES-23) and uses only the database.
+# Re-enable a section if your `supabase start` build requires it.
+project_id = "nestova"
+
+[db]
+# Local Postgres port (matches the Supabase CLI default; distinct from the
+# docker-compose service on 5432 so both can run side by side).
+port = 54322
+# Keep in step with compose.yaml (postgres:17-alpine) and your Supabase project.
+# Requires a Supabase CLI version whose bundled image supports this major version.
+major_version = 17
+
+[db.pooler]
+# The Supavisor connection pooler — the reason this stack exists. Exercise the
+# pooler-safe exec mode (DB_PROVIDER=supabase, DB_POOL_MODE=transaction) against
+# this endpoint.
+enabled = true
+port = 54329
+pool_mode = "transaction"
+default_pool_size = 20
+max_client_conn = 100
+
+[api]
+enabled = false
+
+[studio]
+enabled = false
+
+[auth]
+enabled = false
+
+[storage]
+enabled = false
+
+[realtime]
+enabled = false
+
+[edge_runtime]
+enabled = false
+
+[analytics]
+enabled = false
+
+[inbucket]
+enabled = false
