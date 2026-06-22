@@ -147,6 +147,44 @@ make migrate-up    # applies migrations via MIGRATE_DATABASE_URL (direct/session
 make run
 ```
 
+#### Local Supabase via the CLI (optional)
+
+To develop against a Supabase-shaped environment locally — Postgres plus the
+Supavisor pooler — without a hosted project, run the [Supabase CLI](https://supabase.com/docs/guides/local-development)
+stack. This is **opt-in**: the default developer workflow stays on docker-compose
+Postgres (`docker compose up` + `make run`), and these targets are unchanged.
+
+The stack is pinned in [`supabase/config.toml`](supabase/config.toml), scoped to
+the **database and pooler only** (Auth, Storage, Realtime, Studio, and Edge
+Functions are disabled — Nestova brings its own auth stack):
+
+```sh
+make supabase-up        # supabase start — local Postgres (:54322) + pooler (:54329)
+make supabase-status    # prints the DB URL and Pooler URL to copy below
+make supabase-down      # supabase stop
+```
+
+`make supabase-status` reports the connection URLs. Wire them into `.env` to
+exercise the pooler-safe path locally — the **pooler** URL with
+`DB_POOL_MODE=transaction`, and the **direct** DB URL for migrations:
+
+```sh
+DB_PROVIDER=supabase
+DB_POOL_MODE=transaction
+# Transaction pooler (port 54329 from config.toml):
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres?sslmode=require
+# Direct/session connection (port 54322) for migrations:
+MIGRATE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres?sslmode=require
+```
+
+> Nestova enforces TLS for `DB_PROVIDER=supabase` (it rejects `sslmode=disable`),
+> so `sslmode=require` is used here — the Supabase CLI's Postgres serves TLS. If
+> your CLI's **pooler** endpoint does not terminate TLS, point `DATABASE_URL` at
+> the direct connection (port 54322) with `DB_POOL_MODE=session` instead; the
+> pooler-safe exec mode itself is also covered by the unit tests (NES-46/47). The
+> DB-gated suite can run against this stack by pointing `NESTOVA_TEST_DATABASE_URL`
+> at the direct DB URL.
+
 ### App-terminated TLS
 
 By default Nestova serves plain HTTP and relies on a reverse proxy (Caddy /

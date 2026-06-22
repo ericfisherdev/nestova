@@ -54,7 +54,8 @@ CSS_OUTPUT := web/static/css/app.css
 COVERAGE_OUT := coverage.out
 
 .PHONY: all build run test cover lint fmt generate assets hooks hooks-uninstall tidy clean help \
-	migrate-up migrate-down migrate-status migrate-reset migrate-create
+	migrate-up migrate-down migrate-status migrate-reset migrate-create \
+	supabase-up supabase-down supabase-status require-supabase-cli
 
 ## all: default aggregate target (alias for build)
 all: build
@@ -124,6 +125,30 @@ migrate-reset:
 migrate-create:
 	@test -n "$(name)" || { echo "Error: name is required, e.g. make migrate-create name=add_widgets"; exit 1; }
 	go run ./cmd/migrate create "$(name)"
+
+# Fail with a clear message when the opt-in Supabase CLI is missing or too old.
+# The local stack pins Postgres 17 (config.toml), which needs Supabase CLI v2+;
+# a major-version floor is robust without being brittle on minor versions, and
+# `supabase start` validates finer image compatibility itself.
+require-supabase-cli:
+	@command -v supabase >/dev/null 2>&1 || { echo "Error: the Supabase CLI is not installed. See https://supabase.com/docs/guides/cli"; exit 1; }
+	@major=$$(supabase --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
+	if [ -z "$$major" ] || [ "$$major" -lt 2 ]; then \
+		echo "Error: Supabase CLI v2+ is required for the local Postgres 17 stack (got '$$(supabase --version 2>/dev/null)'). Update from https://supabase.com/docs/guides/cli"; \
+		exit 1; \
+	fi
+
+## supabase-up: (opt-in) start a local Supabase Postgres + pooler stack (needs the Supabase CLI)
+supabase-up: require-supabase-cli
+	supabase start
+
+## supabase-down: (opt-in) stop the local Supabase stack
+supabase-down: require-supabase-cli
+	supabase stop
+
+## supabase-status: (opt-in) show local Supabase stack status and connection URLs
+supabase-status: require-supabase-cli
+	supabase status
 
 ## generate: generate Go code from .templ files
 generate:
