@@ -42,6 +42,7 @@ environment variables always take precedence over `.env`.
 | --- | --- | --- | --- |
 | `APP_ENV` | no | `dev` | Deployment environment: `dev`, `test`, or `prod`. |
 | `PORT` | no | `8080` | HTTP listen port (a leading colon is tolerated). |
+| `TRUSTED_PROXIES` | no | `127.0.0.0/8,::1/128` | CIDRs whose `X-Forwarded-*` headers are trusted. Empty trusts none (see [HTTPS deployment](#https-deployment-reverse-proxy)). |
 | `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Override in prod. |
 | `MIGRATE_DATABASE_URL` | no | `DATABASE_URL` | Separate DSN for the migration tool; point at a session/direct connection for Supabase (see [Database migrations](#database-migrations)). |
 | `DB_MAX_CONNS` | no | `0` (Supabase: `10`) | Connection pool cap. `0` lets the pool choose; with `DB_PROVIDER=supabase` it defaults to `10` behind the shared pooler. |
@@ -51,13 +52,14 @@ environment variables always take precedence over `.env`.
 | `DB_SSL_ROOT_CERT` | no | — | Path to a CA bundle; enables `sslmode=verify-full`. |
 | `SESSION_SECRET` | yes in prod | dev-only default | Signs session cookies; ≥ 32 bytes. The dev default is rejected in prod. |
 | `SESSION_LIFETIME` | no | `12h` | Maximum session duration (Go duration). |
+| `SESSION_COOKIE_SECURE` | no | `auto` | Secure cookie policy: `auto` (Secure in prod), or `true`/`false` to force it (see [HTTPS deployment](#https-deployment-reverse-proxy)). |
 | `GOOGLE_CLIENT_ID` | yes in prod | — | Google OAuth client ID (Google Calendar sync). |
 | `GOOGLE_CLIENT_SECRET` | yes in prod | — | Google OAuth client secret. |
 | `GOOGLE_REDIRECT_URL` | yes in prod | — | Google OAuth redirect URL. |
 | `TLS_CERT_FILE` | no | — | PEM certificate for app-terminated TLS; set with `TLS_KEY_FILE` (see [App-terminated TLS](#app-terminated-tls)). |
 | `TLS_KEY_FILE` | no | — | PEM private key paired with `TLS_CERT_FILE` (see [App-terminated TLS](#app-terminated-tls)). |
 | `HSTS_ENABLED` | no | `false` | Emit Strict-Transport-Security (only over HTTPS). Enable only on a stable HTTPS hostname. |
-| `HSTS_MAX_AGE` | no | `180d` | HSTS max-age (Go duration). Unset applies the default; an explicit `0s` clears a previously-sent policy in browsers. |
+| `HSTS_MAX_AGE` | no | `4320h` (180d) | HSTS max-age (Go duration; `d`/days is not valid). Unset applies the default; an explicit `0s` clears a previously-sent policy in browsers. |
 | `HSTS_INCLUDE_SUBDOMAINS` | no | `false` | Add `includeSubDomains` to the HSTS header. |
 | `HSTS_PRELOAD` | no | `false` | Add `preload` to the HSTS header. Requires `HSTS_INCLUDE_SUBDOMAINS=true` and `HSTS_MAX_AGE` ≥ 1 year (a hard-to-undo public commitment; validated at startup). |
 
@@ -184,6 +186,54 @@ MIGRATE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres?sslmo
 > pooler-safe exec mode itself is also covered by the unit tests (NES-46/47). The
 > DB-gated suite can run against this stack by pointing `NESTOVA_TEST_DATABASE_URL`
 > at the direct DB URL.
+
+### HTTPS deployment (reverse proxy)
+
+The recommended way to serve Nestova over HTTPS on a home network (LAN +
+Tailscale) is behind a **TLS-terminating reverse proxy**. Nestova itself stays
+plain HTTP and relies on the proxy for TLS; it derives the original request
+scheme from `X-Forwarded-Proto` (NES-50), so Secure cookies and HSTS still engage.
+(For a proxy-free setup, the app can terminate TLS itself — see
+[App-terminated TLS](#app-terminated-tls).)
+
+**Architecture.** The proxy terminates TLS and forwards to Nestova on `:8080`
+over loopback; Nestova trusts `X-Forwarded-Proto` / `X-Forwarded-For` only from
+`TRUSTED_PROXIES` (loopback by default), so a same-host proxy works out of the box.
+
+**Tailscale (simplest).** `tailscale serve` provisions and auto-renews a
+Let's Encrypt certificate for your tailnet:
+
+```sh
+sudo tailscale serve --bg http://localhost:8080
+# → https://<machine>.<tailnet>.ts.net  (reachable by your tailnet devices only)
+```
+
+**LAN with Caddy.** Caddy obtains a publicly-trusted cert via the Let's Encrypt
+**DNS-01** challenge (which works even for a host not reachable from the public
+internet), and a local DNS record (e.g. on the home Pi-hole) maps the name to the
+LAN IP. Public CAs will not issue for a bare private IP — always use a hostname.
+
+```caddyfile
+nestova.example.com {
+	reverse_proxy 127.0.0.1:8080
+	tls {
+		dns <your-dns-provider> {env.DNS_API_TOKEN}
+	}
+}
+```
+
+**No domain? Private CA.** Use [mkcert](https://github.com/FiloSottile/mkcert) to
+generate a locally-trusted cert for the proxy; its root CA must be trusted on each
+client device.
+
+**Env knobs behind a proxy.** Set these once you are actually serving HTTPS:
+
+```sh
+TRUSTED_PROXIES=127.0.0.0/8,::1/128   # default; widen only for a non-loopback proxy
+SESSION_COOKIE_SECURE=true            # emit Secure cookies even when APP_ENV != prod
+HSTS_ENABLED=true                     # only on a stable HTTPS hostname
+HSTS_MAX_AGE=4320h                    # 180 days (Go duration; d/days is not valid)
+```
 
 ### App-terminated TLS
 
