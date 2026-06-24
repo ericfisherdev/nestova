@@ -179,6 +179,12 @@ func TestBuildDSN(t *testing.T) {
 		{name: "out-of-range port", in: Input{Host: "h", Database: "d", User: "u", Port: "70000"}, wantErr: true},
 		{name: "bad sslmode", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "bogus"}, wantErr: true},
 		{name: "raw dsn wrong scheme", in: Input{RawDSN: "mysql://h/db"}, wantErr: true},
+		{name: "raw dsn missing database", in: Input{RawDSN: "postgres://u@h:5432"}, wantErr: true},
+		{name: "raw dsn database via dbname param", in: Input{RawDSN: "postgres://u@h:5432?dbname=app"}, check: func(t *testing.T, dsn string) {
+			if dsn != "postgres://u@h:5432?dbname=app" {
+				t.Fatalf("raw DSN altered: %q", dsn)
+			}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

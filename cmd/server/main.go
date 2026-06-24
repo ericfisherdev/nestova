@@ -117,6 +117,14 @@ func main() {
 		if result != outcomeRestart {
 			return
 		}
+		// Setup just completed and persisted its configuration. Clear any
+		// forced-setup override for this process so the restart boots normally
+		// instead of re-entering the wizard — NESTOVA_FORCE_SETUP would otherwise
+		// make NeedsSetup return true indefinitely, looping forever.
+		if err := os.Unsetenv(bootstrap.ForceSetupEnv); err != nil {
+			logger.Error("failed to clear force-setup flag", "error", err)
+			os.Exit(1)
+		}
 		logger.Info("first-run setup complete; restarting in normal mode")
 	}
 }

@@ -193,6 +193,22 @@ func TestPostSetup_ConnectFailure_422_NoPasswordEcho(t *testing.T) {
 	}
 }
 
+func TestPostSetup_RawDSNCredentialsNotEchoed(t *testing.T) {
+	h := newHarness(t, &fakeApplier{err: fmt.Errorf("%w: dial tcp", setup.ErrConnect)}, "")
+	csrf := h.getCSRF(t)
+	resp, body := h.postSetup(t, url.Values{
+		"csrf_token": {csrf},
+		"raw_dsn":    {"postgres://admin:raw-dsn-secret@db.example:5432/app?sslmode=require"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", resp.StatusCode)
+	}
+	// A raw DSN can embed credentials; they must never be reflected into the form.
+	if strings.Contains(body, "raw-dsn-secret") {
+		t.Fatal("raw DSN credentials were echoed back into the form")
+	}
+}
+
 func TestPostSetup_SetupTokenGate(t *testing.T) {
 	h := newHarness(t, &fakeApplier{}, "secret-token")
 
