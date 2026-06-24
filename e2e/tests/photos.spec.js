@@ -114,17 +114,20 @@ test.describe('NES-75 Photos / Albums', () => {
     // assertion — we only need a raw URL to hit).
     const pngPath = writeTempPng();
     try {
+      const caption = `Raw probe ${Date.now()}`;
       await page.locator('#photo-file').setInputFiles(pngPath);
-      await page.locator('#photo-caption').fill(`Raw probe ${Date.now()}`);
+      await page.locator('#photo-caption').fill(caption);
       await page.getByTestId('upload-form').getByRole('button', { name: 'Upload' }).click();
 
       const grid = page.getByTestId('photo-grid');
       await expect(grid).toBeVisible();
 
-      // Each card's <img src> is exactly "/photos/{id}/raw". Read the first one.
-      const firstImg = grid.locator('figure img').first();
-      await expect(firstImg).toBeVisible();
-      const rawUrl = await firstImg.getAttribute('src');
+      // Bind to the card we just uploaded (by its unique caption) so the check
+      // can't pass off an older photo if this upload failed. Each card's <img src>
+      // is exactly "/photos/{id}/raw".
+      const uploadedCard = grid.locator('figure').filter({ hasText: caption });
+      await expect(uploadedCard).toBeVisible();
+      const rawUrl = await uploadedCard.locator('img').first().getAttribute('src');
       expect(rawUrl).toBeTruthy();
       expect(rawUrl).toMatch(/^\/photos\/[^/]+\/raw$/);
 

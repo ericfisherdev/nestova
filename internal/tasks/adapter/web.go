@@ -676,11 +676,18 @@ func (h *WebHandlers) buildInstanceRow(r *http.Request, member *household.Member
 		return components.TaskRow{}, err
 	}
 	// Resolve the parent title only when the task is still active, matching the
-	// list builder (which keys off ListActive); an inactive parent shows as
-	// "(archived)".
+	// list builder (which keys off ListActive); an inactive or deleted parent
+	// shows as "(archived)". A genuine lookup failure is propagated so the caller
+	// falls back to an HX-Redirect rather than rendering a fake archived row.
 	var meta *domain.RecurringTask
-	if m, err := h.taskRepo.Get(r.Context(), member.HouseholdID, inst.RecurringTaskID); err == nil && m.Active {
+	m, err := h.taskRepo.Get(r.Context(), member.HouseholdID, inst.RecurringTaskID)
+	switch {
+	case err == nil && m.Active:
 		meta = m
+	case err == nil, errors.Is(err, domain.ErrTaskNotFound):
+		// inactive or deleted parent → render as "(archived)" (meta stays nil)
+	default:
+		return components.TaskRow{}, err
 	}
 	members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
 	if err != nil {
