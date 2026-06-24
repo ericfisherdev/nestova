@@ -18,9 +18,12 @@ const priceyName = `Edge Pricey ${TS}`;
 let cheapId;
 let priceyId;
 
+// grantSource uniquely tags this spec's point grant so cleanup targets only it.
+const grantSource = `edge-${TS}`;
+
 test.beforeAll(() => {
   psql(`INSERT INTO point_ledger (id, household_id, member_id, source_type, points)
-        SELECT gen_random_uuid(), household_id, id, 'manual', 50 FROM member WHERE role='owner' LIMIT 1;`);
+        SELECT gen_random_uuid(), household_id, id, '${grantSource}', 50 FROM member WHERE role='owner' LIMIT 1;`);
   const rows = psql(`
     INSERT INTO reward (id, household_id, name, cost_points, active)
     SELECT gen_random_uuid(), (SELECT household_id FROM member WHERE role='owner' LIMIT 1), v.name, v.cost, true
@@ -36,10 +39,13 @@ test.beforeAll(() => {
 });
 
 test.afterAll(() => {
-  const owner = `(SELECT id FROM member WHERE role='owner' LIMIT 1)`;
-  psql(`DELETE FROM reward_redemption WHERE member_id = ${owner};
-        DELETE FROM reward WHERE name LIKE 'Edge %${TS}';
-        DELETE FROM point_ledger WHERE member_id = ${owner};`);
+  // Scope cleanup to only this spec's rows: the uniquely-tagged grant, any
+  // redemption ledger debits / records pointing at the seeded rewards, and the
+  // seeded rewards themselves (delete the referencing rows before the rewards).
+  const seededRewards = `(SELECT id FROM reward WHERE name LIKE 'Edge %${TS}')`;
+  psql(`DELETE FROM reward_redemption WHERE reward_id IN ${seededRewards};
+        DELETE FROM point_ledger WHERE source_type = '${grantSource}' OR source_id IN ${seededRewards};
+        DELETE FROM reward WHERE name LIKE 'Edge %${TS}';`);
 });
 
 // balanceNow reads the "Your Balance" number. Assertions are relative (before vs
@@ -49,7 +55,8 @@ async function balanceNow(page) {
   await el.waitFor();
   // textContent (not innerText) so it does not depend on layout/visibility timing.
   const m = ((await el.textContent()) || '').match(/\d+/);
-  return m ? Number(m[0]) : 0;
+  if (!m) throw new Error('Could not parse "Your Balance" value from p.text-4xl');
+  return Number(m[0]);
 }
 
 test('redeeming an affordable reward deducts the cost from the balance', async ({ page }) => {
