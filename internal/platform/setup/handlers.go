@@ -117,13 +117,15 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 	token := h.csrfToken(r.Context())
 	formFromRequest := func(errMsg string) components.SetupForm {
 		return components.SetupForm{
-			CSRFToken:     token,
-			Host:          strings.TrimSpace(r.FormValue("host")),
-			Port:          strings.TrimSpace(r.FormValue("port")),
-			Database:      strings.TrimSpace(r.FormValue("database")),
-			User:          strings.TrimSpace(r.FormValue("user")),
-			SSLMode:       strings.TrimSpace(r.FormValue("sslmode")),
-			RawDSN:        strings.TrimSpace(r.FormValue("raw_dsn")),
+			CSRFToken: token,
+			Host:      strings.TrimSpace(r.FormValue("host")),
+			Port:      strings.TrimSpace(r.FormValue("port")),
+			Database:  strings.TrimSpace(r.FormValue("database")),
+			User:      strings.TrimSpace(r.FormValue("user")),
+			SSLMode:   strings.TrimSpace(r.FormValue("sslmode")),
+			// Never echo the raw DSN back: it may embed credentials, which would
+			// then be exposed in the rendered HTML on a validation error.
+			RawDSN:        "",
 			TokenRequired: h.setupToken != "",
 			Error:         errMsg,
 		}

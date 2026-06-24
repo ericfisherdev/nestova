@@ -208,5 +208,11 @@ func validatePostgresDSN(dsn string) error {
 	if u.Host == "" {
 		return errors.New("missing host")
 	}
+	// Require an explicit target database (path segment or dbname query param) so a
+	// DSN like "postgres://u@h:5432" cannot silently run migrations against the
+	// connection's default database.
+	if strings.Trim(u.Path, "/") == "" && strings.TrimSpace(u.Query().Get("dbname")) == "" {
+		return errors.New("missing database name")
+	}
 	return nil
 }

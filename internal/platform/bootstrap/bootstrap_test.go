@@ -113,6 +113,27 @@ func TestNeedsSetup(t *testing.T) {
 	}
 }
 
+func TestNeedsSetup_ClearingForceEscapesAfterConfigured(t *testing.T) {
+	// Mirrors the main() restart loop: with NESTOVA_FORCE_SETUP set, a configured
+	// app re-enters setup every boot (the loop would spin forever); clearing the
+	// flag after setup completes lets the next NeedsSetup — now seeing persisted
+	// state — return false so the restart boots normally.
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("DATABASE_URL", "")
+	state := &bootstrap.State{DatabaseURL: "postgres://x"}
+
+	t.Setenv(bootstrap.ForceSetupEnv, "1")
+	if !bootstrap.NeedsSetup(state) {
+		t.Fatal("with the force flag set, NeedsSetup should be true")
+	}
+	if err := os.Unsetenv(bootstrap.ForceSetupEnv); err != nil {
+		t.Fatalf("unset force flag: %v", err)
+	}
+	if bootstrap.NeedsSetup(state) {
+		t.Fatal("after clearing the force flag with persisted state, NeedsSetup should be false")
+	}
+}
+
 func TestExportToEnv_EnvWins(t *testing.T) {
 	// A pre-set variable must not be overwritten; an unset one must be applied.
 	// t.Setenv registers restoration of the original value; os.Unsetenv then makes
