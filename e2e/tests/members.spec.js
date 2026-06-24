@@ -49,7 +49,11 @@ test.describe('Members', () => {
     await page.goto('/');
     const familyHeading = page.getByRole('heading', { name: 'Family' });
     await expect(familyHeading).toBeVisible();
-    await expect(page.getByText(name, { exact: true })).toBeVisible();
+    // The Family heading + member rows share a wrapping <div> in the sidebar
+    // (not a <section>); scope to it so the name match can't be satisfied by
+    // unrelated page text.
+    const familySection = familyHeading.locator('xpath=ancestor::div[1]');
+    await expect(familySection.getByText(name, { exact: true })).toBeVisible();
   });
 
   test('submitting with an empty display name is rejected with a visible error', async ({ page }) => {

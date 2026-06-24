@@ -22,7 +22,13 @@ function uniqueName(prefix) {
 // The option values are server-defined; selecting by index keeps the test from
 // hard-coding a unit value that the domain might rename.
 async function selectFirstUnit(select) {
-  const firstValue = await select.locator('option').first().getAttribute('value');
+  // Pick the first real option, skipping any placeholder/disabled/empty entries
+  // so the form always submits a valid unit value.
+  const firstValue = await select
+    .locator('option:not([disabled])[value]:not([value=""])')
+    .first()
+    .getAttribute('value');
+  if (!firstValue) throw new Error('No selectable unit option found');
   await select.selectOption(firstValue);
 }
 

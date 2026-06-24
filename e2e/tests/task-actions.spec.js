@@ -36,12 +36,13 @@ test.beforeAll(() => {
         ('${titles.skip}','fixed'),
         ('${titles.claim}','claimable')
       ) AS t(title, policy)
-      RETURNING id, rotation_policy
+      RETURNING id, household_id, rotation_policy
     )
     INSERT INTO task_instance (id, household_id, recurring_task_id, assignee_id, due_on, status)
-    SELECT gen_random_uuid(), (SELECT id FROM household LIMIT 1), r.id,
+    SELECT gen_random_uuid(), r.household_id, r.id,
            CASE WHEN r.rotation_policy = 'claimable' THEN NULL
-                ELSE (SELECT id FROM member WHERE role = 'owner' LIMIT 1) END,
+                ELSE (SELECT m.id FROM member m
+                      WHERE m.household_id = r.household_id AND m.role = 'owner' LIMIT 1) END,
            CURRENT_DATE, 'pending'
     FROM ins_rt r;
   `);
