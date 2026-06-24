@@ -447,6 +447,16 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// ServerAddrFromEnv returns the HTTP listen address derived from PORT using the
+// same parsing as Load (a leading colon is tolerated), without requiring a full,
+// validated configuration. It backs first-run setup mode, which must serve the
+// HTTP wizard before a complete configuration (notably DATABASE_URL) exists and
+// so cannot call Load.
+func ServerAddrFromEnv() string {
+	port := strings.TrimPrefix(getenv("PORT", "8080"), ":")
+	return ":" + port
+}
+
 // validate returns every configuration problem found, so callers can surface
 // them together.
 func (c Config) validate() []error {
