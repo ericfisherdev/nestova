@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -121,7 +122,8 @@ func (h *WebHandlers) List(layoutFn LayoutFunc) http.HandlerFunc {
 
 // Complete handles POST /tasks/{id}/complete. It verifies the CSRF token,
 // parses the instance id from the path, calls CompleteInstance, and on success
-// redirects (full navigation) or sends an HX-Redirect header (HTMX).
+// returns the updated row for an in-place HTMX swap (or redirects to /tasks for
+// a full navigation) via respondAfterTaskMutation.
 //
 // Error mapping:
 //   - bad CSRF                   → 403
@@ -154,11 +156,12 @@ func (h *WebHandlers) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondAfterMutation(w, r)
+	h.respondAfterTaskMutation(w, r, member, id)
 }
 
 // Skip handles POST /tasks/{id}/skip. It verifies the CSRF token, parses the
-// instance id, calls SkipInstance, and responds with a redirect or HX-Redirect.
+// instance id, calls SkipInstance, and returns the updated row for an in-place
+// HTMX swap (or redirects to /tasks for a full navigation).
 //
 // Error mapping: same as Complete.
 func (h *WebHandlers) Skip(w http.ResponseWriter, r *http.Request) {
@@ -186,12 +189,13 @@ func (h *WebHandlers) Skip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondAfterMutation(w, r)
+	h.respondAfterTaskMutation(w, r, member, id)
 }
 
 // Claim handles POST /tasks/{id}/claim. It verifies the CSRF token, parses the
 // instance id, calls ClaimInstance with the current member as assignee, and
-// responds with a redirect or HX-Redirect.
+// returns the updated (now-assigned) row for an in-place HTMX swap, or redirects
+// to /tasks for a full navigation.
 //
 // Error mapping:
 //   - bad CSRF                   → 403
@@ -225,7 +229,7 @@ func (h *WebHandlers) Claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondAfterMutation(w, r)
+	h.respondAfterTaskMutation(w, r, member, id)
 }
 
 // NewTaskPage handles GET /tasks/new. It loads the household member list for the
@@ -597,52 +601,9 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 
 	rows := make([]components.TaskRow, 0, len(combined))
 	for _, inst := range combined {
-		meta, found := taskMeta[inst.RecurringTaskID]
-		var title, category string
-		if found {
-			title = meta.Title
-			category = meta.Category.String()
-		} else {
-			// Parent recurring task is inactive (archived); still show the instance
-			// so it can be acted on.
-			title = "(archived)"
-			category = "chore"
-		}
-
-		var assigneeID, assigneeName, assigneeColor string
-		if inst.AssigneeID != nil {
-			assigneeID = inst.AssigneeID.String()
-			if m, ok := memberByID[*inst.AssigneeID]; ok {
-				assigneeName = m.DisplayName
-				assigneeColor = m.Color.String()
-			} else {
-				// The composite tenant FK + ON DELETE SET NULL should keep this
-				// from happening (a deleted member clears assignee_id), so a
-				// non-resolvable assignee signals a referential-integrity anomaly.
-				h.logger.WarnContext(r.Context(), "tasks: assignee id has no matching member",
-					"instance_id", inst.ID.String(), "assignee_id", assigneeID)
-			}
-		}
-
-		// An instance is claimable when it is unassigned and still actionable.
-		// As of NES-32 both pending and overdue are actionable, so an unassigned
-		// overdue instance can also be claimed.
-		actionable := inst.Status == domain.StatusPending || inst.Status == domain.StatusOverdue
-		claimable := actionable && inst.AssigneeID == nil
-
-		rows = append(rows, components.TaskRow{
-			InstanceID:    inst.ID.String(),
-			Title:         title,
-			Category:      category,
-			DueOn:         inst.DueOn,
-			DueLabel:      dueLabel(inst.DueOn, today),
-			Status:        inst.Status.String(),
-			AssigneeID:    assigneeID,
-			AssigneeName:  assigneeName,
-			AssigneeColor: assigneeColor,
-			Claimable:     claimable,
-			CSRFToken:     csrfToken,
-		})
+		// taskMeta is keyed only by ACTIVE recurring tasks, so a missing entry
+		// (nil) is rendered as "(archived)" by instanceToRow.
+		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today))
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -652,6 +613,86 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 		return rows[i].DueOn.Before(rows[j].DueOn)
 	})
 	return rows, nil
+}
+
+// instanceToRow maps a single task instance to its TaskRow view model. meta is
+// the parent recurring task (nil renders as "(archived)"); memberByID resolves
+// the assignee's name and color. It is shared by buildTaskRows and the
+// single-row partial returned after a complete/skip/claim mutation.
+func (h *WebHandlers) instanceToRow(
+	ctx context.Context,
+	inst *domain.TaskInstance,
+	meta *domain.RecurringTask,
+	memberByID map[household.MemberID]*household.Member,
+	csrfToken string,
+	today time.Time,
+) components.TaskRow {
+	title, category := "(archived)", "chore"
+	if meta != nil {
+		title = meta.Title
+		category = meta.Category.String()
+	}
+
+	var assigneeID, assigneeName, assigneeColor string
+	if inst.AssigneeID != nil {
+		assigneeID = inst.AssigneeID.String()
+		if m, ok := memberByID[*inst.AssigneeID]; ok {
+			assigneeName = m.DisplayName
+			assigneeColor = m.Color.String()
+		} else {
+			// The composite tenant FK + ON DELETE SET NULL should keep this from
+			// happening (a deleted member clears assignee_id), so a non-resolvable
+			// assignee signals a referential-integrity anomaly.
+			h.logger.WarnContext(ctx, "tasks: assignee id has no matching member",
+				"instance_id", inst.ID.String(), "assignee_id", assigneeID)
+		}
+	}
+
+	// An instance is claimable when it is unassigned and still actionable. As of
+	// NES-32 both pending and overdue are actionable.
+	actionable := inst.Status == domain.StatusPending || inst.Status == domain.StatusOverdue
+
+	return components.TaskRow{
+		InstanceID:    inst.ID.String(),
+		Title:         title,
+		Category:      category,
+		DueOn:         inst.DueOn,
+		DueLabel:      dueLabel(inst.DueOn, today),
+		Status:        inst.Status.String(),
+		AssigneeID:    assigneeID,
+		AssigneeName:  assigneeName,
+		AssigneeColor: assigneeColor,
+		Claimable:     actionable && inst.AssigneeID == nil,
+		CSRFToken:     csrfToken,
+	}
+}
+
+// buildInstanceRow re-reads one instance (after a mutation has committed) and
+// maps it to its row view model, so a complete/skip/claim action can return just
+// the updated row for an in-place HTMX swap.
+func (h *WebHandlers) buildInstanceRow(r *http.Request, member *household.Member, id domain.TaskInstanceID) (components.TaskRow, error) {
+	inst, err := h.instanceRepo.Get(r.Context(), member.HouseholdID, id)
+	if err != nil {
+		return components.TaskRow{}, err
+	}
+	// Resolve the parent title only when the task is still active, matching the
+	// list builder (which keys off ListActive); an inactive parent shows as
+	// "(archived)".
+	var meta *domain.RecurringTask
+	if m, err := h.taskRepo.Get(r.Context(), member.HouseholdID, inst.RecurringTaskID); err == nil && m.Active {
+		meta = m
+	}
+	members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.TaskRow{}, err
+	}
+	memberByID := make(map[household.MemberID]*household.Member, len(members))
+	for _, m := range members {
+		memberByID[m.ID] = m
+	}
+	csrfToken := authadapter.GetCSRFToken(r.Context(), h.sm)
+	today := domain.DateOf(time.Now())
+	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today), nil
 }
 
 // dueLabel renders a due date relative to the supplied reference date today
@@ -772,14 +813,30 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// respondAfterMutation responds after a successful complete/skip/claim. HTMX
-// requests receive an HX-Redirect so the full list page refreshes and reflects
-// the new state. Full navigations receive a 303 redirect to /tasks.
-func respondAfterMutation(w http.ResponseWriter, r *http.Request) {
-	if render.IsHTMX(r) {
+// respondAfterTaskMutation responds after a successful complete/skip/claim.
+// HTMX requests receive the updated instance row so the action swaps it in place
+// via the form's hx-target/hx-swap (NES-32: act on a task without a full page
+// reload); full navigations get a 303 redirect to /tasks. If the row cannot be
+// re-read after the already-committed mutation, it degrades to an HX-Redirect so
+// the list still refreshes.
+func (h *WebHandlers) respondAfterTaskMutation(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	id domain.TaskInstanceID,
+) {
+	if !render.IsHTMX(r) {
+		http.Redirect(w, r, "/tasks", http.StatusSeeOther)
+		return
+	}
+	row, err := h.buildInstanceRow(r, member, id)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: build row after mutation", "error", err)
 		w.Header().Set("HX-Redirect", "/tasks")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	http.Redirect(w, r, "/tasks", http.StatusSeeOther)
+	if err := render.Render(r.Context(), w, http.StatusOK, components.TaskRowItem(row)); err != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: render row after mutation", "error", err)
+	}
 }
