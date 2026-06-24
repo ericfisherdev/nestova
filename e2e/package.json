@@ -1,0 +1,13 @@
+{
+  "name": "nestova-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Headed Playwright end-to-end tests for the Nestova app",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1"
+  }
+}
