@@ -47,6 +47,12 @@ test('a mutating POST without a CSRF token is rejected (403)', async ({ page }) 
 });
 
 test('onboarding is closed once a household exists (redirects to /login)', async ({ page }) => {
+  // Precondition (made explicit): a household exists — the authenticated session
+  // resolves to a member, so the dashboard renders at "/" rather than bouncing to
+  // /login (unauthenticated) or /onboarding (no household).
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page).toHaveURL(/\/$/);
+
   await page.goto('/onboarding', { waitUntil: 'domcontentloaded' });
   await expect(page).toHaveURL(/\/login/);
 });

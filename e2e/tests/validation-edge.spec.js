@@ -19,6 +19,9 @@ async function csrf(page, path) {
 }
 
 const TS = Date.now();
+// The authenticated test user (storageState). Seeds tie to THIS user's household
+// so the consume route resolves to the seeded item.
+const EMAIL = process.env.NESTOVA_EMAIL || 'eric@ericfisher.dev';
 
 test('a subscription with a negative amount is rejected (not created)', async ({ page }) => {
   const token = await csrf(page, '/subscriptions');
@@ -73,15 +76,21 @@ test('consuming more than on-hand never drives the pantry quantity negative', as
       INSERT INTO ingredient (id, canonical_name) VALUES (gen_random_uuid(), 'edge-underflow-${TS}') RETURNING id
     )
     INSERT INTO pantry_item (id, household_id, ingredient_id, quantity, unit)
-    SELECT gen_random_uuid(), (SELECT household_id FROM member WHERE role='owner' LIMIT 1), ing.id, 2, 'count' FROM ing
+    SELECT gen_random_uuid(),
+           (SELECT household_id FROM member WHERE email = '${EMAIL}' LIMIT 1),
+           ing.id, 2, 'count' FROM ing
     RETURNING id;
   `).trim();
   try {
     const token = await csrf(page, '/groceries');
-    await page.request.post(`/groceries/pantry/${itemId}/consume`, {
+    const resp = await page.request.post(`/groceries/pantry/${itemId}/consume`, {
       form: { csrf_token: token, amount: '5', unit: 'count' },
       maxRedirects: 0,
     });
+    // The over-consume must be handled gracefully (rejected or clamped), never a
+    // 5xx, and the route must reach this household's item (not 404).
+    expect(resp.status(), `consume status = ${resp.status()}`).toBeLessThan(500);
+    expect(resp.status()).not.toBe(404);
     const qty = psql(`SELECT quantity FROM pantry_item WHERE id = '${itemId}';`).trim();
     // The item may be clamped to 0 or removed, but it must never go negative.
     if (qty !== '') {
