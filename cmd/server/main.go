@@ -26,6 +26,7 @@ import (
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/bootstrap"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
@@ -104,10 +105,43 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(logger); err != nil {
-		logger.Error("server exited with error", "error", err)
-		os.Exit(1)
+	// run() returns outcomeRestart once first-run setup completes, so the boot is
+	// retried in normal mode with the now-persisted configuration. Any other
+	// outcome (clean shutdown) exits the loop.
+	for {
+		result, err := run(logger)
+		if err != nil {
+			logger.Error("server exited with error", "error", err)
+			os.Exit(1)
+		}
+		if result != outcomeRestart {
+			return
+		}
+		logger.Info("first-run setup complete; restarting in normal mode")
 	}
+}
+
+// run decides between first-run setup mode and normal operation. When nothing is
+// configured (no DATABASE_URL and no persisted state file) it serves the setup
+// wizard; otherwise it applies any persisted state to the environment and boots
+// the full server. Detection lives here, ahead of config.Load, so the wizard can
+// run before a complete configuration (notably DATABASE_URL) exists.
+func run(logger *slog.Logger) (outcome, error) {
+	statePath := bootstrap.StatePath()
+	state, err := bootstrap.LoadState(statePath)
+	if err != nil {
+		return outcomeShutdown, fmt.Errorf("load setup state: %w", err)
+	}
+	if bootstrap.NeedsSetup(state) {
+		logger.Info("no database configured; entering first-run setup", "state_file", statePath)
+		return runSetup(logger, statePath)
+	}
+	// Persisted first-run config feeds the unchanged env-based config.Load; the
+	// real environment still wins (ExportToEnv only sets unset variables).
+	if err := bootstrap.ExportToEnv(state); err != nil {
+		return outcomeShutdown, fmt.Errorf("apply setup state: %w", err)
+	}
+	return outcomeShutdown, runServer(logger)
 }
 
 // listenAndServe starts srv with app-terminated TLS when cert+key are configured
@@ -122,10 +156,10 @@ func listenAndServe(srv *http.Server, tlsCfg config.TLSConfig) error {
 	return srv.ListenAndServe()
 }
 
-// run starts the HTTP server and blocks until an interrupt signal triggers a
-// graceful shutdown. It is separated from main so the lifecycle has a single
+// runServer starts the HTTP server and blocks until an interrupt signal triggers
+// a graceful shutdown. It is separated from main so the lifecycle has a single
 // error return that is straightforward to test.
-func run(logger *slog.Logger) error {
+func runServer(logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
