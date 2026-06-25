@@ -73,6 +73,44 @@ In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
 > Kubernetes Secrets) and inject them into the environment, rather than storing
 > them in plaintext `.env` files.
 
+### Supported databases
+
+Nestova's data layer is Postgres; the `DB_PROVIDER` selector only changes
+connectivity (TLS and pooler handling), never the schema or queries. Pick a
+source below — each row links to its setup details.
+
+| Source | Status | How to configure |
+| --- | --- | --- |
+| **Local Postgres** | ✅ Supported (default) | The bundled `docker compose` Postgres; the default `DATABASE_URL` matches it. See [Database (local Postgres)](#database-local-postgres). |
+| **Remote Postgres** | ✅ Supported | Any reachable Postgres — point `DATABASE_URL` at it (same configuration as local). |
+| **Supabase (cloud)** | ✅ Supported | `DB_PROVIDER=supabase`, a pooler/direct DSN, and enforced TLS. See [Using Supabase](#using-supabase). |
+| **Supabase (local CLI)** | ✅ Supported | The Supabase CLI stack (Postgres + Supavisor pooler). See [Local Supabase via the CLI](#local-supabase-via-the-cli-optional). |
+| **PocketBase** | 🚧 Planned | Tracked under epic [NES-81](https://ericfisherdev.atlassian.net/browse/NES-81); the [feasibility spike](docs/pocketbase-backend-spike.md) recommends an embedded **SQLite** backend. Not yet available. |
+
+Configure any supported source through the environment variables below, or
+interactively through the [first-run setup wizard](#first-run-setup-wizard).
+
+### First-run setup wizard
+
+When no database is configured, Nestova does not fail at boot — it serves a
+**first-run setup wizard** so an operator can supply the connection without
+hand-editing the environment. The wizard activates when `DATABASE_URL` is unset
+and no state file exists (outside `dev`, or any time with
+`NESTOVA_FORCE_SETUP=1`).
+
+The form collects the connection (host/port/database/user/password and `sslmode`,
+or a raw `postgres://` DSN) and the **provider**:
+
+- **Postgres** — a self-hosted local or remote instance.
+- **Supabase** — additionally selects the pooler mode (session/transaction, which
+  pins the port to 5432/6543) and an optional SSL root cert; TLS is required.
+
+On submit it validates connectivity through the same path the server boots with,
+applies the migrations, and persists the configuration plus generated secrets to
+a `0600` state file, then restarts into normal mode where the onboarding flow
+creates the first administrator account. The wizard can be gated with
+`NESTOVA_SETUP_TOKEN`. (First-run wizard: NES-78; provider selection: NES-83.)
+
 ### Database (local Postgres)
 
 The app connects to Postgres on boot via a pgx connection pool
