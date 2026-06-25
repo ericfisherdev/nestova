@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -172,17 +174,25 @@ func migrationDSN(conn setup.Conn) (string, error) {
 	return dsn, nil
 }
 
+// transactionPortRe matches the keyword/value "port=6543" token (the Supabase
+// transaction pooler) so sessionEndpoint can rewrite it for non-URL DSNs.
+var transactionPortRe = regexp.MustCompile(`(\bport=)6543\b`)
+
 // sessionEndpoint rewrites a Supabase transaction-pooler DSN (port 6543) to the
-// session endpoint (port 5432) on the same host. Other ports are left unchanged.
+// session endpoint (port 5432) on the same host, handling both URL and
+// keyword/value forms. Other ports are left unchanged.
 func sessionEndpoint(dsn string) (string, error) {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "", fmt.Errorf("parse database dsn: %w", err)
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", fmt.Errorf("parse database dsn: %w", err)
+		}
+		if u.Port() == "6543" {
+			u.Host = net.JoinHostPort(u.Hostname(), "5432")
+		}
+		return u.String(), nil
 	}
-	if u.Port() == "6543" {
-		u.Host = net.JoinHostPort(u.Hostname(), "5432")
-	}
-	return u.String(), nil
+	return transactionPortRe.ReplaceAllString(dsn, "${1}5432"), nil
 }
 
 // pingerFunc, migratorFunc, and stateStoreFunc adapt plain functions to the

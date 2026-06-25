@@ -56,6 +56,11 @@ func TestMigrationDSN(t *testing.T) {
 			conn: setup.Conn{DSN: "postgres://u@db.pooler.supabase.com:6543/postgres?sslmode=require", Provider: "supabase", PoolMode: "transaction"},
 			want: "postgres://u@db.pooler.supabase.com:5432/postgres?sslmode=require",
 		},
+		{
+			name: "supabase transaction keyword/value dsn routes to the session port",
+			conn: setup.Conn{DSN: "host=db.pooler.supabase.com port=6543 dbname=postgres sslmode=require", Provider: "supabase", PoolMode: "transaction"},
+			want: "host=db.pooler.supabase.com port=5432 dbname=postgres sslmode=require",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -11,19 +11,32 @@ import templruntime "github.com/a-h/templ/runtime"
 import "encoding/json"
 
 // alpineSetupState is the JSON-encoded Alpine x-data for the setup form. It
-// tracks the selected provider (to x-show the Supabase-only fields) and the
-// sslmode (so selecting Supabase can auto-upgrade an insecure sslmode). Values
-// are JSON-encoded to stay injection-safe.
-func alpineSetupState(provider, sslMode string) string {
+// tracks the selected provider (to x-show the Supabase-only fields), the sslmode
+// (so selecting Supabase can auto-upgrade an insecure sslmode), and the pooler
+// mode + port (so the port follows the Supabase pooler choice — 6543 for the
+// transaction pooler, 5432 for session/direct — which buildConn requires to
+// agree). Values are JSON-encoded to stay injection-safe.
+func alpineSetupState(provider, sslMode, poolMode, port string) string {
 	if provider != "supabase" {
 		provider = "postgres"
 	}
 	if sslMode == "" {
 		sslMode = "disable"
 	}
-	b, err := json.Marshal(map[string]string{"provider": provider, "sslmode": sslMode})
+	if poolMode != "transaction" {
+		poolMode = "session"
+	}
+	if port == "" {
+		port = "5432"
+	}
+	b, err := json.Marshal(map[string]string{
+		"provider": provider,
+		"sslmode":  sslMode,
+		"poolMode": poolMode,
+		"port":     port,
+	})
 	if err != nil {
-		return `{"provider":"postgres","sslmode":"disable"}`
+		return `{"provider":"postgres","sslmode":"disable","poolMode":"session","port":"5432"}`
 	}
 	return string(b)
 }
@@ -90,22 +103,22 @@ func SetupPage(form SetupForm) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
-		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(alpineSetupState(form.Provider, form.SSLMode))
+		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(alpineSetupState(form.Provider, form.SSLMode, form.PoolMode, form.Port))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 85, Col: 60}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 98, Col: 86}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" x-effect=\"if (provider === 'supabase' && !['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" x-effect=\"if (provider === 'supabase') { if (!['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'; port = (poolMode === 'transaction' ? '6543' : '5432') }\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 88, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 101, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -148,20 +161,20 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Host)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 123, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 136, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"localhost\"></div><div class=\"flex w-24 flex-col gap-1\"><label for=\"port\" class=\"text-sm font-medium text-ink-secondary\">Port</label> <input id=\"port\" type=\"text\" name=\"port\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"localhost\"></div><div class=\"flex w-24 flex-col gap-1\"><label for=\"port\" class=\"text-sm font-medium text-ink-secondary\">Port</label> <input id=\"port\" type=\"text\" name=\"port\" x-model=\"port\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(form.Port)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 135, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 149, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -174,7 +187,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(form.Database)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 149, Col: 30}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 163, Col: 30}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -187,7 +200,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(form.User)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 162, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 176, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -205,7 +218,7 @@ func SetupPage(form SetupForm) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(mode)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 189, Col: 30}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 203, Col: 30}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -228,7 +241,7 @@ func SetupPage(form SetupForm) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(mode)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 189, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 203, Col: 74}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 			if templ_7745c5c3_Err != nil {
@@ -239,7 +252,7 @@ func SetupPage(form SetupForm) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</select></div><!-- Supabase-only: pooler mode + optional CA bundle. TLS is required. --><div x-show=\"provider === 'supabase'\" x-cloak class=\"flex flex-col gap-4 rounded-control border border-sidebar-border bg-surface-warm p-3\"><p class=\"text-xs text-ink-faint\">Supabase requires TLS — set SSL mode to <span class=\"font-medium\">require</span> (or <span class=\"font-medium\">verify-full</span> with a CA bundle below).</p><div class=\"flex flex-col gap-1\"><label for=\"pool_mode\" class=\"text-sm font-medium text-ink-secondary\">Pooler mode</label> <select id=\"pool_mode\" name=\"pool_mode\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"><option value=\"session\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</select></div><!-- Supabase-only: pooler mode + optional CA bundle. TLS is required. --><div x-show=\"provider === 'supabase'\" x-cloak class=\"flex flex-col gap-4 rounded-control border border-sidebar-border bg-surface-warm p-3\"><p class=\"text-xs text-ink-faint\">Supabase requires TLS — set SSL mode to <span class=\"font-medium\">require</span> (or <span class=\"font-medium\">verify-full</span> with a CA bundle below).</p><div class=\"flex flex-col gap-1\"><label for=\"pool_mode\" class=\"text-sm font-medium text-ink-secondary\">Pooler mode</label> <select id=\"pool_mode\" name=\"pool_mode\" x-model=\"poolMode\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"><option value=\"session\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -266,7 +279,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(form.SSLRootCert)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 213, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 228, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -279,7 +292,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(form.RawDSN)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 228, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 243, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -297,7 +310,7 @@ func SetupPage(form SetupForm) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 237, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 252, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
