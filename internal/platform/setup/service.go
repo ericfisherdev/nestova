@@ -210,7 +210,7 @@ func buildConn(in Input) (Conn, error) {
 		// Supabase must enforce TLS. sslmode=disable turns it off, and allow/prefer
 		// can silently downgrade to plaintext, so require an enforcing mode.
 		if !supabaseTLSModes[dsnSSLMode(dsn)] {
-			return Conn{}, errors.New("Supabase requires an enforced-TLS sslmode (require, verify-ca, or verify-full)")
+			return Conn{}, errors.New("the Supabase provider requires an enforced-TLS sslmode (require, verify-ca, or verify-full)")
 		}
 		poolMode := strings.ToLower(strings.TrimSpace(in.PoolMode))
 		// Supabase's transaction pooler listens on 6543; the session pooler and
@@ -231,7 +231,7 @@ func buildConn(in Input) (Conn, error) {
 			return Conn{}, fmt.Errorf("unsupported pool mode %q", poolMode)
 		}
 		if transactionPort && poolMode == "session" {
-			return Conn{}, errors.New("Supabase port 6543 is the transaction pooler — select the transaction pool mode, or use the session pooler on port 5432")
+			return Conn{}, errors.New("port 6543 is the Supabase transaction pooler — select the transaction pool mode, or use the session pooler on port 5432")
 		}
 		if !transactionPort && poolMode == "transaction" {
 			return Conn{}, errors.New("the transaction pool mode requires the Supabase transaction pooler on port 6543")
