@@ -3,19 +3,32 @@ package components
 import "encoding/json"
 
 // alpineSetupState is the JSON-encoded Alpine x-data for the setup form. It
-// tracks the selected provider (to x-show the Supabase-only fields) and the
-// sslmode (so selecting Supabase can auto-upgrade an insecure sslmode). Values
-// are JSON-encoded to stay injection-safe.
-func alpineSetupState(provider, sslMode string) string {
+// tracks the selected provider (to x-show the Supabase-only fields), the sslmode
+// (so selecting Supabase can auto-upgrade an insecure sslmode), and the pooler
+// mode + port (so the port follows the Supabase pooler choice — 6543 for the
+// transaction pooler, 5432 for session/direct — which buildConn requires to
+// agree). Values are JSON-encoded to stay injection-safe.
+func alpineSetupState(provider, sslMode, poolMode, port string) string {
 	if provider != "supabase" {
 		provider = "postgres"
 	}
 	if sslMode == "" {
 		sslMode = "disable"
 	}
-	b, err := json.Marshal(map[string]string{"provider": provider, "sslmode": sslMode})
+	if poolMode != "transaction" {
+		poolMode = "session"
+	}
+	if port == "" {
+		port = "5432"
+	}
+	b, err := json.Marshal(map[string]string{
+		"provider": provider,
+		"sslmode":  sslMode,
+		"poolMode": poolMode,
+		"port":     port,
+	})
 	if err != nil {
-		return `{"provider":"postgres","sslmode":"disable"}`
+		return `{"provider":"postgres","sslmode":"disable","poolMode":"session","port":"5432"}`
 	}
 	return string(b)
 }
@@ -82,8 +95,8 @@ templ SetupPage(form SetupForm) {
 						method="POST"
 						action="/setup"
 						novalidate
-						x-data={ alpineSetupState(form.Provider, form.SSLMode) }
-						x-effect="if (provider === 'supabase' && !['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'"
+						x-data={ alpineSetupState(form.Provider, form.SSLMode, form.PoolMode, form.Port) }
+						x-effect="if (provider === 'supabase') { if (!['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'; port = (poolMode === 'transaction' ? '6543' : '5432') }"
 					>
 						<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
 						<div class="flex flex-col gap-4">
@@ -132,6 +145,7 @@ templ SetupPage(form SetupForm) {
 										id="port"
 										type="text"
 										name="port"
+										x-model="port"
 										value={ form.Port }
 										inputmode="numeric"
 										autocomplete="off"
@@ -198,6 +212,7 @@ templ SetupPage(form SetupForm) {
 									<select
 										id="pool_mode"
 										name="pool_mode"
+										x-model="poolMode"
 										class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
 									>
 										<option value="session" selected?={ form.PoolMode != "transaction" }>Session pooler / direct (port 5432)</option>
