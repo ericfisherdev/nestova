@@ -27,13 +27,23 @@ import (
 // Pinger verifies that a database is reachable at the given DSN. It abstracts
 // db.New so the service is testable without a real database.
 type Pinger interface {
-	Ping(ctx context.Context, dsn string) error
+	Ping(ctx context.Context, conn Conn) error
 }
 
-// Migrator applies all pending schema migrations against the given DSN. It
-// abstracts migrate.Up.
+// Migrator applies all pending schema migrations against the given connection.
+// It abstracts migrate.Up.
 type Migrator interface {
-	MigrateUp(ctx context.Context, dsn string) error
+	MigrateUp(ctx context.Context, conn Conn) error
+}
+
+// Conn is the resolved connection descriptor the setup service validates and
+// persists: the DSN plus the optional provider/pooler/TLS settings the server
+// applies at boot. Provider is empty for self-hosted Postgres.
+type Conn struct {
+	DSN         string
+	Provider    string // "" (postgres) or "supabase"
+	PoolMode    string // "session" | "transaction" (supabase only)
+	SSLRootCert string // optional CA-bundle path (supabase verify-full)
 }
 
 // StateStore persists the first-run configuration. It abstracts
@@ -77,6 +87,13 @@ type Input struct {
 	SSLMode  string
 	// RawDSN, when non-empty, is used verbatim and the discrete fields are ignored.
 	RawDSN string
+	// Provider selects the backend: "" / "postgres" (self-hosted) or "supabase".
+	Provider string
+	// PoolMode is the Supabase pooler mode ("session" | "transaction"); used only
+	// when Provider is supabase.
+	PoolMode string
+	// SSLRootCert is an optional CA-bundle path (Supabase verify-full).
+	SSLRootCert string
 }
 
 // secretGenerator produces a random secret. It defaults to
@@ -117,21 +134,26 @@ func NewService(pinger Pinger, migrator Migrator, store StateStore) *Service {
 // state. Failures wrap ErrInvalidInput, ErrConnect, or ErrMigrate so the handler
 // can report the failing stage.
 func (s *Service) Apply(ctx context.Context, in Input) error {
-	dsn, err := buildDSN(in)
+	conn, err := buildConn(in)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	if err := s.pinger.Ping(ctx, dsn); err != nil {
+	if err := s.pinger.Ping(ctx, conn); err != nil {
 		return fmt.Errorf("%w: %v", ErrConnect, err)
 	}
-	if err := s.migrator.MigrateUp(ctx, dsn); err != nil {
+	if err := s.migrator.MigrateUp(ctx, conn); err != nil {
 		return fmt.Errorf("%w: %v", ErrMigrate, err)
 	}
 
 	// Generate the secrets the running app needs but the operator has not
 	// supplied via the environment. The environment still wins at load time
 	// (bootstrap.ExportToEnv), so an operator-provided secret is respected.
-	state := &bootstrap.State{DatabaseURL: dsn}
+	state := &bootstrap.State{
+		DatabaseURL: conn.DSN,
+		Provider:    conn.Provider,
+		PoolMode:    conn.PoolMode,
+		SSLRootCert: conn.SSLRootCert,
+	}
 	if os.Getenv("SESSION_SECRET") == "" {
 		if state.SessionSecret, err = s.genSecret(); err != nil {
 			return fmt.Errorf("setup: generate session secret: %w", err)
@@ -146,6 +168,104 @@ func (s *Service) Apply(ctx context.Context, in Input) error {
 		return fmt.Errorf("setup: persist configuration: %w", err)
 	}
 	return nil
+}
+
+// Database providers the wizard can configure.
+const (
+	providerPostgres = "postgres"
+	providerSupabase = "supabase"
+)
+
+// allowedPoolModes is the set of Supabase pooler modes the wizard accepts.
+var allowedPoolModes = map[string]struct{}{
+	"session":     {},
+	"transaction": {},
+}
+
+// supabaseTLSModes are the sslmode values that actually enforce TLS. disable
+// turns it off; allow and prefer can silently downgrade to plaintext, so they
+// are excluded for the Supabase provider.
+var supabaseTLSModes = map[string]bool{
+	"require":     true,
+	"verify-ca":   true,
+	"verify-full": true,
+}
+
+// buildConn resolves the form into a Conn: it builds and validates the DSN, then
+// applies provider-specific rules. Self-hosted Postgres carries no provider
+// override; Supabase requires an enforced-TLS sslmode, a pooler mode consistent
+// with the DSN port (inferred when unset), and an optional SSL root cert.
+func buildConn(in Input) (Conn, error) {
+	dsn, err := buildDSN(in)
+	if err != nil {
+		return Conn{}, err
+	}
+
+	switch provider := strings.ToLower(strings.TrimSpace(in.Provider)); provider {
+	case "", providerPostgres:
+		// Self-hosted Postgres: no provider override, no pooler — leave the
+		// post-restart boot to default DB_PROVIDER to postgres.
+		return Conn{DSN: dsn}, nil
+	case providerSupabase:
+		// Supabase must enforce TLS. sslmode=disable turns it off, and allow/prefer
+		// can silently downgrade to plaintext, so require an enforcing mode.
+		if !supabaseTLSModes[dsnSSLMode(dsn)] {
+			return Conn{}, errors.New("Supabase requires an enforced-TLS sslmode (require, verify-ca, or verify-full)")
+		}
+		poolMode := strings.ToLower(strings.TrimSpace(in.PoolMode))
+		// Supabase's transaction pooler listens on 6543; the session pooler and
+		// direct connection on 5432. Infer the mode from the port when the operator
+		// left it unset, then require the mode and the port to agree: the
+		// transaction pooler needs transaction mode (else pgx holds prepared
+		// statements it cannot keep across multiplexed transactions), and only the
+		// 6543 endpoint provides it.
+		transactionPort := dsnPort(dsn) == "6543"
+		if poolMode == "" {
+			if transactionPort {
+				poolMode = "transaction"
+			} else {
+				poolMode = "session"
+			}
+		}
+		if _, ok := allowedPoolModes[poolMode]; !ok {
+			return Conn{}, fmt.Errorf("unsupported pool mode %q", poolMode)
+		}
+		if transactionPort && poolMode == "session" {
+			return Conn{}, errors.New("Supabase port 6543 is the transaction pooler — select the transaction pool mode, or use the session pooler on port 5432")
+		}
+		if !transactionPort && poolMode == "transaction" {
+			return Conn{}, errors.New("the transaction pool mode requires the Supabase transaction pooler on port 6543")
+		}
+		return Conn{
+			DSN:         dsn,
+			Provider:    providerSupabase,
+			PoolMode:    poolMode,
+			SSLRootCert: strings.TrimSpace(in.SSLRootCert),
+		}, nil
+	default:
+		return Conn{}, fmt.Errorf("unsupported provider %q", provider)
+	}
+}
+
+// dsnSSLMode returns the lowercased sslmode query parameter of dsn, or "" when
+// absent or unparsable. For field-built DSNs buildDSN always sets it; a raw DSN
+// may omit it (libpq then defaults to prefer, which is TLS-capable).
+func dsnSSLMode(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Query().Get("sslmode"))
+}
+
+// dsnPort returns the port of a URL-form dsn, or "" when absent or unparsable
+// (e.g. a keyword/value DSN), in which case the pooler mode cannot be inferred.
+func dsnPort(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return ""
+	}
+	return u.Port()
 }
 
 // buildDSN returns the Postgres DSN from in: the raw DSN when supplied,

@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -55,17 +58,22 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 	sm.Cookie.Path = "/"
 
 	service := setup.NewService(
-		// Ping by building the pool db.New would build at boot, then closing it,
-		// so the wizard validates exactly the connectivity the server will use.
-		pingerFunc(func(ctx context.Context, dsn string) error {
-			pool, err := db.New(ctx, config.DBConfig{DSN: dsn, ConnTimeout: setupConnectTimeout})
+		// Ping by building the pool db.New would build at boot (with the provider
+		// applied), then closing it, so the wizard validates exactly the
+		// connectivity the server will use.
+		pingerFunc(func(ctx context.Context, conn setup.Conn) error {
+			pool, err := db.New(ctx, dbConfigForConn(conn))
 			if err != nil {
 				return err
 			}
 			pool.Close()
 			return nil
 		}),
-		migratorFunc(func(ctx context.Context, dsn string) error {
+		migratorFunc(func(ctx context.Context, conn setup.Conn) error {
+			dsn, err := migrationDSN(conn)
+			if err != nil {
+				return err
+			}
 			return dbmigrate.Up(ctx, dsn)
 		}),
 		stateStoreFunc(func(state *bootstrap.State) error {
@@ -126,16 +134,67 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 	return result, nil
 }
 
+// dbConfigForConn maps a setup.Conn to the DBConfig the server builds at boot,
+// applying the Supabase provider/pooler/TLS settings when present so the wizard's
+// connectivity check exercises exactly the path the running server will use.
+func dbConfigForConn(conn setup.Conn) config.DBConfig {
+	cfg := config.DBConfig{DSN: conn.DSN, ConnTimeout: setupConnectTimeout}
+	if conn.Provider == string(config.DBProviderSupabase) {
+		cfg.Provider = config.DBProviderSupabase
+		cfg.PoolMode = config.DBPoolMode(conn.PoolMode)
+		cfg.SSLRootCert = conn.SSLRootCert
+	}
+	return cfg
+}
+
+// migrationDSN returns the DSN to run migrations against for conn. For the
+// Supabase transaction pooler (port 6543) it routes migrations to the session
+// endpoint (port 5432): goose serializes migrations with a session-level
+// advisory lock that a transaction pooler cannot hold across multiplexed
+// transactions, so the pooler must not be used for migrations. It also applies
+// the SSL root cert so migrations use the same verify-full path as the pool.
+func migrationDSN(conn setup.Conn) (string, error) {
+	dsn := conn.DSN
+	if conn.Provider == string(config.DBProviderSupabase) && conn.PoolMode == string(config.DBPoolModeTransaction) {
+		rewritten, err := sessionEndpoint(dsn)
+		if err != nil {
+			return "", err
+		}
+		dsn = rewritten
+	}
+	if conn.SSLRootCert != "" {
+		normalized, err := db.ApplySSLRootCert(dsn, conn.SSLRootCert)
+		if err != nil {
+			return "", err
+		}
+		dsn = normalized
+	}
+	return dsn, nil
+}
+
+// sessionEndpoint rewrites a Supabase transaction-pooler DSN (port 6543) to the
+// session endpoint (port 5432) on the same host. Other ports are left unchanged.
+func sessionEndpoint(dsn string) (string, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", fmt.Errorf("parse database dsn: %w", err)
+	}
+	if u.Port() == "6543" {
+		u.Host = net.JoinHostPort(u.Hostname(), "5432")
+	}
+	return u.String(), nil
+}
+
 // pingerFunc, migratorFunc, and stateStoreFunc adapt plain functions to the
 // setup ports, wiring db.New / migrate.Up / bootstrap.SaveState in the
 // composition root without standalone adapter types.
-type pingerFunc func(ctx context.Context, dsn string) error
+type pingerFunc func(ctx context.Context, conn setup.Conn) error
 
-func (f pingerFunc) Ping(ctx context.Context, dsn string) error { return f(ctx, dsn) }
+func (f pingerFunc) Ping(ctx context.Context, conn setup.Conn) error { return f(ctx, conn) }
 
-type migratorFunc func(ctx context.Context, dsn string) error
+type migratorFunc func(ctx context.Context, conn setup.Conn) error
 
-func (f migratorFunc) MigrateUp(ctx context.Context, dsn string) error { return f(ctx, dsn) }
+func (f migratorFunc) MigrateUp(ctx context.Context, conn setup.Conn) error { return f(ctx, conn) }
 
 type stateStoreFunc func(state *bootstrap.State) error
 

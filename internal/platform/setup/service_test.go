@@ -11,24 +11,26 @@ import (
 )
 
 type fakePinger struct {
-	gotDSN string
-	err    error
+	gotConn Conn
+	called  bool
+	err     error
 }
 
-func (f *fakePinger) Ping(_ context.Context, dsn string) error {
-	f.gotDSN = dsn
+func (f *fakePinger) Ping(_ context.Context, conn Conn) error {
+	f.called = true
+	f.gotConn = conn
 	return f.err
 }
 
 type fakeMigrator struct {
-	gotDSN string
-	called bool
-	err    error
+	gotConn Conn
+	called  bool
+	err     error
 }
 
-func (f *fakeMigrator) MigrateUp(_ context.Context, dsn string) error {
+func (f *fakeMigrator) MigrateUp(_ context.Context, conn Conn) error {
 	f.called = true
-	f.gotDSN = dsn
+	f.gotConn = conn
 	return f.err
 }
 
@@ -74,8 +76,8 @@ func TestApply_Success_BuildsDSNMigratesAndPersists(t *testing.T) {
 		t.Fatal("state was not persisted")
 	}
 	// The same DSN must be pinged, migrated, and saved.
-	if pinger.gotDSN != migrator.gotDSN || migrator.gotDSN != store.saved.DatabaseURL {
-		t.Fatalf("DSN mismatch: ping=%q migrate=%q save=%q", pinger.gotDSN, migrator.gotDSN, store.saved.DatabaseURL)
+	if pinger.gotConn.DSN != migrator.gotConn.DSN || migrator.gotConn.DSN != store.saved.DatabaseURL {
+		t.Fatalf("DSN mismatch: ping=%q migrate=%q save=%q", pinger.gotConn.DSN, migrator.gotConn.DSN, store.saved.DatabaseURL)
 	}
 	// The assembled DSN must round-trip the fields, including a space-bearing password.
 	u, err := url.Parse(store.saved.DatabaseURL)
@@ -200,6 +202,140 @@ func TestBuildDSN(t *testing.T) {
 			}
 			if tc.check != nil {
 				tc.check(t, dsn)
+			}
+		})
+	}
+}
+
+func TestApply_Supabase_PersistsProviderAndPoolMode(t *testing.T) {
+	t.Setenv("SESSION_SECRET", "x")
+	t.Setenv("ENCRYPTION_KEY", "y")
+
+	pinger := &fakePinger{}
+	migrator := &fakeMigrator{}
+	store := &fakeStore{}
+	svc := newService(pinger, migrator, store)
+
+	in := Input{
+		Host: "db.supabase.co", Port: "6543", Database: "postgres", User: "postgres",
+		Password: "pw", SSLMode: "require",
+		Provider: "supabase", PoolMode: "transaction", SSLRootCert: "/etc/ssl/ca.crt",
+	}
+	if err := svc.Apply(context.Background(), in); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// The provider/pooler/TLS settings — including the SSL root cert — must reach
+	// the ping and migrate steps so the wizard validates the path the server uses.
+	wantConn := Conn{
+		DSN:         "postgres://postgres:pw@db.supabase.co:6543/postgres?sslmode=require",
+		Provider:    "supabase",
+		PoolMode:    "transaction",
+		SSLRootCert: "/etc/ssl/ca.crt",
+	}
+	if pinger.gotConn != wantConn {
+		t.Fatalf("ping conn = %+v, want %+v", pinger.gotConn, wantConn)
+	}
+	if migrator.gotConn != wantConn {
+		t.Fatalf("migrate conn = %+v, want %+v", migrator.gotConn, wantConn)
+	}
+	// ...and be persisted so the post-restart boot exports DB_PROVIDER et al.
+	if store.saved.Provider != "supabase" || store.saved.PoolMode != "transaction" || store.saved.SSLRootCert != "/etc/ssl/ca.crt" {
+		t.Fatalf("saved state = %+v, want supabase/transaction/cert", store.saved)
+	}
+}
+
+func TestApply_Supabase_RejectsDisabledTLS(t *testing.T) {
+	pinger := &fakePinger{}
+	migrator := &fakeMigrator{}
+	store := &fakeStore{}
+	svc := newService(pinger, migrator, store)
+
+	in := Input{Host: "db.supabase.co", Database: "postgres", User: "postgres", SSLMode: "disable", Provider: "supabase"}
+	err := svc.Apply(context.Background(), in)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("error = %v, want ErrInvalidInput", err)
+	}
+	if pinger.called || migrator.called || store.called {
+		t.Fatal("Supabase with sslmode=disable must be rejected before ping/migrate/persist")
+	}
+}
+
+func TestApply_Postgres_NoProviderOverride(t *testing.T) {
+	t.Setenv("SESSION_SECRET", "x")
+	t.Setenv("ENCRYPTION_KEY", "y")
+
+	store := &fakeStore{}
+	svc := newService(&fakePinger{}, &fakeMigrator{}, store)
+
+	// Explicit postgres provider must carry no override, so DB_PROVIDER defaults.
+	in := Input{Host: "localhost", Database: "app", User: "svc", Provider: "postgres"}
+	if err := svc.Apply(context.Background(), in); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if store.saved.Provider != "" || store.saved.PoolMode != "" || store.saved.SSLRootCert != "" {
+		t.Fatalf("postgres path persisted a provider override: %+v", store.saved)
+	}
+}
+
+func TestBuildConn(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      Input
+		wantErr bool
+		want    Conn
+	}{
+		{
+			name: "postgres has no override",
+			in:   Input{Host: "h", Database: "d", User: "u", Provider: "postgres"},
+			want: Conn{DSN: "postgres://u:@h:5432/d?sslmode=disable"},
+		},
+		{
+			name: "empty provider defaults to postgres",
+			in:   Input{Host: "h", Database: "d", User: "u"},
+			want: Conn{DSN: "postgres://u:@h:5432/d?sslmode=disable"},
+		},
+		{
+			name: "supabase defaults to session pooler",
+			in:   Input{Host: "h", Database: "d", User: "u", SSLMode: "require", Provider: "supabase"},
+			want: Conn{DSN: "postgres://u:@h:5432/d?sslmode=require", Provider: "supabase", PoolMode: "session"},
+		},
+		{
+			name: "supabase port 6543 infers transaction pooler",
+			in:   Input{Host: "h", Port: "6543", Database: "d", User: "u", SSLMode: "require", Provider: "supabase"},
+			want: Conn{DSN: "postgres://u:@h:6543/d?sslmode=require", Provider: "supabase", PoolMode: "transaction"},
+		},
+		{name: "supabase port 6543 rejects session mode", in: Input{Host: "h", Port: "6543", Database: "d", User: "u", SSLMode: "require", Provider: "supabase", PoolMode: "session"}, wantErr: true},
+		{name: "supabase port 5432 rejects transaction mode", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "require", Provider: "supabase", PoolMode: "transaction"}, wantErr: true},
+		{name: "supabase rejects sslmode disable", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "disable", Provider: "supabase"}, wantErr: true},
+		{name: "supabase rejects non-enforcing sslmode prefer", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "prefer", Provider: "supabase"}, wantErr: true},
+		{
+			name: "supabase raw dsn infers transaction from 6543",
+			in:   Input{RawDSN: "postgres://u:p@db.supabase.co:6543/postgres?sslmode=require", Provider: "supabase"},
+			want: Conn{DSN: "postgres://u:p@db.supabase.co:6543/postgres?sslmode=require", Provider: "supabase", PoolMode: "transaction"},
+		},
+		{name: "supabase raw dsn rejects sslmode disable", in: Input{RawDSN: "postgres://u:p@db.supabase.co:5432/postgres?sslmode=disable", Provider: "supabase"}, wantErr: true},
+		{name: "supabase raw dsn rejects absent sslmode", in: Input{RawDSN: "postgres://u:p@db.supabase.co:5432/postgres", Provider: "supabase"}, wantErr: true},
+		// The wizard accepts only URL-form DSNs (validatePostgresDSN requires the
+		// postgres:// scheme), so a keyword/value DSN is rejected before the
+		// provider checks regardless of its sslmode.
+		{name: "supabase keyword/value raw dsn rejected (url-only)", in: Input{RawDSN: "host=db.supabase.co port=6543 sslmode=require", Provider: "supabase"}, wantErr: true},
+		{name: "supabase rejects unknown pool mode", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "require", Provider: "supabase", PoolMode: "bogus"}, wantErr: true},
+		{name: "unsupported provider", in: Input{Host: "h", Database: "d", User: "u", Provider: "mysql"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildConn(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildConn: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("buildConn = %+v, want %+v", got, tc.want)
 			}
 		})
 	}

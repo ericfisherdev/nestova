@@ -82,11 +82,11 @@ func Health(ctx context.Context, pool *pgxpool.Pool) error {
 func poolConfig(cfg config.DBConfig) (*pgxpool.Config, error) {
 	dsn := cfg.DSN
 	if cfg.SSLRootCert != "" {
-		// Let pgx own TLS construction: it reads sslrootcert from the connection
-		// string and, when present, upgrades to sslmode=verify-full and loads the
-		// CA bundle. Injecting the path is safer than hand-building a tls.Config.
+		// Let pgx own TLS construction: inject sslrootcert and force
+		// sslmode=verify-full (see ApplySSLRootCert), so pgx loads the CA bundle
+		// and verifies the cert/hostname. Safer than hand-building a tls.Config.
 		var err error
-		dsn, err = applySSLRootCert(dsn, cfg.SSLRootCert)
+		dsn, err = ApplySSLRootCert(dsn, cfg.SSLRootCert)
 		if err != nil {
 			return nil, err
 		}
@@ -142,12 +142,17 @@ func applySupabasePooling(poolCfg *pgxpool.Config, mode config.DBPoolMode) error
 	return nil
 }
 
-// applySSLRootCert injects the sslrootcert parameter into the connection string.
-// pgx reads it during ParseConfig and upgrades the connection to verify-full,
-// loading the CA bundle itself. URL-form DSNs (the project default and what
-// Supabase hands out) are parsed and re-encoded; keyword/value DSNs get the
-// parameter appended.
-func applySSLRootCert(dsn, certPath string) (string, error) {
+// ApplySSLRootCert injects the sslrootcert parameter into the connection string
+// and forces sslmode=verify-full. A CA bundle is only meaningful under full
+// verification: sslmode=require encrypts but skips CA and hostname checks, so
+// supplying a root cert without verify-full would be a false sense of security.
+// pgx then loads the CA bundle and verifies the server certificate and hostname.
+// URL-form DSNs (the project default and what Supabase hands out) are parsed and
+// re-encoded; keyword/value DSNs get the parameters appended (later keys win, so
+// the appended sslmode overrides any earlier one). Exported so callers that run
+// their own connection (e.g. the migration runner) normalize the DSN identically
+// to the pool.
+func ApplySSLRootCert(dsn, certPath string) (string, error) {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		u, err := url.Parse(dsn)
 		if err != nil {
@@ -155,6 +160,7 @@ func applySSLRootCert(dsn, certPath string) (string, error) {
 		}
 		q := u.Query()
 		q.Set("sslrootcert", certPath)
+		q.Set("sslmode", "verify-full")
 		u.RawQuery = q.Encode()
 		return u.String(), nil
 	}
@@ -163,5 +169,5 @@ func applySSLRootCert(dsn, certPath string) (string, error) {
 	// rules so a path like "/var/certs/my app/ca.pem" is not truncated.
 	escaped := strings.ReplaceAll(certPath, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `'`, `\'`)
-	return dsn + " sslrootcert='" + escaped + "'", nil
+	return dsn + " sslrootcert='" + escaped + "' sslmode=verify-full", nil
 }

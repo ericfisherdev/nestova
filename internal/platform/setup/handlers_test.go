@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -20,15 +21,27 @@ import (
 )
 
 type fakeApplier struct {
-	err      error
-	calls    int32
+	err   error
+	calls int32
+
+	mu       sync.Mutex
 	gotInput setup.Input
 }
 
 func (f *fakeApplier) Apply(_ context.Context, in setup.Input) error {
 	atomic.AddInt32(&f.calls, 1)
+	f.mu.Lock()
 	f.gotInput = in
+	f.mu.Unlock()
 	return f.err
+}
+
+// input returns the last applied Input under lock, so reads in test assertions
+// are race-free against the server goroutine that writes it.
+func (f *fakeApplier) input() setup.Input {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotInput
 }
 
 type harness struct {
@@ -161,11 +174,36 @@ func TestPostSetup_Success_AppliesAndSignalsComplete(t *testing.T) {
 	if n := atomic.LoadInt32(&h.applier.calls); n != 1 {
 		t.Fatalf("service called %d times, want 1", n)
 	}
-	if h.applier.gotInput.Host != "localhost" || h.applier.gotInput.Password != "nestova_test_pw" {
-		t.Fatalf("service got unexpected input: %+v", h.applier.gotInput)
+	got := h.applier.input()
+	if got.Host != "localhost" || got.Password != "nestova_test_pw" {
+		t.Fatalf("service got unexpected input: %+v", got)
 	}
 	if !h.completed.Load() {
 		t.Fatal("onComplete was not invoked on success")
+	}
+}
+
+func TestPostSetup_PlumbsProviderFields(t *testing.T) {
+	h := newHarness(t, &fakeApplier{}, "")
+	csrf := h.getCSRF(t)
+	resp, body := h.postSetup(t, url.Values{
+		"csrf_token":    {csrf},
+		"provider":      {"supabase"},
+		"host":          {"db.supabase.co"},
+		"port":          {"6543"},
+		"database":      {"postgres"},
+		"user":          {"postgres"},
+		"password":      {"pw"},
+		"sslmode":       {"require"},
+		"pool_mode":     {"transaction"},
+		"ssl_root_cert": {"/etc/ssl/ca.crt"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200:\n%s", resp.StatusCode, body)
+	}
+	in := h.applier.input()
+	if in.Provider != "supabase" || in.PoolMode != "transaction" || in.SSLRootCert != "/etc/ssl/ca.crt" {
+		t.Fatalf("provider fields not plumbed into Input: %+v", in)
 	}
 }
 

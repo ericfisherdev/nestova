@@ -160,10 +160,12 @@ func TestPoolConfigSupabase(t *testing.T) {
 func TestApplySSLRootCert(t *testing.T) {
 	const certPath = "/etc/ssl/ca.crt"
 
-	t.Run("url form preserves existing params", func(t *testing.T) {
-		got, err := applySSLRootCert("postgres://u:p@host:6543/db?sslmode=verify-full", certPath)
+	t.Run("url form forces verify-full and preserves other params", func(t *testing.T) {
+		// sslmode=require alone encrypts without verifying, so adding a CA must
+		// upgrade to verify-full or the cert is never checked.
+		got, err := ApplySSLRootCert("postgres://u:p@host:6543/db?sslmode=require", certPath)
 		if err != nil {
-			t.Fatalf("applySSLRootCert() error: %v", err)
+			t.Fatalf("ApplySSLRootCert() error: %v", err)
 		}
 		u, err := url.Parse(got)
 		if err != nil {
@@ -173,14 +175,17 @@ func TestApplySSLRootCert(t *testing.T) {
 			t.Errorf("sslrootcert = %q, want %q", u.Query().Get("sslrootcert"), certPath)
 		}
 		if u.Query().Get("sslmode") != "verify-full" {
-			t.Errorf("sslmode = %q, want verify-full (preserved)", u.Query().Get("sslmode"))
+			t.Errorf("sslmode = %q, want verify-full (upgraded from require)", u.Query().Get("sslmode"))
+		}
+		if u.Host != "host:6543" || u.Path != "/db" {
+			t.Errorf("connection target altered: host=%q path=%q", u.Host, u.Path)
 		}
 	})
 
 	t.Run("keyword form quotes the parameter", func(t *testing.T) {
-		got, err := applySSLRootCert("host=db sslmode=verify-full", certPath)
+		got, err := ApplySSLRootCert("host=db sslmode=verify-full", certPath)
 		if err != nil {
-			t.Fatalf("applySSLRootCert() error: %v", err)
+			t.Fatalf("ApplySSLRootCert() error: %v", err)
 		}
 		if !strings.Contains(got, "sslrootcert='"+certPath+"'") {
 			t.Errorf("result = %q, want it to contain sslrootcert='%s'", got, certPath)
@@ -189,9 +194,9 @@ func TestApplySSLRootCert(t *testing.T) {
 
 	t.Run("keyword form keeps a spaced path intact", func(t *testing.T) {
 		const spaced = "/var/certs/my app/ca.pem"
-		got, err := applySSLRootCert("host=db sslmode=require", spaced)
+		got, err := ApplySSLRootCert("host=db sslmode=require", spaced)
 		if err != nil {
-			t.Fatalf("applySSLRootCert() error: %v", err)
+			t.Fatalf("ApplySSLRootCert() error: %v", err)
 		}
 		// pgx reads the (nonexistent) CA file, so ParseConfig is expected to fail —
 		// but its error must name the full path, proving the value was parsed as a

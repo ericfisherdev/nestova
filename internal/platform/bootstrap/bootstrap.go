@@ -55,6 +55,15 @@ type State struct {
 	DatabaseURL   string `json:"database_url"`
 	SessionSecret string `json:"session_secret"`
 	EncryptionKey string `json:"encryption_key"`
+	// Provider selects the database backend (empty means the default postgres).
+	// Persisted so the post-restart boot sets DB_PROVIDER.
+	Provider string `json:"provider,omitempty"`
+	// PoolMode is the Supabase pooler mode (session|transaction); consulted only
+	// for the supabase provider. Maps to DB_POOL_MODE.
+	PoolMode string `json:"pool_mode,omitempty"`
+	// SSLRootCert is an optional CA-bundle path for verify-full TLS. Maps to
+	// DB_SSL_ROOT_CERT.
+	SSLRootCert string `json:"ssl_root_cert,omitempty"`
 }
 
 // StatePath returns the configured state-file path (NESTOVA_STATE_FILE) or the
@@ -133,28 +142,65 @@ func NeedsSetup(state *State) bool {
 	return env != envDev
 }
 
-// ExportToEnv sets DATABASE_URL, SESSION_SECRET, and ENCRYPTION_KEY from s into
-// the process environment, but only for variables that are not already set — the
-// real environment always wins, mirroring godotenv. This lets the unchanged
-// env-based config.Load consume the persisted first-run configuration.
+// ExportToEnv sets the persisted configuration into the process environment for
+// variables that are not already set — the real environment always wins,
+// mirroring godotenv — so the unchanged env-based config.Load can consume it.
+//
+// SESSION_SECRET and ENCRYPTION_KEY are independent secrets, applied per
+// variable. DATABASE_URL, DB_PROVIDER, DB_POOL_MODE, and DB_SSL_ROOT_CERT
+// describe a single connection profile and are applied as a unit: if the
+// operator has set ANY of them in the environment, that configuration wins
+// wholesale and none of the persisted database settings are applied. This
+// prevents a hybrid config such as an operator DATABASE_URL paired with a
+// persisted Supabase DB_PROVIDER/DB_POOL_MODE.
 func ExportToEnv(s *State) error {
 	if s == nil {
 		return nil
 	}
 	for _, kv := range []struct{ key, val string }{
-		{"DATABASE_URL", s.DatabaseURL},
 		{"SESSION_SECRET", s.SessionSecret},
 		{"ENCRYPTION_KEY", s.EncryptionKey},
 	} {
-		if kv.val == "" {
-			continue
+		if err := setEnvIfAbsent(kv.key, kv.val); err != nil {
+			return err
 		}
-		if _, ok := os.LookupEnv(kv.key); ok {
-			continue
+	}
+
+	dbVars := []struct{ key, val string }{
+		{"DATABASE_URL", s.DatabaseURL},
+		{"DB_PROVIDER", s.Provider},
+		{"DB_POOL_MODE", s.PoolMode},
+		{"DB_SSL_ROOT_CERT", s.SSLRootCert},
+	}
+	for _, kv := range dbVars {
+		// A present-but-empty value is treated as absent, matching how config.Load
+		// and setup read these (os.Getenv == ""); otherwise an empty override could
+		// suppress the persisted DB group entirely.
+		if os.Getenv(kv.key) != "" {
+			return nil
 		}
-		if err := os.Setenv(kv.key, kv.val); err != nil {
-			return fmt.Errorf("set %s: %w", kv.key, err)
+	}
+	for _, kv := range dbVars {
+		if err := setEnvIfAbsent(kv.key, kv.val); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// setEnvIfAbsent sets key to val unless val is empty or key already holds a
+// non-empty value. A present-but-empty variable is treated as absent (matching
+// how config.Load and setup read these via os.Getenv == ""), so a generated
+// secret persisted during setup is still exported after restart.
+func setEnvIfAbsent(key, val string) error {
+	if val == "" {
+		return nil
+	}
+	if os.Getenv(key) != "" {
+		return nil
+	}
+	if err := os.Setenv(key, val); err != nil {
+		return fmt.Errorf("set %s: %w", key, err)
 	}
 	return nil
 }
