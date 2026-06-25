@@ -1,11 +1,34 @@
 package components
 
+import "encoding/json"
+
+// alpineSetupState is the JSON-encoded Alpine x-data for the setup form. It
+// tracks the selected provider (to x-show the Supabase-only fields) and the
+// sslmode (so selecting Supabase can auto-upgrade an insecure sslmode). Values
+// are JSON-encoded to stay injection-safe.
+func alpineSetupState(provider, sslMode string) string {
+	if provider != "supabase" {
+		provider = "postgres"
+	}
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	b, err := json.Marshal(map[string]string{"provider": provider, "sslmode": sslMode})
+	if err != nil {
+		return `{"provider":"postgres","sslmode":"disable"}`
+	}
+	return string(b)
+}
+
 // SetupForm holds the data the first-run setup wizard needs to render. It is
 // shown before any database exists, so it is a self-contained page (not wrapped
 // in the app shell). The password is never carried back into the form.
 type SetupForm struct {
 	// CSRFToken is the per-session CSRF token embedded as a hidden form field.
 	CSRFToken string
+	// Provider is the selected database backend ("postgres" or "supabase"); it
+	// drives the Supabase-only fields via Alpine.
+	Provider string
 	// Host/Port/Database/User pre-fill the connection fields after a failed
 	// submission (and carry sensible local defaults on first render).
 	Host     string
@@ -14,6 +37,10 @@ type SetupForm struct {
 	User     string
 	// SSLMode is the currently selected libpq sslmode.
 	SSLMode string
+	// PoolMode pre-fills the Supabase pooler mode ("session" | "transaction").
+	PoolMode string
+	// SSLRootCert pre-fills the optional Supabase CA-bundle path.
+	SSLRootCert string
 	// RawDSN pre-fills the advanced raw-DSN override field.
 	RawDSN string
 	// TokenRequired shows the setup-token field when NESTOVA_SETUP_TOKEN gates
@@ -38,6 +65,10 @@ templ SetupPage(form SetupForm) {
 			<title>Set up Nestova</title>
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
+			<!-- This standalone page is outside the app shell, so it loads Alpine
+			     itself: the provider selector drives the Supabase-only fields and the
+			     sslmode auto-upgrade via x-data/x-model/x-effect/x-show. -->
+			<script src="/static/js/alpine.min.js" defer></script>
 		</head>
 		<body class="bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4">
 			<div class="w-full max-w-md">
@@ -47,9 +78,27 @@ templ SetupPage(form SetupForm) {
 					<p class="mt-1 text-sm text-ink-muted">Connect your database to get started</p>
 				</div>
 				<div class="rounded-card bg-surface p-6 shadow-warm">
-					<form method="POST" action="/setup" novalidate>
+					<form
+						method="POST"
+						action="/setup"
+						novalidate
+						x-data={ alpineSetupState(form.Provider, form.SSLMode) }
+						x-effect="if (provider === 'supabase' && !['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'"
+					>
 						<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
 						<div class="flex flex-col gap-4">
+							<div class="flex flex-col gap-1">
+								<label for="provider" class="text-sm font-medium text-ink-secondary">Database</label>
+								<select
+									id="provider"
+									name="provider"
+									x-model="provider"
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+								>
+									<option value="postgres" selected?={ form.Provider != "supabase" }>Postgres (self-hosted, local or remote)</option>
+									<option value="supabase" selected?={ form.Provider == "supabase" }>Supabase (cloud or local)</option>
+								</select>
+							</div>
 							if form.TokenRequired {
 								<div class="flex flex-col gap-1">
 									<label for="setup_token" class="text-sm font-medium text-ink-secondary">Setup token</label>
@@ -133,12 +182,40 @@ templ SetupPage(form SetupForm) {
 								<select
 									id="sslmode"
 									name="sslmode"
+									x-model="sslmode"
 									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
 								>
 									for _, mode := range sslModeOptions {
 										<option value={ mode } selected?={ form.SSLMode == mode }>{ mode }</option>
 									}
 								</select>
+							</div>
+							<!-- Supabase-only: pooler mode + optional CA bundle. TLS is required. -->
+							<div x-show="provider === 'supabase'" x-cloak class="flex flex-col gap-4 rounded-control border border-sidebar-border bg-surface-warm p-3">
+								<p class="text-xs text-ink-faint">Supabase requires TLS — set SSL mode to <span class="font-medium">require</span> (or <span class="font-medium">verify-full</span> with a CA bundle below).</p>
+								<div class="flex flex-col gap-1">
+									<label for="pool_mode" class="text-sm font-medium text-ink-secondary">Pooler mode</label>
+									<select
+										id="pool_mode"
+										name="pool_mode"
+										class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+									>
+										<option value="session" selected?={ form.PoolMode != "transaction" }>Session pooler / direct (port 5432)</option>
+										<option value="transaction" selected?={ form.PoolMode == "transaction" }>Transaction pooler (port 6543)</option>
+									</select>
+								</div>
+								<div class="flex flex-col gap-1">
+									<label for="ssl_root_cert" class="text-sm font-medium text-ink-secondary">SSL root cert path (required for verify-full)</label>
+									<input
+										id="ssl_root_cert"
+										type="text"
+										name="ssl_root_cert"
+										value={ form.SSLRootCert }
+										autocomplete="off"
+										class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+										placeholder="/path/to/supabase-ca.crt"
+									/>
+								</div>
 							</div>
 							<details class="text-sm">
 								<summary class="cursor-pointer text-ink-muted">Advanced: paste a full connection string</summary>

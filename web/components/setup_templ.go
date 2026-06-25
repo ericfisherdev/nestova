@@ -8,12 +8,35 @@ package components
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
+import "encoding/json"
+
+// alpineSetupState is the JSON-encoded Alpine x-data for the setup form. It
+// tracks the selected provider (to x-show the Supabase-only fields) and the
+// sslmode (so selecting Supabase can auto-upgrade an insecure sslmode). Values
+// are JSON-encoded to stay injection-safe.
+func alpineSetupState(provider, sslMode string) string {
+	if provider != "supabase" {
+		provider = "postgres"
+	}
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	b, err := json.Marshal(map[string]string{"provider": provider, "sslmode": sslMode})
+	if err != nil {
+		return `{"provider":"postgres","sslmode":"disable"}`
+	}
+	return string(b)
+}
+
 // SetupForm holds the data the first-run setup wizard needs to render. It is
 // shown before any database exists, so it is a self-contained page (not wrapped
 // in the app shell). The password is never carried back into the form.
 type SetupForm struct {
 	// CSRFToken is the per-session CSRF token embedded as a hidden form field.
 	CSRFToken string
+	// Provider is the selected database backend ("postgres" or "supabase"); it
+	// drives the Supabase-only fields via Alpine.
+	Provider string
 	// Host/Port/Database/User pre-fill the connection fields after a failed
 	// submission (and carry sensible local defaults on first render).
 	Host     string
@@ -22,6 +45,10 @@ type SetupForm struct {
 	User     string
 	// SSLMode is the currently selected libpq sslmode.
 	SSLMode string
+	// PoolMode pre-fills the Supabase pooler mode ("session" | "transaction").
+	PoolMode string
+	// SSLRootCert pre-fills the optional Supabase CA-bundle path.
+	SSLRootCert string
 	// RawDSN pre-fills the advanced raw-DSN override field.
 	RawDSN string
 	// TokenRequired shows the setup-token field when NESTOVA_SETUP_TOKEN gates
@@ -58,159 +85,225 @@ func SetupPage(form SetupForm) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Set up Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-md\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Welcome to Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Connect your database to get started</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><form method=\"POST\" action=\"/setup\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Set up Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- This standalone page is outside the app shell, so it loads Alpine\n\t\t\t     itself: the provider selector drives the Supabase-only fields and the\n\t\t\t     sslmode auto-upgrade via x-data/x-model/x-effect/x-show. --><script src=\"/static/js/alpine.min.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-md\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Welcome to Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Connect your database to get started</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><form method=\"POST\" action=\"/setup\" novalidate x-data=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
-		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(form.CSRFToken)
+		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(alpineSetupState(form.Provider, form.SSLMode))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 51, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 85, Col: 60}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><div class=\"flex flex-col gap-4\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if form.TokenRequired {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"flex flex-col gap-1\"><label for=\"setup_token\" class=\"text-sm font-medium text-ink-secondary\">Setup token</label> <input id=\"setup_token\" type=\"password\" name=\"setup_token\" autocomplete=\"off\" required class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"Printed in the server log\"></div>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"flex gap-3\"><div class=\"flex flex-1 flex-col gap-1\"><label for=\"host\" class=\"text-sm font-medium text-ink-secondary\">Host</label> <input id=\"host\" type=\"text\" name=\"host\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" x-effect=\"if (provider === 'supabase' && !['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
-		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(form.Host)
+		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 74, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 88, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"localhost\"></div><div class=\"flex w-24 flex-col gap-1\"><label for=\"port\" class=\"text-sm font-medium text-ink-secondary\">Port</label> <input id=\"port\" type=\"text\" name=\"port\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><div class=\"flex flex-col gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"provider\" class=\"text-sm font-medium text-ink-secondary\">Database</label> <select id=\"provider\" name=\"provider\" x-model=\"provider\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"><option value=\"postgres\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.Provider != "supabase" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, " selected")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, ">Postgres (self-hosted, local or remote)</option> <option value=\"supabase\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.Provider == "supabase" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, " selected")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, ">Supabase (cloud or local)</option></select></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.TokenRequired {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<div class=\"flex flex-col gap-1\"><label for=\"setup_token\" class=\"text-sm font-medium text-ink-secondary\">Setup token</label> <input id=\"setup_token\" type=\"password\" name=\"setup_token\" autocomplete=\"off\" required class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"Printed in the server log\"></div>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div class=\"flex gap-3\"><div class=\"flex flex-1 flex-col gap-1\"><label for=\"host\" class=\"text-sm font-medium text-ink-secondary\">Host</label> <input id=\"host\" type=\"text\" name=\"host\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var4 string
-		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Port)
+		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Host)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 86, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 123, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\" inputmode=\"numeric\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"5432\"></div></div><div class=\"flex flex-col gap-1\"><label for=\"database\" class=\"text-sm font-medium text-ink-secondary\">Database name</label> <input id=\"database\" type=\"text\" name=\"database\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"localhost\"></div><div class=\"flex w-24 flex-col gap-1\"><label for=\"port\" class=\"text-sm font-medium text-ink-secondary\">Port</label> <input id=\"port\" type=\"text\" name=\"port\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var5 string
-		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(form.Database)
+		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(form.Port)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 100, Col: 30}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 135, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"nestova\"></div><div class=\"flex gap-3\"><div class=\"flex flex-1 flex-col gap-1\"><label for=\"user\" class=\"text-sm font-medium text-ink-secondary\">User</label> <input id=\"user\" type=\"text\" name=\"user\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" inputmode=\"numeric\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"5432\"></div></div><div class=\"flex flex-col gap-1\"><label for=\"database\" class=\"text-sm font-medium text-ink-secondary\">Database name</label> <input id=\"database\" type=\"text\" name=\"database\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
-		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(form.User)
+		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(form.Database)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 113, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 149, Col: 30}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"nestova\"></div><div class=\"flex flex-1 flex-col gap-1\"><label for=\"password\" class=\"text-sm font-medium text-ink-secondary\">Password</label> <input id=\"password\" type=\"password\" name=\"password\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"••••••••\"></div></div><div class=\"flex flex-col gap-1\"><label for=\"sslmode\" class=\"text-sm font-medium text-ink-secondary\">SSL mode</label> <select id=\"sslmode\" name=\"sslmode\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"nestova\"></div><div class=\"flex gap-3\"><div class=\"flex flex-1 flex-col gap-1\"><label for=\"user\" class=\"text-sm font-medium text-ink-secondary\">User</label> <input id=\"user\" type=\"text\" name=\"user\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var7 string
+		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(form.User)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 162, Col: 27}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"nestova\"></div><div class=\"flex flex-1 flex-col gap-1\"><label for=\"password\" class=\"text-sm font-medium text-ink-secondary\">Password</label> <input id=\"password\" type=\"password\" name=\"password\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"••••••••\"></div></div><div class=\"flex flex-col gap-1\"><label for=\"sslmode\" class=\"text-sm font-medium text-ink-secondary\">SSL mode</label> <select id=\"sslmode\" name=\"sslmode\" x-model=\"sslmode\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		for _, mode := range sslModeOptions {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<option value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var7 string
-			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(mode)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 139, Col: 30}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if form.SSLMode == mode {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " selected")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, ">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<option value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(mode)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 139, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 189, Col: 30}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "</option>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if form.SSLMode == mode {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, " selected")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, ">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var9 string
+			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(mode)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 189, Col: 74}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</option>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "</select></div><details class=\"text-sm\"><summary class=\"cursor-pointer text-ink-muted\">Advanced: paste a full connection string</summary><div class=\"mt-2 flex flex-col gap-1\"><label for=\"raw_dsn\" class=\"text-sm font-medium text-ink-secondary\">Connection string (DSN)</label> <input id=\"raw_dsn\" type=\"text\" name=\"raw_dsn\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</select></div><!-- Supabase-only: pooler mode + optional CA bundle. TLS is required. --><div x-show=\"provider === 'supabase'\" x-cloak class=\"flex flex-col gap-4 rounded-control border border-sidebar-border bg-surface-warm p-3\"><p class=\"text-xs text-ink-faint\">Supabase requires TLS — set SSL mode to <span class=\"font-medium\">require</span> (or <span class=\"font-medium\">verify-full</span> with a CA bundle below).</p><div class=\"flex flex-col gap-1\"><label for=\"pool_mode\" class=\"text-sm font-medium text-ink-secondary\">Pooler mode</label> <select id=\"pool_mode\" name=\"pool_mode\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"><option value=\"session\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var9 string
-		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(form.RawDSN)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 151, Col: 29}
+		if form.PoolMode != "transaction" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, " selected")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, ">Session pooler / direct (port 5432)</option> <option value=\"transaction\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"postgres://user:pass@host:5432/db?sslmode=disable\"><p class=\"text-xs text-ink-faint\">When set, this overrides the fields above.</p></div></details> ")
+		if form.PoolMode == "transaction" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, " selected")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, ">Transaction pooler (port 6543)</option></select></div><div class=\"flex flex-col gap-1\"><label for=\"ssl_root_cert\" class=\"text-sm font-medium text-ink-secondary\">SSL root cert path (required for verify-full)</label> <input id=\"ssl_root_cert\" type=\"text\" name=\"ssl_root_cert\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var10 string
+		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(form.SSLRootCert)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 213, Col: 34}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"/path/to/supabase-ca.crt\"></div></div><details class=\"text-sm\"><summary class=\"cursor-pointer text-ink-muted\">Advanced: paste a full connection string</summary><div class=\"mt-2 flex flex-col gap-1\"><label for=\"raw_dsn\" class=\"text-sm font-medium text-ink-secondary\">Connection string (DSN)</label> <input id=\"raw_dsn\" type=\"text\" name=\"raw_dsn\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var11 string
+		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(form.RawDSN)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 228, Col: 29}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\" autocomplete=\"off\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"postgres://user:pass@host:5432/db?sslmode=disable\"><p class=\"text-xs text-ink-faint\">When set, this overrides the fields above.</p></div></details> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if form.Error != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<p role=\"alert\" class=\"text-sm text-red-600\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "<p role=\"alert\" class=\"text-sm text-red-600\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var10 string
-			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
+			var templ_7745c5c3_Var12 string
+			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 160, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 237, Col: 65}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -219,7 +312,7 @@ func SetupPage(form SetupForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</div></form></div><p class=\"mt-6 text-center text-xs text-ink-faint\">Nestova will test the connection, set up the database, and then ask you to create the administrator account.</p></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "</div></form></div><p class=\"mt-6 text-center text-xs text-ink-faint\">Nestova will test the connection, set up the database, and then ask you to create the administrator account.</p></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -246,12 +339,12 @@ func SetupCompletePage() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var11 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var11 == nil {
-			templ_7745c5c3_Var11 = templ.NopComponent
+		templ_7745c5c3_Var13 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var13 == nil {
+			templ_7745c5c3_Var13 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta http-equiv=\"refresh\" content=\"4; url=/onboarding\"><title>Setting up Nestova…</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-sm text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">You're all set</h1><p class=\"mt-2 text-sm text-ink-muted\">Database configured and migrated. Starting Nestova and taking you to create your administrator account…</p><p class=\"mt-4 text-sm text-ink-faint\">If this page doesn't move on its own, <a href=\"/onboarding\" class=\"font-medium text-sage hover:text-sage-dark\">continue here</a>.</p></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta http-equiv=\"refresh\" content=\"4; url=/onboarding\"><title>Setting up Nestova…</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-sm text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">You're all set</h1><p class=\"mt-2 text-sm text-ink-muted\">Database configured and migrated. Starting Nestova and taking you to create your administrator account…</p><p class=\"mt-4 text-sm text-ink-faint\">If this page doesn't move on its own, <a href=\"/onboarding\" class=\"font-medium text-sage hover:text-sage-dark\">continue here</a>.</p></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -92,9 +92,11 @@ func (h *Handlers) redirectToSetup(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Page(w http.ResponseWriter, r *http.Request) {
 	form := components.SetupForm{
 		CSRFToken:     h.csrfToken(r.Context()),
+		Provider:      "postgres",
 		Host:          "localhost",
 		Port:          "5432",
 		SSLMode:       "disable",
+		PoolMode:      "session",
 		TokenRequired: h.setupToken != "",
 	}
 	h.renderForm(w, r, http.StatusOK, form)
@@ -118,11 +120,16 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 	formFromRequest := func(errMsg string) components.SetupForm {
 		return components.SetupForm{
 			CSRFToken: token,
+			Provider:  strings.TrimSpace(r.FormValue("provider")),
 			Host:      strings.TrimSpace(r.FormValue("host")),
 			Port:      strings.TrimSpace(r.FormValue("port")),
 			Database:  strings.TrimSpace(r.FormValue("database")),
 			User:      strings.TrimSpace(r.FormValue("user")),
 			SSLMode:   strings.TrimSpace(r.FormValue("sslmode")),
+			PoolMode:  strings.TrimSpace(r.FormValue("pool_mode")),
+			// SSL root cert is a filesystem path, not a secret, so it is safe to
+			// echo back to keep the form sticky on a validation error.
+			SSLRootCert: strings.TrimSpace(r.FormValue("ssl_root_cert")),
 			// Never echo the raw DSN back: it may embed credentials, which would
 			// then be exposed in the rendered HTML on a validation error.
 			RawDSN:        "",
@@ -140,13 +147,16 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := Input{
-		Host:     r.FormValue("host"),
-		Port:     r.FormValue("port"),
-		Database: r.FormValue("database"),
-		User:     r.FormValue("user"),
-		Password: r.FormValue("password"),
-		SSLMode:  r.FormValue("sslmode"),
-		RawDSN:   r.FormValue("raw_dsn"),
+		Host:        r.FormValue("host"),
+		Port:        r.FormValue("port"),
+		Database:    r.FormValue("database"),
+		User:        r.FormValue("user"),
+		Password:    r.FormValue("password"),
+		SSLMode:     r.FormValue("sslmode"),
+		RawDSN:      r.FormValue("raw_dsn"),
+		Provider:    r.FormValue("provider"),
+		PoolMode:    r.FormValue("pool_mode"),
+		SSLRootCert: r.FormValue("ssl_root_cert"),
 	}
 	if err := h.service.Apply(r.Context(), in); err != nil {
 		status, msg := classifyApplyError(err)

@@ -27,6 +27,9 @@ func TestSaveLoadState_RoundTripAndPermissions(t *testing.T) {
 		DatabaseURL:   "postgres://u:p@localhost:5434/db?sslmode=disable",
 		SessionSecret: "deadbeef",
 		EncryptionKey: "cafebabe",
+		Provider:      "supabase",
+		PoolMode:      "transaction",
+		SSLRootCert:   "/etc/ssl/supabase-ca.crt",
 	}
 	if err := bootstrap.SaveState(path, want); err != nil {
 		t.Fatalf("SaveState: %v", err)
@@ -134,25 +137,35 @@ func TestNeedsSetup_ClearingForceEscapesAfterConfigured(t *testing.T) {
 	}
 }
 
-func TestExportToEnv_EnvWins(t *testing.T) {
-	// A pre-set variable must not be overwritten; an unset one must be applied.
-	// t.Setenv registers restoration of the original value; os.Unsetenv then makes
-	// LookupEnv report the var as absent for the duration of the test.
-	unset := func(key string) {
-		t.Helper()
-		t.Setenv(key, "")
-		if err := os.Unsetenv(key); err != nil {
-			t.Fatalf("unset %s: %v", key, err)
-		}
+// unsetEnv makes LookupEnv report key as absent for the duration of the test.
+// t.Setenv registers restoration of the original value; os.Unsetenv then removes
+// it so the code under test sees it as unset.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
 	}
+}
+
+func TestExportToEnv_EnvWins(t *testing.T) {
+	// Secrets are independent and applied per variable; the DB-connection group is
+	// applied as a unit. Here one DB var (DATABASE_URL) is already set, so the
+	// whole persisted DB group must be skipped — no hybrid config.
 	t.Setenv("DATABASE_URL", "postgres://preset")
-	unset("SESSION_SECRET")
-	unset("ENCRYPTION_KEY")
+	unsetEnv(t, "SESSION_SECRET")
+	unsetEnv(t, "ENCRYPTION_KEY")
+	unsetEnv(t, "DB_PROVIDER")
+	unsetEnv(t, "DB_POOL_MODE")
+	unsetEnv(t, "DB_SSL_ROOT_CERT")
 
 	err := bootstrap.ExportToEnv(&bootstrap.State{
 		DatabaseURL:   "postgres://fromstate",
 		SessionSecret: "secret-from-state",
 		EncryptionKey: "key-from-state",
+		Provider:      "supabase",
+		PoolMode:      "transaction",
+		SSLRootCert:   "/etc/ssl/supabase-ca.crt",
 	})
 	if err != nil {
 		t.Fatalf("ExportToEnv: %v", err)
@@ -165,6 +178,37 @@ func TestExportToEnv_EnvWins(t *testing.T) {
 	}
 	if got := os.Getenv("ENCRYPTION_KEY"); got != "key-from-state" {
 		t.Fatalf("ENCRYPTION_KEY = %q, want state value applied", got)
+	}
+	// The rest of the DB group must NOT be applied, since DATABASE_URL is set.
+	for _, k := range []string{"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT"} {
+		if got := os.Getenv(k); got != "" {
+			t.Fatalf("%s = %q, want empty (DB group skipped when any DB env var is set)", k, got)
+		}
+	}
+}
+
+func TestExportToEnv_AppliesDBGroupWhenNoDBEnv(t *testing.T) {
+	for _, k := range []string{"DATABASE_URL", "DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT"} {
+		unsetEnv(t, k)
+	}
+	err := bootstrap.ExportToEnv(&bootstrap.State{
+		DatabaseURL: "postgres://fromstate",
+		Provider:    "supabase",
+		PoolMode:    "transaction",
+		SSLRootCert: "/etc/ssl/supabase-ca.crt",
+	})
+	if err != nil {
+		t.Fatalf("ExportToEnv: %v", err)
+	}
+	for k, want := range map[string]string{
+		"DATABASE_URL":     "postgres://fromstate",
+		"DB_PROVIDER":      "supabase",
+		"DB_POOL_MODE":     "transaction",
+		"DB_SSL_ROOT_CERT": "/etc/ssl/supabase-ca.crt",
+	} {
+		if got := os.Getenv(k); got != want {
+			t.Fatalf("%s = %q, want %q applied from state", k, got, want)
+		}
 	}
 }
 
