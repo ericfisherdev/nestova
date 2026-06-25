@@ -106,7 +106,7 @@ repository ports against SQLite directly.
 | Advisory locks | `pg_advisory_xact_lock` (onboarding, gamification) | SQLite is single-writer; the correctness boundary is a `BEGIN IMMEDIATE` transaction **plus the existing unique constraints/indexes** (an in-process mutex is not sufficient — it only serializes threads in one process, not other connections). The onboarding first-household guard and the gamification ledger's uniqueness index carry over and do the enforcing. |
 | Migrations | goose (postgres) | goose has a **sqlite3** dialect; maintain a parallel SQLite migration set (or a translation), porting the DDL. |
 | Types / SQL | `jsonb`, `text[]`, `numeric`, `timestamptz`, `gen_random_uuid()` | `json`/`text`; `json`; **`numeric` → `TEXT` or scaled integers** (SQLite `REAL` is approximate — do not use it for exact-decimal/money fields); ISO-8601 `text`; app-generated UUIDv7. `ON CONFLICT` is supported by SQLite as-is. |
-| Sessions | `scs` `pgxstore` | `scs` `sqlite3store` (or `memstore` for a kiosk). |
+| Sessions | `scs` `pgxstore` | `scs` `sqlite3store` is the default (it persists sessions across restarts, matching the offline-appliance goal). `memstore` only for a deliberately ephemeral kiosk mode — it drops all auth state on restart. |
 | Setup wizard | `postgres://` DSN | a new "embedded/SQLite" mode: a data-dir/file path instead of a DSN. |
 
 ## 6. Recommendation (go/no-go)
