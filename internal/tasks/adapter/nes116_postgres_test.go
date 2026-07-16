@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
@@ -458,6 +460,16 @@ func TestTaskInstance_Insert_StandingUniquePerTask(t *testing.T) {
 	}
 	if errors.Is(err, domain.ErrDuplicateInstance) {
 		t.Errorf("Insert(second standing instance) = %v, want a generic error (this is a different constraint than task_instance_task_due_uniq)", err)
+	}
+	// Require the specific unique violation from task_instance_standing_open_uniq
+	// so the failure proves the standing backstop fired, not an unrelated
+	// insert error.
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("Insert(second standing instance) = %v, want a *pgconn.PgError unique violation", err)
+	}
+	if pgErr.Code != "23505" || pgErr.ConstraintName != "task_instance_standing_open_uniq" {
+		t.Errorf("Insert(second standing instance) = code %s constraint %q, want 23505 on task_instance_standing_open_uniq", pgErr.Code, pgErr.ConstraintName)
 	}
 
 	// The task still has exactly one open standing instance — the rejected

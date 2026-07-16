@@ -833,7 +833,7 @@ func (r *TaskInstanceRepository) Complete(
 		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return r.disambiguateTerminal(ctx, householdID, id)
+			return r.disambiguateTerminal(ctx, tx, householdID, id)
 		}
 		return fmt.Errorf("complete task instance: %w", err)
 	}
@@ -904,7 +904,7 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return r.disambiguateTerminal(ctx, householdID, id)
+			return r.disambiguateTerminal(ctx, tx, householdID, id)
 		}
 		return fmt.Errorf("complete and award: update instance: %w", err)
 	}
@@ -983,7 +983,7 @@ func (r *TaskInstanceRepository) Skip(
 		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return r.disambiguateTerminal(ctx, householdID, id)
+			return r.disambiguateTerminal(ctx, tx, householdID, id)
 		}
 		return fmt.Errorf("skip task instance: %w", err)
 	}
@@ -1004,16 +1004,37 @@ func (r *TaskInstanceRepository) Skip(
 // is already done or skipped. Because Complete and Skip now act on both pending
 // and overdue rows, a zero-row update for an existing instance means the row is
 // in a terminal state (done or skipped).
+//
+// q is the caller's open transaction: reading through it keeps the check on
+// the connection (and snapshot) the caller already holds instead of borrowing
+// a second pool connection while the first is still checked out, which could
+// stall under pool pressure.
 func (r *TaskInstanceRepository) disambiguateTerminal(
 	ctx context.Context,
+	q rowQuerier,
 	householdID household.HouseholdID,
 	id domain.TaskInstanceID,
 ) error {
-	if _, err := r.Get(ctx, householdID, id); err != nil {
-		// Covers both ErrInstanceNotFound and unexpected DB errors.
-		return err
+	const query = `
+		SELECT status
+		  FROM task_instance
+		 WHERE id = $1
+		   AND household_id = $2`
+	var status string
+	err := q.QueryRow(ctx, query, id.String(), householdID.String()).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrInstanceNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("disambiguate terminal task instance: %w", err)
 	}
 	return domain.ErrInstanceInTerminalState
+}
+
+// rowQuerier is the single-row read seam disambiguateTerminal needs; both
+// pgx.Tx and the pool-backed db.TX satisfy it.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // MarkPendingOverdue bulk-transitions all pending, kind='scheduled' instances
