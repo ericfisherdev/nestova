@@ -69,12 +69,17 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			>
 				<span aria-hidden="true">&#9776;</span>
 			</button>
-			<!-- Click-away overlay shown with the drawer on narrow screens. -->
+			<!-- Click-away overlay shown with the drawer on narrow screens. This is
+			     a pointer-only convenience: it carries no accessible name and isn't
+			     reachable by keyboard, so it's marked aria-hidden to keep assistive
+			     tech from exposing it as an ambiguous interactive element. Keyboard
+			     users close the drawer via the Escape handler on <body> above. -->
 			<div
 				x-show="open"
 				x-cloak
 				@click="open = false; $refs.navToggle.focus()"
 				class="fixed inset-0 z-30 bg-ink/30 md:hidden"
+				aria-hidden="true"
 			></div>
 			@sidebar(props, nav)
 			<!-- inert disables the main content behind the open drawer so keyboard
