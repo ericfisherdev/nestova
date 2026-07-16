@@ -233,6 +233,40 @@ func registerWebRoutes(
 		gamificationHandlers.Redeem(layoutFn)(w, r)
 	})))
 
+	// Reward catalogue admin routes (NES-126) — RequireMember-gated at the
+	// router; each handler additionally checks isParent (owner/adult) and
+	// returns 403 for a child member, mirroring the /trades/history gate.
+	// GET  /admin/rewards            parent-only catalogue list (active + archived).
+	// GET  /admin/rewards/new        create-reward form.
+	// POST /admin/rewards            create-reward submit.
+	// GET  /admin/rewards/{id}/edit  edit-reward form, pre-filled.
+	// POST /admin/rewards/{id}       edit-reward submit.
+	// POST /admin/rewards/{id}/archive retires a reward from the storefront.
+	rewardAdminLayoutFn := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
+		return func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref)
+				return components.Layout(props, nav, c)
+			}
+		}
+	}
+	mux.Handle("GET /admin/rewards", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gamificationHandlers.RewardsAdminPage(rewardAdminLayoutFn(r))(w, r)
+	})))
+	mux.Handle("GET /admin/rewards/new", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gamificationHandlers.NewRewardPage(rewardAdminLayoutFn(r))(w, r)
+	})))
+	mux.Handle("POST /admin/rewards", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gamificationHandlers.CreateReward(rewardAdminLayoutFn(r))(w, r)
+	})))
+	mux.Handle("GET /admin/rewards/{id}/edit", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gamificationHandlers.EditRewardPage(rewardAdminLayoutFn(r))(w, r)
+	})))
+	mux.Handle("POST /admin/rewards/{id}", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gamificationHandlers.UpdateReward(rewardAdminLayoutFn(r))(w, r)
+	})))
+	mux.Handle("POST /admin/rewards/{id}/archive", requireMember(http.HandlerFunc(gamificationHandlers.ArchiveReward)))
+
 	// Groceries routes — RequireMember-gated (NES-45).
 	// GET  /groceries                          renders the usage tracker, pantry,
 	//                                          and shopping-list sections.

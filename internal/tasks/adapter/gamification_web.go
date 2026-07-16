@@ -6,8 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -46,13 +49,14 @@ const pointHistoryLimit = 20
 // handler types share no state and are independently wired at the composition
 // root.
 type GamificationWebHandlers struct {
-	ledger       domain.PointLedgerRepository
-	rewards      domain.RewardRepository
-	rewardSvc    *tasksapp.RewardService
-	instanceRepo domain.TaskInstanceRepository
-	households   household.HouseholdRepository
-	sm           *scs.SessionManager
-	logger       *slog.Logger
+	ledger         domain.PointLedgerRepository
+	rewards        domain.RewardRepository
+	rewardSvc      *tasksapp.RewardService
+	rewardAdminSvc *tasksapp.RewardAdminService
+	instanceRepo   domain.TaskInstanceRepository
+	households     household.HouseholdRepository
+	sm             *scs.SessionManager
+	logger         *slog.Logger
 }
 
 // NewGamificationWebHandlers constructs a GamificationWebHandlers with all
@@ -62,6 +66,7 @@ func NewGamificationWebHandlers(
 	ledger domain.PointLedgerRepository,
 	rewards domain.RewardRepository,
 	rewardSvc *tasksapp.RewardService,
+	rewardAdminSvc *tasksapp.RewardAdminService,
 	instanceRepo domain.TaskInstanceRepository,
 	households household.HouseholdRepository,
 	sm *scs.SessionManager,
@@ -76,6 +81,9 @@ func NewGamificationWebHandlers(
 	if rewardSvc == nil {
 		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil RewardService")
 	}
+	if rewardAdminSvc == nil {
+		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil RewardAdminService")
+	}
 	if instanceRepo == nil {
 		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil TaskInstanceRepository")
 	}
@@ -89,13 +97,14 @@ func NewGamificationWebHandlers(
 		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil logger")
 	}
 	return &GamificationWebHandlers{
-		ledger:       ledger,
-		rewards:      rewards,
-		rewardSvc:    rewardSvc,
-		instanceRepo: instanceRepo,
-		households:   households,
-		sm:           sm,
-		logger:       logger,
+		ledger:         ledger,
+		rewards:        rewards,
+		rewardSvc:      rewardSvc,
+		rewardAdminSvc: rewardAdminSvc,
+		instanceRepo:   instanceRepo,
+		households:     households,
+		sm:             sm,
+		logger:         logger,
 	}
 }
 
@@ -272,19 +281,16 @@ func (h *GamificationWebHandlers) buildRewardsPage(
 		return components.RewardsPage{}, err
 	}
 
-	// Active rewards catalogue.
-	activeRewards, err := h.rewards.ListActiveRewards(ctx, member.HouseholdID)
+	// Storefront rewards catalogue (NES-126 AC2): active AND in-stock only —
+	// an archived or sold-out reward is never returned by ListStorefrontRewards,
+	// so the template need not re-check either condition.
+	storefront, err := h.rewards.ListStorefrontRewards(ctx, member.HouseholdID)
 	if err != nil {
 		return components.RewardsPage{}, err
 	}
-	rewardItems := make([]components.RewardItem, 0, len(activeRewards))
-	for _, rw := range activeRewards {
-		rewardItems = append(rewardItems, components.RewardItem{
-			ID:         rw.ID.String(),
-			Name:       rw.Name,
-			CostPoints: rw.CostPoints,
-			Affordable: balance >= rw.CostPoints,
-		})
+	rewardItems := make([]components.RewardItem, 0, len(storefront))
+	for _, sr := range storefront {
+		rewardItems = append(rewardItems, buildRewardItem(sr, balance))
 	}
 
 	// Current member's recent point ledger activity (NES-118), enriched with a
@@ -309,7 +315,42 @@ func (h *GamificationWebHandlers) buildRewardsPage(
 		History:             historyRows,
 		CSRFToken:           authadapter.GetCSRFToken(r.Context(), h.sm),
 		InsufficientMessage: insufficientMessage,
+		// CanManageRewards gates the "Manage rewards" link to parents (owner or
+		// adult), mirroring TradeSections.CanViewHistory's role gate (NES-122).
+		CanManageRewards: isParent(member),
 	}, nil
+}
+
+// buildRewardItem maps one storefront read model to its RewardItem view,
+// computing the affordability badge and stock label the template renders
+// verbatim (NES-126 AC3): NeedMore is the positive point shortfall when the
+// member cannot yet afford the reward, and StockLabel is empty for unlimited
+// stock or "N left" when a cap is set.
+func buildRewardItem(sr domain.StorefrontReward, balance int) components.RewardItem {
+	rw := sr.Reward
+	affordable := balance >= rw.CostPoints
+	needMore := 0
+	if !affordable {
+		needMore = rw.CostPoints - balance
+	}
+	stockLabel := ""
+	if sr.RemainingStock != nil {
+		stockLabel = fmt.Sprintf("%d left", *sr.RemainingStock)
+	}
+	imageRef := ""
+	if rw.ImageRef != nil {
+		imageRef = *rw.ImageRef
+	}
+	return components.RewardItem{
+		ID:          rw.ID.String(),
+		Name:        rw.Name,
+		Description: rw.Description,
+		ImageRef:    imageRef,
+		CostPoints:  rw.CostPoints,
+		Affordable:  affordable,
+		NeedMore:    needMore,
+		StockLabel:  stockLabel,
+	}
 }
 
 // historyReason builds a human-readable label for a point ledger entry based
@@ -386,4 +427,425 @@ func buildLeaderboardRows(
 		rows = append(rows, e.row)
 	}
 	return rows
+}
+
+// ---------------------------------------------------------------------------
+// Reward admin (NES-126) — parent-only create/edit/archive.
+//
+// Every handler below re-checks isParent (defined in trade_web.go, shared by
+// this package) after the RequireMember auth gate: a child member who is
+// authenticated must still be refused with 403, mirroring
+// TradeWebHandlers.HistoryPage's exact role-gate shape (NES-122).
+// ---------------------------------------------------------------------------
+
+// RewardsAdminPage handles GET /admin/rewards. It lists every reward in the
+// household — active and archived — for the parent-only catalogue admin
+// (NES-126 AC1).
+func (h *GamificationWebHandlers) RewardsAdminPage(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isParent(member) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		rewards, err := h.rewards.ListAllRewards(r.Context(), member.HouseholdID)
+		if err != nil {
+			h.logger.ErrorContext(r.Context(), "rewards admin: list all rewards", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		page := components.RewardAdminListPage{
+			Rewards:   toRewardAdminListItems(rewards),
+			CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
+		}
+		content := components.RewardsAdminPage(page)
+		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
+			h.logger.ErrorContext(r.Context(), "rewards admin: render list", "error", err)
+		}
+	}
+}
+
+// NewRewardPage handles GET /admin/rewards/new. It renders a blank
+// create-reward form for a parent (NES-126 AC1).
+func (h *GamificationWebHandlers) NewRewardPage(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isParent(member) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		form := components.RewardAdminForm{CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm)}
+		content := components.RewardAdminFormPage(form)
+		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
+			h.logger.ErrorContext(r.Context(), "new reward page: render", "error", err)
+		}
+	}
+}
+
+// CreateReward handles POST /admin/rewards. It parses and validates the
+// form, delegates to RewardAdminService.Create, and on success redirects to
+// the admin list. On validation failure it re-renders the form at HTTP 422
+// with the submitted values preserved and an error message (NES-126 AC1).
+//
+// Error mapping:
+//   - bad CSRF                        → 403
+//   - not a parent (owner/adult)      → 403
+//   - missing/invalid name/cost/qty   → 422 (form re-render)
+//   - other                           → 500
+func (h *GamificationWebHandlers) CreateReward(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !authadapter.VerifyCSRF(r, h.sm) {
+			http.Error(w, "invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isParent(member) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		name, description, cost, imageRef, quantity, form, validationMsg := parseRewardAdminForm(r, h.sm, "")
+		if validationMsg != "" {
+			h.renderRewardAdminForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+			return
+		}
+
+		if _, err := h.rewardAdminSvc.Create(r.Context(), member.HouseholdID, name, description, cost, imageRef, quantity); err != nil {
+			errMsg := rewardAdminErrMessage(err)
+			if errMsg == "" {
+				h.logger.ErrorContext(r.Context(), "create reward: service error", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			form.Error = errMsg
+			h.renderRewardAdminForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+			return
+		}
+
+		http.Redirect(w, r, "/admin/rewards", http.StatusSeeOther)
+	}
+}
+
+// EditRewardPage handles GET /admin/rewards/{id}/edit. It loads the reward
+// (tenant-checked) and renders the form pre-filled with its current values
+// (NES-126 AC1).
+//
+// Error mapping:
+//   - malformed reward id   → 400
+//   - ErrRewardNotFound     → 404
+//   - other                 → 500
+func (h *GamificationWebHandlers) EditRewardPage(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isParent(member) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		id, err := domain.ParseRewardID(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid reward id", http.StatusBadRequest)
+			return
+		}
+
+		reward, err := h.rewards.GetReward(r.Context(), member.HouseholdID, id)
+		if err != nil {
+			if errors.Is(err, domain.ErrRewardNotFound) {
+				http.Error(w, "reward not found", http.StatusNotFound)
+				return
+			}
+			h.logger.ErrorContext(r.Context(), "edit reward page: get reward", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		form := rewardToForm(reward, authadapter.GetCSRFToken(r.Context(), h.sm))
+		content := components.RewardAdminFormPage(form)
+		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
+			h.logger.ErrorContext(r.Context(), "edit reward page: render", "error", err)
+		}
+	}
+}
+
+// UpdateReward handles POST /admin/rewards/{id}. It parses and validates the
+// form, delegates to RewardAdminService.Update, and on success redirects to
+// the admin list (NES-126 AC1).
+//
+// Error mapping:
+//   - bad CSRF                        → 403
+//   - not a parent (owner/adult)      → 403
+//   - malformed reward id             → 400
+//   - missing/invalid name/cost/qty   → 422 (form re-render)
+//   - ErrRewardNotFound                → 404
+//   - other                           → 500
+func (h *GamificationWebHandlers) UpdateReward(layoutFn LayoutFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if !authadapter.VerifyCSRF(r, h.sm) {
+			http.Error(w, "invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !isParent(member) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		rawID := r.PathValue("id")
+		id, err := domain.ParseRewardID(rawID)
+		if err != nil {
+			http.Error(w, "invalid reward id", http.StatusBadRequest)
+			return
+		}
+
+		name, description, cost, imageRef, quantity, form, validationMsg := parseRewardAdminForm(r, h.sm, rawID)
+		if validationMsg != "" {
+			h.renderRewardAdminForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+			return
+		}
+
+		if _, err := h.rewardAdminSvc.Update(r.Context(), member.HouseholdID, id, name, description, cost, imageRef, quantity); err != nil {
+			if errors.Is(err, domain.ErrRewardNotFound) {
+				http.Error(w, "reward not found", http.StatusNotFound)
+				return
+			}
+			errMsg := rewardAdminErrMessage(err)
+			if errMsg == "" {
+				h.logger.ErrorContext(r.Context(), "update reward: service error", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			form.Error = errMsg
+			h.renderRewardAdminForm(w, r, http.StatusUnprocessableEntity, form, layoutFn(member))
+			return
+		}
+
+		http.Redirect(w, r, "/admin/rewards", http.StatusSeeOther)
+	}
+}
+
+// ArchiveReward handles POST /admin/rewards/{id}/archive. It retires the
+// reward from the storefront without touching its redemption history
+// (NES-126 AC1, AC5 — archive is the only removal action exposed to parents;
+// see domain.RewardRepository.DeleteReward's doc for the hard-delete guard).
+//
+// Error mapping:
+//   - bad CSRF                   → 403
+//   - not a parent (owner/adult) → 403
+//   - malformed reward id        → 400
+//   - ErrRewardNotFound          → 404
+//   - other                      → 500
+func (h *GamificationWebHandlers) ArchiveReward(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if !authadapter.VerifyCSRF(r, h.sm) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	member, ok := authadapter.CurrentMember(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !isParent(member) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	id, err := domain.ParseRewardID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid reward id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.rewardAdminSvc.Archive(r.Context(), member.HouseholdID, id); err != nil {
+		if errors.Is(err, domain.ErrRewardNotFound) {
+			http.Error(w, "reward not found", http.StatusNotFound)
+			return
+		}
+		h.logger.ErrorContext(r.Context(), "archive reward: service error", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/rewards", http.StatusSeeOther)
+}
+
+// renderRewardAdminForm renders the create/edit reward form component at the
+// given HTTP status, mirroring WebHandlers.renderNewTaskForm's
+// render-at-status precedent.
+func (h *GamificationWebHandlers) renderRewardAdminForm(
+	w http.ResponseWriter,
+	r *http.Request,
+	status int,
+	form components.RewardAdminForm,
+	layout func(templ.Component) templ.Component,
+) {
+	content := components.RewardAdminFormPage(form)
+	if err := render.Render(r.Context(), w, status, layout(content)); err != nil {
+		h.logger.ErrorContext(r.Context(), "reward admin: render form", "error", err)
+	}
+}
+
+// parseRewardAdminForm reads the submitted form values from r, validates them
+// locally (before the service is ever called — the service re-validates the
+// same rules and is the source of truth, but a local check gives a friendlier
+// message without a round trip), and returns a sticky RewardAdminForm for
+// re-rendering. editID is "" for the create form and the reward's string id
+// for the edit form; it only affects the returned form's ID/IsEdit fields.
+// The parsed name/description/cost/imageRef/quantity are only valid when
+// validationMsg is empty.
+func parseRewardAdminForm(
+	r *http.Request,
+	sm *scs.SessionManager,
+	editID string,
+) (name, description string, costPoints int, imageRef *string, quantityAvailable *int, form components.RewardAdminForm, validationMsg string) {
+	rawName := strings.TrimSpace(r.FormValue("name"))
+	rawDescription := strings.TrimSpace(r.FormValue("description"))
+	rawCost := r.FormValue("cost_points")
+	rawImageRef := strings.TrimSpace(r.FormValue("image_ref"))
+	rawQuantity := strings.TrimSpace(r.FormValue("quantity_available"))
+
+	form = components.RewardAdminForm{
+		CSRFToken:         authadapter.GetCSRFToken(r.Context(), sm),
+		ID:                editID,
+		IsEdit:            editID != "",
+		Name:              rawName,
+		Description:       rawDescription,
+		CostPoints:        rawCost,
+		ImageRef:          rawImageRef,
+		QuantityAvailable: rawQuantity,
+	}
+
+	if rawName == "" {
+		form.Error = "Name is required."
+		return "", "", 0, nil, nil, form, form.Error
+	}
+
+	cost, err := strconv.Atoi(rawCost)
+	if err != nil || cost <= 0 {
+		form.Error = "Cost must be a positive number of points."
+		return "", "", 0, nil, nil, form, form.Error
+	}
+
+	var imageRefPtr *string
+	if rawImageRef != "" {
+		imageRefPtr = &rawImageRef
+	}
+
+	var quantityPtr *int
+	if rawQuantity != "" {
+		q, err := strconv.Atoi(rawQuantity)
+		if err != nil || q < 0 {
+			form.Error = "Quantity available must be zero or greater, or left blank for unlimited."
+			return "", "", 0, nil, nil, form, form.Error
+		}
+		quantityPtr = &q
+	}
+
+	return rawName, rawDescription, cost, imageRefPtr, quantityPtr, form, ""
+}
+
+// rewardAdminErrMessage maps a RewardAdminService validation error to a
+// user-readable message. An empty string means the error is unexpected and
+// should be treated as a 500, mirroring createTaskErrMessage's precedent.
+func rewardAdminErrMessage(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrInvalidRewardName):
+		return "Name is required."
+	case errors.Is(err, domain.ErrInvalidRewardCost):
+		return "Cost must be a positive number of points."
+	case errors.Is(err, domain.ErrInvalidRewardQuantity):
+		return "Quantity available must be zero or greater, or left blank for unlimited."
+	default:
+		return ""
+	}
+}
+
+// rewardToForm maps a persisted reward to a sticky RewardAdminForm for the
+// edit page's initial (non-error) render.
+func rewardToForm(reward *domain.Reward, csrfToken string) components.RewardAdminForm {
+	imageRef := ""
+	if reward.ImageRef != nil {
+		imageRef = *reward.ImageRef
+	}
+	quantity := ""
+	if reward.QuantityAvailable != nil {
+		quantity = strconv.Itoa(*reward.QuantityAvailable)
+	}
+	return components.RewardAdminForm{
+		CSRFToken:         csrfToken,
+		ID:                reward.ID.String(),
+		IsEdit:            true,
+		Name:              reward.Name,
+		Description:       reward.Description,
+		CostPoints:        strconv.Itoa(reward.CostPoints),
+		ImageRef:          imageRef,
+		QuantityAvailable: quantity,
+	}
+}
+
+// toRewardAdminListItems maps every reward in the household (active and
+// archived) to its admin list-row view model.
+func toRewardAdminListItems(rewards []*domain.Reward) []components.RewardAdminListItem {
+	items := make([]components.RewardAdminListItem, 0, len(rewards))
+	for _, rw := range rewards {
+		imageRef := ""
+		if rw.ImageRef != nil {
+			imageRef = *rw.ImageRef
+		}
+		items = append(items, components.RewardAdminListItem{
+			ID:          rw.ID.String(),
+			Name:        rw.Name,
+			Description: rw.Description,
+			ImageRef:    imageRef,
+			CostPoints:  rw.CostPoints,
+			StockLabel:  adminStockLabel(rw.QuantityAvailable),
+			Active:      rw.Active,
+		})
+	}
+	return items
+}
+
+// adminStockLabel renders a reward's configured cap for the admin list —
+// distinct from the storefront's remaining-stock label, since the admin view
+// shows the cap itself (what the parent set), not what's left after
+// redemptions.
+func adminStockLabel(quantityAvailable *int) string {
+	if quantityAvailable == nil {
+		return "Unlimited"
+	}
+	return fmt.Sprintf("%d available", *quantityAvailable)
 }

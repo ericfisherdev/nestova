@@ -239,7 +239,8 @@ func NewRewardPostgresRepository(dbtx db.TX) *RewardPostgresRepository {
 }
 
 // CreateReward persists a new reward in the household's catalogue. The caller
-// must set ID, HouseholdID, Name, CostPoints, and Active; the store populates
+// must set ID, HouseholdID, Name, CostPoints, and Active; Description,
+// ImageRef, and QuantityAvailable are optional (NES-126). The store populates
 // CreatedAt and UpdatedAt.
 func (r *RewardPostgresRepository) CreateReward(ctx context.Context, reward *domain.Reward) error {
 	if reward == nil {
@@ -247,20 +248,28 @@ func (r *RewardPostgresRepository) CreateReward(ctx context.Context, reward *dom
 	}
 	const q = `
 		INSERT INTO reward
-			(id, household_id, name, cost_points, active)
-		VALUES ($1, $2, $3, $4, $5)
+			(id, household_id, name, description, cost_points, image_ref, quantity_available, active)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING created_at, updated_at`
 	if err := r.dbtx.QueryRow(ctx, q,
 		reward.ID.String(),
 		reward.HouseholdID.String(),
 		reward.Name,
+		reward.Description,
 		reward.CostPoints,
+		reward.ImageRef,
+		reward.QuantityAvailable,
 		reward.Active,
 	).Scan(&reward.CreatedAt, &reward.UpdatedAt); err != nil {
 		return fmt.Errorf("create reward: %w", err)
 	}
 	return nil
 }
+
+// rewardColumns is the full column list for a [domain.Reward] row, in the
+// exact order scanReward expects. Named once here so every reward query
+// selects — and scans — the same shape (NES-126).
+const rewardColumns = `id, household_id, name, description, cost_points, image_ref, quantity_available, active, created_at, updated_at`
 
 // GetReward returns the reward with the given id within the household.
 // Returns [domain.ErrRewardNotFound] when id is unknown or belongs to another
@@ -270,8 +279,8 @@ func (r *RewardPostgresRepository) GetReward(
 	householdID household.HouseholdID,
 	id domain.RewardID,
 ) (*domain.Reward, error) {
-	const q = `
-		SELECT id, household_id, name, cost_points, active, created_at, updated_at
+	q := `
+		SELECT ` + rewardColumns + `
 		  FROM reward
 		 WHERE id           = $1
 		   AND household_id = $2`
@@ -292,8 +301,8 @@ func (r *RewardPostgresRepository) ListActiveRewards(
 	ctx context.Context,
 	householdID household.HouseholdID,
 ) ([]*domain.Reward, error) {
-	const q = `
-		SELECT id, household_id, name, cost_points, active, created_at, updated_at
+	q := `
+		SELECT ` + rewardColumns + `
 		  FROM reward
 		 WHERE household_id = $1
 		   AND active       = true
@@ -316,6 +325,176 @@ func (r *RewardPostgresRepository) ListActiveRewards(
 		return nil, fmt.Errorf("list active rewards: %w", err)
 	}
 	return rewards, nil
+}
+
+// ListStorefrontRewards returns active, in-stock rewards for the member
+// storefront (NES-126 AC2), each joined with its remaining stock. A reward is
+// excluded when quantity_available is set and the reward's non-cancelled
+// redemption count has reached it; a nil quantity_available (unlimited)
+// always qualifies. Ordered by cost_points ascending, matching
+// ListActiveRewards.
+// Returns an empty slice (not an error) when none qualify.
+func (r *RewardPostgresRepository) ListStorefrontRewards(
+	ctx context.Context,
+	householdID household.HouseholdID,
+) ([]domain.StorefrontReward, error) {
+	q := `
+		SELECT ` + rewardColumns + `, r.quantity_available - COALESCE(redeemed.count, 0) AS remaining
+		  FROM reward r
+		  LEFT JOIN (
+		           SELECT reward_id, COUNT(*) AS count
+		             FROM reward_redemption
+		            WHERE status != 'cancelled'
+		            GROUP BY reward_id
+		       ) redeemed ON redeemed.reward_id = r.id
+		 WHERE r.household_id = $1
+		   AND r.active       = true
+		   AND (r.quantity_available IS NULL OR r.quantity_available > COALESCE(redeemed.count, 0))
+		 ORDER BY r.cost_points`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list storefront rewards: %w", err)
+	}
+	defer rows.Close()
+
+	storefront := make([]domain.StorefrontReward, 0)
+	for rows.Next() {
+		reward, remaining, err := scanRewardWithRemaining(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list storefront rewards: scan: %w", err)
+		}
+		storefront = append(storefront, domain.StorefrontReward{Reward: reward, RemainingStock: remaining})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list storefront rewards: %w", err)
+	}
+	return storefront, nil
+}
+
+// ListAllRewards returns every reward for the household — active and
+// archived — for the parent-only admin catalogue view (NES-126 AC1), ordered
+// active-first then by name for a stable, scannable list.
+// Returns an empty slice (not an error) when the household has no rewards.
+func (r *RewardPostgresRepository) ListAllRewards(
+	ctx context.Context,
+	householdID household.HouseholdID,
+) ([]*domain.Reward, error) {
+	q := `
+		SELECT ` + rewardColumns + `
+		  FROM reward
+		 WHERE household_id = $1
+		 ORDER BY active DESC, name`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list all rewards: %w", err)
+	}
+	defer rows.Close()
+
+	rewards := make([]*domain.Reward, 0)
+	for rows.Next() {
+		reward, err := scanReward(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list all rewards: scan: %w", err)
+		}
+		rewards = append(rewards, reward)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list all rewards: %w", err)
+	}
+	return rewards, nil
+}
+
+// UpdateReward persists changes to an existing reward's editable catalogue
+// fields (Name, Description, CostPoints, ImageRef, QuantityAvailable) and
+// refreshes UpdatedAt. Active is untouched — see ArchiveReward. Returns
+// [domain.ErrRewardNotFound] when r.ID is unknown or belongs to another
+// household.
+func (r *RewardPostgresRepository) UpdateReward(ctx context.Context, reward *domain.Reward) error {
+	if reward == nil {
+		return errors.New("adapter: update reward: nil reward")
+	}
+	const q = `
+		UPDATE reward
+		   SET name               = $1,
+		       description        = $2,
+		       cost_points        = $3,
+		       image_ref          = $4,
+		       quantity_available = $5,
+		       updated_at         = now()
+		 WHERE id           = $6
+		   AND household_id = $7
+		RETURNING updated_at`
+	err := r.dbtx.QueryRow(ctx, q,
+		reward.Name,
+		reward.Description,
+		reward.CostPoints,
+		reward.ImageRef,
+		reward.QuantityAvailable,
+		reward.ID.String(),
+		reward.HouseholdID.String(),
+	).Scan(&reward.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrRewardNotFound
+		}
+		return fmt.Errorf("update reward: %w", err)
+	}
+	return nil
+}
+
+// ArchiveReward sets active = false on the reward, retiring it from the
+// storefront (NES-126) without touching its redemption history. Returns
+// [domain.ErrRewardNotFound] when id is unknown or belongs to another
+// household.
+func (r *RewardPostgresRepository) ArchiveReward(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.RewardID,
+) error {
+	const q = `
+		UPDATE reward
+		   SET active     = false,
+		       updated_at = now()
+		 WHERE id           = $1
+		   AND household_id = $2`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String())
+	if err != nil {
+		return fmt.Errorf("archive reward: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrRewardNotFound
+	}
+	return nil
+}
+
+// DeleteReward permanently removes a reward that has no redemption history
+// (NES-126 AC5). Returns [domain.ErrRewardNotFound] when id is unknown or
+// belongs to another household, and [domain.ErrRewardHasRedemptions] when the
+// reward_redemption_reward_fk ON DELETE RESTRICT constraint rejects the
+// delete because at least one redemption still references it.
+func (r *RewardPostgresRepository) DeleteReward(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.RewardID,
+) error {
+	const q = `
+		DELETE FROM reward
+		 WHERE id           = $1
+		   AND household_id = $2`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String())
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) &&
+			pgErr.Code == sqlstateForeignKeyViolation &&
+			pgErr.ConstraintName == constraintRewardRedemptionRewardFK {
+			return domain.ErrRewardHasRedemptions
+		}
+		return fmt.Errorf("delete reward: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrRewardNotFound
+	}
+	return nil
 }
 
 // Redeem persists a reward redemption row. The caller must set ID, HouseholdID,
@@ -481,7 +660,8 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 	return nil
 }
 
-// scanReward scans a reward row from r into a new [domain.Reward].
+// scanReward scans a reward row (rewardColumns order) from r into a new
+// [domain.Reward].
 func scanReward(r row) (*domain.Reward, error) {
 	var (
 		reward                domain.Reward
@@ -491,7 +671,10 @@ func scanReward(r row) (*domain.Reward, error) {
 		&idStr,
 		&householdIDStr,
 		&reward.Name,
+		&reward.Description,
 		&reward.CostPoints,
+		&reward.ImageRef,
+		&reward.QuantityAvailable,
 		&reward.Active,
 		&reward.CreatedAt,
 		&reward.UpdatedAt,
@@ -510,4 +693,45 @@ func scanReward(r row) (*domain.Reward, error) {
 	reward.ID = id
 	reward.HouseholdID = householdID
 	return &reward, nil
+}
+
+// scanRewardWithRemaining scans a rewardColumns row plus a trailing computed
+// "remaining" column (r.quantity_available - redeemed count) into a
+// [domain.Reward] and its remaining-stock pointer. remaining is nil when the
+// reward's QuantityAvailable is nil (unlimited stock) — Postgres propagates
+// NULL through the subtraction automatically in that case, so the same NULL
+// scan target used for QuantityAvailable works here.
+func scanRewardWithRemaining(r row) (*domain.Reward, *int, error) {
+	var (
+		reward                domain.Reward
+		idStr, householdIDStr string
+		remaining             *int
+	)
+	err := r.Scan(
+		&idStr,
+		&householdIDStr,
+		&reward.Name,
+		&reward.Description,
+		&reward.CostPoints,
+		&reward.ImageRef,
+		&reward.QuantityAvailable,
+		&reward.Active,
+		&reward.CreatedAt,
+		&reward.UpdatedAt,
+		&remaining,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	id, err := domain.ParseRewardID(idStr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan reward with remaining: %w", err)
+	}
+	householdID, err := household.ParseHouseholdID(householdIDStr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan reward with remaining: %w", err)
+	}
+	reward.ID = id
+	reward.HouseholdID = householdID
+	return &reward, remaining, nil
 }

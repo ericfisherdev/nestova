@@ -1,0 +1,4 @@
+# Generated, minified Tailwind output (produced by `make assets`) — never
+# hand-edited, so linting it flags noise from the minifier's own formatting
+# rather than real issues.
+web/static/css/app.css

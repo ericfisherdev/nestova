@@ -28,11 +28,24 @@ type RewardItem struct {
 	ID string
 	// Name is the human-readable reward name.
 	Name string
+	// Description is the reward's human-readable description (NES-126).
+	// Empty means no description was set.
+	Description string
+	// ImageRef is the reward's optional emoji/text image token (NES-126).
+	// Empty means the reward has no image reference.
+	ImageRef string
 	// CostPoints is the point cost to redeem this reward.
 	CostPoints int
 	// Affordable is true when the current member's balance >= CostPoints, i.e.
 	// the Redeem button should be active.
 	Affordable bool
+	// NeedMore is the point shortfall when Affordable is false (CostPoints
+	// minus the member's balance); 0 when Affordable is true (NES-126 AC3).
+	NeedMore int
+	// StockLabel is a pre-formatted "N left" label, or empty for unlimited
+	// stock (NES-126 AC2/AC3). The storefront query already excludes
+	// out-of-stock rewards entirely, so this is purely informational.
+	StockLabel string
 }
 
 // RewardsPage is the view model for the /rewards page.
@@ -51,6 +64,10 @@ type RewardsPage struct {
 	// InsufficientMessage is set when the previous redeem attempt was rejected
 	// due to insufficient points; empty means no error banner is shown.
 	InsufficientMessage string
+	// CanManageRewards is true for parents (owner or adult roles), who get a
+	// link to the reward admin catalogue (NES-126), mirroring
+	// TradeSections.CanViewHistory's role gate (NES-122).
+	CanManageRewards bool
 }
 
 // PointHistoryRow is the view model for one entry in the current member's
@@ -76,9 +93,14 @@ type PointHistoryRow struct {
 // A·Hearth app shell. The layout wrapper is supplied by the caller.
 templ RewardsPageComponent(page RewardsPage) {
 	<div class="p-6">
-		<div class="mb-6">
-			<h1 class="text-2xl font-semibold">Rewards &amp; Scoreboard</h1>
-			<p class="mt-1 text-sm text-ink-muted">Earn points by completing tasks and redeem them for rewards.</p>
+		<div class="mb-6 flex items-start justify-between gap-4">
+			<div>
+				<h1 class="text-2xl font-semibold">Rewards &amp; Scoreboard</h1>
+				<p class="mt-1 text-sm text-ink-muted">Earn points by completing tasks and redeem them for rewards.</p>
+			</div>
+			if page.CanManageRewards {
+				<a href="/admin/rewards" class="shrink-0 text-sm font-medium text-sage hover:underline">Manage rewards</a>
+			}
 		</div>
 		<!-- Insufficient points error banner -->
 		if page.InsufficientMessage != "" {
@@ -229,13 +251,28 @@ templ RewardsCatalog(rewards []RewardItem, csrfToken string) {
 	</div>
 }
 
-// RewardCard renders a single reward with its name, point cost, and a Redeem
-// button that is disabled when the current member cannot afford it.
+// RewardCard renders a single reward with its name, description, stock,
+// point cost, and a Redeem button. The button is disabled — and an
+// affordability badge ("You need N more points") shown in its place — when
+// the current member cannot yet afford the reward (NES-126 AC3).
 templ RewardCard(r RewardItem, csrfToken string) {
 	<li class="flex items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface-warm px-4 py-3">
 		<div class="min-w-0 flex-1">
-			<p class="truncate font-medium text-ink">{ r.Name }</p>
-			<p class="text-sm text-ink-muted">{ fmt.Sprintf("%d pts", r.CostPoints) }</p>
+			<p class="truncate font-medium text-ink">
+				if r.ImageRef != "" {
+					<span aria-hidden="true">{ r.ImageRef + " " }</span>
+				}
+				{ r.Name }
+			</p>
+			if r.Description != "" {
+				<p class="truncate text-sm text-ink-muted">{ r.Description }</p>
+			}
+			<p class="text-sm text-ink-muted">
+				{ fmt.Sprintf("%d pts", r.CostPoints) }
+				if r.StockLabel != "" {
+					{ " · " + r.StockLabel }
+				}
+			</p>
 		</div>
 		if r.Affordable {
 			<form method="post" action={ templ.SafeURL(fmt.Sprintf("/rewards/%s/redeem", r.ID)) }>
@@ -243,12 +280,15 @@ templ RewardCard(r RewardItem, csrfToken string) {
 				@Button("Redeem", ButtonPrimary, "submit")
 			</form>
 		} else {
-			<button
-				type="button"
-				disabled
-				aria-disabled="true"
-				class="inline-flex cursor-not-allowed items-center justify-center rounded-control px-4 py-2 font-medium opacity-40 bg-sage text-white shadow-warm"
-			>Redeem</button>
+			<div class="flex flex-col items-end gap-1">
+				<button
+					type="button"
+					disabled
+					aria-disabled="true"
+					class="inline-flex cursor-not-allowed items-center justify-center rounded-control px-4 py-2 font-medium opacity-40 bg-sage text-white shadow-warm"
+				>Redeem</button>
+				<span class="text-xs text-ink-muted">{ fmt.Sprintf("You need %d more", r.NeedMore) }</span>
+			</div>
 		}
 	</li>
 }

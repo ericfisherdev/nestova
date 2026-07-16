@@ -1,0 +1,254 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// View models
+// ---------------------------------------------------------------------------
+
+// RewardAdminListItem is the view model for one row in the parent-only reward
+// catalogue admin list (NES-126).
+type RewardAdminListItem struct {
+	// ID is the string form of the RewardID UUID.
+	ID string
+	// Name is the reward's display name.
+	Name string
+	// Description is the reward's human-readable description; empty means
+	// none was set.
+	Description string
+	// ImageRef is the reward's optional emoji/text image token; empty means
+	// none was set.
+	ImageRef string
+	// CostPoints is the point cost to redeem this reward.
+	CostPoints int
+	// StockLabel is "Unlimited" or "N available" — the admin-configured cap,
+	// not the storefront's post-redemption remaining count.
+	StockLabel string
+	// Active is false for an archived reward, which is shown but visually
+	// muted and offered no further Archive action.
+	Active bool
+}
+
+// RewardAdminListPage is the view model for the GET /admin/rewards page.
+type RewardAdminListPage struct {
+	// Rewards holds every reward in the household — active and archived —
+	// ordered active-first then by name (see ListAllRewards).
+	Rewards []RewardAdminListItem
+	// CSRFToken is embedded in every row's Archive form.
+	CSRFToken string
+}
+
+// RewardAdminForm is the view model for the create/edit reward form. All
+// fields carry the last-submitted values so the form is sticky after a
+// validation error (HTTP 422 re-render). The zero value renders a blank
+// create form.
+type RewardAdminForm struct {
+	// CSRFToken is the per-session CSRF token embedded as a hidden field.
+	CSRFToken string
+	// Error is a validation error shown above the submit button. Empty means
+	// no error is shown.
+	Error string
+	// ID is the reward's string id; empty for the create form.
+	ID string
+	// IsEdit is true when this form edits an existing reward (posts to
+	// /admin/rewards/{id}) rather than creating one (posts to /admin/rewards).
+	IsEdit bool
+	// Name pre-fills the name input after a failed submission.
+	Name string
+	// Description pre-fills the description textarea after a failed submission.
+	Description string
+	// CostPoints is the last-submitted cost string (stringified int > 0).
+	CostPoints string
+	// ImageRef is the last-submitted image/emoji token string; empty means none.
+	ImageRef string
+	// QuantityAvailable is the last-submitted quantity string; empty means
+	// unlimited stock.
+	QuantityAvailable string
+}
+
+// ---------------------------------------------------------------------------
+// Admin list page
+// ---------------------------------------------------------------------------
+
+// RewardsAdminPage renders the parent-only reward catalogue: every reward,
+// active and archived, each with Edit and (for active rewards) Archive
+// actions, plus a link to create a new reward (NES-126 AC1).
+templ RewardsAdminPage(page RewardAdminListPage) {
+	<div class="p-6">
+		<div class="mb-6 flex items-center justify-between gap-4">
+			<div>
+				<h1 class="text-2xl font-semibold">Manage Rewards</h1>
+				<p class="mt-1 text-sm text-ink-muted">Create, edit, and archive the household's reward catalogue.</p>
+			</div>
+			<a
+				href="/admin/rewards/new"
+				class={ "inline-flex shrink-0 items-center justify-center rounded-control px-4 py-2 font-medium transition-colors", buttonVariantClass(ButtonPrimary) }
+			>Add reward</a>
+		</div>
+		<div class="rounded-card bg-surface p-4 shadow-warm">
+			if len(page.Rewards) == 0 {
+				<p class="text-sm text-ink-muted">No rewards yet — add one to get started.</p>
+			} else {
+				<ul class="flex flex-col gap-3">
+					for _, item := range page.Rewards {
+						@rewardAdminRow(item, page.CSRFToken)
+					}
+				</ul>
+			}
+		</div>
+		<p class="mt-4">
+			<a href="/rewards" class="text-sm font-medium text-sage hover:underline">Back to rewards</a>
+		</p>
+	</div>
+}
+
+// rewardAdminRow renders one reward's admin list entry.
+templ rewardAdminRow(item RewardAdminListItem, csrfToken string) {
+	<li
+		class={
+			"flex items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface-warm px-4 py-3",
+			templ.KV("opacity-60", !item.Active),
+		}
+	>
+		<div class="min-w-0 flex-1">
+			<p class="truncate font-medium text-ink">
+				if item.ImageRef != "" {
+					<span aria-hidden="true">{ item.ImageRef + " " }</span>
+				}
+				{ item.Name }
+				if !item.Active {
+					<span class="ml-2 rounded-control bg-surface px-2 py-0.5 text-xs font-medium text-ink-muted">Archived</span>
+				}
+			</p>
+			if item.Description != "" {
+				<p class="truncate text-sm text-ink-muted">{ item.Description }</p>
+			}
+			<p class="text-sm text-ink-muted">{ fmt.Sprintf("%d pts", item.CostPoints) } · { item.StockLabel }</p>
+		</div>
+		<div class="flex shrink-0 items-center gap-2">
+			<a
+				href={ templ.SafeURL(fmt.Sprintf("/admin/rewards/%s/edit", item.ID)) }
+				class="inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors bg-surface text-ink border border-sidebar-border hover:bg-surface-warm"
+			>Edit</a>
+			if item.Active {
+				<form method="post" action={ templ.SafeURL(fmt.Sprintf("/admin/rewards/%s/archive", item.ID)) }>
+					<input type="hidden" name="csrf_token" value={ csrfToken }/>
+					@Button("Archive", ButtonSecondary, "submit")
+				</form>
+			}
+		</div>
+	</li>
+}
+
+// ---------------------------------------------------------------------------
+// Create / edit form
+// ---------------------------------------------------------------------------
+
+// RewardAdminFormPage renders the create-or-edit reward form. The form posts
+// to /admin/rewards (create) or /admin/rewards/{id} (edit) depending on
+// form.IsEdit (NES-126 AC1).
+templ RewardAdminFormPage(form RewardAdminForm) {
+	<div class="p-6">
+		<div class="mb-6">
+			if form.IsEdit {
+				<h1 class="text-2xl font-semibold">Edit reward</h1>
+			} else {
+				<h1 class="text-2xl font-semibold">Add a reward</h1>
+			}
+			<p class="mt-1 text-sm text-ink-muted">Define what household members can redeem their points for.</p>
+		</div>
+		<div class="max-w-lg rounded-card bg-surface p-6 shadow-warm">
+			<form method="POST" action={ rewardFormAction(form) } novalidate>
+				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+				<div class="flex flex-col gap-5">
+					<!-- Name -->
+					<div class="flex flex-col gap-1">
+						<label for="rw_name" class="text-sm font-medium text-ink-secondary">Name</label>
+						<input
+							id="rw_name"
+							type="text"
+							name="name"
+							value={ form.Name }
+							autocomplete="off"
+							required
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+							placeholder="e.g. Extra screen time"
+						/>
+					</div>
+					<!-- Description -->
+					<div class="flex flex-col gap-1">
+						<label for="rw_description" class="text-sm font-medium text-ink-secondary">Description</label>
+						<textarea
+							id="rw_description"
+							name="description"
+							rows="3"
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+							placeholder="What does redeeming this reward get you?"
+						>{ form.Description }</textarea>
+					</div>
+					<!-- Image / emoji token -->
+					<div class="flex flex-col gap-1">
+						<label for="rw_image_ref" class="text-sm font-medium text-ink-secondary">Icon (emoji, optional)</label>
+						<input
+							id="rw_image_ref"
+							type="text"
+							name="image_ref"
+							value={ form.ImageRef }
+							autocomplete="off"
+							class="w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+							placeholder="🎮"
+						/>
+					</div>
+					<!-- Cost + quantity -->
+					<div class="flex flex-wrap gap-4">
+						<div class="flex flex-col gap-1">
+							<label for="rw_cost" class="text-sm font-medium text-ink-secondary">Cost (points)</label>
+							<input
+								id="rw_cost"
+								type="number"
+								name="cost_points"
+								value={ form.CostPoints }
+								min="1"
+								placeholder="20"
+								required
+								class="w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+							/>
+						</div>
+						<div class="flex flex-col gap-1">
+							<label for="rw_quantity" class="text-sm font-medium text-ink-secondary">Quantity available</label>
+							<input
+								id="rw_quantity"
+								type="number"
+								name="quantity_available"
+								value={ form.QuantityAvailable }
+								min="0"
+								placeholder="Unlimited"
+								class="w-32 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+							/>
+						</div>
+					</div>
+					<!-- Error message -->
+					if form.Error != "" {
+						<p role="alert" class="text-sm text-red-600">{ form.Error }</p>
+					}
+					<!-- Actions -->
+					<div class="flex gap-3">
+						@Button("Save reward", ButtonPrimary, "submit")
+						<a
+							href="/admin/rewards"
+							class="inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors bg-surface text-ink border border-sidebar-border hover:bg-surface-warm"
+						>Cancel</a>
+					</div>
+				</div>
+			</form>
+		</div>
+	</div>
+}
+
+// rewardFormAction returns the create or edit form's POST target.
+func rewardFormAction(form RewardAdminForm) templ.SafeURL {
+	if form.IsEdit {
+		return templ.SafeURL(fmt.Sprintf("/admin/rewards/%s", form.ID))
+	}
+	return templ.SafeURL("/admin/rewards")
+}
