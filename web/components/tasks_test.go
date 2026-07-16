@@ -293,7 +293,7 @@ func TestTaskGroupsFragment_RendersContainerAndGroups(t *testing.T) {
 			},
 		},
 	}
-	out := renderString(t, components.TaskGroupsFragment(groups))
+	out := renderString(t, components.TaskGroupsFragment(groups, false))
 
 	if !strings.Contains(out, `id="task-groups"`) {
 		t.Errorf("fragment missing the stable #task-groups container id: %q", out)
@@ -311,13 +311,39 @@ func TestTaskGroupsFragment_RendersContainerAndGroups(t *testing.T) {
 // are no groups — the same shape GET /tasks/groups returns after the last
 // remaining claim on the page reverts to claimable with nothing else pending.
 func TestTaskGroupsFragment_Empty(t *testing.T) {
-	out := renderString(t, components.TaskGroupsFragment(nil))
+	out := renderString(t, components.TaskGroupsFragment(nil, false))
 
 	if !strings.Contains(out, `id="task-groups"`) {
 		t.Errorf("empty fragment missing the #task-groups container: %q", out)
 	}
 	if !strings.Contains(out, "all caught up") {
 		t.Errorf("empty fragment missing empty-state message: %q", out)
+	}
+}
+
+// TestTaskGroupsFragment_OOB verifies that oob=true adds hx-swap-oob="true"
+// to the #task-groups container (NES-122), so a chore trade's Accept
+// response can refresh an already-open /tasks page's groups list as an
+// out-of-band update alongside its own primary swap target.
+func TestTaskGroupsFragment_OOB(t *testing.T) {
+	out := renderString(t, components.TaskGroupsFragment(nil, true))
+
+	if !strings.Contains(out, `id="task-groups"`) {
+		t.Errorf("oob fragment missing the #task-groups container: %q", out)
+	}
+	if !strings.Contains(out, `hx-swap-oob="true"`) {
+		t.Errorf("oob fragment missing hx-swap-oob=\"true\": %q", out)
+	}
+}
+
+// TestTaskGroupsFragment_NotOOB verifies that oob=false (the default used by
+// TasksPage and GET /tasks/groups) never adds hx-swap-oob, so the normal
+// primary-swap response shape is unchanged.
+func TestTaskGroupsFragment_NotOOB(t *testing.T) {
+	out := renderString(t, components.TaskGroupsFragment(nil, false))
+
+	if strings.Contains(out, "hx-swap-oob") {
+		t.Errorf("non-oob fragment must not carry hx-swap-oob: %q", out)
 	}
 }
 

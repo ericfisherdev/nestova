@@ -61,7 +61,13 @@ var _ tasksdomain.RecurringTaskRepository = fakeRecurringTaskRepo{}
 // completeErr, skipErr, and claimErr let individual tests inject domain errors;
 // completeCalls, skipCalls, and claimCalls record how many times each mutation
 // reached the repository so a test can prove a request passed the CSRF guard and
-// reached the service.
+// reached the service. getInst/getErr (NES-122) let a test configure Get's
+// result directly, used by the propose-trade picker/action tests; the zero
+// value preserves every other test's existing "always ErrInstanceNotFound"
+// behavior. getErrOnCall (NES-122), mirroring fakeEnqueuerWithError's
+// errOnCall, lets a test make a SPECIFIC Get call fail (1-based call count)
+// while earlier calls still succeed via getInst — used to reproduce a
+// picker-rebuild-time failure distinct from the request's earlier lookups.
 type fakeTaskInstanceRepo struct {
 	completeErr   error
 	skipErr       error
@@ -69,6 +75,10 @@ type fakeTaskInstanceRepo struct {
 	completeCalls int
 	skipCalls     int
 	claimCalls    int
+	getInst       *tasksdomain.TaskInstance
+	getErr        error
+	getCalls      int
+	getErrOnCall  int
 }
 
 func (f *fakeTaskInstanceRepo) Insert(_ context.Context, _ *tasksdomain.TaskInstance) error {
@@ -76,6 +86,16 @@ func (f *fakeTaskInstanceRepo) Insert(_ context.Context, _ *tasksdomain.TaskInst
 }
 
 func (f *fakeTaskInstanceRepo) Get(_ context.Context, _ household.HouseholdID, _ tasksdomain.TaskInstanceID) (*tasksdomain.TaskInstance, error) {
+	f.getCalls++
+	if f.getErrOnCall > 0 && f.getCalls == f.getErrOnCall {
+		return nil, tasksdomain.ErrInstanceNotFound
+	}
+	if f.getInst != nil {
+		return f.getInst, nil
+	}
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return nil, tasksdomain.ErrInstanceNotFound
 }
 
@@ -84,6 +104,10 @@ func (f *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, _ household.Ho
 }
 
 func (f *fakeTaskInstanceRepo) ListStanding(_ context.Context, _ household.HouseholdID) ([]*tasksdomain.TaskInstance, error) {
+	return nil, nil
+}
+
+func (f *fakeTaskInstanceRepo) ListTradeableAssignedToOthers(_ context.Context, _ household.HouseholdID, _ household.MemberID) ([]*tasksdomain.TaskInstance, error) {
 	return nil, nil
 }
 
@@ -170,7 +194,7 @@ func buildTaskTestHandler(instanceRepo *fakeTaskInstanceRepo) http.Handler {
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

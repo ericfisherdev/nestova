@@ -1,12 +1,15 @@
 package components
 
-// Dashboard is the home content: a top bar plus a responsive grid of
-// placeholder cards, one per feature area. It renders into the Layout shell.
-templ Dashboard() {
+// Dashboard is the home content: the pending chore-trade cards (NES-122,
+// rendered only when the viewing member has any), a top bar, and a
+// responsive grid of placeholder cards, one per feature area. It renders
+// into the Layout shell.
+templ Dashboard(trades TradeSections) {
 	<div class="p-6">
 		<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
 			<h1 class="text-2xl font-semibold">Dashboard</h1>
 		</div>
+		@TradeProposalsSection(trades)
 		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 			@Card("Calendar") {
 				<p>Upcoming family events will appear here.</p>

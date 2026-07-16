@@ -256,9 +256,26 @@ func (h *WebHandlers) Groups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	groups := groupTaskRows(rows)
-	if err := render.Render(r.Context(), w, http.StatusOK, components.TaskGroupsFragment(groups)); err != nil {
+	if err := render.Render(r.Context(), w, http.StatusOK, components.TaskGroupsFragment(groups, false)); err != nil {
 		h.logger.ErrorContext(r.Context(), "tasks: render group refresh", "error", err)
 	}
+}
+
+// BuildGroups rebuilds the current grouped task list without rendering it.
+// It is the read half of Groups, exported so a sibling handler type can
+// refresh #task-groups after mutating a task instance outside this package's
+// own mutation endpoints — specifically, TradeWebHandlers.Accept (NES-122),
+// which swaps two instances' assignees and must reflect that in an
+// already-open /tasks page the same way a claim's expiry already does.
+// Keeping this as a narrow, single-method capability (rather than exposing
+// WebHandlers' full read/write surface to TradeWebHandlers) is why it is
+// consumed through the adapter's own minimal taskGroupsBuilder interface.
+func (h *WebHandlers) BuildGroups(r *http.Request, member *household.Member) ([]components.TaskGroup, error) {
+	rows, err := h.buildTaskRows(r, member)
+	if err != nil {
+		return nil, err
+	}
+	return groupTaskRows(rows), nil
 }
 
 // NewTaskPage handles GET /tasks/new. It loads the household member list for the
@@ -651,7 +668,7 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 	for _, inst := range combined {
 		// taskMeta is keyed only by ACTIVE recurring tasks, so a missing entry
 		// (nil) is rendered as "(archived)" by instanceToRow.
-		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today))
+		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today, member.ID))
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -665,7 +682,8 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 
 // instanceToRow maps a single task instance to its TaskRow view model. meta is
 // the parent recurring task (nil renders as "(archived)"); memberByID resolves
-// the assignee's name and color. It is shared by buildTaskRows and the
+// the assignee's name and color; viewerID is the member currently viewing the
+// list, used to compute Mine (NES-122). It is shared by buildTaskRows and the
 // single-row partial returned after a complete/skip/claim mutation.
 func (h *WebHandlers) instanceToRow(
 	ctx context.Context,
@@ -674,6 +692,7 @@ func (h *WebHandlers) instanceToRow(
 	memberByID map[household.MemberID]*household.Member,
 	csrfToken string,
 	today time.Time,
+	viewerID household.MemberID,
 ) components.TaskRow {
 	title, category := "(archived)", "chore"
 	if meta != nil {
@@ -743,6 +762,8 @@ func (h *WebHandlers) instanceToRow(
 		Standing:          standing,
 		ClaimExpiresAtISO: claimExpiresAtISO,
 		CSRFToken:         csrfToken,
+		Mine:              inst.AssigneeID != nil && *inst.AssigneeID == viewerID,
+		Tradeable:         domain.IsInstanceTradeable(inst),
 	}
 }
 
@@ -778,7 +799,7 @@ func (h *WebHandlers) buildInstanceRow(r *http.Request, member *household.Member
 	}
 	csrfToken := authadapter.GetCSRFToken(r.Context(), h.sm)
 	today := domain.DateOf(time.Now())
-	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today), nil
+	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today, member.ID), nil
 }
 
 // dueLabel renders a due date relative to the supplied reference date today

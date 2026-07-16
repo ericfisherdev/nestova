@@ -79,26 +79,26 @@ func (r *fakeChoreTradeRepo) hasLiveProposalLocked(offeredID, requestedID domain
 	return false
 }
 
-func (r *fakeChoreTradeRepo) Propose(_ context.Context, householdID household.HouseholdID, trade *domain.ChoreTrade) error {
+func (r *fakeChoreTradeRepo) Propose(_ context.Context, householdID household.HouseholdID, trade *domain.ChoreTrade) (domain.ProposedTrade, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	offered := r.findInstanceLocked(householdID, trade.OfferedInstanceID)
 	requested := r.findInstanceLocked(householdID, trade.RequestedInstanceID)
 	if offered == nil || requested == nil {
-		return domain.ErrInstanceNotFound
+		return domain.ProposedTrade{}, domain.ErrInstanceNotFound
 	}
 	if !domain.IsInstanceTradeable(offered) || !domain.IsInstanceTradeable(requested) {
-		return domain.ErrInstanceNotTradeable
+		return domain.ProposedTrade{}, domain.ErrInstanceNotTradeable
 	}
 	if offered.AssigneeID == nil || *offered.AssigneeID != trade.ProposerID {
-		return domain.ErrNotYourChore
+		return domain.ProposedTrade{}, domain.ErrNotYourChore
 	}
 	if requested.AssigneeID == nil || *requested.AssigneeID != trade.ResponderID {
-		return domain.ErrNotYourChore
+		return domain.ProposedTrade{}, domain.ErrNotYourChore
 	}
 	if r.hasLiveProposalLocked(trade.OfferedInstanceID, trade.RequestedInstanceID) {
-		return domain.ErrInstanceNotTradeable
+		return domain.ProposedTrade{}, domain.ErrInstanceNotTradeable
 	}
 
 	expiresAt := *offered.DueOn
@@ -112,7 +112,15 @@ func (r *fakeChoreTradeRepo) Propose(_ context.Context, householdID household.Ho
 	trade.ExpiresAt = expiresAt
 	snapshot := *trade
 	r.trades = append(r.trades, &snapshot)
-	return nil
+
+	return domain.ProposedTrade{
+		TradeID:        trade.ID,
+		HouseholdID:    householdID,
+		ProposerID:     trade.ProposerID,
+		ResponderID:    trade.ResponderID,
+		OfferedTitle:   r.titles[trade.OfferedInstanceID],
+		RequestedTitle: r.titles[trade.RequestedInstanceID],
+	}, nil
 }
 
 func (r *fakeChoreTradeRepo) Get(_ context.Context, householdID household.HouseholdID, id domain.ChoreTradeID) (*domain.ChoreTrade, error) {
@@ -184,17 +192,23 @@ func (r *fakeChoreTradeRepo) Decline(
 	householdID household.HouseholdID,
 	id domain.ChoreTradeID,
 	responderID household.MemberID,
-) error {
+) (domain.DeclinedTrade, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	tr := r.findTradeLocked(householdID, id)
 	if tr == nil || tr.Status != domain.TradeProposed || tr.ResponderID != responderID {
-		return domain.ErrTradeNotPending
+		return domain.DeclinedTrade{}, domain.ErrTradeNotPending
 	}
 	now := time.Now()
 	tr.Status = domain.TradeDeclined
 	tr.ResolvedAt = &now
-	return nil
+	return domain.DeclinedTrade{
+		TradeID:        tr.ID,
+		HouseholdID:    tr.HouseholdID,
+		ProposerID:     tr.ProposerID,
+		OfferedTitle:   r.titles[tr.OfferedInstanceID],
+		RequestedTitle: r.titles[tr.RequestedInstanceID],
+	}, nil
 }
 
 func (r *fakeChoreTradeRepo) Cancel(
@@ -243,6 +257,57 @@ func (r *fakeChoreTradeRepo) SweepExpiredTrades(_ context.Context, asOf time.Tim
 		}
 	}
 	return expired, nil
+}
+
+// toTradeSummaryLocked converts tr to a domain.TradeSummary using r.titles
+// for both sides' titles, mirroring the real adapter's joined projection
+// (NES-122). Points are left at 0 — the fake never tracks them, and neither
+// ListPendingByMember nor ListHistory is exercised by TradeService's own
+// unit tests for title/point content (they are read-only queries consumed
+// directly by the web handlers, tested at the adapter/handler layers
+// instead). Caller must hold r.mu.
+func (r *fakeChoreTradeRepo) toTradeSummaryLocked(tr *domain.ChoreTrade) domain.TradeSummary {
+	return domain.TradeSummary{
+		TradeID:        tr.ID,
+		HouseholdID:    tr.HouseholdID,
+		ProposerID:     tr.ProposerID,
+		ResponderID:    tr.ResponderID,
+		OfferedTitle:   r.titles[tr.OfferedInstanceID],
+		RequestedTitle: r.titles[tr.RequestedInstanceID],
+		Status:         tr.Status,
+		CreatedAt:      tr.CreatedAt,
+		ResolvedAt:     tr.ResolvedAt,
+	}
+}
+
+// ListPendingByMember and ListHistory are not exercised by TradeService's own
+// unit tests (they are read-only queries consumed directly by the web
+// handlers, tested at the adapter/handler layers instead) — these stubs
+// exist only to satisfy domain.ChoreTradeRepository so fakeChoreTradeRepo
+// remains a valid substitute wherever the port is required.
+func (r *fakeChoreTradeRepo) ListPendingByMember(_ context.Context, householdID household.HouseholdID, memberID household.MemberID) ([]domain.TradeSummary, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var pending []domain.TradeSummary
+	for _, tr := range r.trades {
+		if tr.HouseholdID == householdID && tr.Status == domain.TradeProposed &&
+			(tr.ProposerID == memberID || tr.ResponderID == memberID) {
+			pending = append(pending, r.toTradeSummaryLocked(tr))
+		}
+	}
+	return pending, nil
+}
+
+func (r *fakeChoreTradeRepo) ListHistory(_ context.Context, householdID household.HouseholdID) ([]domain.TradeSummary, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var history []domain.TradeSummary
+	for _, tr := range r.trades {
+		if tr.HouseholdID == householdID {
+			history = append(history, r.toTradeSummaryLocked(tr))
+		}
+	}
+	return history, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +385,51 @@ func TestTradeService_Propose_Success(t *testing.T) {
 	}
 	if !trade.ExpiresAt.Equal(due) {
 		t.Errorf("ExpiresAt = %v, want the earlier due date %v", trade.ExpiresAt, due)
+	}
+}
+
+// TestTradeService_Propose_EnqueuesResponderNotification covers NES-122's
+// "proposal received" notification: a successful Propose enqueues exactly
+// one in-app notification, addressed to the responder.
+func TestTradeService_Propose_EnqueuesResponderNotification(t *testing.T) {
+	repo := newFakeChoreTradeRepo()
+	enqueuer := newFakeEnqueuer()
+	proposer, responder := household.NewMemberID(), household.NewMemberID()
+	due := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	offered := repo.seedInstance(newTradeTestInstance(proposer, due), "Vacuum")
+	requested := repo.seedInstance(newTradeTestInstance(responder, due), "Dishes")
+
+	svc := newTestTradeService(t, repo, enqueuer)
+	if _, err := svc.Propose(context.Background(), tradeTestHousehold, proposer, responder, offered.ID, requested.ID); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+
+	if len(enqueuer.notifications) != 1 {
+		t.Fatalf("enqueued notifications = %d, want 1", len(enqueuer.notifications))
+	}
+	n := enqueuer.notifications[0]
+	if n.MemberID == nil || *n.MemberID != responder {
+		t.Errorf("notification MemberID = %v, want responder %v", n.MemberID, responder)
+	}
+}
+
+// TestTradeService_Propose_FailedProposal_NoNotification verifies that a
+// Propose call rejected before persistence (here: self-trade) never reaches
+// the enqueuer — there is nothing to notify about.
+func TestTradeService_Propose_FailedProposal_NoNotification(t *testing.T) {
+	repo := newFakeChoreTradeRepo()
+	enqueuer := newFakeEnqueuer()
+	member := household.NewMemberID()
+	due := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	offered := repo.seedInstance(newTradeTestInstance(member, due), "Vacuum")
+	requested := repo.seedInstance(newTradeTestInstance(member, due), "Dishes")
+
+	svc := newTestTradeService(t, repo, enqueuer)
+	if _, err := svc.Propose(context.Background(), tradeTestHousehold, member, member, offered.ID, requested.ID); !errors.Is(err, domain.ErrTradeSelf) {
+		t.Fatalf("Propose(self) error = %v, want ErrTradeSelf", err)
+	}
+	if len(enqueuer.notifications) != 0 {
+		t.Errorf("enqueued notifications = %d, want 0 (proposal was rejected)", len(enqueuer.notifications))
 	}
 }
 
@@ -545,8 +655,11 @@ func TestTradeService_Accept_EnqueuesBothPartyNotifications(t *testing.T) {
 		t.Fatalf("Accept: %v", err)
 	}
 
-	if len(enqueuer.notifications) != 2 {
-		t.Fatalf("enqueued notifications = %d, want 2", len(enqueuer.notifications))
+	// 3, not 2: seedProposedTrade's own Propose call already enqueued one
+	// "proposal received" notification to the responder; Accept then adds its
+	// own two (one per party).
+	if len(enqueuer.notifications) != 3 {
+		t.Fatalf("enqueued notifications = %d, want 3 (1 from Propose + 2 from Accept)", len(enqueuer.notifications))
 	}
 	addressees := map[household.MemberID]bool{}
 	for _, n := range enqueuer.notifications {
@@ -687,6 +800,48 @@ func TestTradeService_Decline_WrongResponder_ReturnsErrTradeNotPending(t *testin
 	}
 }
 
+// TestTradeService_Decline_EnqueuesProposerNotification covers NES-122's
+// "trade declined" notification: a successful Decline enqueues exactly one
+// in-app notification (beyond Propose's own), addressed to the proposer.
+func TestTradeService_Decline_EnqueuesProposerNotification(t *testing.T) {
+	repo := newFakeChoreTradeRepo()
+	// Seed through a separate service so Propose's own notification does not
+	// need to be filtered out of this test's assertions.
+	seedSvc := newTestTradeService(t, repo, newFakeEnqueuer())
+	trade, _, _, _, responder := seedProposedTrade(t, repo, seedSvc)
+
+	enqueuer := newFakeEnqueuer()
+	svc := newTestTradeService(t, repo, enqueuer)
+	if err := svc.Decline(context.Background(), tradeTestHousehold, trade.ID, responder); err != nil {
+		t.Fatalf("Decline: %v", err)
+	}
+
+	if len(enqueuer.notifications) != 1 {
+		t.Fatalf("enqueued notifications = %d, want 1", len(enqueuer.notifications))
+	}
+	n := enqueuer.notifications[0]
+	if n.MemberID == nil || *n.MemberID != trade.ProposerID {
+		t.Errorf("notification MemberID = %v, want proposer %v", n.MemberID, trade.ProposerID)
+	}
+}
+
+// TestTradeService_Decline_WrongResponder_NoNotification verifies that a
+// Decline call rejected before persistence never reaches the enqueuer.
+func TestTradeService_Decline_WrongResponder_NoNotification(t *testing.T) {
+	repo := newFakeChoreTradeRepo()
+	seedSvc := newTestTradeService(t, repo, newFakeEnqueuer())
+	trade, _, _, _, _ := seedProposedTrade(t, repo, seedSvc)
+
+	enqueuer := newFakeEnqueuer()
+	svc := newTestTradeService(t, repo, enqueuer)
+	if err := svc.Decline(context.Background(), tradeTestHousehold, trade.ID, household.NewMemberID()); !errors.Is(err, domain.ErrTradeNotPending) {
+		t.Fatalf("Decline(wrong responder) error = %v, want ErrTradeNotPending", err)
+	}
+	if len(enqueuer.notifications) != 0 {
+		t.Errorf("enqueued notifications = %d, want 0 (decline was rejected)", len(enqueuer.notifications))
+	}
+}
+
 func TestTradeService_Cancel_NoAssignmentChange(t *testing.T) {
 	repo := newFakeChoreTradeRepo()
 	svc := newTestTradeService(t, repo, newFakeEnqueuer())
@@ -744,11 +899,22 @@ func TestTradeService_ExpireTrades_NoAssignmentChangeAndNotifiesProposer(t *test
 		t.Error("ExpireTrades must not change either instance's assignee")
 	}
 
-	if len(enqueuer.notifications) != 1 {
-		t.Fatalf("enqueued notifications = %d, want 1", len(enqueuer.notifications))
+	// 2, not 1: seedProposedTrade's own Propose call already enqueued one
+	// "proposal received" notification to the responder; ExpireTrades then
+	// adds its own expiry notification to the proposer. Since Propose runs
+	// first, index order is not assumed — the expiry notification is found
+	// by its addressee instead.
+	if len(enqueuer.notifications) != 2 {
+		t.Fatalf("enqueued notifications = %d, want 2 (1 from Propose + 1 from ExpireTrades)", len(enqueuer.notifications))
 	}
-	if got := enqueuer.notifications[0].MemberID; got == nil || *got != proposer {
-		t.Errorf("notification MemberID = %v, want proposer %v", got, proposer)
+	var foundExpiryNotification bool
+	for _, n := range enqueuer.notifications {
+		if n.MemberID != nil && *n.MemberID == proposer && n.Title == "Chore trade proposal expired" {
+			foundExpiryNotification = true
+		}
+	}
+	if !foundExpiryNotification {
+		t.Error("no expiry notification addressed to the proposer")
 	}
 }
 
@@ -793,9 +959,15 @@ func TestTradeService_ExpireTrades_SweepError_ReturnsError(t *testing.T) {
 // Accept's doc).
 func TestTradeService_Accept_SucceedsAndAttemptsBothRecipientsWhenEnqueueFails(t *testing.T) {
 	repo := newFakeChoreTradeRepo()
+	// Seed through a separate, non-failing service: seedProposedTrade's own
+	// Propose call enqueues its own "proposal received" notification, which
+	// must not consume errOnCall's budget — this test is exclusively about
+	// Accept's own two-recipient enqueue resilience.
+	seedSvc := newTestTradeService(t, repo, newFakeEnqueuer())
+	trade, _, _, _, responder := seedProposedTrade(t, repo, seedSvc)
+
 	failingEnqueuer := &fakeEnqueuerWithError{errOnCall: 1} // fail only the first attempt
 	svc := newTestTradeService(t, repo, failingEnqueuer)
-	trade, _, _, _, responder := seedProposedTrade(t, repo, svc)
 
 	err := svc.Accept(context.Background(), tradeTestHousehold, trade.ID, responder, trade.ExpiresAt.Add(-time.Hour))
 	if err != nil {
@@ -827,11 +999,15 @@ func TestTradeService_Accept_SucceedsAndAttemptsBothRecipientsWhenEnqueueFails(t
 // trade must still read back as TradeExpired.
 func TestTradeService_ExpireTrades_EnqueueFails_ReturnsErrorButTradeStaysExpired(t *testing.T) {
 	repo := newFakeChoreTradeRepo()
+	// Seed through a separate, non-failing service (NES-122: Propose now
+	// enqueues its own "proposal received" notification, which must not
+	// consume errOnCall's budget — this test is exclusively about
+	// ExpireTrades' own enqueue-failure contract).
+	seedSvc := newTestTradeService(t, repo, newFakeEnqueuer())
+	trade, _, _, _, _ := seedProposedTrade(t, repo, seedSvc)
+
 	failingEnqueuer := &fakeEnqueuerWithError{errOnCall: 1}
 	svc := newTestTradeService(t, repo, failingEnqueuer)
-	// Propose never touches the enqueuer, so seeding through svc itself
-	// (rather than a separate non-failing service) is safe here.
-	trade, _, _, _, _ := seedProposedTrade(t, repo, svc)
 
 	err := svc.ExpireTrades(context.Background(), trade.ExpiresAt.Add(time.Second))
 	if err == nil {

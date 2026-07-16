@@ -209,3 +209,75 @@ type ExpiredTrade struct {
 	OfferedTitle   string
 	RequestedTitle string
 }
+
+// ProposedTrade carries the fields needed to build and route the
+// trade-proposal-received notification to the responder immediately after
+// [ChoreTradeRepository.Propose] persists a new trade (NES-122), mirroring
+// [AcceptedTrade] and [ExpiredTrade]'s shape: the adapter resolves both
+// instances' titles within the same transaction as the insert, so the app
+// layer never needs its own [TaskInstanceRepository]/[RecurringTaskRepository]
+// dependency just to describe the proposal in a notification body.
+type ProposedTrade struct {
+	TradeID        ChoreTradeID
+	HouseholdID    household.HouseholdID
+	ProposerID     household.MemberID
+	ResponderID    household.MemberID
+	OfferedTitle   string
+	RequestedTitle string
+}
+
+// DeclinedTrade carries the fields needed to build and route the
+// trade-declined notification to the proposer after
+// [ChoreTradeRepository.Decline] resolves a trade against acceptance
+// (NES-122), mirroring [AcceptedTrade]'s shape.
+type DeclinedTrade struct {
+	TradeID        ChoreTradeID
+	HouseholdID    household.HouseholdID
+	ProposerID     household.MemberID
+	OfferedTitle   string
+	RequestedTitle string
+}
+
+// ---------------------------------------------------------------------------
+// Read-model projections
+// ---------------------------------------------------------------------------
+
+// TradeHistoryLimit caps how many rows [ChoreTradeRepository.ListHistory]
+// returns, newest first (NES-122). The parent-only trade-history page is a
+// recent-activity view, not an unbounded audit log: without a cap, a
+// household's full trade history would grow the query (and the page) without
+// bound for as long as the household keeps trading chores.
+const TradeHistoryLimit = 50
+
+// TradeSummary is a read-only, denormalized view of a chore_trade row joined
+// with both referenced instances' recurring-task titles and point values
+// (NES-122). It is what [ChoreTradeRepository.ListPendingByMember] and
+// [ChoreTradeRepository.ListHistory] return, so a caller can render a trade
+// card or history row directly, without resolving each side's title/points
+// via its own [TaskInstanceRepository.Get] + [RecurringTaskRepository.Get]
+// pair per trade — the N+1 shape those two methods originally required of
+// their callers before this type replaced it.
+//
+// OfferedTitle/RequestedTitle render "(archived)" (with the corresponding
+// Points left at 0) when the parent recurring task is inactive, mirroring
+// WebHandlers.buildInstanceRow's precedent for the live task list — an
+// inactive task's title is not shown as if it were still a going concern.
+// Member display names are deliberately NOT included here: unlike titles
+// (which require the tasks bounded context's own task_instance/
+// recurring_task join), a member's display name is already resolved in a
+// single household.HouseholdRepository.ListMembers call by every caller of
+// this type, so joining it here would duplicate a lookup that is already
+// O(1) rather than eliminate a real N+1.
+type TradeSummary struct {
+	TradeID         ChoreTradeID
+	HouseholdID     household.HouseholdID
+	ProposerID      household.MemberID
+	ResponderID     household.MemberID
+	OfferedTitle    string
+	OfferedPoints   int
+	RequestedTitle  string
+	RequestedPoints int
+	Status          TradeStatus
+	CreatedAt       time.Time
+	ResolvedAt      *time.Time
+}

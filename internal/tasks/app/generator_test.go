@@ -211,6 +211,22 @@ func (r *fakeTaskInstanceRepo) ListStanding(_ context.Context, householdID house
 	return out, nil
 }
 
+// ListTradeableAssignedToOthers is the in-memory counterpart of the NES-122
+// picker query: every instance satisfying domain.IsInstanceTradeable that is
+// assigned to a member other than excludeMemberID.
+func (r *fakeTaskInstanceRepo) ListTradeableAssignedToOthers(_ context.Context, householdID household.HouseholdID, excludeMemberID household.MemberID) ([]*domain.TaskInstance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.TaskInstance
+	for _, inst := range r.instances {
+		if inst.HouseholdID == householdID && domain.IsInstanceTradeable(inst) &&
+			inst.AssigneeID != nil && *inst.AssigneeID != excludeMemberID {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
+}
+
 func (r *fakeTaskInstanceRepo) LatestDueOn(_ context.Context, householdID household.HouseholdID, id domain.RecurringTaskID) (time.Time, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
