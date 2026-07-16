@@ -10,7 +10,30 @@ import (
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
+	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
+
+// seedReward is one example reward seeded into every new household's
+// catalogue on first-run onboarding (NES-126), so the storefront is never
+// empty. imageRef is a plain emoji token per NES-126's "simple optional
+// emoji/text field" decision for v1 — no image upload/picker is involved.
+type seedReward struct {
+	name        string
+	description string
+	imageRef    string
+	costPoints  int
+}
+
+// householdRewardSeeds are the example rewards every new household starts
+// with. Parents can edit or archive any of them immediately from
+// /admin/rewards; none carry a quantity cap (unlimited stock).
+var householdRewardSeeds = []seedReward{
+	{name: "Extra screen time", description: "30 minutes of extra screen time", imageRef: "🎮", costPoints: 20},
+	{name: "Choose dinner", description: "Pick what's for dinner one night this week", imageRef: "🍽️", costPoints: 30},
+	{name: "Stay-up-late pass", description: "Stay up 30 minutes past bedtime", imageRef: "🌙", costPoints: 25},
+	{name: "Movie night pick", description: "Choose the family movie", imageRef: "🎬", costPoints: 15},
+}
 
 // onboardingAdvisoryLock is a fixed key for the transaction-scoped advisory lock
 // that serializes first-run household provisioning across connections.
@@ -73,7 +96,13 @@ func (p *txProvisioner) ProvisionHousehold(
 		if err := hr.AddMember(ctx, owner); err != nil {
 			return err
 		}
-		return cr.SetPassword(ctx, owner.ID, email, passwordHash)
+		if err := cr.SetPassword(ctx, owner.ID, email, passwordHash); err != nil {
+			return err
+		}
+		// NES-126: seed the example reward catalogue in the same transaction so
+		// a new household's storefront is never empty, and a failure here rolls
+		// back the whole onboarding unit of work like every other step.
+		return seedHouseholdRewards(ctx, tasksadapter.NewRewardPostgresRepository(tx), hh.ID)
 	})
 }
 
@@ -121,6 +150,39 @@ func (p *txProvisioner) withTx(
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// rewardCreator is the minimal capability seedHouseholdRewards needs (ISP): it
+// only ever creates rewards, never reads or mutates them. Satisfied by
+// *tasksadapter.RewardPostgresRepository at the composition root and by a
+// fake in unit tests, so the seeding logic is hermetically testable without a
+// database.
+type rewardCreator interface {
+	CreateReward(ctx context.Context, r *tasksdomain.Reward) error
+}
+
+// seedHouseholdRewards persists householdRewardSeeds as active, unlimited-
+// stock rewards in the new household's catalogue (NES-126). Called inside
+// ProvisionHousehold's transaction, so a failure here rolls back the whole
+// onboarding unit of work rather than leaving a household with a partially
+// seeded — or empty — reward catalogue.
+func seedHouseholdRewards(ctx context.Context, rewards rewardCreator, householdID household.HouseholdID) error {
+	for _, seed := range householdRewardSeeds {
+		imageRef := seed.imageRef
+		reward := &tasksdomain.Reward{
+			ID:          tasksdomain.NewRewardID(),
+			HouseholdID: householdID,
+			Name:        seed.name,
+			Description: seed.description,
+			ImageRef:    &imageRef,
+			CostPoints:  seed.costPoints,
+			Active:      true,
+		}
+		if err := rewards.CreateReward(ctx, reward); err != nil {
+			return fmt.Errorf("seed reward %q: %w", seed.name, err)
+		}
 	}
 	return nil
 }

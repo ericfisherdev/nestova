@@ -128,6 +128,24 @@ func (fakeRewardRepo) ListActiveRewards(_ context.Context, _ household.Household
 	return nil, nil
 }
 
+func (fakeRewardRepo) ListStorefrontRewards(_ context.Context, _ household.HouseholdID) ([]tasksdomain.StorefrontReward, error) {
+	return nil, nil
+}
+
+func (fakeRewardRepo) ListAllRewards(_ context.Context, _ household.HouseholdID) ([]*tasksdomain.Reward, error) {
+	return nil, nil
+}
+
+func (fakeRewardRepo) UpdateReward(_ context.Context, _ *tasksdomain.Reward) error { return nil }
+
+func (fakeRewardRepo) ArchiveReward(_ context.Context, _ household.HouseholdID, _ tasksdomain.RewardID) error {
+	return nil
+}
+
+func (fakeRewardRepo) DeleteReward(_ context.Context, _ household.HouseholdID, _ tasksdomain.RewardID) error {
+	return nil
+}
+
 func (fakeRewardRepo) Redeem(_ context.Context, _ *tasksdomain.RewardRedemption) error {
 	return nil
 }
@@ -152,10 +170,12 @@ func newTestGamificationHandlers(
 ) *tasksadapter.GamificationWebHandlers {
 	rewardRepo := fakeRewardRepo{}
 	rewardSvc := tasksapp.NewRewardService(rewardRepo, logger)
+	rewardAdminSvc := tasksapp.NewRewardAdminService(rewardRepo, logger)
 	return tasksadapter.NewGamificationWebHandlers(
 		fakePointLedgerRepo{},
 		rewardRepo,
 		rewardSvc,
+		rewardAdminSvc,
 		instanceRepo,
 		householdRepo,
 		sm,

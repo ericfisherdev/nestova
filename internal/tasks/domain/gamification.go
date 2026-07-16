@@ -146,10 +146,26 @@ type Reward struct {
 	ID          RewardID
 	HouseholdID household.HouseholdID
 	Name        string
+	// Description is a human-readable explanation of what the reward is
+	// worth redeeming for. Never nil; a reward with no description stored has
+	// the zero value "" (NES-126).
+	Description string
 	CostPoints  int
-	Active      bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// ImageRef is an optional reference to the reward's image, e.g. an emoji
+	// token ("🎮") or a photo identifier. NES-126 deliberately keeps this a
+	// simple optional text field for v1 — no image-picker/upload UI is built
+	// against it yet. Nil means the reward has no image/emoji token.
+	ImageRef *string
+	// QuantityAvailable is the reward's remaining stock cap. Nil means
+	// unlimited stock; a non-nil value of 0 means currently sold out. It is
+	// NOT decremented by a redemption as of NES-126 — stock depletion via
+	// fulfilment is NES-127's concern — so it functions as an admin-set cap
+	// that [RewardRepository.ListStorefrontRewards] checks against the
+	// reward's non-cancelled redemption count to compute remaining stock.
+	QuantityAvailable *int
+	Active            bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // RewardRedemption records a member's request to exchange points for a reward.
@@ -187,6 +203,30 @@ var (
 	// The NES-36 award-on-completion path uses this sentinel to implement
 	// idempotent awarding: a duplicate is treated as a no-op.
 	ErrDuplicatePointEntry = errors.New("tasks: point entry already exists for this task instance")
+
+	// ErrRewardHasRedemptions is returned by RewardRepository.DeleteReward
+	// (NES-126) when the reward has at least one redemption row. The
+	// reward_redemption_reward_fk constraint enforces this as ON DELETE
+	// RESTRICT (00024_reward_catalog_admin.sql): a reward with redemption
+	// history can never be hard-deleted, only archived (Active = false), so
+	// existing point-history entries that reference it via
+	// PointLedgerRepository.History always resolve a reward name.
+	ErrRewardHasRedemptions = errors.New("tasks: reward has redemptions and cannot be hard-deleted")
+
+	// ErrInvalidRewardName is returned by the reward admin use-cases (NES-126)
+	// when the submitted reward name is empty after trimming whitespace.
+	ErrInvalidRewardName = errors.New("tasks: reward name is required")
+
+	// ErrInvalidRewardCost is returned by the reward admin use-cases (NES-126)
+	// when the submitted cost is not a positive number of points, mirroring
+	// the reward.cost_points CHECK (cost_points > 0) constraint.
+	ErrInvalidRewardCost = errors.New("tasks: reward cost must be a positive number of points")
+
+	// ErrInvalidRewardQuantity is returned by the reward admin use-cases
+	// (NES-126) when a submitted quantity-available value is negative,
+	// mirroring the reward.quantity_available CHECK constraint. A nil
+	// quantity (unlimited stock) is always valid.
+	ErrInvalidRewardQuantity = errors.New("tasks: reward quantity available must be zero or greater")
 )
 
 // ---------------------------------------------------------------------------
@@ -262,9 +302,23 @@ type PointLedgerRepository interface {
 	History(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, limit int) ([]PointHistoryEntry, error)
 }
 
+// StorefrontReward is a read model for one reward in the member-facing
+// storefront (NES-126): the reward joined with its computed remaining stock,
+// so [RewardRepository.ListStorefrontRewards] can filter out-of-stock rewards
+// and the handler can display "N left" without a redemption-count query per
+// reward.
+type StorefrontReward struct {
+	Reward *Reward
+	// RemainingStock is Reward.QuantityAvailable minus the reward's
+	// non-cancelled redemption count, or nil when Reward.QuantityAvailable is
+	// nil (unlimited stock).
+	RemainingStock *int
+}
+
 // RewardRepository is the persistence port for [Reward] catalogue entries and
 // [RewardRedemption] records. Implementations live in the adapter layer
-// (NES-36) and are injected into application services.
+// (NES-36, extended by NES-126's admin CRUD) and are injected into
+// application services.
 //
 // All methods are tenant-scoped via household_id: a reward or redemption that
 // belongs to a different household is treated as unknown.
@@ -276,6 +330,19 @@ type PointLedgerRepository interface {
 //     another household.
 //   - ListActiveRewards returns an empty slice (not an error) when the
 //     household has no active rewards.
+//   - ListStorefrontRewards returns an empty slice (not an error) when the
+//     household has no active, in-stock rewards.
+//   - ListAllRewards returns an empty slice (not an error) when the household
+//     has no rewards at all (active or archived).
+//   - UpdateReward returns [ErrRewardNotFound] when r.ID is unknown or belongs
+//     to another household.
+//   - ArchiveReward returns [ErrRewardNotFound] when id is unknown or belongs
+//     to another household. Archiving an already-archived reward is a no-op
+//     success, not an error.
+//   - DeleteReward returns [ErrRewardNotFound] when id is unknown or belongs
+//     to another household, and [ErrRewardHasRedemptions] when the reward has
+//     at least one redemption row (the reward_redemption_reward_fk ON DELETE
+//     RESTRICT constraint rejects the delete).
 //   - Redeem expects redemption.ID, redemption.HouseholdID, redemption.RewardID,
 //     redemption.MemberID, redemption.Status, redemption.CreatedAt, and
 //     redemption.UpdatedAt set.
@@ -293,9 +360,39 @@ type RewardRepository interface {
 	// Returns [ErrRewardNotFound] when id is unknown or belongs to another household.
 	GetReward(ctx context.Context, householdID household.HouseholdID, id RewardID) (*Reward, error)
 
-	// ListActiveRewards returns all active rewards for the household.
-	// Returns an empty slice (not an error) when none exist.
+	// ListActiveRewards returns all active rewards for the household,
+	// regardless of remaining stock. Returns an empty slice (not an error)
+	// when none exist.
 	ListActiveRewards(ctx context.Context, householdID household.HouseholdID) ([]*Reward, error)
+
+	// ListStorefrontRewards returns active, in-stock rewards for the member
+	// storefront (NES-126 AC2): a reward is excluded when Active is false or
+	// when QuantityAvailable is non-nil and the reward's non-cancelled
+	// redemption count has reached it. Returns an empty slice (not an error)
+	// when none qualify.
+	ListStorefrontRewards(ctx context.Context, householdID household.HouseholdID) ([]StorefrontReward, error)
+
+	// ListAllRewards returns every reward for the household — active and
+	// archived — for the parent-only admin catalogue view (NES-126), ordered
+	// active-first then by name.
+	ListAllRewards(ctx context.Context, householdID household.HouseholdID) ([]*Reward, error)
+
+	// UpdateReward persists changes to an existing reward's editable catalogue
+	// fields (Name, Description, CostPoints, ImageRef, QuantityAvailable).
+	// Active is not touched by UpdateReward — see ArchiveReward. Returns
+	// [ErrRewardNotFound] when r.ID is unknown or belongs to another household.
+	UpdateReward(ctx context.Context, r *Reward) error
+
+	// ArchiveReward sets Active = false on the reward, retiring it from the
+	// storefront without deleting its redemption history. Returns
+	// [ErrRewardNotFound] when id is unknown or belongs to another household.
+	ArchiveReward(ctx context.Context, householdID household.HouseholdID, id RewardID) error
+
+	// DeleteReward permanently removes a reward that has no redemption
+	// history. Returns [ErrRewardNotFound] when id is unknown or belongs to
+	// another household, and [ErrRewardHasRedemptions] when the reward has at
+	// least one redemption — callers must archive such a reward instead.
+	DeleteReward(ctx context.Context, householdID household.HouseholdID, id RewardID) error
 
 	// Redeem persists a reward redemption row. The corresponding point debit is
 	// appended separately by the use-case via [PointLedgerRepository.Append].
