@@ -182,15 +182,20 @@ type TaskInstanceRepository interface {
 	// cannot be taken over.
 	//
 	// NES-117 claim-expiry semantics (evaluated against the instance's
-	// pre-update assignee_id):
-	//   - Previously unassigned (claimable, or a NES-116 standing instance) →
-	//     this is a claim on a chore not originally assigned to anyone, so
-	//     ClaimedBy/ClaimedAt are set and ClaimExpiresAt is set to
-	//     claimed_at + [ClaimWindow]. AssigneeID becomes assignee.
-	//   - Already assigned to assignee (a self-claim — always true for a
-	//     fixed/round-robin instance, whose AssigneeID is never nil) →
-	//     ClaimedBy/ClaimedAt are set but ClaimExpiresAt is cleared to nil: no
-	//     risk, since the chore was already assignee's responsibility.
+	// pre-update state):
+	//   - assignee already holds an active claim (ClaimedBy already equals
+	//     assignee) → this call only re-asserts an existing claim. ClaimedAt
+	//     and ClaimExpiresAt are left UNCHANGED — re-claiming your own claim
+	//     must never reset or clear its expiry, or a member could evade the
+	//     penalty indefinitely by calling Claim repeatedly.
+	//   - Otherwise, previously unassigned (claimable, or a NES-116 standing
+	//     instance) → this is a NEW claim on a chore not originally assigned
+	//     to anyone, so ClaimedBy/ClaimedAt are set and ClaimExpiresAt is set
+	//     to claimed_at + [ClaimWindow]. AssigneeID becomes assignee.
+	//   - Otherwise, already assigned to assignee but never claimed (a
+	//     fixed/round-robin instance's own assignee claiming it for the first
+	//     time) → ClaimedBy/ClaimedAt are set but ClaimExpiresAt is left nil:
+	//     no risk, since the chore was already assignee's responsibility.
 	//     AssigneeID is unchanged.
 	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
@@ -206,6 +211,12 @@ type TaskInstanceRepository interface {
 	// recurring task is materialised in the same transaction — the "always
 	// exactly one open standing instance" invariant does not depend on which
 	// method performed the transition.
+	//
+	// NES-117: ClaimedBy, ClaimedAt, and ClaimExpiresAt are cleared in the same
+	// transition — they describe a CURRENT claim, and a done instance has none.
+	// This applies to every terminal transition ([Complete], [CompleteAndAward],
+	// and [Skip] alike).
+	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Complete(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
@@ -235,6 +246,9 @@ type TaskInstanceRepository interface {
 	// done and returns this sentinel. The same race resolution applies when a
 	// completion and a skip target the same standing instance concurrently —
 	// exactly one transition wins and exactly one respawn happens.
+	//
+	// NES-117: ClaimedBy/ClaimedAt/ClaimExpiresAt are cleared in the same
+	// transition as [Complete] — see its doc.
 	CompleteAndAward(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
 
 	// Skip transitions the instance from pending or overdue to skipped. NES-116:
@@ -242,6 +256,12 @@ type TaskInstanceRepository interface {
 	// unassigned standing instance for the same recurring task is materialised
 	// in the same transaction, exactly as [Complete] and [CompleteAndAward] do
 	// on their own terminal transitions.
+	//
+	// NES-117: ClaimedBy/ClaimedAt/ClaimExpiresAt are cleared in the same
+	// transition as [Complete] — see its doc. AssigneeID, in contrast, is left
+	// untouched: Skip does not release the instance's assignee back to the
+	// pool the way an expiry-driven revert does.
+	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Skip(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) error
@@ -329,6 +349,13 @@ type TaskInstanceRepository interface {
 	// (an instance's specific claimed-then-expired episode) is never
 	// penalized twice, while a later, independent claim on the same instance
 	// that also expires IS penalized again on its own.
+	//
+	// Orphaned claims: a claim whose claimant's member row was deleted before
+	// expiry has ClaimedBy nil but ClaimedAt/ClaimExpiresAt still set (the
+	// member deletion nulls only ClaimedBy — see Claim's doc). Such a row is
+	// still reverted so it does not accumulate as a dangling claimed instance,
+	// but no penalty entry is appended and it is excluded from the returned
+	// slice: there is no one left to penalize or notify.
 	//
 	// Returns the reverted claims as [ExpiredClaim] values so the caller can
 	// enqueue a notification per claimant without an additional query. Returns

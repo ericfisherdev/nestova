@@ -281,7 +281,8 @@ func (r *fakeTaskInstanceRepo) respawnStandingLocked(inst *domain.TaskInstance) 
 // Complete does not award points (no ledger exists in this fake); it does not
 // accept overdue instances either — see CompleteAndAward for both differences.
 // NES-116: like every terminal transition, completing a standing instance
-// respawns its replacement.
+// respawns its replacement. NES-117: claim metadata is cleared, mirroring the
+// real adapter's UPDATE.
 func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -293,6 +294,9 @@ func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household
 			inst.Status = domain.StatusDone
 			inst.CompletedBy = &by
 			inst.CompletedAt = &at
+			inst.ClaimedBy = nil
+			inst.ClaimedAt = nil
+			inst.ClaimExpiresAt = nil
 			r.respawnStandingLocked(inst)
 			return nil
 		}
@@ -310,7 +314,8 @@ func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household
 // NES-116: when the completed instance is a standing instance, a fresh
 // pending standing instance for the same recurring task is appended, mirroring
 // the real adapter's same-transaction respawn so hermetic tests can verify
-// "always exactly one open standing instance" without a database.
+// "always exactly one open standing instance" without a database. NES-117:
+// claim metadata is cleared, mirroring the real adapter's UPDATE.
 func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -322,6 +327,9 @@ func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID h
 			inst.Status = domain.StatusDone
 			inst.CompletedBy = &by
 			inst.CompletedAt = &at
+			inst.ClaimedBy = nil
+			inst.ClaimedAt = nil
+			inst.ClaimExpiresAt = nil
 			r.respawnStandingLocked(inst)
 			return nil
 		}
@@ -332,7 +340,8 @@ func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID h
 // Skip transitions a pending instance to skipped. NES-116: skipping a
 // standing instance respawns its replacement, exactly like Complete and
 // CompleteAndAward — the "always exactly one open standing instance"
-// invariant does not depend on which terminal transition ended it.
+// invariant does not depend on which terminal transition ended it. NES-117:
+// claim metadata is cleared, mirroring the real adapter's UPDATE.
 func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -342,6 +351,9 @@ func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.Hou
 				return domain.ErrInstanceInTerminalState
 			}
 			inst.Status = domain.StatusSkipped
+			inst.ClaimedBy = nil
+			inst.ClaimedAt = nil
+			inst.ClaimExpiresAt = nil
 			r.respawnStandingLocked(inst)
 			return nil
 		}
