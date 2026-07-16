@@ -393,6 +393,170 @@ func TestEmitDueSoon_ClearFailureStillSurfacesEnqueueError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// fakeInstanceRepoWithClaimExpiry extends fakeTaskInstanceRepo with a
+// configurable SweepExpiredClaims (NES-117), mirroring
+// fakeInstanceRepoWithDueSoon.
+// ---------------------------------------------------------------------------
+
+type fakeInstanceRepoWithClaimExpiry struct {
+	*fakeTaskInstanceRepo
+	claims []domain.ExpiredClaim
+	err    error
+}
+
+func (r *fakeInstanceRepoWithClaimExpiry) SweepExpiredClaims(_ context.Context, _ time.Time) ([]domain.ExpiredClaim, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.claims, nil
+}
+
+func (r *fakeInstanceRepoWithClaimExpiry) MarkPendingOverdueAll(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
+	return nil, nil
+}
+
+// newExpiredClaim builds a domain.ExpiredClaim with a fresh instance,
+// household, and claimant for use across EmitClaimExpiry tests.
+func newExpiredClaim(penaltyPoints int) domain.ExpiredClaim {
+	return domain.ExpiredClaim{
+		InstanceID:      domain.NewTaskInstanceID(),
+		HouseholdID:     household.NewHouseholdID(),
+		RecurringTaskID: domain.NewRecurringTaskID(),
+		ClaimedBy:       household.NewMemberID(),
+		Title:           "Mow the lawn",
+		PenaltyPoints:   penaltyPoints,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EmitClaimExpiry (NES-117)
+// ---------------------------------------------------------------------------
+
+// TestEmitClaimExpiry_EnqueuesOneNotificationPerClaim verifies that
+// EmitClaimExpiry calls Enqueue once per claim returned by
+// SweepExpiredClaims, addressed to the claimant, with the penalty reflected
+// in the notification body.
+func TestEmitClaimExpiry_EnqueuesOneNotificationPerClaim(t *testing.T) {
+	enqueuer := newFakeEnqueuer()
+	claim := newExpiredClaim(5)
+
+	instRepo := &fakeInstanceRepoWithClaimExpiry{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		claims:               []domain.ExpiredClaim{claim},
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	asOf := time.Date(2025, 4, 1, 9, 30, 0, 0, time.UTC)
+	if emitErr := r.EmitClaimExpiry(context.Background(), asOf); emitErr != nil {
+		t.Fatalf("EmitClaimExpiry: %v", emitErr)
+	}
+
+	if len(enqueuer.notifications) != 1 {
+		t.Fatalf("enqueued %d notifications, want 1", len(enqueuer.notifications))
+	}
+	n := enqueuer.notifications[0]
+	if n.HouseholdID != claim.HouseholdID {
+		t.Errorf("HouseholdID = %v, want %v", n.HouseholdID, claim.HouseholdID)
+	}
+	if n.MemberID == nil || *n.MemberID != claim.ClaimedBy {
+		t.Errorf("MemberID = %v, want %v", n.MemberID, claim.ClaimedBy)
+	}
+	if n.Channel != notifydomain.ChannelInApp {
+		t.Errorf("Channel = %v, want inapp", n.Channel)
+	}
+	wantSourceID := uuid.UUID(claim.InstanceID)
+	if n.SourceID == nil || *n.SourceID != wantSourceID {
+		t.Errorf("SourceID = %v, want %v", n.SourceID, wantSourceID)
+	}
+	if n.SourceType != "task_instance" {
+		t.Errorf("SourceType = %q, want task_instance", n.SourceType)
+	}
+	if !n.ScheduledFor.Equal(asOf) {
+		t.Errorf("ScheduledFor = %v, want asOf %v", n.ScheduledFor, asOf)
+	}
+	if n.Status != notifydomain.StatusPending {
+		t.Errorf("Status = %v, want StatusPending", n.Status)
+	}
+	if want := "Your claim on Mow the lawn expired, -5 points."; n.Body != want {
+		t.Errorf("Body = %q, want %q", n.Body, want)
+	}
+}
+
+// TestEmitClaimExpiry_SweepError_ReturnsError verifies that an error from
+// SweepExpiredClaims is propagated and no notifications are enqueued.
+func TestEmitClaimExpiry_SweepError_ReturnsError(t *testing.T) {
+	enqueuer := newFakeEnqueuer()
+	wantErr := errors.New("db: sweep failed")
+
+	instRepo := &fakeInstanceRepoWithClaimExpiry{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		err:                  wantErr,
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	err = r.EmitClaimExpiry(context.Background(), time.Now())
+	if !errors.Is(err, wantErr) {
+		t.Errorf("EmitClaimExpiry error = %v, want to wrap %v", err, wantErr)
+	}
+	if len(enqueuer.notifications) != 0 {
+		t.Errorf("enqueued %d notifications after sweep error, want 0", len(enqueuer.notifications))
+	}
+}
+
+// TestEmitClaimExpiry_OneEnqueueErrorDoesNotAbortBatch verifies that a
+// failing enqueue for one claim does not prevent the remaining claim from
+// being enqueued, and that EmitClaimExpiry returns a non-nil aggregated
+// error so the failure is surfaced rather than masked.
+func TestEmitClaimExpiry_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
+	enqueuer := &fakeEnqueuerWithError{errOnCall: 1}
+	instRepo := &fakeInstanceRepoWithClaimExpiry{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		claims:               []domain.ExpiredClaim{newExpiredClaim(1), newExpiredClaim(2)},
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	emitErr := r.EmitClaimExpiry(context.Background(), time.Now())
+	if emitErr == nil {
+		t.Error("EmitClaimExpiry error = nil, want non-nil when an enqueue failed")
+	}
+	if len(enqueuer.notifications) != 1 {
+		t.Errorf("enqueued %d notifications, want 1 (second claim succeeded)", len(enqueuer.notifications))
+	}
+}
+
+// TestEmitClaimExpiry_EmptyClaims_EnqueuesNothing verifies that
+// EmitClaimExpiry with no expired claims performs no enqueue calls and
+// returns nil.
+func TestEmitClaimExpiry_EmptyClaims_EnqueuesNothing(t *testing.T) {
+	enqueuer := newFakeEnqueuer()
+	instRepo := &fakeInstanceRepoWithClaimExpiry{fakeTaskInstanceRepo: newFakeTaskInstanceRepo()}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	if emitErr := r.EmitClaimExpiry(context.Background(), time.Now()); emitErr != nil {
+		t.Errorf("EmitClaimExpiry(empty) error = %v, want nil", emitErr)
+	}
+	if len(enqueuer.notifications) != 0 {
+		t.Errorf("enqueued %d notifications for no expired claims, want 0", len(enqueuer.notifications))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // combinedFakeRepo satisfies domain.TaskInstanceRepository with configurable
 // MarkPendingOverdueAll and ClaimDueSoonReminders return values, allowing
 // end-to-end Reminders tests without a database.

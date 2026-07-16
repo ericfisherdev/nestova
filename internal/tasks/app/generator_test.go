@@ -227,6 +227,11 @@ func (r *fakeTaskInstanceRepo) LatestDueOn(_ context.Context, householdID househ
 	return latest, found, nil
 }
 
+// Claim mirrors the real adapter's NES-117 semantics: a previously-unassigned
+// instance may be claimed by anyone (sets ClaimedBy/ClaimedAt/ClaimExpiresAt,
+// the latter domain.ClaimWindow out); an instance already assigned to
+// assignee may be self-claimed again (ClaimedBy/ClaimedAt set, no expiry); an
+// instance assigned to a DIFFERENT member is rejected.
 func (r *fakeTaskInstanceRepo) Claim(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -235,10 +240,20 @@ func (r *fakeTaskInstanceRepo) Claim(_ context.Context, householdID household.Ho
 			if inst.Status != domain.StatusPending {
 				return domain.ErrInstanceInTerminalState
 			}
-			if inst.AssigneeID != nil {
+			wasUnassigned := inst.AssigneeID == nil
+			if !wasUnassigned && *inst.AssigneeID != assignee {
 				return domain.ErrInstanceAlreadyClaimed
 			}
+			now := time.Now()
 			inst.AssigneeID = &assignee
+			inst.ClaimedBy = &assignee
+			inst.ClaimedAt = &now
+			if wasUnassigned {
+				expires := now.Add(domain.ClaimWindow)
+				inst.ClaimExpiresAt = &expires
+			} else {
+				inst.ClaimExpiresAt = nil
+			}
 			return nil
 		}
 	}
@@ -389,6 +404,39 @@ func (r *fakeTaskInstanceRepo) ClearDueSoonReminder(_ context.Context, _ domain.
 
 func (r *fakeTaskInstanceRepo) CompletionDays(_ context.Context, _ household.HouseholdID, _ household.MemberID, _ time.Time) ([]time.Time, error) {
 	return nil, nil
+}
+
+// SweepExpiredClaims mirrors the real adapter: it reverts every instance
+// whose ClaimExpiresAt is at or before asOf (assignee_id/claimed_by/
+// claimed_at/claim_expires_at all cleared) and returns one domain.ExpiredClaim
+// per reverted instance, with a fixed penalty of 1 point since this fake has
+// no recurring_task points to look up.
+func (r *fakeTaskInstanceRepo) SweepExpiredClaims(_ context.Context, asOf time.Time) ([]domain.ExpiredClaim, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var claims []domain.ExpiredClaim
+	for _, inst := range r.instances {
+		if inst.ClaimExpiresAt == nil || inst.ClaimExpiresAt.After(asOf) {
+			continue
+		}
+		if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
+			continue
+		}
+		claimedBy := *inst.ClaimedBy
+		claims = append(claims, domain.ExpiredClaim{
+			InstanceID:      inst.ID,
+			HouseholdID:     inst.HouseholdID,
+			RecurringTaskID: inst.RecurringTaskID,
+			ClaimedBy:       claimedBy,
+			Title:           "fake task",
+			PenaltyPoints:   1,
+		})
+		inst.AssigneeID = nil
+		inst.ClaimedBy = nil
+		inst.ClaimedAt = nil
+		inst.ClaimExpiresAt = nil
+	}
+	return claims, nil
 }
 
 // Compile-time assertion.

@@ -56,6 +56,12 @@ type RecurringTask struct {
 // AssigneeID is nil for [RotationClaimable] tasks or when the instance has not
 // yet been claimed. CompletedAt and CompletedBy are populated when Status
 // transitions to [StatusDone].
+//
+// NES-117: ClaimedBy/ClaimedAt/ClaimExpiresAt track claim risk metadata
+// independently of AssigneeID. AssigneeID keeps its pre-NES-117 meaning (the
+// member responsible for the instance, whether via rotation or a claim); the
+// new fields exist only to know whether that responsibility carries an
+// expiry penalty and, if so, when it lapses.
 type TaskInstance struct {
 	ID              TaskInstanceID
 	RecurringTaskID RecurringTaskID
@@ -74,9 +80,22 @@ type TaskInstance struct {
 	// ([KindScheduled], the default for every instance created before NES-116)
 	// from the always-open standing instance of an as-needed task
 	// ([KindStanding]).
-	Kind      InstanceKind
-	CreatedAt time.Time
+	Kind InstanceKind
+	// ClaimedBy is the member who currently holds a claim recorded via
+	// [TaskInstanceRepository.Claim], or nil when the instance has never been
+	// claimed (or its claim already expired/completed). Set together with
+	// ClaimedAt (NES-117).
+	ClaimedBy *household.MemberID
+	// ClaimedAt is when ClaimedBy claimed the instance, or nil to match
+	// ClaimedBy.
+	ClaimedAt *time.Time
+	// ClaimExpiresAt is when an at-risk claim penalizes ClaimedBy if the
+	// instance is not completed by then. Non-nil only for a claim made on a
+	// previously-unassigned instance; nil for an unclaimed instance and for a
+	// self-claim on an already-assigned instance (no risk).
+	ClaimExpiresAt *time.Time
+	CreatedAt      time.Time
 	// UpdatedAt is refreshed on every status transition (claim, complete, skip,
-	// overdue sweep); the NES-29 adapter maintains it.
+	// overdue sweep, claim expiry); the NES-29 adapter maintains it.
 	UpdatedAt time.Time
 }
