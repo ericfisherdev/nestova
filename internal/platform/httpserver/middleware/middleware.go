@@ -33,7 +33,12 @@ func Chain(mws ...Middleware) Middleware {
 // they never collide with keys from other packages.
 type contextKey int
 
-const requestIDKey contextKey = iota
+const (
+	requestIDKey contextKey = iota
+	// routePatternKey stores the *routePatternHolder shared between the
+	// Metrics and CaptureRoutePattern middleware (metrics.go).
+	routePatternKey
+)
 
 const (
 	// requestIDHeader is the canonical request-id header echoed to clients and

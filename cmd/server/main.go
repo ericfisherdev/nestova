@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
@@ -32,6 +34,7 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
@@ -423,11 +426,20 @@ func runServer(logger *slog.Logger) error {
 	}
 	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger)
 
+	// NES-114: Prometheus instrumentation. One registry (runtime + process +
+	// build-info collectors) feeds both the per-request middleware metrics and
+	// the GET /metrics scrape endpoint. The Registry option on the handler
+	// reports scrape errors as metrics instead of failing silently.
+	registry := metrics.NewRegistry()
+	httpMetrics := metrics.NewHTTPMetrics(registry)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
 			return db.Health(ctx, pool)
 		},
+		HTTPMetrics:    httpMetrics,
+		MetricsHandler: promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry}),
 		// NES-23: session loading + authentication injected between Recoverer
 		// and Timeout (canonical chain order per server.go).
 		Middleware: []middleware.Middleware{

@@ -13,6 +13,7 @@ import (
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/web"
 )
 
@@ -48,6 +49,14 @@ type Deps struct {
 	// Recoverer and Timeout in the canonical chain (NES-23: session/auth).
 	// Middleware is applied in the order given (first entry is outermost).
 	Middleware []middleware.Middleware
+	// HTTPMetrics, if non-nil, enables per-request Prometheus instrumentation
+	// (request count, latency, in-flight gauge) via the Metrics middleware
+	// (NES-114). nil disables instrumentation (tests, first-run setup).
+	HTTPMetrics *metrics.HTTPMetrics
+	// MetricsHandler, if non-nil, is served at GET /metrics (the Prometheus
+	// scrape endpoint, typically promhttp.HandlerFor over the registry that
+	// HTTPMetrics is registered on). nil leaves the route unregistered.
+	MetricsHandler http.Handler
 }
 
 // New builds the application's HTTP server from cfg and deps with the core
@@ -64,19 +73,29 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	// every request is logged with an id even on panic; ForwardedHeaders resolves
 	// the effective scheme/client IP from a trusted proxy before anything reads
 	// them; SecurityHeaders sets baseline headers (and HSTS, gated on the resolved
-	// scheme) on every response; logging records the request; recovery turns panics
-	// into 500s; the per-request timeout comes next so its deadline also bounds the
-	// session/auth feature middleware (which do database work), not just the final
-	// handler; feature middleware (session/auth) runs last before the route handler.
+	// scheme) on every response; logging records the request; metrics observes it
+	// (NES-114) — it sits inside RequestLogger so it reuses the responseWriter the
+	// logger creates, and outside Recoverer so a recovered panic's 500 (written
+	// through that shared wrapper) is recorded with the real final status;
+	// recovery turns panics into 500s; the per-request timeout comes next so its
+	// deadline also bounds the session/auth feature middleware (which do database
+	// work), not just the final handler; feature middleware (session/auth) runs
+	// last before the route handler. CaptureRoutePattern is appended innermost
+	// (directly wrapping the mux) to relay the matched route pattern back to the
+	// metrics middleware: Timeout and the feature middleware derive request copies
+	// via WithContext, so the mux's write to r.Pattern never reaches the request
+	// value the metrics middleware holds.
 	chain := []middleware.Middleware{
 		middleware.RequestID,
 		middleware.ForwardedHeaders(cfg.Server.TrustedProxyPrefixes()),
 		middleware.SecurityHeaders(hstsHeaderValue(cfg.HSTS)),
 		middleware.RequestLogger(deps.Logger),
+		middleware.Metrics(deps.HTTPMetrics),
 		middleware.Recoverer(deps.Logger),
 		middleware.Timeout(requestTimeout),
 	}
 	chain = append(chain, deps.Middleware...)
+	chain = append(chain, middleware.CaptureRoutePattern)
 
 	handler := middleware.Chain(chain...)(routes(deps))
 
@@ -119,6 +138,12 @@ func routes(deps Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(deps.Ready))
+	// Prometheus scrape endpoint. Intentionally unauthenticated, like /healthz:
+	// it is scraped by Prometheus over the internal docker network and exposes
+	// only operational counters/gauges, no user data.
+	if deps.MetricsHandler != nil {
+		mux.Handle("GET /metrics", deps.MetricsHandler)
+	}
 	// Embedded front-end assets (built CSS, vendored HTMX/Alpine, fonts).
 	mux.Handle("GET /static/", staticAssets())
 	// Feature routes (pages, fragments, context handlers) register here.
