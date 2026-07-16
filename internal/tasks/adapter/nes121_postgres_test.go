@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
@@ -79,6 +80,76 @@ func seedTwoTradeableInstances(
 	offered = seedAssignedTaskInstance(t, instRepo, rt1, dueOn, proposerID)
 	requested = seedAssignedTaskInstance(t, instRepo, rt2, dueOn, responderID)
 	return offered, requested
+}
+
+// seedThreeTradeableInstances extends seedTwoTradeableInstances with a third,
+// unrelated tradeable instance (z) assigned to m3. Used by the cross-role
+// collision and reservation-lifecycle tests, which each need a "somewhere
+// else" instance beyond the pair a single trade references.
+func seedThreeTradeableInstances(
+	t *testing.T,
+	taskRepo *adapter.RecurringTaskRepository,
+	instRepo *adapter.TaskInstanceRepository,
+	householdID household.HouseholdID,
+	m1, m2, m3 household.MemberID,
+	dueOn time.Time,
+) (x, y, z *domain.TaskInstance) {
+	t.Helper()
+	x, y = seedTwoTradeableInstances(t, taskRepo, instRepo, householdID, m1, m2, dueOn)
+	rt3 := seedRecurringTask(t, taskRepo, householdID)
+	z = seedAssignedTaskInstance(t, instRepo, rt3, dueOn, m3)
+	return x, y, z
+}
+
+// rawInsertChoreTrade INSERTs a chore_trade row directly via pool, bypassing
+// ChoreTradeRepository.Propose (and therefore every Go-level validation and
+// lock it performs) entirely. Used to prove the cross-role "at most one live
+// reservation per instance" invariant is enforced by the schema itself —
+// chore_trade_reservation_sync_trigger and chore_trade_reservation's PRIMARY
+// KEY — for any writer, not just this repository.
+func rawInsertChoreTrade(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	householdID household.HouseholdID,
+	proposerID, responderID household.MemberID,
+	offeredID, requestedID domain.TaskInstanceID,
+	expiresAt time.Time,
+) error {
+	t.Helper()
+	const q = `
+		INSERT INTO chore_trade
+			(id, household_id, proposer_id, responder_id, offered_instance_id, requested_instance_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := pool.Exec(testCtx(t), q,
+		domain.NewChoreTradeID().String(),
+		householdID.String(),
+		proposerID.String(),
+		responderID.String(),
+		offeredID.String(),
+		requestedID.String(),
+		expiresAt,
+	)
+	return err
+}
+
+// pgSQLStateUniqueViolation is the PostgreSQL SQLSTATE for a unique-constraint
+// violation. adapter.sqlstateUniqueViolation is unexported, so this test
+// package (adapter_test) carries its own copy for asserting on raw pgconn
+// errors from schema-level (repository-bypassing) writes.
+const pgSQLStateUniqueViolation = "23505"
+
+// assertReservationConflictRejected asserts err is a Postgres unique_violation
+// (SQLSTATE 23505) on chore_trade_reservation's PRIMARY KEY — the schema-level
+// signature of a cross-role (or same-role) live-reservation collision.
+func assertReservationConflictRejected(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want a unique_violation on chore_trade_reservation_pkey")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != pgSQLStateUniqueViolation || pgErr.ConstraintName != "chore_trade_reservation_pkey" {
+		t.Errorf("error = %v, want a 23505 unique_violation on chore_trade_reservation_pkey", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +324,118 @@ func TestTrade_Propose_RequestedInstanceAlreadyLive_ReturnsErrInstanceNotTradeab
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(requested instance already live) error = %v, want ErrInstanceNotTradeable", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Propose — cross-role collisions (the same instance offered in one live
+// trade and requested in another). Distinct from the same-role tests above:
+// those collide offered-vs-offered or requested-vs-requested; these collide
+// offered-vs-requested, which the chore_trade_reservation table's PRIMARY KEY
+// on instance_id (not the offered/requested columns individually) is what
+// closes — see 00021_chore_trade.sql.
+// ---------------------------------------------------------------------------
+
+// TestTrade_Propose_OfferedAlreadyRequestedElsewhere_ReturnsErrInstanceNotTradeable
+// covers the cross-role gap directly: an instance already the REQUESTED side
+// of a live trade cannot be newly OFFERED by a different trade.
+func TestTrade_Propose_OfferedAlreadyRequestedElsewhere_ReturnsErrInstanceNotTradeable(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID) // trade1: offers x, requests y
+
+	trade2 := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m2,
+		ResponderID:         m3,
+		OfferedInstanceID:   y.ID, // already requested by trade1
+		RequestedInstanceID: z.ID,
+	}
+	err := tradeRepo.Propose(testCtx(t), h.ID, trade2)
+	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
+		t.Errorf("Propose(offered already requested elsewhere) error = %v, want ErrInstanceNotTradeable", err)
+	}
+}
+
+// TestTrade_Propose_RequestedAlreadyOfferedElsewhere_ReturnsErrInstanceNotTradeable
+// covers the cross-role gap's other direction: an instance already the
+// OFFERED side of a live trade cannot be newly REQUESTED by a different
+// trade.
+func TestTrade_Propose_RequestedAlreadyOfferedElsewhere_ReturnsErrInstanceNotTradeable(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID) // trade1: offers x, requests y
+
+	trade2 := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m3,
+		ResponderID:         m1,
+		OfferedInstanceID:   z.ID,
+		RequestedInstanceID: x.ID, // already offered by trade1
+	}
+	err := tradeRepo.Propose(testCtx(t), h.ID, trade2)
+	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
+		t.Errorf("Propose(requested already offered elsewhere) error = %v, want ErrInstanceNotTradeable", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Propose — schema-level enforcement (bypassing the repository entirely).
+// These prove the cross-role invariant is a hard database guarantee, not
+// just repository discipline: chore_trade_reservation_sync_trigger and
+// chore_trade_reservation's PRIMARY KEY reject a colliding raw INSERT even
+// when ChoreTradeRepository.Propose's Go-level checks are never consulted.
+// ---------------------------------------------------------------------------
+
+// TestTrade_SchemaLevel_RawInsert_OfferedAlreadyRequestedElsewhere_Rejected
+// mirrors TestTrade_Propose_OfferedAlreadyRequestedElsewhere_ReturnsErrInstanceNotTradeable
+// but via a raw INSERT INTO chore_trade instead of the repository.
+func TestTrade_SchemaLevel_RawInsert_OfferedAlreadyRequestedElsewhere_Rejected(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID) // trade1: offers x, requests y (reserves both)
+
+	err := rawInsertChoreTrade(t, pool, h.ID, m2, m3, y.ID, z.ID, dueOn)
+	assertReservationConflictRejected(t, err)
+}
+
+// TestTrade_SchemaLevel_RawInsert_RequestedAlreadyOfferedElsewhere_Rejected
+// mirrors TestTrade_Propose_RequestedAlreadyOfferedElsewhere_ReturnsErrInstanceNotTradeable
+// but via a raw INSERT INTO chore_trade instead of the repository.
+func TestTrade_SchemaLevel_RawInsert_RequestedAlreadyOfferedElsewhere_Rejected(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID) // trade1: offers x, requests y (reserves both)
+
+	err := rawInsertChoreTrade(t, pool, h.ID, m3, m1, z.ID, x.ID, dueOn)
+	assertReservationConflictRejected(t, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +809,138 @@ func TestTrade_SweepExpiredTrades_AcceptedTradeNeverExpires(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Reservation lifecycle — chore_trade_reservation_sync_trigger must free a
+// trade's two reservation rows the moment its status leaves 'proposed',
+// regardless of which of the four resolution paths caused it. Each test below
+// resolves a trade one way, then proposes a completely independent follow-up
+// trade referencing one of the same instances — success proves the
+// reservation was actually freed (a still-held reservation would make the
+// follow-up Propose fail with ErrInstanceNotTradeable, per the cross-role
+// tests above).
+// ---------------------------------------------------------------------------
+
+// TestTrade_Accept_FreesReservationForFollowUpTrade covers the accept path.
+// x's assignee has moved to m2 by the time of the follow-up (Accept's own
+// swap), so the follow-up is proposed by m2, not m1.
+func TestTrade_Accept_FreesReservationForFollowUpTrade(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	trade1 := proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID)
+	if _, err := tradeRepo.Accept(testCtx(t), h.ID, trade1.ID, m2, refDate); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	trade2 := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m2, // x's new owner, post-swap
+		ResponderID:         m3,
+		OfferedInstanceID:   x.ID,
+		RequestedInstanceID: z.ID,
+	}
+	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+		t.Errorf("Propose(follow-up after accept) error = %v, want nil (reservation must be freed)", err)
+	}
+}
+
+// TestTrade_Decline_FreesReservationForFollowUpTrade covers the decline path.
+// Decline never changes assignees, so the follow-up is proposed by the same
+// original proposer, m1.
+func TestTrade_Decline_FreesReservationForFollowUpTrade(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	trade1 := proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID)
+	if err := tradeRepo.Decline(testCtx(t), h.ID, trade1.ID, m2); err != nil {
+		t.Fatalf("Decline: %v", err)
+	}
+
+	trade2 := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m1,
+		ResponderID:         m3,
+		OfferedInstanceID:   x.ID,
+		RequestedInstanceID: z.ID,
+	}
+	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+		t.Errorf("Propose(follow-up after decline) error = %v, want nil (reservation must be freed)", err)
+	}
+}
+
+// TestTrade_Cancel_FreesReservationForFollowUpTrade covers the cancel path.
+func TestTrade_Cancel_FreesReservationForFollowUpTrade(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	trade1 := proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID)
+	if err := tradeRepo.Cancel(testCtx(t), h.ID, trade1.ID, m1); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	trade2 := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m1,
+		ResponderID:         m3,
+		OfferedInstanceID:   x.ID,
+		RequestedInstanceID: z.ID,
+	}
+	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+		t.Errorf("Propose(follow-up after cancel) error = %v, want nil (reservation must be freed)", err)
+	}
+}
+
+// TestTrade_Expire_FreesReservationForFollowUpTrade covers the background
+// sweep's expiry path.
+func TestTrade_Expire_FreesReservationForFollowUpTrade(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+	trade1 := proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID)
+	expired, err := tradeRepo.SweepExpiredTrades(testCtx(t), trade1.ExpiresAt)
+	if err != nil {
+		t.Fatalf("SweepExpiredTrades: %v", err)
+	}
+	if len(expired) != 1 {
+		t.Fatalf("SweepExpiredTrades = %d expired, want 1", len(expired))
+	}
+
+	trade2 := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m1,
+		ResponderID:         m3,
+		OfferedInstanceID:   x.ID,
+		RequestedInstanceID: z.ID,
+	}
+	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+		t.Errorf("Propose(follow-up after expiry) error = %v, want nil (reservation must be freed)", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Concurrency
 // ---------------------------------------------------------------------------
 
@@ -847,4 +1162,80 @@ func TestTrade_ProposeVsAccept_NoDeadlock(t *testing.T) {
 	}
 	assertAssigneeUnchanged(t, instRepo, h.ID, x.ID, m2)
 	assertAssigneeUnchanged(t, instRepo, h.ID, y.ID, m1)
+}
+
+// TestTrade_ProposeVsPropose_CrossRoleRace_ExactlyOneWins races two brand-new
+// Propose calls that collide on instance x in DIFFERENT roles: tradeA offers
+// x, tradeB requests x. Before the reservation table (chore_trade_offered_
+// live_uniq / chore_trade_requested_live_uniq alone), both could succeed,
+// since neither indexed column overlaps with the other trade's role for x.
+// With chore_trade_reservation's single PRIMARY KEY on instance_id, exactly
+// one may still win regardless of role. This is expected to already be
+// race-free rather than reveal a NEW hazard: lockTradeInstances' FOR UPDATE
+// on x fully serializes the two Propose calls before either reaches the
+// trigger, so the loser's hasLiveTradeProposal check sees the winner's
+// already-committed trade and exits cleanly — see hasLiveTradeProposal's doc
+// for why. The test exists to pin that behavior empirically, the same way
+// TestTrade_ProposeVsAccept_NoDeadlock pins the propose/accept case.
+func TestTrade_ProposeVsPropose_CrossRoleRace_ExactlyOneWins(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	tradeRepo := adapter.NewTradeRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	m3 := seedThirdMember(t, pool, h.ID)
+
+	dueOn := refDate.AddDate(0, 0, 5)
+	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
+
+	var (
+		wg         sync.WaitGroup
+		errA, errB error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		tradeA := &domain.ChoreTrade{
+			ID: domain.NewChoreTradeID(), ProposerID: m1, ResponderID: m2,
+			OfferedInstanceID: x.ID, RequestedInstanceID: y.ID,
+		}
+		errA = tradeRepo.Propose(context.Background(), h.ID, tradeA)
+	}()
+	go func() {
+		defer wg.Done()
+		tradeB := &domain.ChoreTrade{
+			ID: domain.NewChoreTradeID(), ProposerID: m3, ResponderID: m1,
+			OfferedInstanceID: z.ID, RequestedInstanceID: x.ID,
+		}
+		errB = tradeRepo.Propose(context.Background(), h.ID, tradeB)
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Propose A and Propose B did not both complete within 10s — possibly deadlocked")
+	}
+
+	successes, notTradeableErrs := 0, 0
+	for _, err := range []error{errA, errB} {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, domain.ErrInstanceNotTradeable):
+			notTradeableErrs++
+		default:
+			t.Errorf("unexpected error racing cross-role propose: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("successes = %d, want 1", successes)
+	}
+	if notTradeableErrs != 1 {
+		t.Errorf("ErrInstanceNotTradeable count = %d, want 1", notTradeableErrs)
+	}
 }
