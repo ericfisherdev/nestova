@@ -106,8 +106,19 @@ func (f *fakeMediaPhotoRepo) FindByContentHash(_ context.Context, householdID ho
 	return nil, mediadomain.ErrPhotoNotFound
 }
 
-func (f *fakeMediaPhotoRepo) ListByHousehold(context.Context, household.HouseholdID) ([]*mediadomain.Photo, error) {
-	return nil, nil
+// ListByHousehold returns every stored photo belonging to householdID. It
+// used to be an unconditional nil stub (no test needed a repo listing to
+// reflect what Create had persisted); the grid-fragment endpoint (NES-124)
+// is the first thing under test that reads back through List, so the stub
+// now actually filters the fake's own store.
+func (f *fakeMediaPhotoRepo) ListByHousehold(_ context.Context, householdID household.HouseholdID) ([]*mediadomain.Photo, error) {
+	var out []*mediadomain.Photo
+	for _, p := range f.store {
+		if p.HouseholdID == householdID {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeMediaPhotoRepo) Delete(_ context.Context, id mediadomain.PhotoID) error {
@@ -155,25 +166,34 @@ func (f *fakeMediaAlbumRepo) Delete(_ context.Context, id mediadomain.AlbumID) e
 	return nil
 }
 
-type fakeMediaAlbumPhotoRepo struct{}
+// fakeMediaAlbumPhotoRepo fakes per-album ordered photo membership. It counts
+// ListByAlbumOrdered calls (made via AlbumService.AlbumPhotos) so tests can
+// assert GET /photos/grid never triggers a per-album membership read: the
+// grid fragment's add-to-album dropdown only ever needs an album's id/name
+// (NES-124's fix for the reviewed N+1), never its ordered photos — that read
+// belongs to the full page's Albums section alone.
+type fakeMediaAlbumPhotoRepo struct {
+	listByAlbumOrderedCalls int
+}
 
-func (fakeMediaAlbumPhotoRepo) Add(context.Context, mediadomain.AlbumID, mediadomain.PhotoID) error {
+func (f *fakeMediaAlbumPhotoRepo) Add(context.Context, mediadomain.AlbumID, mediadomain.PhotoID) error {
 	return nil
 }
 
-func (fakeMediaAlbumPhotoRepo) Remove(context.Context, mediadomain.AlbumID, mediadomain.PhotoID) error {
+func (f *fakeMediaAlbumPhotoRepo) Remove(context.Context, mediadomain.AlbumID, mediadomain.PhotoID) error {
 	return nil
 }
 
-func (fakeMediaAlbumPhotoRepo) Reorder(context.Context, mediadomain.AlbumID, []mediadomain.PhotoID) error {
+func (f *fakeMediaAlbumPhotoRepo) Reorder(context.Context, mediadomain.AlbumID, []mediadomain.PhotoID) error {
 	return nil
 }
 
-func (fakeMediaAlbumPhotoRepo) ListByAlbumOrdered(context.Context, mediadomain.AlbumID) ([]*mediadomain.Photo, error) {
+func (f *fakeMediaAlbumPhotoRepo) ListByAlbumOrdered(context.Context, mediadomain.AlbumID) ([]*mediadomain.Photo, error) {
+	f.listByAlbumOrderedCalls++
 	return nil, nil
 }
 
-func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMediaStore, photoRepo *fakeMediaPhotoRepo) (http.Handler, *scs.SessionManager, *fakeMediaAlbumRepo) {
+func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMediaStore, photoRepo *fakeMediaPhotoRepo) (http.Handler, *scs.SessionManager, *fakeMediaAlbumRepo, *fakeMediaAlbumPhotoRepo) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
@@ -181,11 +201,12 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), logger)
 
 	albumRepo := newFakeMediaAlbumRepo()
+	albumPhotoRepo := &fakeMediaAlbumPhotoRepo{}
 	photoService, err := mediaapp.NewPhotoService(store, fakeMediaExif{}, photoRepo)
 	if err != nil {
 		t.Fatalf("NewPhotoService: %v", err)
 	}
-	albumService, err := mediaapp.NewAlbumService(albumRepo, photoRepo, fakeMediaAlbumPhotoRepo{})
+	albumService, err := mediaapp.NewAlbumService(albumRepo, photoRepo, albumPhotoRepo)
 	if err != nil {
 		t.Fatalf("NewAlbumService: %v", err)
 	}
@@ -199,9 +220,10 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 	requireMember := authadapter.RequireMember(sm)
 	mux.Handle("GET /photos", requireMember(http.HandlerFunc(handlers.Page(layoutFn))))
 	mux.Handle("POST /photos", requireMember(http.HandlerFunc(handlers.Upload)))
+	mux.Handle("GET /photos/grid", requireMember(http.HandlerFunc(handlers.Grid)))
 	mux.Handle("GET /photos/{id}/raw", requireMember(http.HandlerFunc(handlers.Raw)))
 	mux.Handle("GET /album/{id}", requireMember(http.HandlerFunc(handlers.AlbumViewer)))
-	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm, albumRepo
+	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm, albumRepo, albumPhotoRepo
 }
 
 // multipartUpload builds a multipart body with a csrf field and a "photo" part.
@@ -224,7 +246,7 @@ func TestMediaUploadPersistsAndRedirects(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	ct, body := multipartUpload(t, csrf, []byte("imgbytes"))
@@ -257,7 +279,7 @@ func TestMediaUploadDedupSetsResultHeader(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	upload := func() *httptest.ResponseRecorder {
@@ -297,7 +319,7 @@ func TestMediaUploadRejectsUnsupportedMediaType(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{putErr: mediadomain.ErrUnsupportedMediaType}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	ct, body := multipartUpload(t, csrf, []byte("not really an image"))
@@ -322,7 +344,7 @@ func TestMediaUploadRejectsOversizeRequestBody(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	oversized := make([]byte, mediaTestMaxUploadBytes+(1<<20)) // 1 MiB past the configured cap
@@ -345,7 +367,7 @@ func TestMediaUploadRejectsBadCSRF(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	ct, body := multipartUpload(t, "wrong", []byte("x"))
@@ -364,7 +386,7 @@ func TestMediaUploadRejectsBadCSRF(t *testing.T) {
 }
 
 func TestMediaUploadRequiresMember(t *testing.T) {
-	handler, _, _ := buildMediaTestHandler(t, testMember(), &fakeMediaStore{}, newFakeMediaPhotoRepo())
+	handler, _, _, _ := buildMediaTestHandler(t, testMember(), &fakeMediaStore{}, newFakeMediaPhotoRepo())
 	ct, body := multipartUpload(t, "x", []byte("x"))
 	req := httptest.NewRequest(http.MethodPost, "/photos", body)
 	req.Header.Set("Content-Type", ct)
@@ -376,11 +398,130 @@ func TestMediaUploadRequiresMember(t *testing.T) {
 	}
 }
 
+// TestMediaGridReflectsUploadedPhotos covers AC4 at the handler level:
+// GET /photos/grid — the fragment endpoint the client-side upload queue
+// triggers exactly once after a whole drag-and-drop batch drains (NES-124) —
+// renders every photo uploaded so far in the #photo-grid container.
+func TestMediaGridReflectsUploadedPhotos(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{}
+	repo := newFakeMediaPhotoRepo()
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
+	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	for _, data := range [][]byte{[]byte("photo-one"), []byte("photo-two")} {
+		ct, body := multipartUpload(t, csrf, data)
+		req := httptest.NewRequest(http.MethodPost, "/photos", body)
+		req.Header.Set("Content-Type", ct)
+		req.Header.Set("Cookie", cookie)
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("seed upload: status=%d", rec.Code)
+		}
+	}
+
+	// The real request is htmx-issued (PhotoGridFragment's own hx-trigger),
+	// which always carries HX-Request; set it here to match.
+	req := httptest.NewRequest(http.MethodGet, "/photos/grid", nil)
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grid: status=%d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="photo-grid"`) {
+		t.Fatalf("grid response missing #photo-grid container: %q", body)
+	}
+	if got := strings.Count(body, "<figure"); got != 2 {
+		t.Fatalf("grid rendered %d photo cards, want 2 (one per seeded upload): %q", got, body)
+	}
+}
+
+// TestMediaGridEmptyRendersEmptyState covers the "no photos yet" shape
+// GET /photos/grid returns for a household with nothing uploaded, still
+// wrapped in the stable #photo-grid container the upload queue targets.
+func TestMediaGridEmptyRendersEmptyState(t *testing.T) {
+	member := testMember()
+	handler, sm, _, _ := buildMediaTestHandler(t, member, &fakeMediaStore{}, newFakeMediaPhotoRepo())
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	req := httptest.NewRequest(http.MethodGet, "/photos/grid", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grid: status=%d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="photo-grid"`) || !strings.Contains(body, "No photos yet") {
+		t.Fatalf("empty grid response missing container or empty-state text: %q", body)
+	}
+}
+
+// TestMediaGridDoesNotLoadPerAlbumMembership covers the reviewed N+1: GET
+// /photos/grid must build its add-to-album dropdown from each album's
+// id/name alone (AlbumService.List), never from its ordered photo membership
+// (AlbumService.AlbumPhotos -> AlbumPhotoRepository.ListByAlbumOrdered) — the
+// grid fragment never renders that membership; the full page's Albums
+// section is the only thing that does, and is unaffected.
+func TestMediaGridDoesNotLoadPerAlbumMembership(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{}
+	repo := newFakeMediaPhotoRepo()
+	handler, sm, albumRepo, albumPhotoRepo := buildMediaTestHandler(t, member, store, repo)
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	rotation, err := mediadomain.NewRotationInterval(8)
+	if err != nil {
+		t.Fatalf("NewRotationInterval: %v", err)
+	}
+	for _, name := range []string{"Family", "Trip", "Pets"} {
+		if err := albumRepo.Create(context.Background(), &mediadomain.Album{
+			ID:          mediadomain.NewAlbumID(),
+			HouseholdID: member.HouseholdID,
+			Name:        name,
+			Rotation:    rotation,
+		}); err != nil {
+			t.Fatalf("seed album %q: %v", name, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/photos/grid", nil)
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grid: status=%d", rec.Code)
+	}
+	if albumPhotoRepo.listByAlbumOrderedCalls != 0 {
+		t.Fatalf("GET /photos/grid called ListByAlbumOrdered %d times (via AlbumPhotos) across 3 albums, want 0 — the grid's add-to-album dropdown must not require per-album membership reads", albumPhotoRepo.listByAlbumOrderedCalls)
+	}
+}
+
+func TestMediaGridRequiresMember(t *testing.T) {
+	handler, _, _, _ := buildMediaTestHandler(t, testMember(), &fakeMediaStore{}, newFakeMediaPhotoRepo())
+	req := httptest.NewRequest(http.MethodGet, "/photos/grid", nil)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated grid request: status=%d, want 401", rec.Code)
+	}
+}
+
 func TestMediaRawStreamsToOwnerAndRejectsOthers(t *testing.T) {
 	member := testMember()
 	store := &fakeMediaStore{bytes: []byte("the-image-bytes")}
 	repo := newFakeMediaPhotoRepo()
-	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	// Owned photo: streams the bytes.
@@ -415,7 +556,7 @@ func TestMediaRawStreamsToOwnerAndRejectsOthers(t *testing.T) {
 
 func TestAlbumViewerOwnershipAndRender(t *testing.T) {
 	member := testMember()
-	handler, sm, albumRepo := buildMediaTestHandler(t, member, &fakeMediaStore{}, newFakeMediaPhotoRepo())
+	handler, sm, albumRepo, _ := buildMediaTestHandler(t, member, &fakeMediaStore{}, newFakeMediaPhotoRepo())
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	rot, _ := mediadomain.NewRotationInterval(8)

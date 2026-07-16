@@ -48,9 +48,9 @@ const requestOverheadBytes = 64 << 10
 // uploadResultHeader reports whether Upload created a new photo or matched an
 // existing one by content hash. It is informational only — the mutation
 // success signal (HX-Redirect/303 via respondAfterMutation) is the same
-// either way — intended for a future single-photo-per-request queue UI
-// (NES-124) that needs to distinguish a dedup no-op from a real create
-// without parsing the redirected page.
+// either way — read by the client-side upload queue's per-file XHR (NES-124,
+// web/static/js/upload-queue.js) to distinguish a dedup no-op from a real
+// create without parsing the redirected page.
 const uploadResultHeader = "X-Upload-Result"
 
 // uploadResultHeader values.
@@ -70,6 +70,7 @@ type WebHandlers struct {
 	households            household.HouseholdRepository
 	sm                    *scs.SessionManager
 	logger                *slog.Logger
+	maxUploadBytes        int64
 	maxUploadRequestBytes int64
 }
 
@@ -95,6 +96,7 @@ func NewWebHandlers(albums *app.AlbumService, photos *app.PhotoService, househol
 	}
 	return &WebHandlers{
 		albums: albums, photos: photos, households: households, sm: sm, logger: logger,
+		maxUploadBytes:        maxUploadBytes,
 		maxUploadRequestBytes: maxUploadBytes + requestOverheadBytes,
 	}
 }
@@ -117,6 +119,29 @@ func (h *WebHandlers) Page(layoutFn LayoutFunc) http.HandlerFunc {
 			h.logger.ErrorContext(r.Context(), "photos: render page", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
+	}
+}
+
+// Grid handles GET /photos/grid. It rebuilds the photo list and renders just
+// the #photo-grid fragment (NES-124): the client-side upload queue
+// (web/static/js/upload-queue.js) triggers this exactly once after a whole
+// drag-and-drop batch drains, so dropping 50 photos refreshes the grid once —
+// not once per file. This is a passive read with no state to change, so it
+// is a GET and always succeeds, mirroring tasks/adapter.WebHandlers.Groups.
+func (h *WebHandlers) Grid(w http.ResponseWriter, r *http.Request) {
+	member, ok := authadapter.CurrentMember(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	view, err := h.buildGridView(r, member)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "photos: build grid view", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.PhotoGridFragment(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "photos: render grid", "error", err)
 	}
 }
 
@@ -402,27 +427,23 @@ func (h *WebHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (components.PhotosView, error) {
-	albums, err := h.albums.List(r.Context(), member.HouseholdID)
-	if err != nil {
-		return components.PhotosView{}, fmt.Errorf("list albums: %w", err)
-	}
-	photos, err := h.photos.List(r.Context(), member.HouseholdID)
-	if err != nil {
-		return components.PhotosView{}, fmt.Errorf("list photos: %w", err)
-	}
-	members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
-	if err != nil {
-		return components.PhotosView{}, fmt.Errorf("list members: %w", err)
-	}
-
+// memberColorByID builds the member-id -> color lookup that a photo's
+// uploader-attribution chip (buildPhotoViews) keys off. Shared by buildView
+// and buildGridView so the two can never attribute a photo differently.
+func memberColorByID(members []*household.Member) map[household.MemberID]string {
 	colorByID := make(map[household.MemberID]string, len(members))
-	memberOptions := make([]components.MediaMemberOption, 0, len(members))
 	for _, m := range members {
 		colorByID[m.ID] = m.Color.String()
-		memberOptions = append(memberOptions, components.MediaMemberOption{ID: m.ID.String(), Name: m.DisplayName, Color: m.Color.String()})
 	}
+	return colorByID
+}
 
+// buildPhotoViews projects domain photos into grid rows, attributing each to
+// its uploader's color via colorByID. Shared by buildView (the full /photos
+// page) and buildGridView (the #photo-grid fragment, NES-124) so the two
+// render the exact same photo list/attribution logic rather than a second,
+// independently-maintained copy of it.
+func buildPhotoViews(photos []*domain.Photo, colorByID map[household.MemberID]string) []components.PhotoView {
 	photoViews := make([]components.PhotoView, 0, len(photos))
 	for _, p := range photos {
 		pv := components.PhotoView{
@@ -438,15 +459,40 @@ func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (comp
 		}
 		photoViews = append(photoViews, pv)
 	}
+	return photoViews
+}
+
+// buildView loads everything the full /photos page renders: the photo grid,
+// the create-album member filter options, and each album's full view
+// including its ordered photo membership (h.albums.AlbumPhotos, one query
+// per album) for the Albums section's move/remove controls.
+func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (components.PhotosView, error) {
+	albums, err := h.albums.List(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.PhotosView{}, fmt.Errorf("list albums: %w", err)
+	}
+	photos, err := h.photos.List(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.PhotosView{}, fmt.Errorf("list photos: %w", err)
+	}
+	members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.PhotosView{}, fmt.Errorf("list members: %w", err)
+	}
+
+	memberOptions := make([]components.MediaMemberOption, 0, len(members))
+	for _, m := range members {
+		memberOptions = append(memberOptions, components.MediaMemberOption{ID: m.ID.String(), Name: m.DisplayName, Color: m.Color.String()})
+	}
 
 	albumViews := make([]components.AlbumView, 0, len(albums))
 	for _, a := range albums {
-		members, err := h.albums.AlbumPhotos(r.Context(), member.HouseholdID, a.ID)
+		albumMembers, err := h.albums.AlbumPhotos(r.Context(), member.HouseholdID, a.ID)
 		if err != nil {
 			return components.PhotosView{}, fmt.Errorf("album photos: %w", err)
 		}
-		memberViews := make([]components.AlbumPhotoView, 0, len(members))
-		for _, p := range members {
+		memberViews := make([]components.AlbumPhotoView, 0, len(albumMembers))
+		for _, p := range albumMembers {
 			memberViews = append(memberViews, components.AlbumPhotoView{
 				PhotoID: p.ID.String(),
 				RawURL:  photosPath + "/" + p.ID.String() + "/raw",
@@ -463,9 +509,44 @@ func (h *WebHandlers) buildView(r *http.Request, member *household.Member) (comp
 	}
 
 	return components.PhotosView{
-		Albums:    albumViews,
-		Photos:    photoViews,
-		Members:   memberOptions,
+		Albums:         albumViews,
+		Photos:         buildPhotoViews(photos, memberColorByID(members)),
+		Members:        memberOptions,
+		CSRFToken:      authadapter.GetCSRFToken(r.Context(), h.sm),
+		MaxUploadBytes: h.maxUploadBytes,
+	}, nil
+}
+
+// buildGridView loads just what PhotoGridFragment renders: the photo grid and
+// lightweight album id/name options for photoCard's add-to-album dropdown.
+// It deliberately does NOT call h.albums.AlbumPhotos — the grid fragment
+// never renders an album's ordered membership (that's the full page's Albums
+// section only, in buildView) — so a GET /photos/grid, which the upload
+// queue triggers once after every drag-and-drop batch drains, costs a fixed
+// three queries (albums, photos, members) regardless of how many albums the
+// household has, instead of one extra AlbumPhotos round trip per album.
+func (h *WebHandlers) buildGridView(r *http.Request, member *household.Member) (components.PhotoGridView, error) {
+	albums, err := h.albums.List(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.PhotoGridView{}, fmt.Errorf("list albums: %w", err)
+	}
+	photos, err := h.photos.List(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.PhotoGridView{}, fmt.Errorf("list photos: %w", err)
+	}
+	members, err := h.households.ListMembers(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.PhotoGridView{}, fmt.Errorf("list members: %w", err)
+	}
+
+	albumOptions := make([]components.AlbumOption, 0, len(albums))
+	for _, a := range albums {
+		albumOptions = append(albumOptions, components.AlbumOption{ID: a.ID.String(), Name: a.Name})
+	}
+
+	return components.PhotoGridView{
+		Photos:    buildPhotoViews(photos, memberColorByID(members)),
+		Albums:    albumOptions,
 		CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
 	}, nil
 }

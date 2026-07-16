@@ -344,7 +344,9 @@ func registerCalendarSubscriptionPages(
 }
 
 // registerMediaPages wires the NES-75 photo management UI: the /photos page, the
-// upload and album-management actions, and the tenant-checked raw-bytes endpoint.
+// upload and album-management actions, the #photo-grid refresh fragment the
+// upload queue drives after a batch drains (NES-124), and the tenant-checked
+// raw-bytes endpoint.
 func registerMediaPages(
 	mux *http.ServeMux,
 	logger *slog.Logger,
@@ -366,6 +368,10 @@ func registerMediaPages(
 		mediaHandlers.Page(layoutFor(r))(w, r)
 	})))
 	mux.Handle("POST /photos", requireMember(http.HandlerFunc(mediaHandlers.Upload)))
+	// GET /photos/grid re-renders the #photo-grid fragment (NES-124): the
+	// client-side upload queue triggers this once after a whole drag-and-drop
+	// batch drains, so the grid refreshes once regardless of batch size.
+	mux.Handle("GET /photos/grid", requireMember(http.HandlerFunc(mediaHandlers.Grid)))
 	mux.Handle("GET /photos/{id}/raw", requireMember(http.HandlerFunc(mediaHandlers.Raw)))
 	mux.Handle("POST /photos/{id}/delete", requireMember(http.HandlerFunc(mediaHandlers.DeletePhoto)))
 	mux.Handle("POST /photos/{id}/add-to-album", requireMember(http.HandlerFunc(mediaHandlers.AddPhoto)))
