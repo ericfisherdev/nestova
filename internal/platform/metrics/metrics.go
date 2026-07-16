@@ -9,9 +9,12 @@
 package metrics
 
 import (
+	"net/http"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // NewRegistry returns a fresh Prometheus registry pre-populated with the
@@ -28,6 +31,20 @@ func NewRegistry() *prometheus.Registry {
 		collectors.NewBuildInfoCollector(),
 	)
 	return reg
+}
+
+// Handler returns the HTTP scrape handler for reg, keeping the promhttp
+// dependency inside this package so the composition root never imports the
+// Prometheus client directly. The Registry option makes the handler report
+// scrape errors (e.g. a collector failing mid-gather) as metrics on the same
+// registry instead of failing silently. It panics when reg is nil (matching
+// the platform convention of failing loudly at construction for required
+// dependencies).
+func Handler(reg *prometheus.Registry) http.Handler {
+	if reg == nil {
+		panic("metrics: Handler requires a non-nil registry")
+	}
+	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg})
 }
 
 // HTTPMetrics bundles the per-request HTTP metrics recorded by the Metrics

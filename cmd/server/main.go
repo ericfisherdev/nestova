@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
@@ -443,9 +441,10 @@ func runServer(logger *slog.Logger) error {
 			return db.Health(ctx, pool)
 		},
 		HTTPMetrics: httpMetrics,
-		// The Registry option on the scrape handler reports scrape errors as
-		// metrics instead of failing silently (NES-114).
-		MetricsHandler: promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry}),
+		// metrics.Handler keeps the promhttp dependency inside the metrics
+		// package and reports scrape errors as metrics instead of failing
+		// silently (NES-114).
+		MetricsHandler: metrics.Handler(registry),
 		// NES-23: session loading + authentication injected between Recoverer
 		// and Timeout (canonical chain order per server.go).
 		Middleware: []middleware.Middleware{

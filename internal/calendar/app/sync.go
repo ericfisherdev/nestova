@@ -64,7 +64,11 @@ func NewSyncService(accounts syncAccountStore, events domain.ExternalEventReposi
 
 // RunOnce syncs every connected account once, returning the number of events
 // processed. A failure on one account is logged and recorded, but the rest of
-// the batch still runs; the first error encountered is returned.
+// the batch still runs; the first error encountered is returned. Context
+// cancellation (or the cycle deadline expiring) is the exception: it aborts
+// the whole pass immediately and is NOT counted or logged as an account
+// failure — shutdown and tick timeouts are lifecycle events, not sync errors,
+// and counting them would inflate the account-error metric on every deploy.
 func (s *SyncService) RunOnce(ctx context.Context) (int, error) {
 	accounts, err := s.accounts.ListAll(ctx)
 	if err != nil {
@@ -84,6 +88,15 @@ func (s *SyncService) RunOnce(ctx context.Context) (int, error) {
 		}
 		n, syncErr := s.syncAccount(ctx, account)
 		if syncErr != nil {
+			// A cancelled or timed-out cycle context is a shutdown/deadline
+			// signal, not an account failure: don't count or log it against
+			// the account, and stop the pass — the remaining accounts would
+			// only fail on the same dead context. Mirrors the ctx.Err() early
+			// return above (including its precedence over any earlier
+			// firstErr).
+			if errors.Is(syncErr, context.Canceled) || errors.Is(syncErr, context.DeadlineExceeded) {
+				return processed, syncErr
+			}
 			s.recorder.IncAccountError()
 			s.logger.ErrorContext(ctx, "sync: account failed",
 				"account_id", account.ID.String(), "error", syncErr)

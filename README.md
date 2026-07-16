@@ -460,7 +460,8 @@ future recovery sweep can close both gaps.
 ### Observability (NES-114 / NES-115)
 
 The server exposes Prometheus metrics at `GET /metrics`, backed by a dedicated
-registry built in `cmd/server/main.go` (`internal/platform/metrics.NewRegistry`).
+registry built in `cmd/server/main.go` (`internal/platform/metrics.NewRegistry`)
+and served through `metrics.Handler` (which configures scrape-error reporting).
 The registry includes the standard Go runtime, process, and build-info
 collectors plus the application metrics below. All instrumentation lives in
 `internal/platform/metrics` — the only package that imports the Prometheus
@@ -476,9 +477,11 @@ client directly; consumers record through the `HTTPMetrics` fields and the
 | `nestova_http_requests_in_flight` | gauge | — | Requests currently being served |
 
 **Background scheduler metrics** (recorded once per poll cycle by each of the
-five background workers, NES-115). The `scheduler` label only ever holds one of
-the five canonical values defined next to the `TickRecorder` port:
-`dispatcher`, `task_scheduler`, `restock`, `renewal`, `calendar_sync`.
+five background workers, NES-115). The `scheduler` label holds one of the five
+canonical `SchedulerName` values defined next to the `TickRecorder` port —
+`dispatcher`, `task_scheduler`, `restock`, `renewal`, `calendar_sync` — and the
+recorder collapses any unrecognised name to the fixed value `other`, so label
+cardinality stays bounded even against misuse.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |

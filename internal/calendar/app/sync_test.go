@@ -330,3 +330,53 @@ func TestRunOnceRecordsAccountErrorAndStillCountsHealthyAccounts(t *testing.T) {
 		t.Errorf("recorded events synced = %d, want 1 (the healthy account's event)", spy.eventsSynced)
 	}
 }
+
+// cancellingTokenProvider cancels the pass's context when asked for cancelID's
+// token — simulating shutdown or the tick deadline expiring mid-pass — and
+// returns the context's error, as a real provider would once its calls start
+// failing on the dead context.
+type cancellingTokenProvider struct {
+	cancelID calendardomain.CalendarAccountID
+	cancel   context.CancelFunc
+}
+
+func (f *cancellingTokenProvider) ValidAccessToken(ctx context.Context, id calendardomain.CalendarAccountID) (string, error) {
+	if id == f.cancelID {
+		f.cancel()
+		return "", ctx.Err()
+	}
+	return "access-token", nil
+}
+
+func TestRunOnceCancellationIsNotAnAccountError(t *testing.T) {
+	first := account("", "primary")
+	second := account("", "primary")
+	store := &fakeSyncAccountStore{accounts: []*calendardomain.CalendarAccount{first, second}}
+	source := &fakeEventSource{fullEvents: []calendardomain.SyncedEvent{event("a")}, nextSyncToken: "t"}
+
+	// The context is cancelled while the second account is being synced, after
+	// the first account completed cleanly.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tokens := &cancellingTokenProvider{cancelID: second.ID, cancel: cancel}
+	spy := &spySyncRecorder{}
+	svc, err := app.NewSyncService(store, &fakeEventRepo{}, source, tokens, syncLogger(), spy)
+	if err != nil {
+		t.Fatalf("NewSyncService: %v", err)
+	}
+
+	n, err := svc.RunOnce(ctx)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunOnce error = %v, want context.Canceled propagated", err)
+	}
+	if spy.accountErrors != 0 {
+		t.Errorf("recorded account errors = %d, want 0 (cancellation is not an account failure)", spy.accountErrors)
+	}
+	if spy.eventsSynced != 1 {
+		t.Errorf("recorded events synced = %d, want 1 (the completed first account's count is preserved)", spy.eventsSynced)
+	}
+	if n != 1 {
+		t.Errorf("processed = %d, want 1 (the first account's events)", n)
+	}
+}
