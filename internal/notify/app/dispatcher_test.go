@@ -331,11 +331,11 @@ type spyTickRecorder struct {
 }
 
 type spyTickCall struct {
-	scheduler string
+	scheduler metrics.SchedulerName
 	err       error
 }
 
-func (s *spyTickRecorder) ObserveTick(scheduler string, _ time.Duration, err error) {
+func (s *spyTickRecorder) ObserveTick(scheduler metrics.SchedulerName, _ time.Duration, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, spyTickCall{scheduler: scheduler, err: err})

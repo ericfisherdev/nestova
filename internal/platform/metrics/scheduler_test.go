@@ -61,10 +61,10 @@ func TestObserveTickErrorCountsErrorAndKeepsLastSuccess(t *testing.T) {
 
 	r.ObserveTick(metrics.SchedulerTasks, 50*time.Millisecond, errors.New("db down"))
 
-	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(metrics.SchedulerTasks, "error")); got != 1 {
+	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(string(metrics.SchedulerTasks), "error")); got != 1 {
 		t.Errorf(`ticks_total{result="error"} = %v, want 1`, got)
 	}
-	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(metrics.SchedulerTasks, "success")); got != 0 {
+	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(string(metrics.SchedulerTasks), "success")); got != 0 {
 		t.Errorf(`ticks_total{result="success"} = %v, want 0`, got)
 	}
 	if got := testutil.CollectAndCount(r.TickDuration); got != 1 {
@@ -82,15 +82,37 @@ func TestObserveTickErrorCountsErrorAndKeepsLastSuccess(t *testing.T) {
 	// the same clock reading.
 	r.ObserveTick(metrics.SchedulerTasks, 50*time.Millisecond, nil)
 	const pinnedLastSuccess = 12345.0
-	r.LastSuccess.WithLabelValues(metrics.SchedulerTasks).Set(pinnedLastSuccess)
+	r.LastSuccess.WithLabelValues(string(metrics.SchedulerTasks)).Set(pinnedLastSuccess)
 
 	r.ObserveTick(metrics.SchedulerTasks, 50*time.Millisecond, errors.New("db down again"))
 
-	if got := testutil.ToFloat64(r.LastSuccess.WithLabelValues(metrics.SchedulerTasks)); got != pinnedLastSuccess {
+	if got := testutil.ToFloat64(r.LastSuccess.WithLabelValues(string(metrics.SchedulerTasks))); got != pinnedLastSuccess {
 		t.Errorf("last_success after a failure following a success = %v, want unchanged %v", got, pinnedLastSuccess)
 	}
-	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(metrics.SchedulerTasks, "error")); got != 2 {
+	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(string(metrics.SchedulerTasks), "error")); got != 2 {
 		t.Errorf(`ticks_total{result="error"} after second failure = %v, want 2`, got)
+	}
+}
+
+// TestObserveTickUnknownSchedulerCollapsesToOther verifies the cardinality
+// guard: a SchedulerName outside the canonical set must land in the fixed
+// "other" series rather than minting a new label value.
+func TestObserveTickUnknownSchedulerCollapsesToOther(t *testing.T) {
+	r := metrics.NewPromTickRecorder(metrics.NewRegistry())
+
+	r.ObserveTick(metrics.SchedulerName("rogue"), time.Millisecond, nil)
+
+	// Exactly one counter series must exist — the "other" one. Asserting the
+	// series count (rather than reading a "rogue" child, which would itself
+	// instantiate that series) proves no rogue label value was minted.
+	if got := testutil.CollectAndCount(r.TicksTotal); got != 1 {
+		t.Errorf("ticks_total series count = %d, want 1 (only the collapsed 'other' series)", got)
+	}
+	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues("other", "success")); got != 1 {
+		t.Errorf(`ticks_total{scheduler="other",result="success"} = %v, want 1`, got)
+	}
+	if got := testutil.ToFloat64(r.LastSuccess.WithLabelValues("other")); got <= 0 {
+		t.Errorf(`last_success{scheduler="other"} = %v, want a positive Unix timestamp`, got)
 	}
 }
 
@@ -103,10 +125,10 @@ func TestObserveTickSuccessCountsSuccessAndMovesLastSuccess(t *testing.T) {
 	before := float64(time.Now().Add(-time.Second).Unix())
 	r.ObserveTick(metrics.SchedulerRenewal, 50*time.Millisecond, nil)
 
-	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(metrics.SchedulerRenewal, "success")); got != 1 {
+	if got := testutil.ToFloat64(r.TicksTotal.WithLabelValues(string(metrics.SchedulerRenewal), "success")); got != 1 {
 		t.Errorf(`ticks_total{result="success"} = %v, want 1`, got)
 	}
-	if got := testutil.ToFloat64(r.LastSuccess.WithLabelValues(metrics.SchedulerRenewal)); got < before {
+	if got := testutil.ToFloat64(r.LastSuccess.WithLabelValues(string(metrics.SchedulerRenewal))); got < before {
 		t.Errorf("last_success = %v, want a recent Unix timestamp (>= %v)", got, before)
 	}
 }

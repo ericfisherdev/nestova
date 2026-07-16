@@ -1,6 +1,9 @@
 package metrics_test
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ericfisherdev/nestova/internal/platform/metrics"
@@ -63,4 +66,36 @@ func TestNewHTTPMetricsNilRegistererPanics(t *testing.T) {
 		}
 	}()
 	metrics.NewHTTPMetrics(nil)
+}
+
+// TestHandlerServesRegistryFamilies verifies the scrape handler exposes the
+// families registered on the provided registry, so the composition root can
+// mount it without touching promhttp directly.
+func TestHandlerServesRegistryFamilies(t *testing.T) {
+	reg := metrics.NewRegistry()
+	metrics.NewHTTPMetrics(reg).RequestsInFlight.Set(0)
+
+	rr := httptest.NewRecorder()
+	metrics.Handler(reg).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /metrics status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"go_goroutines", "nestova_http_requests_in_flight"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape body is missing family %q", want)
+		}
+	}
+}
+
+// TestHandlerNilRegistryPanics pins the platform convention of failing loudly
+// at construction when a required dependency is missing.
+func TestHandlerNilRegistryPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("Handler(nil) did not panic")
+		}
+	}()
+	metrics.Handler(nil)
 }
