@@ -8,6 +8,36 @@ type PhotosView struct {
 	Photos    []PhotoView
 	Members   []MediaMemberOption
 	CSRFToken string
+	// MaxUploadBytes is the operator-configured per-photo cap
+	// (config.Media.MaxUploadBytes), rendered as a data attribute on the
+	// upload dropzone (NES-124) so the client-side queue's pre-check rejects
+	// an oversized file before ever starting its upload request, without a
+	// second hardcoded copy of the limit in JS.
+	MaxUploadBytes int64
+}
+
+// PhotoGridView is the fragment view model for #photo-grid: the photo list
+// plus what photoCard's per-photo actions need (album options for the
+// add-to-album dropdown, the CSRF token for its mutation forms). It is a
+// deliberate subset of PhotosView, not PhotosView itself, so GET /photos/grid
+// (NES-124) only ever has to load the reads PhotoGridFragment actually
+// renders. Albums is []AlbumOption, not []AlbumView: the dropdown only ever
+// reads an album's id and name, never its ordered photo membership, so the
+// handler backing this view never has to pay for AlbumService.AlbumPhotos
+// (one query per album) just to satisfy this struct's shape.
+type PhotoGridView struct {
+	Photos    []PhotoView
+	Albums    []AlbumOption
+	CSRFToken string
+}
+
+// AlbumOption is an album's id/name, all photoCard's add-to-album dropdown
+// needs. Distinct from AlbumView (which also carries rotation, a view URL,
+// and ordered photo membership for the Albums section's move/remove
+// controls) so building it never requires loading that membership.
+type AlbumOption struct {
+	ID   string
+	Name string
 }
 
 // AlbumView is one album with its ordered membership (for move/remove controls).
@@ -52,15 +82,8 @@ templ PhotosPage(view PhotosView) {
 		</div>
 		<div class="grid gap-6 lg:grid-cols-3">
 			<section class="rounded-card bg-surface p-4 shadow-warm lg:col-span-1">
-				<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Upload a photo</h2>
-				<form method="post" action={ templ.URL(photosPath) } hx-post={ photosPath } hx-encoding="multipart/form-data" enctype="multipart/form-data" class="flex flex-col gap-2" data-testid="upload-form">
-					<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
-					<label class="text-xs font-medium text-ink-muted" for="photo-file">Photo file</label>
-					<input id="photo-file" type="file" name="photo" accept="image/jpeg,image/png,image/webp" required class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
-					<label class="text-xs font-medium text-ink-muted" for="photo-caption">Caption (optional)</label>
-					<input id="photo-caption" type="text" name="caption" placeholder="e.g. Beach day" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
-					@Button("Upload", ButtonPrimary, "submit")
-				</form>
+				<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Upload photos</h2>
+				@uploadDropzone(view.CSRFToken, view.MaxUploadBytes)
 				<h2 class="mb-3 mt-6 text-sm font-semibold uppercase tracking-wide text-ink-muted">New album</h2>
 				@albumForm("create", "/albums", view.CSRFToken, "", 8, view.Members)
 			</section>
@@ -79,16 +102,104 @@ templ PhotosPage(view PhotosView) {
 		</div>
 		<section class="mt-6 rounded-card bg-surface p-4 shadow-warm">
 			<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">All photos</h2>
-			if len(view.Photos) == 0 {
-				<p class="text-sm text-ink-muted">No photos yet — upload one above.</p>
-			} else {
-				<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4" data-testid="photo-grid">
-					for _, photo := range view.Photos {
-						@photoCard(photo, view.Albums, view.CSRFToken)
-					}
-				</div>
-			}
+			@PhotoGridFragment(PhotoGridView{Photos: view.Photos, Albums: albumOptions(view.Albums), CSRFToken: view.CSRFToken})
 		</section>
+	</div>
+}
+
+// uploadDropzone renders the drag-and-drop multi-file upload queue (NES-124).
+// Selecting or dropping files enqueues them client-side
+// (web/static/js/upload-queue.js, Alpine.data("uploadQueue")); each queued
+// file then uploads through its own request to the unchanged single-file
+// POST /photos endpoint (NES-123's streaming/sniffing/dedup path needs no
+// change here), at a small capped concurrency so a 50-photo drop never opens
+// 50 sockets at once. data-max-bytes/data-accept are the single source of
+// truth the queue's client-side pre-check reads from — mirroring
+// config.Media.MaxUploadBytes and domain.acceptedContentTypes server-side —
+// so the client check can't silently drift from what the server enforces.
+// The optional caption applies to every file in this batch (there is no
+// per-file caption UI): the same one field NES-75 originally shipped, no
+// longer scoped to a single file. The file input is sr-only (visually
+// hidden but still focusable) and nested inside its own <label> — real HTML
+// semantics, not an ARIA role hack — so :focus-within on the label gives a
+// sighted keyboard user a visible ring around "choose files" the moment Tab
+// reaches the input, which a bare sr-only input's own (invisible) focus
+// outline would never show.
+templ uploadDropzone(csrfToken string, maxUploadBytes int64) {
+	<div
+		id="upload-dropzone"
+		data-testid="upload-dropzone"
+		data-upload-url={ photosPath }
+		data-max-bytes={ fmt.Sprintf("%d", maxUploadBytes) }
+		data-accept="image/jpeg,image/png,image/webp"
+		x-data="uploadQueue()"
+		@dragover.prevent="dragActive = true"
+		@dragleave.prevent="dragActive = false"
+		@drop.prevent="dragActive = false; enqueueFiles($event.dataTransfer.files)"
+		:class="dragActive ? 'border-sage bg-surface-warm' : 'border-sidebar-border'"
+		class="flex flex-col gap-2 rounded-control border-2 border-dashed p-3 text-center transition-colors"
+	>
+		<form id="upload-form" method="post" action={ templ.URL(photosPath) } enctype="multipart/form-data" class="flex flex-col gap-2" data-testid="upload-form">
+			<input type="hidden" name="csrf_token" id="upload-csrf-token" value={ csrfToken }/>
+			<p class="text-sm text-ink-muted">
+				Drag photos here, or
+				<label
+					class="cursor-pointer rounded-control font-medium text-accent underline focus-within:outline-none focus-within:ring-2 focus-within:ring-sage focus-within:ring-offset-2"
+				>
+					choose files
+					<input
+						id="photo-file"
+						type="file"
+						name="photo"
+						multiple
+						accept="image/jpeg,image/png,image/webp"
+						class="sr-only"
+						@change="enqueueFiles($event.target.files); $event.target.value = ''"
+					/>
+				</label>
+			</p>
+			<label class="text-left text-xs font-medium text-ink-muted" for="upload-caption">Caption (optional, applied to this batch)</label>
+			<input id="upload-caption" type="text" name="caption" placeholder="e.g. Beach day" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>
+		</form>
+		<p class="text-xs text-ink-muted">{ fmt.Sprintf("JPEG, PNG, or WEBP — up to %d MB each.", maxUploadBytes/(1<<20)) }</p>
+		<ul x-show="queue.length > 0" x-cloak class="flex flex-col gap-1 text-left" data-testid="upload-queue">
+			<template x-for="item in queue" :key="item.id">
+				<li class="flex items-center gap-2 rounded-control border border-sidebar-border bg-surface-warm px-2 py-1 text-xs">
+					<span class="flex-1 truncate" x-text="item.name"></span>
+					<progress class="h-1.5 w-16" :value="item.progress" max="100" x-show="item.status === 'uploading'"></progress>
+					<span x-text="item.statusLabel"></span>
+					<button type="button" x-show="item.status === 'error'" @click="retry(item.id)" class="text-ink-muted underline">Retry</button>
+				</li>
+			</template>
+		</ul>
+		<p x-show="summary" x-cloak x-text="summary" class="text-xs font-medium text-ink" data-testid="upload-summary"></p>
+	</div>
+}
+
+// PhotoGridFragment renders the "All photos" grid (or its empty state),
+// wrapped in a stable id="photo-grid" container. It is shared by PhotosPage's
+// full-page render and by GET /photos/grid, the fragment endpoint the
+// client-side upload queue (web/static/js/upload-queue.js) triggers exactly
+// once after a whole drag-and-drop batch drains — via
+// htmx.trigger("#photo-grid", "photos-uploaded") — so dropping 50 photos
+// refreshes the grid once, not once per file.
+templ PhotoGridFragment(view PhotoGridView) {
+	<div
+		id="photo-grid"
+		hx-trigger="photos-uploaded"
+		hx-get="/photos/grid"
+		hx-target="this"
+		hx-swap="outerHTML"
+	>
+		if len(view.Photos) == 0 {
+			<p class="text-sm text-ink-muted">No photos yet — upload one above.</p>
+		} else {
+			<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4" data-testid="photo-grid">
+				for _, photo := range view.Photos {
+					@photoCard(photo, view.Albums, view.CSRFToken)
+				}
+			</div>
+		}
 	</div>
 }
 
@@ -138,7 +249,7 @@ templ moveButton(albumID, photoID, direction string, disabled bool, csrfToken st
 	</form>
 }
 
-templ photoCard(photo PhotoView, albums []AlbumView, csrfToken string) {
+templ photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) {
 	<figure class="overflow-hidden rounded-control border border-sidebar-border bg-surface-warm">
 		<img src={ photo.RawURL } alt={ photo.Caption } class="aspect-square w-full object-cover"/>
 		<figcaption class="flex flex-col gap-1 p-2">
@@ -202,6 +313,21 @@ templ albumForm(mode, action, csrfToken, nameValue string, rotationValue int, me
 // uploaderChipClass builds the member-colored attribution dot class.
 func uploaderChipClass(color string) string {
 	return fmt.Sprintf("bg-member-%s-solid", color)
+}
+
+// albumOptions projects the full page's AlbumView list (which carries each
+// album's ordered photo membership, needed by the Albums section's
+// move/remove controls) down to the id/name pairs photoCard's add-to-album
+// dropdown actually reads. This is a field projection only — no extra
+// loading — so PhotosPage's own render of PhotoGridFragment stays as cheap
+// as GET /photos/grid's, which builds AlbumOption directly and never loads
+// membership at all (NES-124).
+func albumOptions(albums []AlbumView) []AlbumOption {
+	options := make([]AlbumOption, 0, len(albums))
+	for _, a := range albums {
+		options = append(options, AlbumOption{ID: a.ID, Name: a.Name})
+	}
+	return options
 }
 
 // arrow renders the move-direction glyph.
