@@ -18,6 +18,7 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/domain"
@@ -437,7 +438,7 @@ func TestRenewalSchedulerEndToEnd(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	scheduler, err := subscriptionsapp.NewRenewalScheduler(repo, outbox, discardTestLogger(), time.Hour, time.Minute)
+	scheduler, err := subscriptionsapp.NewRenewalScheduler(repo, outbox, discardTestLogger(), metrics.NopTickRecorder{}, time.Hour, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRenewalScheduler: %v", err)
 	}

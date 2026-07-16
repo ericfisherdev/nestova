@@ -203,6 +203,16 @@ func runServer(logger *slog.Logger) error {
 	provisioner := newTxProvisioner(pool)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, credRepo, provisioner, sm, logger)
 
+	// NES-114/NES-115: Prometheus instrumentation. One registry (runtime +
+	// process + build-info collectors) feeds the per-request middleware metrics,
+	// the background scheduler tick recorder, the calendar sync metrics, and the
+	// GET /metrics scrape endpoint. It is built ahead of the background workers
+	// so their constructors receive the shared tick recorder.
+	registry := metrics.NewRegistry()
+	httpMetrics := metrics.NewHTTPMetrics(registry)
+	tickRecorder := metrics.NewPromTickRecorder(registry)
+	syncMetrics := metrics.NewSyncMetrics(registry)
+
 	// NES-24: notification outbox wiring.
 	outboxRepo := notifyadapter.NewOutboxRepository(pool)
 	inAppSender := notifyadapter.NewInAppSender(logger)
@@ -210,6 +220,7 @@ func runServer(logger *slog.Logger) error {
 		outboxRepo,
 		[]domain.Sender{inAppSender},
 		logger,
+		tickRecorder,
 		dispatchBatchSize,
 		dispatchPollInterval,
 	)
@@ -227,7 +238,7 @@ func runServer(logger *slog.Logger) error {
 	// outboxRepo satisfies notifydomain.Enqueuer (it embeds Enqueue); passing it
 	// here lets the scheduler emit due-soon and overdue reminders via the same
 	// outbox the dispatcher already consumes (NES-34).
-	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, outboxRepo, logger, taskSchedulerPollInterval)
+	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, outboxRepo, logger, tickRecorder, taskSchedulerPollInterval)
 	if err != nil {
 		return fmt.Errorf("create task scheduler: %w", err)
 	}
@@ -247,7 +258,7 @@ func runServer(logger *slog.Logger) error {
 	}
 	restockScheduler, err := trackingapp.NewRestockScheduler(
 		trackedItemRepo, predictor, ingredientRepo, shoppingListRepo, outboxRepo, logger,
-		restockSchedulerPollInterval, restockSchedulerTickTimeout,
+		tickRecorder, restockSchedulerPollInterval, restockSchedulerTickTimeout,
 	)
 	if err != nil {
 		return fmt.Errorf("create restock scheduler: %w", err)
@@ -259,7 +270,7 @@ func runServer(logger *slog.Logger) error {
 	subscriptionRepo := subscriptionsadapter.NewSubscriptionRepository(pool)
 	renewalScheduler, err := subscriptionsapp.NewRenewalScheduler(
 		subscriptionRepo, outboxRepo, logger,
-		renewalSchedulerPollInterval, renewalSchedulerTickTimeout,
+		tickRecorder, renewalSchedulerPollInterval, renewalSchedulerTickTimeout,
 	)
 	if err != nil {
 		return fmt.Errorf("create renewal scheduler: %w", err)
@@ -386,11 +397,11 @@ func runServer(logger *slog.Logger) error {
 	// token via the account service (which refreshes transparently).
 	externalEventRepo := calendaradapter.NewExternalEventRepository(pool)
 	googleCalendarClient := calendaradapter.NewGoogleCalendarClient()
-	calendarSyncService, err := calendarapp.NewSyncService(calendarAccountRepo, externalEventRepo, googleCalendarClient, accountService, logger)
+	calendarSyncService, err := calendarapp.NewSyncService(calendarAccountRepo, externalEventRepo, googleCalendarClient, accountService, logger, syncMetrics)
 	if err != nil {
 		return fmt.Errorf("create calendar sync service: %w", err)
 	}
-	calendarSyncScheduler, err := calendarapp.NewSyncScheduler(calendarSyncService, logger, calendarSyncPollInterval, calendarSyncTickTimeout)
+	calendarSyncScheduler, err := calendarapp.NewSyncScheduler(calendarSyncService, logger, tickRecorder, calendarSyncPollInterval, calendarSyncTickTimeout)
 	if err != nil {
 		return fmt.Errorf("create calendar sync scheduler: %w", err)
 	}
@@ -426,19 +437,14 @@ func runServer(logger *slog.Logger) error {
 	}
 	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger)
 
-	// NES-114: Prometheus instrumentation. One registry (runtime + process +
-	// build-info collectors) feeds both the per-request middleware metrics and
-	// the GET /metrics scrape endpoint. The Registry option on the handler
-	// reports scrape errors as metrics instead of failing silently.
-	registry := metrics.NewRegistry()
-	httpMetrics := metrics.NewHTTPMetrics(registry)
-
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
 			return db.Health(ctx, pool)
 		},
-		HTTPMetrics:    httpMetrics,
+		HTTPMetrics: httpMetrics,
+		// The Registry option on the scrape handler reports scrape errors as
+		// metrics instead of failing silently (NES-114).
 		MetricsHandler: promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry}),
 		// NES-23: session loading + authentication injected between Recoverer
 		// and Timeout (canonical chain order per server.go).

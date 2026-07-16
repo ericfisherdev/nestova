@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 )
 
 // senderRegistry maps Channel to Sender. It is built once at construction time
@@ -51,17 +52,23 @@ type Dispatcher struct {
 	outbox       domain.Outbox
 	senders      senderRegistry
 	logger       *slog.Logger
+	ticks        metrics.TickRecorder
 	batchSize    int
 	pollInterval time.Duration
 }
 
 // NewDispatcher constructs a Dispatcher with injected dependencies.
+// ticks records each poll cycle's duration and outcome (NES-115); pass
+// [metrics.NopTickRecorder] when tick instrumentation is irrelevant.
 // batchSize caps the number of notifications claimed per RunOnce call.
 // pollInterval controls how often Run polls the outbox.
+// Returns an error when outbox, logger, or ticks is nil, when batchSize or
+// pollInterval is not positive, or when the sender set is empty or invalid.
 func NewDispatcher(
 	outbox domain.Outbox,
 	senders []domain.Sender,
 	logger *slog.Logger,
+	ticks metrics.TickRecorder,
 	batchSize int,
 	pollInterval time.Duration,
 ) (*Dispatcher, error) {
@@ -70,6 +77,9 @@ func NewDispatcher(
 	}
 	if logger == nil {
 		return nil, errors.New("app: NewDispatcher requires a non-nil logger")
+	}
+	if ticks == nil {
+		return nil, errors.New("app: NewDispatcher requires a non-nil tick recorder")
 	}
 	if batchSize <= 0 {
 		return nil, fmt.Errorf("app: NewDispatcher batchSize must be positive, got %d", batchSize)
@@ -85,6 +95,7 @@ func NewDispatcher(
 		outbox:       outbox,
 		senders:      reg,
 		logger:       logger,
+		ticks:        ticks,
 		batchSize:    batchSize,
 		pollInterval: pollInterval,
 	}, nil
@@ -202,7 +213,9 @@ func (d *Dispatcher) runTick() {
 	runCtx, cancel := context.WithTimeout(context.Background(), d.pollInterval)
 	defer cancel()
 
+	start := time.Now()
 	count, err := d.RunOnce(runCtx)
+	d.ticks.ObserveTick(metrics.SchedulerDispatcher, time.Since(start), err)
 	if err != nil {
 		d.logger.Error("dispatcher: run once failed", "error", err)
 		return

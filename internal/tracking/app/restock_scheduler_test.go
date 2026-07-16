@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/tracking/adapter"
 	"github.com/ericfisherdev/nestova/internal/tracking/app"
 	"github.com/ericfisherdev/nestova/internal/tracking/domain"
@@ -101,7 +103,7 @@ func dueSetup(t *testing.T, leadDays int) (*domain.TrackedItem, *app.Predictor) 
 
 func mustRestockScheduler(t *testing.T, items domain.TrackedItemRepository, predictor *app.Predictor, ing domain.IngredientEnsurer, shop domain.ShoppingListRepository, enq notifydomain.Enqueuer) *app.RestockScheduler {
 	t.Helper()
-	s, err := app.NewRestockScheduler(items, predictor, ing, shop, enq, discardLogger(), time.Hour, time.Minute)
+	s, err := app.NewRestockScheduler(items, predictor, ing, shop, enq, discardLogger(), metrics.NopTickRecorder{}, time.Hour, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRestockScheduler: %v", err)
 	}
@@ -219,6 +221,7 @@ func TestNewRestockSchedulerValidatesDeps(t *testing.T) {
 	shop := &fakeRestockShoppingRepo{}
 	enq := &fakeEnqueuer{}
 	log := discardLogger()
+	rec := metrics.NopTickRecorder{}
 	interval := time.Hour
 	tick := time.Minute
 
@@ -227,28 +230,31 @@ func TestNewRestockSchedulerValidatesDeps(t *testing.T) {
 		call func() (*app.RestockScheduler, error)
 	}{
 		{"nil items", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(nil, predictor, ing, shop, enq, log, interval, tick)
+			return app.NewRestockScheduler(nil, predictor, ing, shop, enq, log, rec, interval, tick)
 		}},
 		{"nil predictor", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, nil, ing, shop, enq, log, interval, tick)
+			return app.NewRestockScheduler(items, nil, ing, shop, enq, log, rec, interval, tick)
 		}},
 		{"nil ingredient ensurer", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, nil, shop, enq, log, interval, tick)
+			return app.NewRestockScheduler(items, predictor, nil, shop, enq, log, rec, interval, tick)
 		}},
 		{"nil shopping repo", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, nil, enq, log, interval, tick)
+			return app.NewRestockScheduler(items, predictor, ing, nil, enq, log, rec, interval, tick)
 		}},
 		{"nil enqueuer", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, nil, log, interval, tick)
+			return app.NewRestockScheduler(items, predictor, ing, shop, nil, log, rec, interval, tick)
 		}},
 		{"nil logger", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, enq, nil, interval, tick)
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, nil, rec, interval, tick)
+		}},
+		{"nil tick recorder", func() (*app.RestockScheduler, error) {
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, nil, interval, tick)
 		}},
 		{"zero interval", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, 0, tick)
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, rec, 0, tick)
 		}},
 		{"zero tick timeout", func() (*app.RestockScheduler, error) {
-			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, interval, 0)
+			return app.NewRestockScheduler(items, predictor, ing, shop, enq, log, rec, interval, 0)
 		}},
 	}
 	for _, tt := range tests {
@@ -274,7 +280,7 @@ func TestRestockRunOnceEndToEnd(t *testing.T) {
 		t.Fatalf("NewPredictor: %v", err)
 	}
 	outbox := notifyadapter.NewOutboxRepository(pool)
-	sched, err := app.NewRestockScheduler(trackedRepo, predictor, ingredientRepo, shoppingRepo, outbox, discardLogger(), time.Hour, time.Minute)
+	sched, err := app.NewRestockScheduler(trackedRepo, predictor, ingredientRepo, shoppingRepo, outbox, discardLogger(), metrics.NopTickRecorder{}, time.Hour, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRestockScheduler: %v", err)
 	}
@@ -339,5 +345,91 @@ func TestRestockRunOnceEndToEnd(t *testing.T) {
 	}
 	if notifications != 1 {
 		t.Errorf("restock notifications = %d, want exactly 1", notifications)
+	}
+}
+
+// failingTrackedItemRepo makes ListAllActive fail so a whole restock cycle
+// errors, driving the failing-tick metrics path.
+type failingTrackedItemRepo struct {
+	fakeTrackedItemRepo
+	listErr error
+}
+
+func (f *failingTrackedItemRepo) ListAllActive(context.Context) ([]*domain.TrackedItem, error) {
+	return nil, f.listErr
+}
+
+// spyTickRecorder records ObserveTick calls for assertion. A spy is used
+// instead of asserting on a real PromTickRecorder because the ObserveTick seam
+// lives in the unexported runTick; PromTickRecorder's own error/success
+// behaviour is covered once in the metrics package.
+type spyTickRecorder struct {
+	mu    sync.Mutex
+	calls []spyTickCall
+}
+
+type spyTickCall struct {
+	scheduler string
+	err       error
+}
+
+func (s *spyTickRecorder) ObserveTick(scheduler string, _ time.Duration, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, spyTickCall{scheduler: scheduler, err: err})
+}
+
+// waitForCall polls until at least one call is recorded or the deadline hits.
+func (s *spyTickRecorder) waitForCall(t *testing.T) spyTickCall {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		if len(s.calls) > 0 {
+			call := s.calls[0]
+			s.mu.Unlock()
+			return call
+		}
+		s.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ObserveTick was never called")
+	return spyTickCall{}
+}
+
+func TestRestockScheduler_Run_FailingTickObservedWithError(t *testing.T) {
+	_, predictor := dueSetup(t, 0)
+	items := &failingTrackedItemRepo{listErr: errors.New("db error")}
+	spy := &spyTickRecorder{}
+	s, err := app.NewRestockScheduler(
+		items, predictor, &fakeIngredientEnsurer{id: domain.NewIngredientID()},
+		&fakeRestockShoppingRepo{}, &fakeEnqueuer{}, discardLogger(), spy,
+		10*time.Millisecond, time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("NewRestockScheduler: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		s.Run(ctx)
+		close(done)
+	}()
+
+	call := spy.waitForCall(t)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	if call.scheduler != metrics.SchedulerRestock {
+		t.Errorf("ObserveTick scheduler = %q, want %q", call.scheduler, metrics.SchedulerRestock)
+	}
+	if call.err == nil {
+		t.Error("ObserveTick err = nil, want the failing tick's error")
 	}
 }

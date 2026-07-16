@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/ericfisherdev/nestova/internal/calendar/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 )
 
 // syncAccountStore is the slice of the account repository the sync engine needs
@@ -32,10 +33,14 @@ type SyncService struct {
 	source   domain.CalendarEventSource
 	tokens   accessTokenProvider
 	logger   *slog.Logger
+	recorder metrics.SyncRecorder
 }
 
-// NewSyncService constructs the service with injected dependencies.
-func NewSyncService(accounts syncAccountStore, events domain.ExternalEventRepository, source domain.CalendarEventSource, tokens accessTokenProvider, logger *slog.Logger) (*SyncService, error) {
+// NewSyncService constructs the service with injected dependencies. recorder
+// receives the per-account synced-event counts and account-level sync failures
+// (NES-115); pass [metrics.NopSyncRecorder] when sync instrumentation is
+// irrelevant. Returns an error when any dependency is nil.
+func NewSyncService(accounts syncAccountStore, events domain.ExternalEventRepository, source domain.CalendarEventSource, tokens accessTokenProvider, logger *slog.Logger, recorder metrics.SyncRecorder) (*SyncService, error) {
 	if accounts == nil {
 		return nil, errors.New("calendar: NewSyncService requires a non-nil account store")
 	}
@@ -51,7 +56,10 @@ func NewSyncService(accounts syncAccountStore, events domain.ExternalEventReposi
 	if logger == nil {
 		return nil, errors.New("calendar: NewSyncService requires a non-nil logger")
 	}
-	return &SyncService{accounts: accounts, events: events, source: source, tokens: tokens, logger: logger}, nil
+	if recorder == nil {
+		return nil, errors.New("calendar: NewSyncService requires a non-nil sync recorder")
+	}
+	return &SyncService{accounts: accounts, events: events, source: source, tokens: tokens, logger: logger, recorder: recorder}, nil
 }
 
 // RunOnce syncs every connected account once, returning the number of events
@@ -76,6 +84,7 @@ func (s *SyncService) RunOnce(ctx context.Context) (int, error) {
 		}
 		n, syncErr := s.syncAccount(ctx, account)
 		if syncErr != nil {
+			s.recorder.IncAccountError()
 			s.logger.ErrorContext(ctx, "sync: account failed",
 				"account_id", account.ID.String(), "error", syncErr)
 			if firstErr == nil {
@@ -83,6 +92,9 @@ func (s *SyncService) RunOnce(ctx context.Context) (int, error) {
 			}
 			continue
 		}
+		// Record per successful account (not once per pass) so events synced
+		// ahead of a later account's failure or a shutdown are still counted.
+		s.recorder.AddEventsSynced(n)
 		processed += n
 	}
 	return processed, firstErr

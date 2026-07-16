@@ -457,6 +457,42 @@ future recovery sweep can close both gaps.
 - The dispatcher goroutine uses the same signal-cancelled context as the HTTP
   server, so it stops cleanly on `SIGINT`/`SIGTERM`.
 
+### Observability (NES-114 / NES-115)
+
+The server exposes Prometheus metrics at `GET /metrics`, backed by a dedicated
+registry built in `cmd/server/main.go` (`internal/platform/metrics.NewRegistry`).
+The registry includes the standard Go runtime, process, and build-info
+collectors plus the application metrics below. All instrumentation lives in
+`internal/platform/metrics` — the only package that imports the Prometheus
+client directly; consumers record through the `HTTPMetrics` fields and the
+`TickRecorder`/`SyncRecorder` ports.
+
+**HTTP request metrics** (recorded by the HTTP middleware, NES-114):
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nestova_http_requests_total` | counter | `method`, `route`, `status` | Completed HTTP requests, by method, matched route pattern, and final status code |
+| `nestova_http_request_duration_seconds` | histogram | `method`, `route` | Request latency in seconds (status omitted to bound series count) |
+| `nestova_http_requests_in_flight` | gauge | — | Requests currently being served |
+
+**Background scheduler metrics** (recorded once per poll cycle by each of the
+five background workers, NES-115). The `scheduler` label only ever holds one of
+the five canonical values defined next to the `TickRecorder` port:
+`dispatcher`, `task_scheduler`, `restock`, `renewal`, `calendar_sync`.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nestova_scheduler_ticks_total` | counter | `scheduler`, `result` | Completed scheduler cycles; `result` is `success` or `error` |
+| `nestova_scheduler_tick_duration_seconds` | histogram | `scheduler` | Cycle duration in seconds |
+| `nestova_scheduler_last_success_timestamp_seconds` | gauge | `scheduler` | Unix timestamp of the most recent *successful* cycle — a failing cycle leaves it untouched, so staleness signals a scheduler that has stopped succeeding |
+
+**Calendar sync metrics** (recorded by the sync engine, NES-115):
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nestova_calendar_sync_events_total` | counter | — | External calendar events applied to the cache (upserts and deletes) across all accounts |
+| `nestova_calendar_sync_account_errors_total` | counter | — | Per-account sync failures (one increment per failed account per pass) |
+
 ### Linting (golangci-lint)
 
 Static analysis is configured in [`.golangci.yml`](.golangci.yml) (schema v2).
