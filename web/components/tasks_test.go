@@ -177,7 +177,10 @@ func TestTaskRowItemStanding(t *testing.T) {
 
 // TestTaskRowItemClaimedWithExpiryShowsBadge verifies that a claimed row
 // carrying an at-risk claim expiry renders the countdown badge's Alpine
-// scaffolding and the passive-refresh HTMX trigger, scoped to that row.
+// scaffolding and the passive-refresh HTMX trigger. Unlike the row's own
+// mutation forms, the refresh targets the enclosing #task-groups container
+// (not this row) via GET /tasks/groups, so a reverted claim's row re-renders
+// under its correct group instead of only updating in place.
 func TestTaskRowItemClaimedWithExpiryShowsBadge(t *testing.T) {
 	row := components.TaskRow{
 		InstanceID:        "risky-0001",
@@ -205,8 +208,11 @@ func TestTaskRowItemClaimedWithExpiryShowsBadge(t *testing.T) {
 	if !strings.Contains(out, `hx-trigger="claim-expired"`) {
 		t.Errorf("row missing the passive-refresh hx-trigger: %q", out)
 	}
-	if !strings.Contains(out, `hx-get="/tasks/risky-0001/row"`) {
+	if !strings.Contains(out, `hx-get="/tasks/groups"`) {
 		t.Errorf("row missing the passive-refresh hx-get endpoint: %q", out)
+	}
+	if !strings.Contains(out, `hx-target="#task-groups"`) {
+		t.Errorf("row missing the group-container hx-target (must not self-target): %q", out)
 	}
 }
 
@@ -262,6 +268,56 @@ func TestTasksPageEmpty(t *testing.T) {
 	out := renderString(t, components.TasksPage(nil))
 	if !strings.Contains(out, "all caught up") {
 		t.Errorf("empty tasks page missing empty-state message: %q", out)
+	}
+	// The stable container id must be present even in the empty state, since
+	// it is the NES-118 group-refresh swap target regardless of whether the
+	// list happens to be empty when the refresh lands.
+	if !strings.Contains(out, `id="task-groups"`) {
+		t.Errorf("empty tasks page missing the #task-groups container: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TaskGroupsFragment (NES-118)
+// ---------------------------------------------------------------------------
+
+// TestTaskGroupsFragment_RendersContainerAndGroups verifies that
+// TaskGroupsFragment wraps its groups in the stable id="task-groups"
+// container the claim countdown's group refresh targets.
+func TestTaskGroupsFragment_RendersContainerAndGroups(t *testing.T) {
+	groups := []components.TaskGroup{
+		{
+			Label: "Up for grabs",
+			Rows: []components.TaskRow{
+				{InstanceID: "row-1", Title: "Mow the lawn", Category: "chore", DueLabel: "Today", Status: "pending", Claimable: true, CSRFToken: "tok"},
+			},
+		},
+	}
+	out := renderString(t, components.TaskGroupsFragment(groups))
+
+	if !strings.Contains(out, `id="task-groups"`) {
+		t.Errorf("fragment missing the stable #task-groups container id: %q", out)
+	}
+	if !strings.Contains(out, "Up for grabs") {
+		t.Errorf("fragment missing group heading: %q", out)
+	}
+	if !strings.Contains(out, "Mow the lawn") {
+		t.Errorf("fragment missing row content: %q", out)
+	}
+}
+
+// TestTaskGroupsFragment_Empty verifies that TaskGroupsFragment renders the
+// "all caught up" empty state, still wrapped in id="task-groups", when there
+// are no groups — the same shape GET /tasks/groups returns after the last
+// remaining claim on the page reverts to claimable with nothing else pending.
+func TestTaskGroupsFragment_Empty(t *testing.T) {
+	out := renderString(t, components.TaskGroupsFragment(nil))
+
+	if !strings.Contains(out, `id="task-groups"`) {
+		t.Errorf("empty fragment missing the #task-groups container: %q", out)
+	}
+	if !strings.Contains(out, "all caught up") {
+		t.Errorf("empty fragment missing empty-state message: %q", out)
 	}
 }
 

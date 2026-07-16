@@ -86,16 +86,34 @@ templ TasksPage(groups []TaskGroup) {
 				class="inline-flex items-center justify-center rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm transition-colors hover:bg-sage-dark"
 			>Add chore</a>
 		</div>
+		@TaskGroupsFragment(groups)
+	</div>
+}
+
+// TaskGroupsFragment renders just the grouped task list (or the "all caught
+// up" empty state), wrapped in a stable id="task-groups" container. It is
+// shared by TasksPage's full-page render and by GET /tasks/groups, the HTMX
+// fragment endpoint a claimed row's countdown badge refreshes on expiry
+// (NES-118).
+//
+// The container — not a single row — is the swap target deliberately: a
+// row whose claim expired reverts to unassigned/claimable, which moves it
+// out of its former assignee's group and into "Up for grabs" (or wherever
+// groupTaskRows now places it). Swapping only that one row in place would
+// update its buttons but leave it displayed under the wrong group heading
+// until a full page reload re-ran the grouping. Refreshing the whole
+// container re-runs groupTaskRows server-side, so the row always lands under
+// its correct heading in the same request.
+templ TaskGroupsFragment(groups []TaskGroup) {
+	<div id="task-groups" class="flex flex-col gap-6">
 		if len(groups) == 0 {
 			<div class="rounded-card bg-surface p-8 text-center shadow-warm">
 				<p class="text-ink-secondary">No upcoming or overdue tasks — you're all caught up!</p>
 			</div>
 		} else {
-			<div class="flex flex-col gap-6">
-				for _, group := range groups {
-					@taskGroup(group)
-				}
-			</div>
+			for _, group := range groups {
+				@taskGroup(group)
+			}
 		}
 	</div>
 }
@@ -120,17 +138,21 @@ templ taskGroup(group TaskGroup) {
 	</section>
 }
 
-// TaskRowItem renders a single task instance row. It is the HTMX swap target:
-// each action (complete, skip, claim) swaps this element's outer HTML in place.
-// The wrapping div carries a stable id="task-{InstanceID}" for the swap selector.
+// TaskRowItem renders a single task instance row. It is the HTMX swap target
+// for its own mutations: each action (complete, skip, claim) swaps this
+// element's outer HTML in place. The wrapping div carries a stable
+// id="task-{InstanceID}" for that swap selector.
 //
 // NES-118: when the row carries an at-risk claim (ClaimExpiresAtISO set), the
 // row also carries an Alpine countdown component and an hx-trigger listening
 // for the "claim-expired" event that component dispatches once its countdown
-// reaches zero. That event fires an hx-get back to this same row (scoped to
-// just this element — no polling, no stampede across rows, since every claim
-// expires at its own distinct instant), swapping it to its post-sweep,
-// claimable state without a full page reload.
+// reaches zero. Unlike the mutation forms below, that trigger's hx-target is
+// NOT this row — it targets the enclosing #task-groups container (see
+// TaskGroupsFragment) via GET /tasks/groups, so a reverted claim's row
+// re-renders under its correct group instead of lingering under its former
+// assignee's heading. Still a single request and no page reload — no
+// polling, no stampede across rows, since every claim expires at its own
+// distinct instant.
 templ TaskRowItem(row TaskRow) {
 	<div
 		id={ fmt.Sprintf("task-%s", row.InstanceID) }
@@ -138,7 +160,8 @@ templ TaskRowItem(row TaskRow) {
 		if row.ClaimExpiresAtISO != "" {
 			x-data={ fmt.Sprintf("claimCountdown('%s')", row.ClaimExpiresAtISO) }
 			hx-trigger="claim-expired"
-			hx-get={ fmt.Sprintf("/tasks/%s/row", row.InstanceID) }
+			hx-get="/tasks/groups"
+			hx-target="#task-groups"
 			hx-swap="outerHTML"
 		}
 	>
