@@ -112,14 +112,14 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><form method=\"POST\" action=\"/tasks\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" x-effect=\"if (freq === 'as_needed') { policy = 'claimable' }\"><form method=\"POST\" action=\"/tasks\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 84, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 85, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -132,7 +132,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 93, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 94, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -188,192 +188,202 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, ">Monthly</option></select></div><div class=\"flex flex-col gap-1\"><label for=\"nt_interval\" class=\"text-sm text-ink-secondary\">Every N</label> <input id=\"nt_interval\" type=\"number\" name=\"interval\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, ">Monthly</option> <option value=\"as_needed\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.Freq == "as_needed" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, " selected")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, ">As needed — always available</option></select></div><div x-show=\"freq !== 'as_needed'\" x-cloak class=\"flex flex-col gap-1\"><label for=\"nt_interval\" class=\"text-sm text-ink-secondary\">Every N</label> <input id=\"nt_interval\" type=\"number\" name=\"interval\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(form.Interval)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 150, Col: 30}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 152, Col: 30}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" min=\"1\" placeholder=\"1\" class=\"w-20 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></div><!-- Weekday checkboxes — only visible when freq == \"weekly\" --><div x-show=\"freq === 'weekly'\" x-cloak class=\"flex flex-col gap-1\"><span class=\"text-sm text-ink-secondary\">On days</span><div class=\"flex flex-wrap gap-3\"><label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"0\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "\" min=\"1\" placeholder=\"1\" class=\"w-20 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></div><!-- As-needed explainer — shown in place of the interval/weekday/anchor\n\t\t\t\t\t\t     fields, none of which apply to a task with no fixed schedule. --><p x-show=\"freq === 'as_needed'\" x-cloak class=\"text-sm text-ink-muted\">This chore has no fixed schedule. It stays available for anyone to claim and complete, and reappears immediately after it's done.</p><!-- Weekday checkboxes — only visible when freq == \"weekly\" --><div x-show=\"freq === 'weekly'\" x-cloak class=\"flex flex-col gap-1\"><span class=\"text-sm text-ink-secondary\">On days</span><div class=\"flex flex-wrap gap-3\"><label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"0\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if weekdaySelected("0", form.Weekdays) {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, " checked")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, " class=\"accent-sage\"> Sun</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"1\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if weekdaySelected("1", form.Weekdays) {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " class=\"accent-sage\"> Mon</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"2\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " class=\"accent-sage\"> Sun</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"1\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if weekdaySelected("2", form.Weekdays) {
+		if weekdaySelected("1", form.Weekdays) {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, " class=\"accent-sage\"> Tue</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"3\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, " class=\"accent-sage\"> Mon</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"2\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if weekdaySelected("3", form.Weekdays) {
+		if weekdaySelected("2", form.Weekdays) {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, " class=\"accent-sage\"> Wed</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"4\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, " class=\"accent-sage\"> Tue</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"3\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if weekdaySelected("4", form.Weekdays) {
+		if weekdaySelected("3", form.Weekdays) {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, " class=\"accent-sage\"> Thu</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"5\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, " class=\"accent-sage\"> Wed</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"4\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if weekdaySelected("5", form.Weekdays) {
+		if weekdaySelected("4", form.Weekdays) {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, " class=\"accent-sage\"> Fri</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"6\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, " class=\"accent-sage\"> Thu</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"5\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if weekdaySelected("6", form.Weekdays) {
+		if weekdaySelected("5", form.Weekdays) {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, " checked")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, " class=\"accent-sage\"> Sat</label></div></div><!-- Anchor date --><div class=\"flex flex-col gap-1\"><label for=\"nt_anchor\" class=\"text-sm text-ink-secondary\">Starting on</label> <input id=\"nt_anchor\" type=\"date\" name=\"anchor\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, " class=\"accent-sage\"> Fri</label> <label class=\"flex items-center gap-1.5 text-sm\"><input type=\"checkbox\" name=\"byweekday\" value=\"6\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if weekdaySelected("6", form.Weekdays) {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, " checked")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, " class=\"accent-sage\"> Sat</label></div></div><!-- Anchor date --><div x-show=\"freq !== 'as_needed'\" x-cloak class=\"flex flex-col gap-1\"><label for=\"nt_anchor\" class=\"text-sm text-ink-secondary\">Starting on</label> <input id=\"nt_anchor\" type=\"date\" name=\"anchor\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(form.Anchor)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 240, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 248, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></fieldset><!-- Rotation policy --><div class=\"flex flex-col gap-1\"><label for=\"nt_rotation_policy\" class=\"text-sm font-medium text-ink-secondary\">Assignment</label> <select id=\"nt_rotation_policy\" name=\"rotation_policy\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\" x-model=\"policy\"><option value=\"fixed\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></fieldset><!-- Rotation policy — hidden for as-needed, which is always claimable\n\t\t\t\t\t     (enforced by x-effect above and by the server-side domain rule). --><div x-show=\"freq !== 'as_needed'\" x-cloak class=\"flex flex-col gap-1\"><label for=\"nt_rotation_policy\" class=\"text-sm font-medium text-ink-secondary\">Assignment</label> <select id=\"nt_rotation_policy\" name=\"rotation_policy\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\" x-model=\"policy\"><option value=\"fixed\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if form.RotationPolicy == "fixed" || form.RotationPolicy == "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, " selected")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, ">Fixed — always the same person(s)</option> <option value=\"round_robin\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if form.RotationPolicy == "round_robin" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, " selected")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, ">Round robin — rotate through pool</option> <option value=\"claimable\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, ">Fixed — always the same person(s)</option> <option value=\"round_robin\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if form.RotationPolicy == "claimable" {
+		if form.RotationPolicy == "round_robin" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, " selected")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, ">Claimable — anyone can pick it up</option></select></div><!-- Points + Lead time --><div class=\"flex flex-wrap gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"nt_points\" class=\"text-sm font-medium text-ink-secondary\">Points</label> <input id=\"nt_points\" type=\"number\" name=\"points\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, ">Round robin — rotate through pool</option> <option value=\"claimable\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.RotationPolicy == "claimable" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, " selected")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, ">Claimable — anyone can pick it up</option></select></div><!-- Points + Lead time --><div class=\"flex flex-wrap gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"nt_points\" class=\"text-sm font-medium text-ink-secondary\">Points</label> <input id=\"nt_points\" type=\"number\" name=\"points\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(form.Points)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 267, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 276, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 37, "\" min=\"0\" placeholder=\"0\" class=\"w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div><div class=\"flex flex-col gap-1\"><label for=\"nt_lead_time\" class=\"text-sm font-medium text-ink-secondary\">Visible N days early</label> <input id=\"nt_lead_time\" type=\"number\" name=\"lead_time_days\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "\" min=\"0\" placeholder=\"0\" class=\"w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div><div class=\"flex flex-col gap-1\"><label for=\"nt_lead_time\" class=\"text-sm font-medium text-ink-secondary\">Visible N days early</label> <input id=\"nt_lead_time\" type=\"number\" name=\"lead_time_days\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(form.LeadTimeDays)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 279, Col: 33}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 288, Col: 33}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 38, "\" min=\"0\" placeholder=\"0\" class=\"w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></div><!-- Rotation pool — hidden for claimable via Alpine -->")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "\" min=\"0\" placeholder=\"0\" class=\"w-24 rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></div><!-- Rotation pool — hidden for claimable via Alpine -->")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(form.Members) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 39, "<fieldset class=\"flex flex-col gap-2\" x-show=\"policy !== 'claimable'\" x-cloak><legend class=\"text-sm font-medium text-ink-secondary\">Rotation pool</legend><div class=\"flex flex-col gap-2\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<fieldset class=\"flex flex-col gap-2\" x-show=\"policy !== 'claimable'\" x-cloak><legend class=\"text-sm font-medium text-ink-secondary\">Rotation pool</legend><div class=\"flex flex-col gap-2\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, m := range form.Members {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 40, "<label class=\"flex items-center gap-2 text-sm\"><input type=\"checkbox\" name=\"pool\" value=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<label class=\"flex items-center gap-2 text-sm\"><input type=\"checkbox\" name=\"pool\" value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(m.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 296, Col: 23}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 305, Col: 23}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, "\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				if memberSelected(m.ID, form.SelectedMemberIDs) {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, " checked")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, " checked")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 43, " class=\"accent-sage\"> ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, " class=\"accent-sage\"> ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -382,7 +392,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "<span class=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "<span class=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -395,53 +405,53 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 45, "\" aria-hidden=\"true\"></span> ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "\" aria-hidden=\"true\"></span> ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var12 string
 				templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 304, Col: 18}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 313, Col: 18}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 46, "</label>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "</label>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "</div></fieldset>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "</div></fieldset>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "<!-- Error message -->")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "<!-- Error message -->")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if form.Error != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "<p role=\"alert\" class=\"text-sm text-red-600\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "<p role=\"alert\" class=\"text-sm text-red-600\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 312, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 321, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 50, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 51, "<!-- Actions --><div class=\"flex gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "<!-- Actions --><div class=\"flex gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -449,7 +459,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "<a href=\"/tasks\" class=\"inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors bg-surface text-ink border border-sidebar-border hover:bg-surface-warm\">Cancel</a></div></div></form></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 54, "<a href=\"/tasks\" class=\"inline-flex items-center justify-center rounded-control px-4 py-2 font-medium transition-colors bg-surface text-ink border border-sidebar-border hover:bg-surface-warm\">Cancel</a></div></div></form></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

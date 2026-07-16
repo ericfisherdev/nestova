@@ -38,4 +38,11 @@ var (
 	// generator uses this sentinel to implement idempotent materialisation:
 	// re-running the generator for an already-materialised window is safe.
 	ErrDuplicateInstance = errors.New("tasks: instance already exists for this task and due date")
+
+	// ErrAsNeededRequiresClaimable is returned by TaskService.CreateRecurringTask
+	// when task.Cadence.Freq is household.FreqAsNeeded and task.RotationPolicy is
+	// anything other than RotationClaimable. An as-needed task's single standing
+	// instance is always unassigned until claimed, so a fixed or round-robin
+	// rotation policy would never be honoured (NES-116).
+	ErrAsNeededRequiresClaimable = errors.New("tasks: as-needed cadence requires the claimable rotation policy")
 )

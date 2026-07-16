@@ -15,7 +15,7 @@ func dt(y, m, d, h int) time.Time {
 
 func TestFreqParseValidString(t *testing.T) {
 	t.Parallel()
-	for _, f := range []domain.Freq{domain.FreqDaily, domain.FreqWeekly, domain.FreqMonthly} {
+	for _, f := range []domain.Freq{domain.FreqDaily, domain.FreqWeekly, domain.FreqMonthly, domain.FreqAsNeeded} {
 		got, err := domain.ParseFreq(f.String())
 		if err != nil || got != f {
 			t.Errorf("ParseFreq(%q) = (%v, %v), want (%v, nil)", f, got, err, f)
@@ -29,6 +29,32 @@ func TestFreqParseValidString(t *testing.T) {
 	}
 	if domain.Freq("yearly").Valid() {
 		t.Error("yearly should be invalid")
+	}
+}
+
+// TestFreqAsNeededCadenceNeverProducesOccurrences is the NES-116 regression
+// test for the recurrence-engine guard: a FreqAsNeeded cadence must never hang
+// or produce occurrences via NextAfter/OccurrencesBetween, since as-needed
+// tasks are never scheduled by the recurrence engine (they have a single
+// standing instance instead).
+func TestFreqAsNeededCadenceNeverProducesOccurrences(t *testing.T) {
+	t.Parallel()
+	c := domain.Cadence{Freq: domain.FreqAsNeeded, Interval: 1, Anchor: dt(2026, 1, 1, 10)}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (as-needed is a valid cadence)", err)
+	}
+
+	if got := c.NextAfter(dt(2026, 1, 1, 9)); !got.IsZero() {
+		t.Errorf("NextAfter() = %v, want the zero time", got)
+	}
+	// Also probe with t at/after the anchor, where the unguarded correction
+	// loop would otherwise spin forever on a degenerate (non-advancing) step.
+	if got := c.NextAfter(dt(2026, 6, 1, 0)); !got.IsZero() {
+		t.Errorf("NextAfter() = %v, want the zero time", got)
+	}
+
+	if occs := c.OccurrencesBetween(dt(2026, 1, 1, 0), dt(2027, 1, 1, 0)); occs != nil {
+		t.Errorf("OccurrencesBetween() = %v, want nil", occs)
 	}
 }
 

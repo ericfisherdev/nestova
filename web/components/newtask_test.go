@@ -250,6 +250,25 @@ func TestNewTaskPageAlpineFreqBinding(t *testing.T) {
 	}
 }
 
+// TestNewTaskPageAsNeededOption verifies the as-needed frequency option is
+// present, the interval/anchor fields and the rotation-policy select are gated
+// by an x-show keyed off freq !== 'as_needed', and an x-effect forces the
+// policy to claimable whenever as-needed is selected (NES-116).
+func TestNewTaskPageAsNeededOption(t *testing.T) {
+	form := components.NewTaskForm{CSRFToken: "tok"}
+	out := renderString(t, components.NewTaskPage(form))
+
+	if !strings.Contains(out, `value="as_needed"`) {
+		t.Errorf("new-task form missing as_needed frequency option: %q", out)
+	}
+	if !strings.Contains(out, `x-show="freq !== 'as_needed'"`) {
+		t.Errorf("new-task form missing x-show gating on freq !== 'as_needed': %q", out)
+	}
+	if !strings.Contains(out, "policy = 'claimable'") {
+		t.Errorf("new-task form missing x-effect forcing policy to claimable for as-needed: %q", out)
+	}
+}
+
 // TestNewTaskPageXDataInjectionSafe is the regression test for Alpine expression
 // injection: a hostile sticky freq value (from a 422 re-render) must be safely
 // JSON- and HTML-encoded inside x-data, never breaking out of the expression.

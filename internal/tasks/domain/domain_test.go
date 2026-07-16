@@ -138,6 +138,48 @@ func TestInstanceStatusValid(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// InstanceKind (NES-116)
+// ---------------------------------------------------------------------------
+
+func TestInstanceKindParseAndValid(t *testing.T) {
+	cases := []struct {
+		input string
+		want  domain.InstanceKind
+	}{
+		{"scheduled", domain.KindScheduled},
+		{"standing", domain.KindStanding},
+	}
+	for _, tc := range cases {
+		got, err := domain.ParseInstanceKind(tc.input)
+		if err != nil {
+			t.Errorf("ParseInstanceKind(%q) error = %v, want nil", tc.input, err)
+		}
+		if got != tc.want {
+			t.Errorf("ParseInstanceKind(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+		if !got.Valid() {
+			t.Errorf("InstanceKind(%q).Valid() = false, want true", tc.input)
+		}
+		if got.String() != tc.input {
+			t.Errorf("InstanceKind(%q).String() = %q, want %q", tc.input, got.String(), tc.input)
+		}
+	}
+}
+
+func TestInstanceKindParseUnknown(t *testing.T) {
+	_, err := domain.ParseInstanceKind("recurring")
+	if err == nil {
+		t.Error("ParseInstanceKind(unknown) error = nil, want non-nil")
+	}
+}
+
+func TestInstanceKindValid(t *testing.T) {
+	if domain.InstanceKind("recurring").Valid() {
+		t.Error("InstanceKind(recurring).Valid() = true, want false")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // IDs
 // ---------------------------------------------------------------------------
 
@@ -233,8 +275,9 @@ func TestTaskInstanceConstruction(t *testing.T) {
 		RecurringTaskID: rtid,
 		HouseholdID:     hid,
 		AssigneeID:      &mid,
-		DueOn:           due,
+		DueOn:           &due,
 		Status:          domain.StatusPending,
+		Kind:            domain.KindScheduled,
 	}
 
 	if inst.AssigneeID == nil {
@@ -261,10 +304,26 @@ func TestTaskInstanceNilAssignee(t *testing.T) {
 		RecurringTaskID: domain.NewRecurringTaskID(),
 		HouseholdID:     household.NewHouseholdID(),
 		AssigneeID:      nil,
-		DueOn:           time.Now(),
+		DueOn:           domain.DueOnPtr(time.Now()),
 		Status:          domain.StatusPending,
 	}
 	if inst.AssigneeID != nil {
 		t.Error("AssigneeID = non-nil, want nil for claimable instance")
+	}
+}
+
+// TestTaskInstanceStandingHasNoDueOn verifies that a standing instance
+// (NES-116) — the single open occurrence of an as-needed task — is
+// constructed with a nil DueOn, matching the nullable due_on column.
+func TestTaskInstanceStandingHasNoDueOn(t *testing.T) {
+	inst := domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: domain.NewRecurringTaskID(),
+		HouseholdID:     household.NewHouseholdID(),
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	}
+	if inst.DueOn != nil {
+		t.Errorf("DueOn = %v, want nil for a standing instance", inst.DueOn)
 	}
 }

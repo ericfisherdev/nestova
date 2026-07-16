@@ -83,6 +83,10 @@ func (f *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, _ household.Ho
 	return nil, nil
 }
 
+func (f *fakeTaskInstanceRepo) ListStanding(_ context.Context, _ household.HouseholdID) ([]*tasksdomain.TaskInstance, error) {
+	return nil, nil
+}
+
 func (f *fakeTaskInstanceRepo) LatestDueOn(_ context.Context, _ household.HouseholdID, _ tasksdomain.RecurringTaskID) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }

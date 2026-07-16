@@ -81,6 +81,46 @@ func TestGroupTaskRows_SameDisplayNameDistinctIDs(t *testing.T) {
 	}
 }
 
+// TestGroupTaskRows_AnytimeSection verifies that as-needed standing rows
+// (NES-116) are pulled out of both the per-member and "Up for grabs" buckets
+// into a trailing "Anytime" section, regardless of whether they are claimed.
+func TestGroupTaskRows_AnytimeSection(t *testing.T) {
+	due := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	rows := []components.TaskRow{
+		{InstanceID: "1", Title: "Dishes", AssigneeID: "id-alice", AssigneeName: "Alice", AssigneeColor: "clay", Status: "pending", DueOn: due},
+		{InstanceID: "2", Title: "Lawn", Claimable: true, Status: "pending", DueOn: due},
+		// An unclaimed standing instance: Claimable is true but Standing must win.
+		{InstanceID: "3", Title: "Water plants", Claimable: true, Status: "pending", Standing: true},
+		// A claimed standing instance: assigned to Alice but must still land in
+		// Anytime, not Alice's per-member group.
+		{InstanceID: "4", Title: "Restock paper towels", AssigneeID: "id-alice", AssigneeName: "Alice", AssigneeColor: "clay", Status: "pending", Standing: true},
+	}
+
+	groups := groupTaskRows(rows)
+
+	// Expect: Alice (1 dated row), Up for grabs (1 row), Anytime (2 rows).
+	if len(groups) != 3 {
+		t.Fatalf("groups = %d, want 3", len(groups))
+	}
+	if groups[0].Label != "Alice" || len(groups[0].Rows) != 1 {
+		t.Errorf("groups[0] = %+v, want Alice with 1 dated row", groups[0])
+	}
+	if groups[1].Label != upForGrabsLabel || len(groups[1].Rows) != 1 {
+		t.Errorf("groups[1] = %+v, want %q with 1 row", groups[1], upForGrabsLabel)
+	}
+	if groups[2].Label != anytimeLabel {
+		t.Errorf("groups[2].Label = %q, want %q", groups[2].Label, anytimeLabel)
+	}
+	if len(groups[2].Rows) != 2 {
+		t.Fatalf("Anytime group rows = %d, want 2", len(groups[2].Rows))
+	}
+	for _, row := range groups[2].Rows {
+		if !row.Standing {
+			t.Errorf("Anytime group contains non-standing row: %+v", row)
+		}
+	}
+}
+
 // TestGroupTaskRows_NoClaimable verifies that no "Up for grabs" group is emitted
 // when every row is assigned.
 func TestGroupTaskRows_NoClaimable(t *testing.T) {

@@ -79,6 +79,7 @@ templ NewTaskPage(form NewTaskForm) {
 		<div
 			class="max-w-lg rounded-card bg-surface p-6 shadow-warm"
 			x-data={ alpineTaskState(form.Freq, form.RotationPolicy) }
+			x-effect="if (freq === 'as_needed') { policy = 'claimable' }"
 		>
 			<form method="POST" action="/tasks" novalidate>
 				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
@@ -139,9 +140,10 @@ templ NewTaskPage(form NewTaskForm) {
 									<option value="daily" selected?={ form.Freq == "daily" || form.Freq == "" }>Daily</option>
 									<option value="weekly" selected?={ form.Freq == "weekly" }>Weekly</option>
 									<option value="monthly" selected?={ form.Freq == "monthly" }>Monthly</option>
+									<option value="as_needed" selected?={ form.Freq == "as_needed" }>As needed — always available</option>
 								</select>
 							</div>
-							<div class="flex flex-col gap-1">
+							<div x-show="freq !== 'as_needed'" x-cloak class="flex flex-col gap-1">
 								<label for="nt_interval" class="text-sm text-ink-secondary">Every N</label>
 								<input
 									id="nt_interval"
@@ -154,6 +156,12 @@ templ NewTaskPage(form NewTaskForm) {
 								/>
 							</div>
 						</div>
+						<!-- As-needed explainer — shown in place of the interval/weekday/anchor
+						     fields, none of which apply to a task with no fixed schedule. -->
+						<p x-show="freq === 'as_needed'" x-cloak class="text-sm text-ink-muted">
+							This chore has no fixed schedule. It stays available for anyone to
+							claim and complete, and reappears immediately after it's done.
+						</p>
 						<!-- Weekday checkboxes — only visible when freq == "weekly" -->
 						<div x-show="freq === 'weekly'" x-cloak class="flex flex-col gap-1">
 							<span class="text-sm text-ink-secondary">On days</span>
@@ -231,7 +239,7 @@ templ NewTaskPage(form NewTaskForm) {
 							</div>
 						</div>
 						<!-- Anchor date -->
-						<div class="flex flex-col gap-1">
+						<div x-show="freq !== 'as_needed'" x-cloak class="flex flex-col gap-1">
 							<label for="nt_anchor" class="text-sm text-ink-secondary">Starting on</label>
 							<input
 								id="nt_anchor"
@@ -242,8 +250,9 @@ templ NewTaskPage(form NewTaskForm) {
 							/>
 						</div>
 					</fieldset>
-					<!-- Rotation policy -->
-					<div class="flex flex-col gap-1">
+					<!-- Rotation policy — hidden for as-needed, which is always claimable
+					     (enforced by x-effect above and by the server-side domain rule). -->
+					<div x-show="freq !== 'as_needed'" x-cloak class="flex flex-col gap-1">
 						<label for="nt_rotation_policy" class="text-sm font-medium text-ink-secondary">Assignment</label>
 						<select
 							id="nt_rotation_policy"

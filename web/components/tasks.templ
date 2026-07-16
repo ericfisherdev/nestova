@@ -42,6 +42,11 @@ type TaskRow struct {
 	// Claimable is true for pending or overdue, unassigned instances that the
 	// current member may claim.
 	Claimable bool
+	// Standing is true for an as-needed task's single open instance, which has
+	// no due date. A standing row renders "Anytime" in place of the due-date
+	// label and is grouped into its own "Anytime" section by groupTaskRows,
+	// regardless of assignee.
+	Standing bool
 	// CSRFToken is the per-session CSRF token embedded in every action form.
 	CSRFToken string
 }
@@ -59,9 +64,10 @@ type TaskGroup struct {
 }
 
 // TasksPage renders the full chores & maintenance list, grouped by assignee.
-// Each group has a heading; unassigned claimable tasks appear last under "Up
-// for grabs". HTMX action buttons on each row POST to the server and swap the
-// row in place on success.
+// Each group has a heading; unassigned claimable tasks appear under "Up for
+// grabs", and as-needed standing instances are pinned last in their own
+// "Anytime" section regardless of assignee. HTMX action buttons on each row
+// POST to the server and swap the row in place on success.
 templ TasksPage(groups []TaskGroup) {
 	<div class="p-6">
 		<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -120,7 +126,9 @@ templ TaskRowItem(row TaskRow) {
 				<span class="truncate font-medium text-ink">{ row.Title }</span>
 			</div>
 			<div class="flex items-center gap-2 text-sm">
-				if row.Status == "overdue" {
+				if row.Standing {
+					<span class="text-ink-muted">Anytime</span>
+				} else if row.Status == "overdue" {
 					<span class="font-medium text-red-600">Overdue — due { row.DueLabel }</span>
 				} else {
 					<span class="text-ink-muted">Due { row.DueLabel }</span>

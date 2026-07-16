@@ -54,11 +54,15 @@ func NewTaskService(
 //   - For [domain.RotationClaimable], pool is ignored (may be nil or empty).
 //
 // Error contracts:
+//   - Returns [domain.ErrAsNeededRequiresClaimable] when task.Cadence.Freq is
+//     household.FreqAsNeeded and task.RotationPolicy is not
+//     [domain.RotationClaimable] (NES-116).
 //   - Returns [domain.ErrNoRotationMembers] when pool is empty for a
 //     non-claimable policy.
 //   - Propagates any repository error from CreateWithRotation. Because that
 //     method is atomic, a persistence failure leaves no partially-created task
-//     (e.g. a task with no rotation pool).
+//     (e.g. a task with no rotation pool, or — for an as-needed task — a task
+//     with no standing instance).
 func (s *TaskService) CreateRecurringTask(
 	ctx context.Context,
 	task *domain.RecurringTask,
@@ -69,6 +73,12 @@ func (s *TaskService) CreateRecurringTask(
 	}
 	if err := task.Cadence.Validate(); err != nil {
 		return fmt.Errorf("create recurring task: %w", err)
+	}
+	// An as-needed task's single standing instance is always unassigned until
+	// claimed, so a fixed or round-robin rotation policy could never be
+	// honoured — reject the combination before it reaches persistence.
+	if task.Cadence.Freq == household.FreqAsNeeded && task.RotationPolicy != domain.RotationClaimable {
+		return fmt.Errorf("create recurring task: %w", domain.ErrAsNeededRequiresClaimable)
 	}
 
 	// A claimable task has no rotation pool; ignore any pool the caller passed so

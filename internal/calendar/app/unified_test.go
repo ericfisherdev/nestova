@@ -91,7 +91,7 @@ func TestListMergesOrdersAndColors(t *testing.T) {
 	tasks := &fakeUnifiedTasks{byStatus: map[tasksdomain.InstanceStatus][]*tasksdomain.TaskInstance{
 		tasksdomain.StatusPending: {{
 			ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: recID,
-			AssigneeID: &assignee.ID, DueOn: day(2026, 7, 5), Status: tasksdomain.StatusPending,
+			AssigneeID: &assignee.ID, DueOn: tasksdomain.DueOnPtr(day(2026, 7, 5)), Status: tasksdomain.StatusPending,
 		}},
 	}}
 	rec := &fakeRecurringTasks{titles: map[tasksdomain.RecurringTaskID]string{recID: "Vacuum"}}
@@ -222,7 +222,7 @@ func TestListSkipsTaskWithMissingTemplate(t *testing.T) {
 	tasks := &fakeUnifiedTasks{byStatus: map[tasksdomain.InstanceStatus][]*tasksdomain.TaskInstance{
 		tasksdomain.StatusPending: {{
 			ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: orphan,
-			DueOn: day(2026, 7, 5), Status: tasksdomain.StatusPending,
+			DueOn: tasksdomain.DueOnPtr(day(2026, 7, 5)), Status: tasksdomain.StatusPending,
 		}},
 	}}
 	rec := &fakeRecurringTasks{titles: map[tasksdomain.RecurringTaskID]string{}} // empty -> not found
@@ -240,7 +240,7 @@ func TestListPropagatesTitleResolutionError(t *testing.T) {
 	tasks := &fakeUnifiedTasks{byStatus: map[tasksdomain.InstanceStatus][]*tasksdomain.TaskInstance{
 		tasksdomain.StatusPending: {{
 			ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: tasksdomain.NewRecurringTaskID(),
-			DueOn: day(2026, 7, 5), Status: tasksdomain.StatusPending,
+			DueOn: tasksdomain.DueOnPtr(day(2026, 7, 5)), Status: tasksdomain.StatusPending,
 		}},
 	}}
 	rec := &fakeRecurringTasks{err: errors.New("database is down")} // not ErrTaskNotFound
@@ -269,8 +269,8 @@ func TestListSortsByTitleWhenStartsEqual(t *testing.T) {
 	recA := tasksdomain.NewRecurringTaskID()
 	tasks := &fakeUnifiedTasks{byStatus: map[tasksdomain.InstanceStatus][]*tasksdomain.TaskInstance{
 		tasksdomain.StatusPending: {
-			{ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: recZ, DueOn: sameDay, Status: tasksdomain.StatusPending},
-			{ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: recA, DueOn: sameDay, Status: tasksdomain.StatusPending},
+			{ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: recZ, DueOn: tasksdomain.DueOnPtr(sameDay), Status: tasksdomain.StatusPending},
+			{ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: recA, DueOn: tasksdomain.DueOnPtr(sameDay), Status: tasksdomain.StatusPending},
 		},
 	}}
 	rec := &fakeRecurringTasks{titles: map[tasksdomain.RecurringTaskID]string{recZ: "Zebra", recA: "Apple"}}

@@ -14,12 +14,17 @@ const (
 	FreqDaily   Freq = "daily"
 	FreqWeekly  Freq = "weekly"
 	FreqMonthly Freq = "monthly"
+	// FreqAsNeeded marks a cadence with no scheduled occurrences: the task is
+	// always claimable and has a single standing instance instead of
+	// ahead-of-time materialised ones (NES-116). NextAfter and
+	// OccurrencesBetween never produce occurrences for it — see their docs.
+	FreqAsNeeded Freq = "as_needed"
 )
 
 // Valid reports whether f is a known frequency.
 func (f Freq) Valid() bool {
 	switch f {
-	case FreqDaily, FreqWeekly, FreqMonthly:
+	case FreqDaily, FreqWeekly, FreqMonthly, FreqAsNeeded:
 		return true
 	default:
 		return false
@@ -88,7 +93,17 @@ func (c Cadence) Validate() error {
 
 // NextAfter returns the first occurrence strictly after t. When t precedes the
 // Anchor, the Anchor (the first occurrence) is returned.
+//
+// FreqAsNeeded has no occurrences by definition (NES-116): it returns the zero
+// time rather than searching for a "next" occurrence that does not exist,
+// which would otherwise loop forever in the correction loops below (every
+// candidate step is degenerate — a constant — for a frequency the stepping
+// logic does not know how to advance). Callers must not treat the zero time as
+// a real occurrence date.
 func (c Cadence) NextAfter(t time.Time) time.Time {
+	if c.Freq == FreqAsNeeded {
+		return time.Time{}
+	}
 	if c.Freq == FreqWeekly && len(c.ByWeekday) > 0 {
 		return c.nextWeeklyByWeekday(t)
 	}
@@ -116,7 +131,16 @@ func (c Cadence) NextAfter(t time.Time) time.Time {
 // OccurrencesBetween returns every occurrence in the half-open interval
 // (start, end] in ascending order. The window must be bounded by the caller;
 // the slice length is the number of occurrences it contains.
+//
+// FreqAsNeeded always returns nil: it is never scheduled by the recurrence
+// engine (NES-116). Guarding here — rather than relying solely on callers to
+// skip as-needed tasks before reaching this method — keeps the engine safe by
+// construction, since NextAfter's zero-time return for FreqAsNeeded would
+// otherwise make the loop below append the zero time forever.
 func (c Cadence) OccurrencesBetween(start, end time.Time) []time.Time {
+	if c.Freq == FreqAsNeeded {
+		return nil
+	}
 	var out []time.Time
 	for o := c.NextAfter(start); !o.After(end); o = c.NextAfter(o) {
 		out = append(out, o)

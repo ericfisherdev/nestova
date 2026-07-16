@@ -106,6 +106,16 @@ func (g *Generator) materialiseTask(
 	task *domain.RecurringTask,
 	horizon time.Time,
 ) (int, error) {
+	// As-needed tasks are never scheduled by the recurrence engine (NES-116):
+	// they have a single standing instance materialised when the task is
+	// created and replaced in the same transaction on every completion
+	// (TaskInstanceRepository.CreateWithRotation / CompleteAndAward), not by
+	// ahead-of-time generation. Skipping here avoids an unnecessary
+	// LatestDueOn round trip for every poll cycle.
+	if task.Cadence.Freq == household.FreqAsNeeded {
+		return 0, nil
+	}
+
 	// Determine the start of the generation window.
 	windowStart, err := g.windowStart(ctx, task)
 	if err != nil {
@@ -171,8 +181,9 @@ func (g *Generator) materialiseTask(
 			RecurringTaskID: task.ID,
 			HouseholdID:     task.HouseholdID,
 			AssigneeID:      assignee,
-			DueOn:           domain.DateOf(occ),
+			DueOn:           domain.DueOnPtr(occ),
 			Status:          domain.StatusPending,
+			Kind:            domain.KindScheduled,
 		}
 
 		if err := g.instanceRepo.Insert(ctx, inst); err != nil {

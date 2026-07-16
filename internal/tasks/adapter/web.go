@@ -408,10 +408,15 @@ func (h *WebHandlers) parseCreateForm(
 		return nil, nil, form, form.Error
 	}
 
-	interval, err := strconv.Atoi(rawInterval)
-	if err != nil || interval < 1 {
-		form.Error = "Interval must be a whole number of 1 or more."
-		return nil, nil, form, form.Error
+	// An as-needed cadence has no interval — the form hides the field via
+	// Alpine, so don't require a submitted value for it.
+	interval := 1
+	if freq != household.FreqAsNeeded {
+		interval, err = strconv.Atoi(rawInterval)
+		if err != nil || interval < 1 {
+			form.Error = "Interval must be a whole number of 1 or more."
+			return nil, nil, form, form.Error
+		}
 	}
 
 	var byWeekday []time.Weekday
@@ -498,6 +503,8 @@ func createTaskErrMessage(err error) string {
 		return "The cadence configuration is invalid. Please check the frequency, interval, and starting date."
 	case errors.Is(err, domain.ErrNoRotationMembers):
 		return "At least one rotation pool member is required for fixed or round-robin tasks."
+	case errors.Is(err, domain.ErrAsNeededRequiresClaimable):
+		return "As-needed chores must use the claimable assignment policy."
 	default:
 		return ""
 	}
@@ -535,10 +542,14 @@ func toMemberOptions(members []*household.Member) []components.MemberOption {
 // upForGrabsLabel is the heading for the group of unassigned, claimable rows.
 const upForGrabsLabel = "Up for grabs"
 
-// buildTaskRows fetches pending and overdue instances for the member's
-// household, joins each with its parent recurring task's title and category and
-// with its assignee member's display name and color, and returns a flat slice
-// of TaskRow view models sorted by due date then title.
+// buildTaskRows fetches pending and overdue instances plus every open
+// as-needed standing instance for the member's household, joins each with its
+// parent recurring task's title and category and with its assignee member's
+// display name and color, and returns a flat slice of TaskRow view models
+// sorted by due date then title. A standing instance has no due date, so it
+// sorts to the front of the slice by title alone; groupTaskRows then pulls
+// every standing row into its own trailing "Anytime" section regardless of
+// this position.
 //
 // N+1 avoidance: exactly one ListActive call (recurring task metadata) and one
 // ListMembers call (member display name/color) are made up front, each loaded
@@ -595,9 +606,17 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 		return nil, err
 	}
 
-	combined := make([]*domain.TaskInstance, 0, len(pending)+len(overdue))
+	// Every as-needed task's single open standing instance, regardless of due
+	// date (it has none) — always shown in the list per NES-116.
+	standing, err := h.instanceRepo.ListStanding(r.Context(), member.HouseholdID)
+	if err != nil {
+		return nil, err
+	}
+
+	combined := make([]*domain.TaskInstance, 0, len(pending)+len(overdue)+len(standing))
 	combined = append(combined, pending...)
 	combined = append(combined, overdue...)
+	combined = append(combined, standing...)
 
 	rows := make([]components.TaskRow, 0, len(combined))
 	for _, inst := range combined {
@@ -652,17 +671,38 @@ func (h *WebHandlers) instanceToRow(
 	// NES-32 both pending and overdue are actionable.
 	actionable := inst.Status == domain.StatusPending || inst.Status == domain.StatusOverdue
 
+	// A standing instance (NES-116) has no due date; it renders "Anytime" and is
+	// pinned into its own section by groupTaskRows instead of being sorted by
+	// due date like a normal scheduled instance.
+	standing := inst.Kind == domain.KindStanding
+	var dueOn time.Time
+	dueLbl := "Anytime"
+	if !standing {
+		if inst.DueOn == nil {
+			// A scheduled instance always has a due date (enforced by the
+			// task_instance_standing_no_due_on CHECK constraint); a nil DueOn here
+			// would signal a referential-integrity anomaly. Render with the zero
+			// date rather than panic, and log so the anomaly is visible.
+			h.logger.WarnContext(ctx, "tasks: scheduled instance has no due date",
+				"instance_id", inst.ID.String())
+		} else {
+			dueOn = *inst.DueOn
+		}
+		dueLbl = dueLabel(dueOn, today)
+	}
+
 	return components.TaskRow{
 		InstanceID:    inst.ID.String(),
 		Title:         title,
 		Category:      category,
-		DueOn:         inst.DueOn,
-		DueLabel:      dueLabel(inst.DueOn, today),
+		DueOn:         dueOn,
+		DueLabel:      dueLbl,
 		Status:        inst.Status.String(),
 		AssigneeID:    assigneeID,
 		AssigneeName:  assigneeName,
 		AssigneeColor: assigneeColor,
 		Claimable:     actionable && inst.AssigneeID == nil,
+		Standing:      standing,
 		CSRFToken:     csrfToken,
 	}
 }
@@ -729,22 +769,32 @@ type memberGroup struct {
 	rows  []components.TaskRow
 }
 
+// anytimeLabel is the heading for the trailing section of as-needed standing
+// instances (NES-116), shown regardless of assignee or claim state.
+const anytimeLabel = "Anytime"
+
 // groupTaskRows arranges a flat slice of TaskRow into per-member TaskGroup
 // slices. Rows are grouped by the assignee's stable id (NOT display name, which
 // is not unique within a household — two members named "Sam" must form two
 // groups). Each group is labelled with the assignee's display name and tinted
 // with their color. Member groups are ordered deterministically by display name,
-// then by id as a tiebreaker. All unassigned claimable rows are collected into a
-// final "Up for grabs" group.
+// then by id as a tiebreaker. Unassigned claimable rows are collected into an
+// "Up for grabs" group; every as-needed standing row (NES-116) — claimed or
+// not — is pulled out into a final "Anytime" section instead of its normal
+// member/claimable bucket, so dated chores and always-available ones never mix.
 //
 // Rows within a group preserve the incoming order (sorted by due date then title
 // in buildTaskRows).
 func groupTaskRows(rows []components.TaskRow) []components.TaskGroup {
 	byMemberID := make(map[string]*memberGroup)
 	order := make([]*memberGroup, 0)
-	var claimable []components.TaskRow
+	var claimable, anytime []components.TaskRow
 
 	for _, row := range rows {
+		if row.Standing {
+			anytime = append(anytime, row)
+			continue
+		}
 		if row.Claimable {
 			claimable = append(claimable, row)
 			continue
@@ -788,6 +838,12 @@ func groupTaskRows(rows []components.TaskRow) []components.TaskGroup {
 		groups = append(groups, components.TaskGroup{
 			Label: upForGrabsLabel,
 			Rows:  claimable,
+		})
+	}
+	if len(anytime) > 0 {
+		groups = append(groups, components.TaskGroup{
+			Label: anytimeLabel,
+			Rows:  anytime,
 		})
 	}
 	return groups

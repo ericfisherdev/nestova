@@ -177,6 +177,15 @@ func (s *UnifiedCalendarService) taskItems(ctx context.Context, householdID hous
 			return nil, fmt.Errorf("unified calendar: list task instances (%s): %w", status, err)
 		}
 		for _, inst := range instances {
+			if inst.DueOn == nil {
+				// A standing instance (NES-116) has no due date and so has no place
+				// on the calendar. ListByHousehold's kind='scheduled' filter should
+				// already exclude these; skip defensively rather than panic on a nil
+				// dereference if that contract is ever violated.
+				s.logger.WarnContext(ctx, "unified calendar: skipping task instance with no due date",
+					"task_instance_id", inst.ID.String())
+				continue
+			}
 			title, err := s.taskTitle(ctx, householdID, inst.RecurringTaskID, titles)
 			if err != nil {
 				if errors.Is(err, tasksdomain.ErrTaskNotFound) {
@@ -191,7 +200,7 @@ func (s *UnifiedCalendarService) taskItems(ctx context.Context, householdID hous
 			items = append(items, CalendarItem{
 				Kind:        KindTask,
 				Title:       title,
-				Start:       inst.DueOn,
+				Start:       *inst.DueOn,
 				AllDay:      true,
 				SourceID:    inst.ID.String(),
 				MemberColor: colorFor(inst.AssigneeID, colors),
