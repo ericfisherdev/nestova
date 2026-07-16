@@ -29,13 +29,35 @@ const dateLayout = "2006-01-02"
 // displayDateLayout is the human-readable date layout shown in the UI.
 const displayDateLayout = "Jan 2, 2006"
 
-// uploadMemoryLimit bounds the in-memory portion of a multipart parse; larger
-// parts spill to temp files. The PhotoStore enforces the real per-upload cap.
-const uploadMemoryLimit = 32 << 20
+// uploadMemoryLimit is the memory budget ParseMultipartForm is allowed for a
+// request's non-file parts (csrf_token, caption) plus any file part smaller
+// than this. It is kept deliberately small: any part larger than it spills
+// straight to a temp file (mime/multipart's own streaming write), so a real
+// photo is written to disk as it arrives rather than held as one big in-memory
+// buffer — memory use during an upload stays flat regardless of file size.
+const uploadMemoryLimit = 256 << 10
 
-// maxUploadRequestBytes is the hard cap on a /photos request body — a DoS guard
-// above the PhotoStore's per-photo limit, not the per-photo limit itself.
-const maxUploadRequestBytes = 32 << 20
+// requestOverheadBytes is the slack added on top of the configured per-photo
+// limit (maxUploadBytes, injected via NewWebHandlers) to build the outer
+// request-body cap: multipart boundaries/headers plus the small csrf_token
+// and caption fields. Generous enough that a legitimate request is never
+// rejected by this outer cap before reaching the PhotoStore's own, more
+// specific size-limit error.
+const requestOverheadBytes = 64 << 10
+
+// uploadResultHeader reports whether Upload created a new photo or matched an
+// existing one by content hash. It is informational only — the mutation
+// success signal (HX-Redirect/303 via respondAfterMutation) is the same
+// either way — intended for a future single-photo-per-request queue UI
+// (NES-124) that needs to distinguish a dedup no-op from a real create
+// without parsing the redirected page.
+const uploadResultHeader = "X-Upload-Result"
+
+// uploadResultHeader values.
+const (
+	uploadResultCreated   = "created"
+	uploadResultDuplicate = "duplicate"
+)
 
 // LayoutFunc wraps page content in the app shell; home.go provides it.
 type LayoutFunc func(member *household.Member) func(templ.Component) templ.Component
@@ -43,15 +65,20 @@ type LayoutFunc func(member *household.Member) func(templ.Component) templ.Compo
 // WebHandlers serves the /photos UI: album management and photo upload, plus the
 // tenant-checked raw-bytes endpoint the viewer and thumbnails load images from.
 type WebHandlers struct {
-	albums     *app.AlbumService
-	photos     *app.PhotoService
-	households household.HouseholdRepository
-	sm         *scs.SessionManager
-	logger     *slog.Logger
+	albums                *app.AlbumService
+	photos                *app.PhotoService
+	households            household.HouseholdRepository
+	sm                    *scs.SessionManager
+	logger                *slog.Logger
+	maxUploadRequestBytes int64
 }
 
-// NewWebHandlers constructs a WebHandlers, panicking on a nil dependency.
-func NewWebHandlers(albums *app.AlbumService, photos *app.PhotoService, households household.HouseholdRepository, sm *scs.SessionManager, logger *slog.Logger) *WebHandlers {
+// NewWebHandlers constructs a WebHandlers, panicking on a nil dependency or a
+// non-positive maxUploadBytes. maxUploadBytes is the operator-configured
+// per-photo cap (config.Media.MaxUploadBytes); the outer request-body cap
+// derives from it plus requestOverheadBytes, so raising the configured limit
+// never leaves it unreachable behind a smaller, hardcoded outer cap.
+func NewWebHandlers(albums *app.AlbumService, photos *app.PhotoService, households household.HouseholdRepository, sm *scs.SessionManager, logger *slog.Logger, maxUploadBytes int64) *WebHandlers {
 	switch {
 	case albums == nil:
 		panic("media/adapter: NewWebHandlers requires a non-nil AlbumService")
@@ -63,8 +90,13 @@ func NewWebHandlers(albums *app.AlbumService, photos *app.PhotoService, househol
 		panic("media/adapter: NewWebHandlers requires a non-nil session manager")
 	case logger == nil:
 		panic("media/adapter: NewWebHandlers requires a non-nil logger")
+	case maxUploadBytes <= 0:
+		panic("media/adapter: NewWebHandlers requires a positive maxUploadBytes")
 	}
-	return &WebHandlers{albums: albums, photos: photos, households: households, sm: sm, logger: logger}
+	return &WebHandlers{
+		albums: albums, photos: photos, households: households, sm: sm, logger: logger,
+		maxUploadRequestBytes: maxUploadBytes + requestOverheadBytes,
+	}
 }
 
 // Page handles GET /photos: the album list, the photo grid, and the upload form.
@@ -153,11 +185,14 @@ func (h *WebHandlers) buildViewerView(r *http.Request, member *household.Member,
 	}, nil
 }
 
-// Upload handles POST /photos: a multipart photo upload.
+// Upload handles POST /photos: a multipart photo upload. The file part is
+// streamed straight through to PhotoService/PhotoStore (never buffered whole
+// into a []byte here) — the client's declared Content-Type is not even read;
+// the store sniffs the true type from the bytes themselves.
 func (h *WebHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 	// Hard-cap the request body before parsing so a huge upload cannot exhaust
 	// memory/disk; the PhotoStore still enforces the real per-photo size limit.
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadRequestBytes)
 	if err := r.ParseMultipartForm(uploadMemoryLimit); err != nil {
 		http.Error(w, "upload too large or malformed", http.StatusRequestEntityTooLarge)
 		return
@@ -177,21 +212,22 @@ func (h *WebHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	file, headerInfo, err := r.FormFile("photo")
+	file, _, err := r.FormFile("photo")
 	if err != nil {
 		http.Error(w, "a photo file is required", http.StatusBadRequest)
 		return
 	}
 	defer func() { _ = file.Close() }()
-	data, err := io.ReadAll(file)
+
+	result, err := h.photos.Upload(r.Context(), member.HouseholdID, member.ID, file, r.FormValue("caption"))
 	if err != nil {
-		http.Error(w, "could not read the upload", http.StatusBadRequest)
-		return
-	}
-	contentType := headerInfo.Header.Get("Content-Type")
-	if _, err := h.photos.Upload(r.Context(), member.HouseholdID, member.ID, data, contentType, r.FormValue("caption")); err != nil {
 		h.handleMutationError(w, r, err)
 		return
+	}
+	if result.Duplicate {
+		w.Header().Set(uploadResultHeader, uploadResultDuplicate)
+	} else {
+		w.Header().Set(uploadResultHeader, uploadResultCreated)
 	}
 	respondAfterMutation(w, r, photosPath)
 }
@@ -516,9 +552,9 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 		errors.Is(err, household.ErrHouseholdNotFound), errors.Is(err, household.ErrMemberNotFound):
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, domain.ErrUnsupportedMediaType):
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		http.Error(w, "unsupported photo type — please upload a JPEG, PNG, or WEBP image", http.StatusUnsupportedMediaType)
 	case errors.Is(err, domain.ErrPhotoTooLarge):
-		http.Error(w, "photo too large", http.StatusRequestEntityTooLarge)
+		http.Error(w, "photo exceeds the maximum upload size", http.StatusRequestEntityTooLarge)
 	case errors.Is(err, domain.ErrInvalidAlbum), errors.Is(err, domain.ErrInvalidPhoto):
 		http.Error(w, "invalid request", http.StatusBadRequest)
 	default:

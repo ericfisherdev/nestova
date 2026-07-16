@@ -279,8 +279,9 @@ type MediaConfig struct {
 // devMediaRoot is the default photo-storage directory when MEDIA_ROOT is unset.
 const devMediaRoot = "./.localdata/media"
 
-// defaultMaxUploadBytes is the default per-upload size cap (10 MiB).
-const defaultMaxUploadBytes int64 = 10 << 20
+// defaultMaxUploadBytes is the default per-upload size cap (25 MiB) —
+// sized for bulk album uploads of modern phone camera originals (NES-123).
+const defaultMaxUploadBytes int64 = 25 << 20
 
 // Load reads configuration from the environment and validates it. In
 // development it first loads an optional .env file (real environment variables

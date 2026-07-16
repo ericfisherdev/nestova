@@ -455,7 +455,7 @@ func runServer(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create album service: %w", err)
 	}
-	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger)
+	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger, cfg.Media.MaxUploadBytes)
 
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,

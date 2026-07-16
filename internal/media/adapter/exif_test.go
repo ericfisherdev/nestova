@@ -39,7 +39,7 @@ func exifJPEG(datetime string) []byte {
 }
 
 func TestExifTakenAtPresent(t *testing.T) {
-	got := adapter.NewExifReader().TakenAt(exifJPEG("2021:08:15 12:34:56"))
+	got := adapter.NewExifReader().TakenAt(bytes.NewReader(exifJPEG("2021:08:15 12:34:56")))
 	if got == nil {
 		t.Fatal("TakenAt = nil, want the EXIF capture time")
 	}
@@ -57,11 +57,11 @@ func TestExifTakenAtPresent(t *testing.T) {
 func TestExifTakenAtAbsentOrInvalid(t *testing.T) {
 	r := adapter.NewExifReader()
 	// A plain JPEG with no EXIF segment.
-	if got := r.TakenAt(jpegBytes(t)); got != nil {
+	if got := r.TakenAt(bytes.NewReader(jpegBytes(t))); got != nil {
 		t.Fatalf("TakenAt(no exif) = %s, want nil", got)
 	}
 	// Non-image bytes must not panic and must return nil.
-	if got := r.TakenAt([]byte("definitely not an image")); got != nil {
+	if got := r.TakenAt(bytes.NewReader([]byte("definitely not an image"))); got != nil {
 		t.Fatalf("TakenAt(garbage) = %s, want nil", got)
 	}
 }

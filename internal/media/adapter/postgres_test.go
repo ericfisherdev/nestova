@@ -2,6 +2,8 @@ package adapter_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
@@ -105,6 +107,15 @@ func newPhoto(hh household.HouseholdID, ref string, uploader *household.MemberID
 	}
 }
 
+// fakeHash returns a syntactically valid (64-character lowercase hex) content
+// hash derived from seed, satisfying photo_content_sha256_format (00023)
+// without needing real photo bytes — these tests exercise the repository,
+// not PhotoStore.Put, so the hash's provenance is irrelevant, only its shape.
+func fakeHash(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
+}
+
 func TestAlbumRepositoryCRUD(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewAlbumRepository(pool)
@@ -197,6 +208,9 @@ func TestPhotoRepositoryCRUD(t *testing.T) {
 	photo := newPhoto(hh, "hh/aa/abc.jpg", &member)
 	photo.TakenAt = &taken
 	photo.Caption = "Beach"
+	photo.ContentHash = fakeHash("abc123deadbeef")
+	photo.SizeBytes = 4096
+	photo.ContentType = "image/jpeg"
 	if err := repo.Create(ctx, photo); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -207,6 +221,9 @@ func TestPhotoRepositoryCRUD(t *testing.T) {
 	}
 	if got.StorageRef != "hh/aa/abc.jpg" || got.Caption != "Beach" || got.TakenAt == nil || !got.TakenAt.Equal(taken) || got.UploadedBy == nil || *got.UploadedBy != member {
 		t.Fatalf("Get photo = %+v", got)
+	}
+	if got.ContentHash != fakeHash("abc123deadbeef") || got.SizeBytes != 4096 || got.ContentType != "image/jpeg" {
+		t.Fatalf("Get photo upload facts = %+v", got)
 	}
 
 	list, err := repo.ListByHousehold(ctx, hh)
@@ -233,6 +250,73 @@ func TestPhotoCreateUnknownUploader(t *testing.T) {
 	photo := newPhoto(hh, "hh/aa/x.jpg", &stranger)
 	if err := repo.Create(testCtx(t), photo); !errors.Is(err, household.ErrMemberNotFound) {
 		t.Fatalf("Create with unknown uploader = %v, want ErrMemberNotFound", err)
+	}
+}
+
+// TestPhotoFindByContentHash covers the repository half of AC3 (content-hash
+// dedup): a matching hash within the household is found, an unknown hash and
+// a blank hash both report ErrPhotoNotFound, and a photo with no hash at all
+// (the pre-NES-123/legacy state) never matches.
+func TestPhotoFindByContentHash(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewPhotoRepository(pool)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	photo := newPhoto(hh, "hh/aa/abc.jpg", nil)
+	photo.ContentHash = fakeHash("deadbeefdeadbeef")
+	if err := repo.Create(ctx, photo); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	legacy := newPhoto(hh, "hh/bb/legacy.jpg", nil) // no ContentHash, like a pre-NES-123 row
+	if err := repo.Create(ctx, legacy); err != nil {
+		t.Fatalf("Create legacy: %v", err)
+	}
+
+	got, err := repo.FindByContentHash(ctx, hh, fakeHash("deadbeefdeadbeef"))
+	if err != nil {
+		t.Fatalf("FindByContentHash: %v", err)
+	}
+	if got.ID != photo.ID {
+		t.Fatalf("FindByContentHash returned %s, want %s", got.ID, photo.ID)
+	}
+
+	if _, err := repo.FindByContentHash(ctx, hh, "not-a-real-hash"); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("FindByContentHash(unknown hash) = %v, want ErrPhotoNotFound", err)
+	}
+	if _, err := repo.FindByContentHash(ctx, hh, ""); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("FindByContentHash(blank hash) = %v, want ErrPhotoNotFound (must not match the legacy row)", err)
+	}
+}
+
+// TestPhotoCreateDuplicateContentHashRejected covers the database-level guard
+// behind AC3's race path: two rows in the same household cannot share a
+// content hash, but the same hash is fine across different households.
+func TestPhotoCreateDuplicateContentHashRejected(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewPhotoRepository(pool)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	first := newPhoto(hh, "hh/aa/one.jpg", nil)
+	first.ContentHash = fakeHash("samehash")
+	if err := repo.Create(ctx, first); err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+
+	second := newPhoto(hh, "hh/aa/two.jpg", nil)
+	second.ContentHash = fakeHash("samehash")
+	if err := repo.Create(ctx, second); !errors.Is(err, domain.ErrDuplicatePhoto) {
+		t.Fatalf("Create with a colliding content hash = %v, want ErrDuplicatePhoto", err)
+	}
+
+	// The same hash in a different household is not a conflict — dedup is
+	// scoped per household.
+	otherHH := seedHousehold(t, pool)
+	third := newPhoto(otherHH, "hh/aa/three.jpg", nil)
+	third.ContentHash = fakeHash("samehash")
+	if err := repo.Create(ctx, third); err != nil {
+		t.Fatalf("Create with the same hash in a different household: %v", err)
 	}
 }
 

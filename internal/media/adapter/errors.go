@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -18,6 +19,11 @@ const (
 // albumPhotoPositionUniq is the UNIQUE (album_id, position) constraint; a
 // violation signals two concurrent inserts raced on the next position.
 const albumPhotoPositionUniq = "album_photo_position_uniq"
+
+// photoHouseholdContentHashUniq is the partial UNIQUE (household_id,
+// content_sha256) index added in 00023; a violation signals a concurrent
+// upload of the same bytes won the race to insert first.
+const photoHouseholdContentHashUniq = "photo_household_content_hash_uniq"
 
 // isUniqueViolation reports whether err is a unique-constraint violation on the
 // named constraint.
@@ -65,6 +71,18 @@ func memberArg(id *household.MemberID) *string {
 		return nil
 	}
 	s := id.String()
+	return &s
+}
+
+// nullableText renders s as a nullable text query argument, mapping a blank
+// string to SQL NULL. Used for photo.content_sha256, which is NULL for a
+// legacy (pre-NES-123) photo rather than an empty string — matching the
+// photo_content_sha256_format CHECK, which rejects a stored value that is not
+// a 64-character lowercase hex sha256.
+func nullableText(s string) *string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
 	return &s
 }
 
