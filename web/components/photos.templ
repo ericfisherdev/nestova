@@ -124,7 +124,11 @@ templ PhotosPage(view PhotosView) {
 // semantics, not an ARIA role hack — so :focus-within on the label gives a
 // sighted keyboard user a visible ring around "choose files" the moment Tab
 // reaches the input, which a bare sr-only input's own (invisible) focus
-// outline would never show.
+// outline would never show. The form itself carries @submit.prevent: with no
+// submit button, the only way it could ever submit is a browser's implicit
+// submit-on-Enter in the lone text input (the caption field) — left
+// unguarded, that would navigate the page away mid-batch, aborting every
+// in-flight upload the JS queue was still tracking.
 templ uploadDropzone(csrfToken string, maxUploadBytes int64) {
 	<div
 		id="upload-dropzone"
@@ -139,7 +143,15 @@ templ uploadDropzone(csrfToken string, maxUploadBytes int64) {
 		:class="dragActive ? 'border-sage bg-surface-warm' : 'border-sidebar-border'"
 		class="flex flex-col gap-2 rounded-control border-2 border-dashed p-3 text-center transition-colors"
 	>
-		<form id="upload-form" method="post" action={ templ.URL(photosPath) } enctype="multipart/form-data" class="flex flex-col gap-2" data-testid="upload-form">
+		<form
+			id="upload-form"
+			method="post"
+			action={ templ.URL(photosPath) }
+			enctype="multipart/form-data"
+			class="flex flex-col gap-2"
+			data-testid="upload-form"
+			@submit.prevent
+		>
 			<input type="hidden" name="csrf_token" id="upload-csrf-token" value={ csrfToken }/>
 			<p class="text-sm text-ink-muted">
 				Drag photos here, or

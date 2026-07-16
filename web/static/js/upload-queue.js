@@ -23,6 +23,18 @@
 // ever-growing) queue — so a second, smaller drop doesn't fold an earlier
 // drop's already-reported counts into its own summary line.
 //
+// Memory: a skipped item never carries a File reference at all (it never
+// uploads, so there is nothing to hold). A done/duplicate item's File
+// reference is dropped the moment it reaches that state (finishUpload) —
+// nothing ever needs those bytes again. Only an error item keeps its File,
+// because retry() has to re-send the same bytes; that reference stays until
+// the item either succeeds or is pruned. pruneFinishedRows() additionally
+// drops done/duplicate/skipped rows from every batch older than the one
+// just started, so neither the queue array nor the rendered list grows
+// without bound across a long session with many small batches — error rows
+// are exempt from pruning at any age, since the user may still want to
+// retry an old failure.
+//
 // UPLOAD_TIMEOUT_MS bounds a single file's request so a hung connection can't
 // permanently leak a concurrency slot. Kept just above SERVER_REQUEST_TIMEOUT's
 // 2-minute default (internal/platform/config's config.go, SERVER_REQUEST_TIMEOUT
@@ -61,6 +73,9 @@ document.addEventListener('alpine:init', () => {
       }
       this.batchSeq += 1;
       const batchSeq = this.batchSeq;
+      // Drop finished rows from older batches before adding this one's — see
+      // pruneFinishedRows for exactly what that keeps vs. discards.
+      this.pruneFinishedRows();
       // Clear the previous batch's summary text immediately so it doesn't
       // linger, confusingly, while this new batch is still in flight; the
       // line this batch eventually resolves is still computed from items
@@ -85,12 +100,30 @@ document.addEventListener('alpine:init', () => {
       return {
         id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         batchSeq,
-        file,
+        // A skipped item never uploads and never retries, so it never needs
+        // its File reference at all — not just once it "finishes" like
+        // done/duplicate do.
+        file: reason ? null : file,
         name: file.name,
         progress: 0,
         status: reason ? 'skipped' : 'queued',
         statusLabel: reason || 'queued',
       };
+    },
+
+    // pruneFinishedRows drops done/duplicate/skipped rows that belong to an
+    // older batch than the one about to be enqueued — nothing ever needs
+    // their File reference or their row in the UI once already summarized.
+    // Rows still queued/uploading are always kept regardless of batch age
+    // (their upload is in flight), and error rows are always kept regardless
+    // of age too (retry() still needs their File reference). Called at the
+    // very start of enqueueFiles(), before this new batch's own rows are
+    // pushed, so every row still in the array at that point necessarily
+    // belongs to a strictly older batch.
+    pruneFinishedRows() {
+      this.queue = this.queue.filter(
+        (item) => item.status !== 'done' && item.status !== 'duplicate' && item.status !== 'skipped'
+      );
     },
 
     // precheckReason rejects a file before it is ever enqueued for upload,
@@ -146,6 +179,24 @@ document.addEventListener('alpine:init', () => {
       body.append('photo', item.file, item.file.name);
 
       xhr.open('POST', this.uploadUrl, true);
+      // Without this, internal/media/adapter/web.go's respondAfterMutation
+      // treats the request as a plain browser navigation and answers with a
+      // real 303 redirect to /photos. XHR follows redirects transparently —
+      // there is no way to opt out, unlike fetch()'s redirect: 'manual' — so
+      // xhr.status/getResponseHeader would then reflect the REDIRECTED-TO
+      // page (a 200 full-page GET with no X-Upload-Result header at all),
+      // not the original upload response. Every upload would misreport as
+      // "done", since a missing header can never equal 'duplicate'. Setting
+      // this header makes the server recognize the request as HTMX-style
+      // (render.IsHTMX checks exactly this header) and answer with a real
+      // 200 carrying X-Upload-Result plus an HX-Redirect header instead of
+      // an actual redirect — no follow, so the header survives. That success
+      // response's body is empty (respondAfterMutation's HTMX branch never
+      // writes one); HX-Redirect is meant for htmx's own engine to act on,
+      // which this raw XHR path never invokes. We read only xhr.status and
+      // the X-Upload-Result header below, so the empty body and the ignored
+      // HX-Redirect are both safe to discard.
+      xhr.setRequestHeader('HX-Request', 'true');
       xhr.timeout = UPLOAD_TIMEOUT_MS;
       xhr.send(body);
     },
@@ -153,7 +204,10 @@ document.addEventListener('alpine:init', () => {
     // finishUpload settles one item's terminal state (xhr is null on a
     // network-level error or a client-side timeout, both of which XHR
     // reports without a usable status code) and hands the next queued item
-    // its freed concurrency slot.
+    // its freed concurrency slot. A done/duplicate item's File reference is
+    // dropped immediately: nothing ever needs those bytes again, and holding
+    // on to them across a long session with many batches would leak memory.
+    // An error item keeps its File — retry() has to re-send the same bytes.
     finishUpload(item, xhr) {
       this.active -= 1;
       if (xhr && xhr.status >= 200 && xhr.status < 300) {
@@ -161,6 +215,7 @@ document.addEventListener('alpine:init', () => {
         item.status = result === 'duplicate' ? 'duplicate' : 'done';
         item.statusLabel = result === 'duplicate' ? 'duplicate' : 'uploaded';
         item.progress = 100;
+        item.file = null;
       } else {
         item.status = 'error';
         item.statusLabel = 'failed';
