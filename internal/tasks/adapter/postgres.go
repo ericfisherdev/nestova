@@ -128,6 +128,10 @@ func (r *RecurringTaskRepository) Create(ctx context.Context, rt *domain.Recurri
 //
 // The pool slice order determines rotation position (position = slice index).
 // An empty pool persists the task with no rotation members.
+//
+// NES-116: when task.Cadence.Freq is household.FreqAsNeeded, a single standing
+// task_instance is materialised in the same transaction, so an as-needed task
+// never exists without its one open standing instance.
 func (r *RecurringTaskRepository) CreateWithRotation(
 	ctx context.Context,
 	task *domain.RecurringTask,
@@ -167,6 +171,12 @@ func (r *RecurringTaskRepository) CreateWithRotation(
 			i,
 		); err != nil {
 			return fmt.Errorf("create recurring task with rotation: insert position %d: %w", i, err)
+		}
+	}
+
+	if task.Cadence.Freq == household.FreqAsNeeded {
+		if err := insertStandingInstance(ctx, tx, task.ID, task.HouseholdID); err != nil {
+			return fmt.Errorf("create recurring task with rotation: insert standing instance: %w", err)
 		}
 	}
 
@@ -446,17 +456,61 @@ func NewTaskInstanceRepository(dbtx db.TX) *TaskInstanceRepository {
 	return &TaskInstanceRepository{dbtx: dbtx}
 }
 
+// insertStandingInstance materialises a fresh, unassigned, pending standing
+// instance for taskID via q (either the pool or an open transaction). Both
+// sides of an as-needed task's lifecycle that must (re)create its one open
+// standing instance — RecurringTaskRepository.CreateWithRotation on task
+// creation and TaskInstanceRepository.CompleteAndAward on completion — share
+// this single implementation (NES-116).
+func insertStandingInstance(
+	ctx context.Context,
+	q db.TX,
+	taskID domain.RecurringTaskID,
+	householdID household.HouseholdID,
+) error {
+	repo := NewTaskInstanceRepository(q)
+	inst := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: taskID,
+		HouseholdID:     householdID,
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	}
+	return repo.Insert(ctx, inst)
+}
+
 // Insert persists a new task instance. The caller must populate ID,
-// RecurringTaskID, HouseholdID, DueOn, Status, and optionally AssigneeID; the
-// store populates CreatedAt and UpdatedAt.
+// RecurringTaskID, HouseholdID, Status, and optionally AssigneeID; the store
+// populates CreatedAt and UpdatedAt.
+//
+// Kind and DueOn (NES-116): the zero value of inst.Kind is treated as
+// domain.KindScheduled for callers that predate NES-116. A domain.KindScheduled
+// instance must have a non-nil DueOn; a domain.KindStanding instance must have
+// a nil DueOn — validateInstanceKindDueOn rejects the mismatched
+// combination before it reaches the database's own
+// task_instance_standing_no_due_on CHECK constraint, giving a clearer error.
 //
 // Returns domain.ErrDuplicateInstance on a (recurring_task_id, due_on)
-// conflict (constraint task_instance_task_due_uniq).
+// conflict (constraint task_instance_task_due_uniq). A NULL due_on (standing
+// instances) is never considered a duplicate of another NULL due_on, so a
+// task's completed standing instances accumulate as distinct history rows.
 func (r *TaskInstanceRepository) Insert(ctx context.Context, inst *domain.TaskInstance) error {
 	if inst == nil {
 		return errors.New("adapter: insert task instance: nil instance")
 	}
-	dueOn := domain.DateOf(inst.DueOn)
+	kind := inst.Kind
+	if kind == "" {
+		kind = domain.KindScheduled
+	}
+	if err := validateInstanceKindDueOn(kind, inst.DueOn); err != nil {
+		return fmt.Errorf("insert task instance: %w", err)
+	}
+
+	var dueOn *time.Time
+	if inst.DueOn != nil {
+		d := domain.DateOf(*inst.DueOn)
+		dueOn = &d
+	}
 
 	var assigneeIDStr *string
 	if inst.AssigneeID != nil {
@@ -466,8 +520,8 @@ func (r *TaskInstanceRepository) Insert(ctx context.Context, inst *domain.TaskIn
 
 	const q = `
 		INSERT INTO task_instance
-			(id, household_id, recurring_task_id, assignee_id, due_on, status)
-		VALUES ($1, $2, $3, $4, $5, $6)
+			(id, household_id, recurring_task_id, assignee_id, due_on, status, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING created_at, updated_at`
 	err := r.dbtx.QueryRow(ctx, q,
 		inst.ID.String(),
@@ -476,6 +530,7 @@ func (r *TaskInstanceRepository) Insert(ctx context.Context, inst *domain.TaskIn
 		assigneeIDStr,
 		dueOn,
 		inst.Status.String(),
+		kind.String(),
 	).Scan(&inst.CreatedAt, &inst.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -487,6 +542,26 @@ func (r *TaskInstanceRepository) Insert(ctx context.Context, inst *domain.TaskIn
 		return fmt.Errorf("insert task instance: %w", err)
 	}
 	inst.DueOn = dueOn
+	inst.Kind = kind
+	return nil
+}
+
+// validateInstanceKindDueOn enforces, ahead of the database's
+// task_instance_standing_no_due_on CHECK constraint, that a scheduled instance
+// carries a due date and a standing instance does not (NES-116).
+func validateInstanceKindDueOn(kind domain.InstanceKind, dueOn *time.Time) error {
+	switch kind {
+	case domain.KindScheduled:
+		if dueOn == nil {
+			return errors.New("a scheduled instance requires a non-nil DueOn")
+		}
+	case domain.KindStanding:
+		if dueOn != nil {
+			return errors.New("a standing instance must have a nil DueOn")
+		}
+	default:
+		return fmt.Errorf("unknown instance kind %q", kind)
+	}
 	return nil
 }
 
@@ -500,7 +575,7 @@ func (r *TaskInstanceRepository) Get(
 	const q = `
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
-		       created_at, updated_at
+		       created_at, updated_at, kind
 		  FROM task_instance
 		 WHERE id = $1
 		   AND household_id = $2`
@@ -514,9 +589,12 @@ func (r *TaskInstanceRepository) Get(
 	return inst, nil
 }
 
-// ListByHousehold returns instances for the household filtered by status and
-// due date range [from, to] (inclusive), ordered by due_on. Returns an empty
-// slice when no instances match.
+// ListByHousehold returns kind='scheduled' instances for the household
+// filtered by status and due date range [from, to] (inclusive), ordered by
+// due_on. Standing instances are excluded explicitly (rather than relying on
+// their NULL due_on failing the BETWEEN predicate) so the query's intent does
+// not depend on that SQL NULL-comparison subtlety. Returns an empty slice when
+// no instances match.
 func (r *TaskInstanceRepository) ListByHousehold(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -526,10 +604,11 @@ func (r *TaskInstanceRepository) ListByHousehold(
 	const q = `
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
-		       created_at, updated_at
+		       created_at, updated_at, kind
 		  FROM task_instance
 		 WHERE household_id = $1
 		   AND status = $2
+		   AND kind = 'scheduled'
 		   AND due_on BETWEEN $3 AND $4
 		 ORDER BY due_on`
 	rows, err := r.dbtx.Query(ctx, q,
@@ -553,6 +632,43 @@ func (r *TaskInstanceRepository) ListByHousehold(
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list task instances by household: %w", err)
+	}
+	return instances, nil
+}
+
+// ListStanding returns every pending kind='standing' instance for the
+// household — each is the single open occurrence of an as-needed recurring
+// task (NES-116). Ordered by created_at for a stable display order. Returns an
+// empty slice (not an error) when none exist.
+func (r *TaskInstanceRepository) ListStanding(
+	ctx context.Context,
+	householdID household.HouseholdID,
+) ([]*domain.TaskInstance, error) {
+	const q = `
+		SELECT id, household_id, recurring_task_id, assignee_id,
+		       due_on, status, completed_at, completed_by,
+		       created_at, updated_at, kind
+		  FROM task_instance
+		 WHERE household_id = $1
+		   AND status = 'pending'
+		   AND kind = 'standing'
+		 ORDER BY created_at`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list standing task instances: %w", err)
+	}
+	defer rows.Close()
+
+	instances := make([]*domain.TaskInstance, 0)
+	for rows.Next() {
+		inst, err := scanTaskInstance(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list standing task instances: scan: %w", err)
+		}
+		instances = append(instances, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list standing task instances: %w", err)
 	}
 	return instances, nil
 }
@@ -677,6 +793,11 @@ func (r *TaskInstanceRepository) Complete(
 //
 // Points = 0 optimization: the ledger INSERT is skipped entirely when
 // recurring_task.points = 0, keeping the ledger free of zero-value noise.
+//
+// NES-116: when the completed instance's kind is 'standing', step 3 inserts a
+// fresh pending standing instance for the same recurring task in the same
+// transaction, so an as-needed task always has exactly one open standing
+// instance again immediately after completion.
 func (r *TaskInstanceRepository) CompleteAndAward(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -696,8 +817,12 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Step 1: mark instance done and return the parent recurring_task_id so we
-	// can look up the points value in step 2 without a separate query.
+	// Step 1: mark instance done and return the parent recurring_task_id and
+	// kind so we can look up the points value in step 2, and respawn a standing
+	// instance in step 3, without separate queries. The status predicate is the
+	// guard that resolves the double-completion race: a losing concurrent call
+	// matches zero rows here (the winner's commit already flipped status to
+	// done) and falls through to disambiguateTerminal below.
 	const updateQ = `
 		UPDATE task_instance
 		   SET status       = 'done',
@@ -707,11 +832,11 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		 WHERE id           = $1
 		   AND household_id = $2
 		   AND status       IN ('pending', 'overdue')
-		RETURNING recurring_task_id`
+		RETURNING recurring_task_id, kind`
 
-	var recurringTaskIDStr string
+	var recurringTaskIDStr, kindStr string
 	err = tx.QueryRow(ctx, updateQ, id.String(), householdID.String(), by.String(), at).
-		Scan(&recurringTaskIDStr)
+		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return r.disambiguateTerminal(ctx, householdID, id)
@@ -744,6 +869,18 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		recurringTaskIDStr,
 	); err != nil {
 		return fmt.Errorf("complete and award: insert ledger: %w", err)
+	}
+
+	// Step 3: an as-needed task's standing instance reappears immediately after
+	// completion, in the same transaction as the completion itself.
+	if kindStr == domain.KindStanding.String() {
+		recurringTaskID, err := domain.ParseRecurringTaskID(recurringTaskIDStr)
+		if err != nil {
+			return fmt.Errorf("complete and award: parse recurring task id: %w", err)
+		}
+		if err := insertStandingInstance(ctx, tx, recurringTaskID, householdID); err != nil {
+			return fmt.Errorf("complete and award: respawn standing instance: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -796,8 +933,11 @@ func (r *TaskInstanceRepository) disambiguateTerminal(
 	return domain.ErrInstanceInTerminalState
 }
 
-// MarkPendingOverdue bulk-transitions all pending instances for the household
-// whose due_on < asOf to overdue. Returns the number of rows updated.
+// MarkPendingOverdue bulk-transitions all pending, kind='scheduled' instances
+// for the household whose due_on < asOf to overdue. kind='scheduled' is
+// explicit rather than relied upon implicitly via the NULL due_on on standing
+// instances failing the < comparison, so the query's intent is not hidden
+// behind a SQL NULL-comparison subtlety. Returns the number of rows updated.
 func (r *TaskInstanceRepository) MarkPendingOverdue(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -809,6 +949,7 @@ func (r *TaskInstanceRepository) MarkPendingOverdue(
 		       updated_at = now()
 		 WHERE household_id = $1
 		   AND status       = 'pending'
+		   AND kind         = 'scheduled'
 		   AND due_on       < $2`
 	tag, err := r.dbtx.Exec(ctx, q, householdID.String(), domain.DateOf(asOf))
 	if err != nil {
@@ -817,9 +958,11 @@ func (r *TaskInstanceRepository) MarkPendingOverdue(
 	return int(tag.RowsAffected()), nil
 }
 
-// MarkPendingOverdueAll bulk-transitions all pending instances across ALL
-// households whose due_on < asOf to overdue. It returns the newly-overdue rows
-// as [domain.ReminderTarget] values so the caller can enqueue overdue
+// MarkPendingOverdueAll bulk-transitions all pending, kind='scheduled'
+// instances across ALL households whose due_on < asOf to overdue. Standing
+// instances (kind='standing') are excluded explicitly — they have no due date
+// and so can never be overdue. It returns the newly-overdue rows as
+// [domain.ReminderTarget] values so the caller can enqueue overdue
 // notifications without an additional query. Callers that only want the count
 // use len() on the returned slice.
 //
@@ -838,6 +981,7 @@ func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf
 		   SET status     = 'overdue',
 		       updated_at = now()
 		 WHERE status = 'pending'
+		   AND kind   = 'scheduled'
 		   AND due_on < $1
 		RETURNING id, household_id, assignee_id, due_on, recurring_task_id`
 
@@ -850,10 +994,12 @@ func (r *TaskInstanceRepository) MarkPendingOverdueAll(ctx context.Context, asOf
 	return scanReminderRows(ctx, rows, domain.ReminderOverdue, "mark pending overdue all", r)
 }
 
-// ClaimDueSoonReminders atomically selects pending instances inside the closed
-// due-soon window (asOf <= due_on <= asOf + lead_time_days) that have not yet
-// been reminded (reminded_at IS NULL), stamps reminded_at = now() on each, and
-// returns them as [domain.ReminderTarget] values (Kind=[domain.ReminderDueSoon]).
+// ClaimDueSoonReminders atomically selects pending, kind='scheduled' instances
+// inside the closed due-soon window (asOf <= due_on <= asOf + lead_time_days)
+// that have not yet been reminded (reminded_at IS NULL), stamps reminded_at =
+// now() on each, and returns them as [domain.ReminderTarget] values
+// (Kind=[domain.ReminderDueSoon]). Standing instances (kind='standing') never
+// receive a due-soon reminder: they have no due date to enter the window with.
 //
 // The lower bound (due_on >= asOf) deliberately excludes already-past-due rows:
 // a pending row with due_on < asOf is overdue (or about to be transitioned by
@@ -881,6 +1027,7 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 			  FROM task_instance ti
 			  JOIN recurring_task rt ON rt.id = ti.recurring_task_id
 			 WHERE ti.status       = 'pending'
+			   AND ti.kind         = 'scheduled'
 			   AND ti.reminded_at IS NULL
 			   AND ti.due_on      >= $1::date
 			   AND ti.due_on      <= $1::date + make_interval(days => rt.lead_time_days)
@@ -1118,15 +1265,15 @@ func (r *TaskInstanceRepository) fetchTaskMeta(
 }
 
 // scanTaskInstance scans a task_instance row from r. Nullable columns
-// (assignee_id, completed_at, completed_by) are read into pointer types and
-// converted to domain pointer fields. DueOn is normalized with domain.DateOf.
+// (assignee_id, completed_at, completed_by, due_on) are read into pointer
+// types and converted to domain pointer fields. DueOn is nil for a standing
+// instance (NES-116); when present it is normalized with domain.DateOf.
 func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 	var (
-		inst                                              domain.TaskInstance
-		idStr, householdIDStr, recurringTaskIDStr, status string
-		assigneeIDStr, completedByStr                     *string
-		completedAt                                       *time.Time
-		dueOn                                             time.Time
+		inst                                                     domain.TaskInstance
+		idStr, householdIDStr, recurringTaskIDStr, status, kindS string
+		assigneeIDStr, completedByStr                            *string
+		completedAt, dueOn                                       *time.Time
 	)
 	err := r.Scan(
 		&idStr,
@@ -1139,6 +1286,7 @@ func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 		&completedByStr,
 		&inst.CreatedAt,
 		&inst.UpdatedAt,
+		&kindS,
 	)
 	if err != nil {
 		return nil, err
@@ -1160,12 +1308,19 @@ func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan task instance: %w", err)
 	}
+	kind, err := domain.ParseInstanceKind(kindS)
+	if err != nil {
+		return nil, fmt.Errorf("scan task instance: %w", err)
+	}
 
 	inst.ID = id
 	inst.HouseholdID = householdID
 	inst.RecurringTaskID = recurringTaskID
 	inst.Status = instanceStatus
-	inst.DueOn = domain.DateOf(dueOn)
+	inst.Kind = kind
+	if dueOn != nil {
+		inst.DueOn = domain.DueOnPtr(*dueOn)
+	}
 	inst.CompletedAt = completedAt
 
 	if assigneeIDStr != nil {

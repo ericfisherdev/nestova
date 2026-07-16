@@ -107,11 +107,16 @@ func (r *fakeRecurringTaskRepo) RotationMembers(_ context.Context, householdID h
 	return nil, domain.ErrTaskNotFound
 }
 
-// instanceKey uniquely identifies an (recurring_task_id, due_on) pair, matching
-// the task_instance_task_due_uniq constraint.
+// instanceKey uniquely identifies a task instance for duplicate detection,
+// matching the task_instance_task_due_uniq constraint. For a scheduled
+// instance, (taskID, dueOn) alone determines duplication. A standing instance
+// has no due date; standingID discriminates each one so it never collides
+// with another standing instance for the same task, mirroring Postgres (which
+// treats every NULL due_on as distinct).
 type instanceKey struct {
-	taskID domain.RecurringTaskID
-	dueOn  time.Time
+	taskID     domain.RecurringTaskID
+	dueOn      time.Time
+	standingID domain.TaskInstanceID
 }
 
 // fakeTaskInstanceRepo is an in-memory implementation of
@@ -131,13 +136,28 @@ func newFakeTaskInstanceRepo() *fakeTaskInstanceRepo {
 func (r *fakeTaskInstanceRepo) Insert(_ context.Context, inst *domain.TaskInstance) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := instanceKey{taskID: inst.RecurringTaskID, dueOn: domain.DateOf(inst.DueOn)}
+
+	kind := inst.Kind
+	if kind == "" {
+		kind = domain.KindScheduled
+	}
+
+	var key instanceKey
+	var dueOn *time.Time
+	if kind == domain.KindStanding {
+		key = instanceKey{taskID: inst.RecurringTaskID, standingID: inst.ID}
+	} else {
+		d := domain.DateOf(*inst.DueOn)
+		dueOn = &d
+		key = instanceKey{taskID: inst.RecurringTaskID, dueOn: d}
+	}
 	if r.seen[key] {
 		return domain.ErrDuplicateInstance
 	}
 	r.seen[key] = true
 	snapshot := *inst
-	snapshot.DueOn = domain.DateOf(inst.DueOn)
+	snapshot.DueOn = dueOn
+	snapshot.Kind = kind
 	r.instances = append(r.instances, &snapshot)
 	return nil
 }
@@ -153,6 +173,9 @@ func (r *fakeTaskInstanceRepo) Get(_ context.Context, householdID household.Hous
 	return nil, domain.ErrInstanceNotFound
 }
 
+// ListByHousehold mirrors the real adapter's kind='scheduled' filter: a
+// standing instance (nil DueOn) never matches a due-date range regardless of
+// the from/to bounds.
 func (r *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, householdID household.HouseholdID, status domain.InstanceStatus, from, to time.Time) ([]*domain.TaskInstance, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -162,8 +185,26 @@ func (r *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, householdID ho
 	for _, inst := range r.instances {
 		if inst.HouseholdID == householdID &&
 			inst.Status == status &&
+			inst.Kind == domain.KindScheduled &&
+			inst.DueOn != nil &&
 			!inst.DueOn.Before(fromDate) &&
 			!inst.DueOn.After(toDate) {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
+}
+
+// ListStanding is the in-memory implementation of the NES-116 "Anytime
+// section" query: every pending kind='standing' instance for the household.
+func (r *fakeTaskInstanceRepo) ListStanding(_ context.Context, householdID household.HouseholdID) ([]*domain.TaskInstance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*domain.TaskInstance
+	for _, inst := range r.instances {
+		if inst.HouseholdID == householdID &&
+			inst.Status == domain.StatusPending &&
+			inst.Kind == domain.KindStanding {
 			out = append(out, inst)
 		}
 	}
@@ -176,9 +217,9 @@ func (r *fakeTaskInstanceRepo) LatestDueOn(_ context.Context, householdID househ
 	var latest time.Time
 	found := false
 	for _, inst := range r.instances {
-		if inst.HouseholdID == householdID && inst.RecurringTaskID == id {
+		if inst.HouseholdID == householdID && inst.RecurringTaskID == id && inst.DueOn != nil {
 			if !found || inst.DueOn.After(latest) {
-				latest = inst.DueOn
+				latest = *inst.DueOn
 				found = true
 			}
 		}
@@ -227,6 +268,11 @@ func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household
 // instance done, and silently no-ops the point award since there is no ledger
 // in memory. Tests that need to verify award behaviour use the gated Postgres
 // tests instead.
+//
+// NES-116: when the completed instance is a standing instance, a fresh
+// pending standing instance for the same recurring task is appended, mirroring
+// the real adapter's same-transaction respawn so hermetic tests can verify
+// "always exactly one open standing instance" without a database.
 func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -238,6 +284,15 @@ func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID h
 			inst.Status = domain.StatusDone
 			inst.CompletedBy = &by
 			inst.CompletedAt = &at
+			if inst.Kind == domain.KindStanding {
+				r.instances = append(r.instances, &domain.TaskInstance{
+					ID:              domain.NewTaskInstanceID(),
+					RecurringTaskID: inst.RecurringTaskID,
+					HouseholdID:     inst.HouseholdID,
+					Status:          domain.StatusPending,
+					Kind:            domain.KindStanding,
+				})
+			}
 			return nil
 		}
 	}
@@ -259,6 +314,8 @@ func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.Hou
 	return domain.ErrInstanceNotFound
 }
 
+// MarkPendingOverdue mirrors the real adapter's kind='scheduled' filter: a
+// standing instance (nil DueOn) can never become overdue.
 func (r *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, householdID household.HouseholdID, asOf time.Time) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -267,6 +324,8 @@ func (r *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, householdID
 	for _, inst := range r.instances {
 		if inst.HouseholdID == householdID &&
 			inst.Status == domain.StatusPending &&
+			inst.Kind == domain.KindScheduled &&
+			inst.DueOn != nil &&
 			inst.DueOn.Before(asOfDate) {
 			inst.Status = domain.StatusOverdue
 			count++
@@ -275,19 +334,24 @@ func (r *fakeTaskInstanceRepo) MarkPendingOverdue(_ context.Context, householdID
 	return count, nil
 }
 
+// MarkPendingOverdueAll mirrors the real adapter's kind='scheduled' filter: a
+// standing instance (nil DueOn) can never become overdue.
 func (r *fakeTaskInstanceRepo) MarkPendingOverdueAll(_ context.Context, asOf time.Time) ([]domain.ReminderTarget, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	asOfDate := domain.DateOf(asOf)
 	var targets []domain.ReminderTarget
 	for _, inst := range r.instances {
-		if inst.Status == domain.StatusPending && inst.DueOn.Before(asOfDate) {
+		if inst.Status == domain.StatusPending &&
+			inst.Kind == domain.KindScheduled &&
+			inst.DueOn != nil &&
+			inst.DueOn.Before(asOfDate) {
 			inst.Status = domain.StatusOverdue
 			targets = append(targets, domain.ReminderTarget{
 				InstanceID:  inst.ID,
 				HouseholdID: inst.HouseholdID,
 				AssigneeID:  inst.AssigneeID,
-				DueOn:       inst.DueOn,
+				DueOn:       *inst.DueOn,
 				Kind:        domain.ReminderOverdue,
 			})
 		}
@@ -463,7 +527,7 @@ func TestGenerator_Idempotency(t *testing.T) {
 		assigneeID *household.MemberID
 	}, len(instanceRepo.instances))
 	for i, inst := range instanceRepo.instances {
-		snapshot1[i].dueOn = inst.DueOn
+		snapshot1[i].dueOn = *inst.DueOn
 		snapshot1[i].assigneeID = inst.AssigneeID
 	}
 
@@ -824,6 +888,168 @@ func TestTaskService_CreateRecurringTask_ClaimableNoPool(t *testing.T) {
 	}
 	if len(taskRepo.tasks) != 1 {
 		t.Fatalf("repo has %d tasks, want 1", len(taskRepo.tasks))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NES-116: as-needed cadence tests
+// ---------------------------------------------------------------------------
+
+// newAsNeededTask returns a minimal as-needed recurring task with the given
+// rotation policy, for exercising the NES-116 constructor guard.
+func newAsNeededTask(policy domain.RotationPolicy) *domain.RecurringTask {
+	return &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       "Refill the soap dispenser",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqAsNeeded,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: policy,
+		Points:         3,
+		Active:         true,
+	}
+}
+
+// TestTaskService_CreateRecurringTask_AsNeededRequiresClaimable is the AC1
+// regression test: an as-needed task with a non-claimable rotation policy is
+// rejected with ErrAsNeededRequiresClaimable before any repository call.
+func TestTaskService_CreateRecurringTask_AsNeededRequiresClaimable(t *testing.T) {
+	for _, policy := range []domain.RotationPolicy{domain.RotationFixed, domain.RotationRoundRobin} {
+		t.Run(policy.String(), func(t *testing.T) {
+			taskRepo := newFakeRecurringTaskRepo()
+			instanceRepo := newFakeTaskInstanceRepo()
+			svc, err := app.NewTaskService(taskRepo, instanceRepo)
+			if err != nil {
+				t.Fatalf("NewTaskService: %v", err)
+			}
+
+			task := newAsNeededTask(policy)
+			err = svc.CreateRecurringTask(context.Background(), task, []household.MemberID{household.NewMemberID()})
+			if !errors.Is(err, domain.ErrAsNeededRequiresClaimable) {
+				t.Errorf("CreateRecurringTask(as-needed, %s) = %v, want ErrAsNeededRequiresClaimable", policy, err)
+			}
+			if len(taskRepo.tasks) != 0 {
+				t.Errorf("repo has %d tasks after rejection, want 0", len(taskRepo.tasks))
+			}
+		})
+	}
+}
+
+// TestTaskService_CreateRecurringTask_AsNeededClaimableSucceeds verifies that
+// an as-needed task paired with the claimable policy is accepted.
+func TestTaskService_CreateRecurringTask_AsNeededClaimableSucceeds(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := newAsNeededTask(domain.RotationClaimable)
+	if err := svc.CreateRecurringTask(context.Background(), task, nil); err != nil {
+		t.Fatalf("CreateRecurringTask(as-needed, claimable): %v", err)
+	}
+	if len(taskRepo.tasks) != 1 {
+		t.Fatalf("repo has %d tasks, want 1", len(taskRepo.tasks))
+	}
+}
+
+// TestGenerator_SkipsAsNeededTasks verifies that the generator never
+// materialises scheduled instances for an as-needed task, even across a wide
+// window — the recurrence engine must never be invoked for it.
+func TestGenerator_SkipsAsNeededTasks(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	task := newAsNeededTask(domain.RotationClaimable)
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	g := newGenerator(t, taskRepo, instanceRepo)
+	asOf := weeklyAnchor.AddDate(1, 0, 0) // a year out — would be many occurrences if scheduled.
+	count, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("GenerateDue inserted %d instances for an as-needed task, want 0", count)
+	}
+	if len(instanceRepo.instances) != 0 {
+		t.Errorf("instance repo has %d instances after GenerateDue, want 0 (generator must not materialise as-needed instances)", len(instanceRepo.instances))
+	}
+}
+
+// TestTaskService_CompleteInstance_StandingRespawns is the AC2/AC3 regression
+// test: completing an as-needed task's standing instance transitions it to
+// done and materialises a fresh pending standing instance for the same task,
+// so exactly one open standing instance exists both before and after
+// completion.
+func TestTaskService_CompleteInstance_StandingRespawns(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := newAsNeededTask(domain.RotationClaimable)
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	standing := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: task.ID,
+		HouseholdID:     task.HouseholdID,
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	}
+	if err := instanceRepo.Insert(context.Background(), standing); err != nil {
+		t.Fatalf("seed standing instance: %v", err)
+	}
+
+	// Before completion: exactly one open standing instance.
+	before, err := instanceRepo.ListStanding(context.Background(), task.HouseholdID)
+	if err != nil {
+		t.Fatalf("ListStanding (before): %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("ListStanding (before) = %d instances, want 1", len(before))
+	}
+
+	m := household.NewMemberID()
+	if err := svc.CompleteInstance(context.Background(), task.HouseholdID, standing.ID, m, time.Now()); err != nil {
+		t.Fatalf("CompleteInstance(standing): %v", err)
+	}
+
+	// The original instance is now done.
+	got, err := instanceRepo.Get(context.Background(), task.HouseholdID, standing.ID)
+	if err != nil {
+		t.Fatalf("Get after completion: %v", err)
+	}
+	if got.Status != domain.StatusDone {
+		t.Errorf("original standing instance status = %v, want done", got.Status)
+	}
+
+	// After completion: still exactly one open standing instance, and it is a
+	// different row than the one just completed.
+	after, err := instanceRepo.ListStanding(context.Background(), task.HouseholdID)
+	if err != nil {
+		t.Fatalf("ListStanding (after): %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("ListStanding (after) = %d instances, want 1", len(after))
+	}
+	if after[0].ID == standing.ID {
+		t.Error("the open standing instance after completion is the same row that was just completed, want a fresh replacement")
+	}
+	if after[0].DueOn != nil {
+		t.Errorf("respawned standing instance DueOn = %v, want nil", after[0].DueOn)
 	}
 }
 

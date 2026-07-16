@@ -114,3 +114,46 @@ func ParseInstanceStatus(s string) (InstanceStatus, error) {
 	}
 	return st, nil
 }
+
+// InstanceKind classifies how a task instance was materialised. Stored as
+// text, validated here. The values match the task_instance.kind CHECK
+// constraint (NES-116).
+type InstanceKind string
+
+// Task instance kinds.
+const (
+	// KindScheduled marks an instance materialised ahead of time by the
+	// recurrence engine (the generator) for a dated cadence. It always carries
+	// a non-nil DueOn.
+	KindScheduled InstanceKind = "scheduled"
+	// KindStanding marks the single open instance of an as-needed
+	// (household.FreqAsNeeded) recurring task. It has a nil DueOn and is never
+	// produced by the recurrence engine: one is materialised when the parent
+	// task is created, and a fresh one replaces it in the same transaction
+	// every time it is completed, so an as-needed task always has exactly one
+	// open standing instance.
+	KindStanding InstanceKind = "standing"
+)
+
+// Valid reports whether k is a known instance kind.
+func (k InstanceKind) Valid() bool {
+	switch k {
+	case KindScheduled, KindStanding:
+		return true
+	default:
+		return false
+	}
+}
+
+// String returns the instance kind's stored value.
+func (k InstanceKind) String() string { return string(k) }
+
+// ParseInstanceKind validates and returns an InstanceKind, or an error for an
+// unknown value.
+func ParseInstanceKind(s string) (InstanceKind, error) {
+	k := InstanceKind(s)
+	if !k.Valid() {
+		return "", fmt.Errorf("invalid instance kind %q", s)
+	}
+	return k, nil
+}

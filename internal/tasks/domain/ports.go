@@ -107,19 +107,26 @@ type RecurringTaskRepository interface {
 //     used by the streak calculation ([CurrentStreak]).
 //
 // Persistence contracts:
-//   - Insert expects inst.ID, inst.RecurringTaskID, inst.HouseholdID, inst.DueOn,
-//     inst.Status, and optionally inst.AssigneeID set. The store sets CreatedAt
-//     and UpdatedAt.
+//   - Insert expects inst.ID, inst.RecurringTaskID, inst.HouseholdID, inst.Kind,
+//     inst.Status, and optionally inst.AssigneeID set. inst.DueOn must be
+//     non-nil for [KindScheduled] and nil for [KindStanding] (NES-116); the
+//     zero value of Kind is treated as [KindScheduled] for callers that predate
+//     NES-116. The store sets CreatedAt and UpdatedAt.
 //   - Complete transitions status from pending OR overdue to done and records
 //     completed_at and completed_by. Skip transitions pending OR overdue to
 //     skipped. Both refresh updated_at. An overdue chore is still actionable: it
 //     can be completed or skipped late.
-//   - MarkPendingOverdue bulk-transitions pending instances whose due_on < asOf
-//     to overdue, scoped to the household, refreshing updated_at.
+//   - MarkPendingOverdue bulk-transitions pending, [KindScheduled] instances
+//     whose due_on < asOf to overdue, scoped to the household, refreshing
+//     updated_at. [KindStanding] instances are never affected: they have no due
+//     date and so can never be overdue.
 //
 // Error contracts:
 //   - Insert returns [ErrDuplicateInstance] on (recurring_task_id, due_on)
-//     conflict (constraint task_instance_task_due_uniq).
+//     conflict (constraint task_instance_task_due_uniq). A NULL due_on
+//     (standing instances) is never considered a duplicate of another NULL
+//     due_on, so a task's completed standing instances accumulate as distinct
+//     history rows, matching scheduled instances.
 //   - Get returns [ErrInstanceNotFound] when id is unknown or belongs to another
 //     household.
 //   - Claim, Complete, and Skip act on a pending or overdue instance.
@@ -130,6 +137,10 @@ type RecurringTaskRepository interface {
 //   - Complete, Skip, and Claim return [ErrInstanceInTerminalState] when the
 //     instance is already in a terminal state. As of NES-32, terminal means done
 //     or skipped only — overdue is no longer terminal for these transitions.
+//     NES-116 reuses this same sentinel for a lost double-completion race on a
+//     standing instance: the loser's UPDATE matches zero rows because the
+//     winner's commit already flipped status to done, which is indistinguishable
+//     from (and handled identically to) any other already-terminal instance.
 //   - LatestDueOn returns (zero, false, nil) when no instances exist for the task.
 //   - ListByHousehold returns an empty slice (not an error) when no instances
 //     match the filter.
@@ -142,9 +153,17 @@ type TaskInstanceRepository interface {
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	Get(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) (*TaskInstance, error)
 
-	// ListByHousehold returns instances for the household filtered by status and
-	// due date range [from, to] (inclusive). Returns an empty slice when none match.
+	// ListByHousehold returns [KindScheduled] instances for the household
+	// filtered by status and due date range [from, to] (inclusive). Standing
+	// instances are never returned (they have no due date to filter by).
+	// Returns an empty slice when none match.
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID, status InstanceStatus, from, to time.Time) ([]*TaskInstance, error)
+
+	// ListStanding returns every pending [KindStanding] instance for the
+	// household — each is the single open occurrence of an as-needed recurring
+	// task (NES-116). Ordered by created_at for a stable display order. Returns
+	// an empty slice (not an error) when none exist.
+	ListStanding(ctx context.Context, householdID household.HouseholdID) ([]*TaskInstance, error)
 
 	// LatestDueOn returns the most recent due_on materialised for the task within
 	// the household and ok=true, or the zero time and ok=false when no instances
@@ -173,10 +192,18 @@ type TaskInstanceRepository interface {
 	// re-completion). When the associated recurring task has points = 0, no
 	// ledger row is produced.
 	//
+	// NES-116: when the completed instance is [KindStanding], a fresh pending
+	// standing instance for the same recurring task is materialised in the same
+	// transaction, so an as-needed task always has exactly one open standing
+	// instance both before and immediately after completion.
+	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another
 	// household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or
-	// skipped (no award is made).
+	// skipped (no award is made, no replacement instance is materialised). Two
+	// concurrent completions of the same standing instance race on this guard:
+	// exactly one succeeds and awards points; the other observes the row already
+	// done and returns this sentinel.
 	CompleteAndAward(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
 
 	// Skip transitions the instance from pending or overdue to skipped.
@@ -184,13 +211,17 @@ type TaskInstanceRepository interface {
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Skip(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) error
 
-	// MarkPendingOverdue bulk-transitions all pending instances for the household
-	// whose due_on < asOf to overdue. Returns the number of rows updated.
+	// MarkPendingOverdue bulk-transitions all pending, [KindScheduled] instances
+	// for the household whose due_on < asOf to overdue. [KindStanding] instances
+	// are never selected — their due_on is NULL, which never satisfies the
+	// comparison. Returns the number of rows updated.
 	MarkPendingOverdue(ctx context.Context, householdID household.HouseholdID, asOf time.Time) (int, error)
 
-	// MarkPendingOverdueAll bulk-transitions all pending instances across ALL
-	// households whose due_on < asOf to overdue. Returns the newly-overdue rows
-	// as [ReminderTarget] values (Kind=[ReminderOverdue]) so the caller can
+	// MarkPendingOverdueAll bulk-transitions all pending, [KindScheduled]
+	// instances across ALL households whose due_on < asOf to overdue.
+	// [KindStanding] instances are never selected: they have no due date and so
+	// can never become overdue. Returns the newly-overdue rows as
+	// [ReminderTarget] values (Kind=[ReminderOverdue]) so the caller can
 	// enqueue overdue notifications without an additional query. Callers that
 	// only want the count use len() on the returned slice.
 	//
@@ -201,10 +232,12 @@ type TaskInstanceRepository interface {
 	// here as for [RecurringTaskRepository.ListAllActive].
 	MarkPendingOverdueAll(ctx context.Context, asOf time.Time) ([]ReminderTarget, error)
 
-	// ClaimDueSoonReminders atomically selects pending instances inside the
-	// closed due-soon window (asOf <= due_on <= asOf + lead_time_days) that have
-	// not yet been reminded (reminded_at IS NULL), marks reminded_at = now() on
-	// each, and returns them as [ReminderTarget] values (Kind=[ReminderDueSoon]).
+	// ClaimDueSoonReminders atomically selects pending, [KindScheduled] instances
+	// inside the closed due-soon window (asOf <= due_on <= asOf + lead_time_days)
+	// that have not yet been reminded (reminded_at IS NULL), marks reminded_at =
+	// now() on each, and returns them as [ReminderTarget] values
+	// (Kind=[ReminderDueSoon]). [KindStanding] instances never receive a
+	// due-soon reminder: they have no due date to enter the window with.
 	// Because reminded_at is set atomically, a row is returned at most once
 	// across concurrent or repeated calls — the idempotency guarantee.
 	//

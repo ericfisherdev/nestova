@@ -149,6 +149,28 @@ func TestTaskRowItemDone(t *testing.T) {
 	}
 }
 
+func TestTaskRowItemStanding(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID: "standing-0000-0001",
+		Title:      "Water the plants",
+		Category:   "chore",
+		Status:     "pending",
+		Claimable:  true,
+		Standing:   true,
+		CSRFToken:  "tok-standing",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	// Standing rows render "Anytime" instead of a due-date label.
+	if !strings.Contains(out, "Anytime") {
+		t.Errorf("standing row missing Anytime label: %q", out)
+	}
+	// A standing row still reuses the normal Claim action when unclaimed.
+	if !strings.Contains(out, "Claim") {
+		t.Errorf("standing row missing Claim button: %q", out)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TasksPage
 // ---------------------------------------------------------------------------

@@ -115,6 +115,17 @@ func newWeeklyCadence() household.Cadence {
 	}
 }
 
+// newAsNeededCadence returns an as-needed (NES-116) cadence anchored to
+// refDate. Interval carries no meaning for this frequency; it is set to
+// satisfy Cadence.Validate the same way the create-task form does.
+func newAsNeededCadence() household.Cadence {
+	return household.Cadence{
+		Freq:     household.FreqAsNeeded,
+		Interval: 1,
+		Anchor:   refDate,
+	}
+}
+
 // seedRecurringTask creates and persists a basic recurring task for the given
 // household. The cadence, category, and rotation policy are sensible defaults.
 func seedRecurringTask(
@@ -153,11 +164,32 @@ func seedTaskInstance(
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     rt.HouseholdID,
-		DueOn:           dueOn,
+		DueOn:           domain.DueOnPtr(dueOn),
 		Status:          domain.StatusPending,
 	}
 	if err := repo.Insert(testCtx(t), inst); err != nil {
 		t.Fatalf("Insert task instance: %v", err)
+	}
+	return inst
+}
+
+// seedStandingInstance creates and persists a pending standing instance
+// (NES-116) for the given as-needed recurring task.
+func seedStandingInstance(
+	t *testing.T,
+	repo *adapter.TaskInstanceRepository,
+	rt *domain.RecurringTask,
+) *domain.TaskInstance {
+	t.Helper()
+	inst := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     rt.HouseholdID,
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	}
+	if err := repo.Insert(testCtx(t), inst); err != nil {
+		t.Fatalf("Insert standing task instance: %v", err)
 	}
 	return inst
 }
@@ -495,7 +527,7 @@ func TestTaskInstance_InsertDuplicateReturnsErrDuplicateInstance(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h.ID,
-		DueOn:           dueOn,
+		DueOn:           domain.DueOnPtr(dueOn),
 		Status:          domain.StatusPending,
 	}
 	err := instRepo.Insert(testCtx(t), dup)
@@ -859,7 +891,7 @@ func TestTaskInstance_MarkPendingOverdue(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h.ID,
-		DueOn:           refDate.AddDate(0, 0, -1),
+		DueOn:           domain.DueOnPtr(refDate.AddDate(0, 0, -1)),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(testCtx(t), pastDue2); err != nil {
@@ -869,7 +901,7 @@ func TestTaskInstance_MarkPendingOverdue(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h.ID,
-		DueOn:           refDate.AddDate(0, 0, 7),
+		DueOn:           domain.DueOnPtr(refDate.AddDate(0, 0, 7)),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(testCtx(t), future); err != nil {
@@ -928,7 +960,7 @@ func TestTaskInstance_ListByHousehold(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h.ID,
-		DueOn:           refDate.AddDate(0, 0, 7),
+		DueOn:           domain.DueOnPtr(refDate.AddDate(0, 0, 7)),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(testCtx(t), inst2); err != nil {
@@ -938,7 +970,7 @@ func TestTaskInstance_ListByHousehold(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h.ID,
-		DueOn:           refDate.AddDate(0, 0, 14),
+		DueOn:           domain.DueOnPtr(refDate.AddDate(0, 0, 14)),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(testCtx(t), inst3); err != nil {
@@ -999,7 +1031,7 @@ func TestTaskInstance_LatestDueOn(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h.ID,
-		DueOn:           refDate.AddDate(0, 0, 14),
+		DueOn:           domain.DueOnPtr(refDate.AddDate(0, 0, 14)),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(testCtx(t), inst2); err != nil {

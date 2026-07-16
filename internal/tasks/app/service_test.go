@@ -46,7 +46,7 @@ func TestService_CompleteInstance_CallsCompleteAndAward(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h,
-		DueOn:           time.Now(),
+		DueOn:           domain.DueOnPtr(time.Now()),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(t.Context(), inst); err != nil {
@@ -101,7 +101,7 @@ func TestService_CompleteInstance_OverdueAccepted(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h,
-		DueOn:           time.Now().AddDate(0, 0, -1),
+		DueOn:           domain.DueOnPtr(time.Now().AddDate(0, 0, -1)),
 		Status:          domain.StatusOverdue,
 	}
 	if err := instRepo.Insert(t.Context(), inst); err != nil {
@@ -154,7 +154,7 @@ func TestService_CompleteInstance_TerminalStatePropagated(t *testing.T) {
 		ID:              domain.NewTaskInstanceID(),
 		RecurringTaskID: rt.ID,
 		HouseholdID:     h,
-		DueOn:           time.Now(),
+		DueOn:           domain.DueOnPtr(time.Now()),
 		Status:          domain.StatusPending,
 	}
 	if err := instRepo.Insert(t.Context(), inst); err != nil {
