@@ -13,10 +13,10 @@ import (
 )
 
 // Scheduler periodically materialises pending task instances, sweeps past-due
-// pending instances to overdue, and emits due-soon and overdue reminders
-// through the notify outbox. It is designed to run as a single background
-// goroutine alongside the notification dispatcher; the two workers are
-// independent and share no state.
+// pending instances to overdue, and emits due-soon, overdue, claim-warning,
+// and claim-expiry reminders through the notify outbox. It is designed to run
+// as a single background goroutine alongside the notification dispatcher; the
+// two workers are independent and share no state.
 //
 // Each poll cycle:
 //  1. Calls [Generator.GenerateDue] to materialise upcoming instances.
@@ -24,16 +24,18 @@ import (
 //     past-due pending instances to overdue and obtain the transitioned rows.
 //  3. Calls [Reminders.EmitOverdue] to enqueue overdue notifications.
 //  4. Calls [Reminders.EmitDueSoon] to claim and enqueue due-soon notifications.
-//  5. Calls [Reminders.EmitClaimExpiry] to revert expired chore claims,
+//  5. Calls [Reminders.EmitClaimWarnings] to mark and enqueue "claim expiring
+//     soon" notifications for claims entering their warning window (NES-118).
+//  6. Calls [Reminders.EmitClaimExpiry] to revert expired chore claims,
 //     penalize their claimants, and enqueue claim-expiry notifications
 //     (NES-117). It runs on this same cadence rather than a separate
 //     scheduler since it shares the same "sweep task_instance for a
 //     time-based transition" shape as step 2.
 //
-// A failure in step 1 is logged and the error is recorded, but steps 2–5 still
+// A failure in step 1 is logged and the error is recorded, but steps 2–6 still
 // run — a generation failure must not prevent the overdue sweep, reminder
-// emission, or claim-expiry sweep. The first error encountered across all
-// steps is surfaced by [Scheduler.RunOnce].
+// emission, claim-warning pass, or claim-expiry sweep. The first error
+// encountered across all steps is surfaced by [Scheduler.RunOnce].
 type Scheduler struct {
 	generator    *Generator
 	instanceRepo domain.TaskInstanceRepository
@@ -107,7 +109,9 @@ func NewScheduler(
 //  3. [Reminders.EmitOverdue] — enqueue overdue notifications for the targets
 //     returned by step 2.
 //  4. [Reminders.EmitDueSoon] — claim and enqueue due-soon notifications.
-//  5. [Reminders.EmitClaimExpiry] — revert expired chore claims, penalize
+//  5. [Reminders.EmitClaimWarnings] — mark and enqueue "claim expiring soon"
+//     notifications (NES-118).
+//  6. [Reminders.EmitClaimExpiry] — revert expired chore claims, penalize
 //     their claimants, and enqueue claim-expiry notifications (NES-117).
 func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 	var firstErr error
@@ -140,6 +144,13 @@ func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 		s.logger.Error("scheduler: due-soon reminders failed", "error", dueSoonErr)
 		if firstErr == nil {
 			firstErr = fmt.Errorf("scheduler: due-soon reminders: %w", dueSoonErr)
+		}
+	}
+
+	if claimWarningErr := s.reminders.EmitClaimWarnings(ctx, asOf); claimWarningErr != nil {
+		s.logger.Error("scheduler: claim warnings failed", "error", claimWarningErr)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("scheduler: claim warnings: %w", claimWarningErr)
 		}
 	}
 

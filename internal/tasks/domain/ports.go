@@ -366,4 +366,53 @@ type TaskInstanceRepository interface {
 	// not be called from user-facing request handlers, matching the
 	// precedent set by [MarkPendingOverdueAll] and [ClaimDueSoonReminders].
 	SweepExpiredClaims(ctx context.Context, asOf time.Time) ([]ExpiredClaim, error)
+
+	// ClaimWarnings atomically selects every claim whose ClaimExpiresAt falls
+	// within [ClaimWarningWindow] of asOf and has not yet been warned
+	// (claim_warned_at IS NULL), marks claim_warned_at = now() on each, and
+	// returns them as [ClaimWarning] values (NES-118). Because
+	// claim_warned_at is set in the same statement as the selection, the same
+	// claim window is warned at most once — mirroring [ClaimDueSoonReminders]'s
+	// reminded_at idempotency guarantee.
+	//
+	// A claim whose window has already expired as of asOf (ClaimExpiresAt <=
+	// asOf) is excluded: that claim belongs to [SweepExpiredClaims] instead,
+	// not this warning path. Only pending or overdue instances are
+	// considered, matching SweepExpiredClaims' status predicate.
+	//
+	// Orphaned claims (the claimant's member row was deleted before expiry,
+	// leaving ClaimedBy nil per [TaskInstanceRepository.Claim]'s doc) are
+	// excluded — there is no one to warn.
+	//
+	// Returns the warned claims as [ClaimWarning] values so the caller can
+	// enqueue a notification per claimant without an additional query.
+	// Returns an empty slice (not an error) when no claims enter the warning
+	// window as of asOf.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process method reserved for the background scheduler and must
+	// not be called from user-facing request handlers, matching the
+	// precedent set by [SweepExpiredClaims] and [ClaimDueSoonReminders].
+	ClaimWarnings(ctx context.Context, asOf time.Time) ([]ClaimWarning, error)
+
+	// ClearClaimWarning resets claim_warned_at to NULL for id's claim, scoped
+	// to the specific claim window identified by expiresAt. It is the
+	// recovery counterpart to [ClaimWarnings], invoked when a warning
+	// notification fails to enqueue after the row was marked warned, so the
+	// warning is retried on a later tick instead of being lost.
+	//
+	// The expiresAt guard scopes the reset to the SAME claim window the
+	// warning was generated for: if the instance has since moved on to a
+	// different claim window (completed, skipped, or swept-and-reclaimed), a
+	// blind reset by id alone would clear a later, unrelated window's
+	// claim_warned_at and cause a spurious duplicate warning.
+	//
+	// It is a no-op (nil error) when id is unknown or its claim_expires_at no
+	// longer matches expiresAt — recovery must be idempotent and tolerant of
+	// the row having moved on before the clear runs.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process recovery method reserved for the background scheduler
+	// and must not be called from user-facing request handlers.
+	ClearClaimWarning(ctx context.Context, id TaskInstanceID, expiresAt time.Time) error
 }

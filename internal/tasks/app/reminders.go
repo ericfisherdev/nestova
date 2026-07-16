@@ -22,9 +22,9 @@ func categoryLabel(cat domain.Category) string {
 	return "Chore"
 }
 
-// Reminders emits due-soon and overdue task notifications through the notify
-// outbox. It is constructed by [NewScheduler] and driven from
-// [Scheduler.RunOnce].
+// Reminders emits due-soon, overdue, claim-warning, and claim-expiry task
+// notifications through the notify outbox. It is constructed by
+// [NewScheduler] and driven from [Scheduler.RunOnce].
 //
 // A single failing enqueue is logged and does not abort the batch — remaining
 // targets are still processed.
@@ -155,6 +155,93 @@ func (r *Reminders) EmitClaimExpiry(ctx context.Context, asOf time.Time) error {
 
 	if failures > 0 {
 		return fmt.Errorf("reminders: %d of %d claim-expiry enqueues failed", failures, len(claims))
+	}
+	return nil
+}
+
+// EmitClaimWarnings calls [domain.TaskInstanceRepository.ClaimWarnings] to
+// atomically select every claim entering its warning window and mark it
+// warned, then enqueues one in-app notification per claim informing the
+// claimant that their claim is close to expiring (NES-118).
+//
+// Recovery: ClaimWarnings stamps claim_warned_at BEFORE this method
+// enqueues, so a failed enqueue would otherwise drop the warning
+// permanently. To make it recoverable, a failed enqueue triggers
+// [domain.TaskInstanceRepository.ClearClaimWarning] to reset claim_warned_at
+// to NULL for that specific claim window, so the next tick re-selects and
+// retries the row. A failed clear is logged (the warning is then lost until
+// the row's claim state changes, which is the best we can do).
+//
+// Returns a non-nil error when ClaimWarnings fails OR when any enqueue
+// failed, so the scheduler surfaces the failure instead of masking it.
+func (r *Reminders) EmitClaimWarnings(ctx context.Context, asOf time.Time) error {
+	warnings, err := r.instanceRepo.ClaimWarnings(ctx, asOf)
+	if err != nil {
+		return fmt.Errorf("reminders: claim warnings: %w", err)
+	}
+
+	var failures int
+	for _, warning := range warnings {
+		if enqErr := r.enqueueClaimWarning(ctx, asOf, warning); enqErr != nil {
+			failures++
+			// Un-stamp claim_warned_at (scoped to this claim window) so the row is
+			// re-selected and retried next tick.
+			if clearErr := r.instanceRepo.ClearClaimWarning(ctx, warning.InstanceID, warning.ExpiresAt); clearErr != nil {
+				r.logger.Error("reminders: clear claim warning failed; warning may be lost until row changes",
+					"instance_id", warning.InstanceID.String(),
+					"error", clearErr,
+				)
+			}
+		}
+	}
+
+	if len(warnings) > 0 {
+		r.logger.Info("reminders: claim warnings emitted",
+			"count", len(warnings), "failures", failures)
+	}
+
+	if failures > 0 {
+		return fmt.Errorf("reminders: %d of %d claim-warning enqueues failed", failures, len(warnings))
+	}
+	return nil
+}
+
+// enqueueClaimWarning builds and enqueues a single claim-expiring-soon
+// notification for warning, addressed to the member whose claim is at risk.
+// A blank-title warning is logged and skipped, returning nil (nothing to
+// retry) — mirroring enqueueClaimExpiry's handling of an unresolved task
+// title. No PII is logged — only task instance ID.
+func (r *Reminders) enqueueClaimWarning(ctx context.Context, asOf time.Time, warning domain.ClaimWarning) error {
+	if warning.Title == "" {
+		r.logger.Warn("reminders: skipping claim-warning target with no resolved task title",
+			"instance_id", warning.InstanceID.String())
+		return nil
+	}
+
+	instUUID := uuid.UUID(warning.InstanceID)
+	claimedBy := warning.ClaimedBy
+	n := &notifydomain.Notification{
+		ID:          notifydomain.NewNotificationID(),
+		HouseholdID: warning.HouseholdID,
+		MemberID:    &claimedBy,
+		Channel:     notifydomain.ChannelInApp,
+		Title:       fmt.Sprintf("Claim expiring soon: %s", warning.Title),
+		Body: fmt.Sprintf(
+			"Your claim on %s expires in less than %d hours — complete it soon to avoid a point penalty.",
+			warning.Title, int(domain.ClaimWarningWindow.Hours()),
+		),
+		ScheduledFor: asOf,
+		Status:       notifydomain.StatusPending,
+		SourceType:   "task_instance",
+		SourceID:     &instUUID,
+	}
+
+	if err := r.enqueuer.Enqueue(ctx, n); err != nil {
+		r.logger.Error("reminders: claim-warning enqueue failed",
+			"instance_id", warning.InstanceID.String(),
+			"error", err,
+		)
+		return fmt.Errorf("reminders: enqueue claim warning instance %s: %w", warning.InstanceID.String(), err)
 	}
 	return nil
 }

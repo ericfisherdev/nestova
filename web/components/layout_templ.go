@@ -52,7 +52,7 @@ func Layout(props ShellProps, nav []NavItem, content templ.Component) templ.Comp
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><script src=\"/static/js/htmx.min.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script><!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. --><script src=\"/static/js/gsap.min.js\" defer></script><script src=\"/static/js/dashboard-motion.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen\" x-data=\"{ open: false }\" @keydown.escape.window=\"if (open) { open = false; $refs.navToggle.focus() }\"><a href=\"#main-content\" class=\"sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white\">Skip to content</a><!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).\n\t\t\t     Opening moves focus into the drawer; closing returns it here. --><button type=\"button\" x-ref=\"navToggle\" class=\"fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden\" @click=\"open = true; $nextTick(() => $refs.navPanel.focus())\" aria-label=\"Open navigation\" aria-controls=\"sidebar\" :aria-expanded=\"open\"><span aria-hidden=\"true\">&#9776;</span></button><!-- Click-away overlay shown with the drawer on narrow screens. --><div x-show=\"open\" x-cloak @click=\"open = false; $refs.navToggle.focus()\" class=\"fixed inset-0 z-30 bg-ink/30 md:hidden\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><script src=\"/static/js/htmx.min.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script><!-- Claim countdown badge for claimed chores (NES-118); registers its Alpine component before Alpine starts. --><script src=\"/static/js/claim-countdown.js\" defer></script><!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. --><script src=\"/static/js/gsap.min.js\" defer></script><script src=\"/static/js/dashboard-motion.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen\" x-data=\"{ open: false }\" @keydown.escape.window=\"if (open) { open = false; $refs.navToggle.focus() }\"><a href=\"#main-content\" class=\"sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white\">Skip to content</a><!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).\n\t\t\t     Opening moves focus into the drawer; closing returns it here. --><button type=\"button\" x-ref=\"navToggle\" class=\"fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden\" @click=\"open = true; $nextTick(() => $refs.navPanel.focus())\" aria-label=\"Open navigation\" aria-controls=\"sidebar\" :aria-expanded=\"open\"><span aria-hidden=\"true\">&#9776;</span></button><!-- Click-away overlay shown with the drawer on narrow screens. --><div x-show=\"open\" x-cloak @click=\"open = false; $refs.navToggle.focus()\" class=\"fixed inset-0 z-30 bg-ink/30 md:hidden\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -146,7 +146,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 108, Col: 36}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 110, Col: 36}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -169,7 +169,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(props.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 114, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 116, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -218,7 +218,7 @@ func miniMonth() templ.Component {
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(day))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 132, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 134, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {

@@ -47,6 +47,11 @@ type callCountingInstanceRepo struct {
 	claimExpiryCalls atomic.Int64
 	claimExpiryErr   error
 	claimExpiryCount int
+	// claimWarningCalls/claimWarningErr/claimWarningCount mirror the
+	// claimExpiry* fields above for RunOnce's NES-118 step.
+	claimWarningCalls atomic.Int64
+	claimWarningErr   error
+	claimWarningCount int
 }
 
 func newCallCountingInstanceRepo() *callCountingInstanceRepo {
@@ -74,6 +79,14 @@ func (r *callCountingInstanceRepo) SweepExpiredClaims(_ context.Context, _ time.
 		return nil, r.claimExpiryErr
 	}
 	return make([]domain.ExpiredClaim, r.claimExpiryCount), nil
+}
+
+func (r *callCountingInstanceRepo) ClaimWarnings(_ context.Context, _ time.Time) ([]domain.ClaimWarning, error) {
+	r.claimWarningCalls.Add(1)
+	if r.claimWarningErr != nil {
+		return nil, r.claimWarningErr
+	}
+	return make([]domain.ClaimWarning, r.claimWarningCount), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +287,47 @@ func TestScheduler_RunOnce_ClaimExpiryError_ReturnsError(t *testing.T) {
 	// The overdue sweep must still have run despite the later step's failure.
 	if got := instRepo.overdueAllCalls.Load(); got != 1 {
 		t.Errorf("MarkPendingOverdueAll calls = %d, want 1 even when claim-expiry sweep fails", got)
+	}
+}
+
+// TestScheduler_RunOnce_CallsClaimWarnings verifies that RunOnce's NES-118
+// step calls ClaimWarnings exactly once per cycle, alongside the claim-expiry
+// sweep.
+func TestScheduler_RunOnce_CallsClaimWarnings(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+
+	s := newTestScheduler(t, taskRepo, instRepo, time.Minute)
+
+	if err := s.RunOnce(context.Background(), time.Now()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := instRepo.claimWarningCalls.Load(); got != 1 {
+		t.Errorf("ClaimWarnings calls = %d, want 1", got)
+	}
+}
+
+// TestScheduler_RunOnce_ClaimWarningsError_ReturnsError verifies that when
+// ClaimWarnings fails and every earlier step succeeds, RunOnce surfaces the
+// claim-warning error while the later claim-expiry sweep still runs.
+func TestScheduler_RunOnce_ClaimWarningsError_ReturnsError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	instRepo.claimWarningErr = errors.New("db: claim warnings failed")
+
+	s := newTestScheduler(t, taskRepo, instRepo, time.Minute)
+
+	err := s.RunOnce(context.Background(), time.Now())
+	if !errors.Is(err, instRepo.claimWarningErr) {
+		t.Errorf("RunOnce error = %v, want the claim-warning error %v", err, instRepo.claimWarningErr)
+	}
+	if got := instRepo.claimWarningCalls.Load(); got != 1 {
+		t.Errorf("ClaimWarnings calls = %d, want 1", got)
+	}
+	// The claim-expiry sweep must still have run despite the earlier step's
+	// failure.
+	if got := instRepo.claimExpiryCalls.Load(); got != 1 {
+		t.Errorf("SweepExpiredClaims calls = %d, want 1 even when claim warnings fails", got)
 	}
 }
 

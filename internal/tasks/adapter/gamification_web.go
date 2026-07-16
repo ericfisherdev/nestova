@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -30,6 +31,11 @@ const leaderboardWindowDays = 30
 // when computing streaks. A member cannot have a streak longer than this
 // value; 366 days covers any year-long streak with a 1-day buffer.
 const streakLookbackDays = 366
+
+// pointHistoryLimit caps how many recent point ledger entries buildRewardsPage
+// fetches for the current member (NES-118). A "Recent Activity" list is a
+// scanning aid, not a full audit trail, so an unbounded query is unnecessary.
+const pointHistoryLimit = 20
 
 // GamificationWebHandlers holds the HTTP handler methods for the /rewards
 // scoreboard + redemption page. All dependencies are injected via the
@@ -281,13 +287,56 @@ func (h *GamificationWebHandlers) buildRewardsPage(
 		})
 	}
 
+	// Current member's recent point ledger activity (NES-118), enriched with a
+	// human-readable reason so the template never branches on SourceType.
+	history, err := h.ledger.History(ctx, member.HouseholdID, member.ID, pointHistoryLimit)
+	if err != nil {
+		return components.RewardsPage{}, err
+	}
+	historyRows := make([]components.PointHistoryRow, 0, len(history))
+	for _, entry := range history {
+		historyRows = append(historyRows, components.PointHistoryRow{
+			Reason:    historyReason(entry),
+			Points:    entry.Points,
+			CreatedAt: entry.CreatedAt.Format("Jan 2"),
+		})
+	}
+
 	return components.RewardsPage{
 		Leaderboard:         rows,
 		Balance:             balance,
 		Rewards:             rewardItems,
+		History:             historyRows,
 		CSRFToken:           authadapter.GetCSRFToken(r.Context(), h.sm),
 		InsufficientMessage: insufficientMessage,
 	}, nil
+}
+
+// historyReason builds a human-readable label for a point ledger entry based
+// on its source (NES-118), mirroring reminders.categoryLabel's simplicity: a
+// small switch over the known source types, falling back to a generic label
+// for a manual adjustment or any other source_type this handler does not yet
+// describe.
+func historyReason(entry domain.PointHistoryEntry) string {
+	switch entry.SourceType {
+	case "task_instance":
+		if entry.TaskTitle != "" {
+			return fmt.Sprintf("Completed: %s", entry.TaskTitle)
+		}
+		return "Task completed"
+	case domain.SourceTypeClaimExpiry:
+		if entry.TaskTitle != "" {
+			return fmt.Sprintf("Claim expired: %s", entry.TaskTitle)
+		}
+		return "Claim expired"
+	case "redemption":
+		if entry.RewardName != "" {
+			return fmt.Sprintf("Redeemed: %s", entry.RewardName)
+		}
+		return "Reward redeemed"
+	default:
+		return "Points adjustment"
+	}
 }
 
 // buildLeaderboardRows constructs the ordered leaderboard view-model slice.

@@ -143,6 +143,78 @@ func (r *PointLedgerPostgresRepository) Leaderboard(
 	return result, nil
 }
 
+// History returns the member's most recent point ledger entries within the
+// household, newest first, limited to at most limit rows (NES-118). Each row
+// is enriched with recurring_task.title (for a "task_instance" award or
+// domain.SourceTypeClaimExpiry penalty, both keyed via point_ledger.source_id
+// -> task_instance.id -> recurring_task.id) or reward.name (for a
+// "redemption" debit, keyed via source_id -> reward_redemption.id ->
+// reward.id) so the caller can build a human-readable reason without an
+// additional query per entry. The two LEFT JOIN chains are each gated by
+// source_type so a row only ever matches the chain relevant to its own kind;
+// COALESCE collapses an unresolved or inapplicable join to "" rather than a
+// NULL scan target.
+// Returns an empty slice (not an error) when the member has no entries.
+func (r *PointLedgerPostgresRepository) History(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+	limit int,
+) ([]domain.PointHistoryEntry, error) {
+	const q = `
+		SELECT pl.id, pl.source_type, pl.points, pl.created_at,
+		       COALESCE(rt.title, ''), COALESCE(rw.name, '')
+		  FROM point_ledger pl
+		  LEFT JOIN task_instance ti
+		         ON pl.source_type IN ('task_instance', $3)
+		        AND ti.id = pl.source_id
+		  LEFT JOIN recurring_task rt ON rt.id = ti.recurring_task_id
+		  LEFT JOIN reward_redemption rr
+		         ON pl.source_type = 'redemption'
+		        AND rr.id = pl.source_id
+		  LEFT JOIN reward rw ON rw.id = rr.reward_id
+		 WHERE pl.household_id = $1
+		   AND pl.member_id    = $2
+		 ORDER BY pl.created_at DESC
+		 LIMIT $4`
+	rows, err := r.dbtx.Query(ctx, q,
+		householdID.String(),
+		memberID.String(),
+		domain.SourceTypeClaimExpiry,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("history: %w", err)
+	}
+	defer rows.Close()
+
+	entries := make([]domain.PointHistoryEntry, 0)
+	for rows.Next() {
+		var idStr, sourceType, taskTitle, rewardName string
+		var points int
+		var createdAt time.Time
+		if err := rows.Scan(&idStr, &sourceType, &points, &createdAt, &taskTitle, &rewardName); err != nil {
+			return nil, fmt.Errorf("history: scan: %w", err)
+		}
+		id, err := domain.ParsePointEntryID(idStr)
+		if err != nil {
+			return nil, fmt.Errorf("history: parse id: %w", err)
+		}
+		entries = append(entries, domain.PointHistoryEntry{
+			ID:         id,
+			SourceType: sourceType,
+			Points:     points,
+			CreatedAt:  createdAt,
+			TaskTitle:  taskTitle,
+			RewardName: rewardName,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("history: %w", err)
+	}
+	return entries, nil
+}
+
 // RewardPostgresRepository is the pgx-backed implementation of
 // domain.RewardRepository. UUIDs are passed and scanned as text so no pgx UUID
 // codec registration is required.
