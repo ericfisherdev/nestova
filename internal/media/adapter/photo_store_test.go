@@ -213,10 +213,22 @@ func TestPutRejectionLeavesNoPartialFile(t *testing.T) {
 	}
 }
 
-// TestPutStreamsWithoutBufferingWholeFile covers AC4 by construction: Put must
-// read its source in bounded chunks (io.Copy's default buffer), never in one
-// call sized to the whole upload, so memory use stays flat regardless of file
-// size.
+// TestPutStreamsWithoutBufferingWholeFile is a direct behavioral proof, for
+// this specific (moderately large) fixture, that Put reads in bounded chunks
+// (io.Copy's default buffer) rather than one call sized to the whole upload.
+//
+// It is not, on its own, a reliable general guard against a future regression
+// to io.ReadAll: io.ReadAll grows its internal buffer geometrically (starting
+// at 512 bytes, ~1.5x per growth step — see io.ReadAll's source), so the
+// single largest Read it issues only exceeds a given threshold once enough
+// chunks have accumulated; for a small enough fixture, or a smaller threshold
+// here, io.ReadAll could still finish (hit EOF) before ever requesting a
+// buffer this test would flag, letting that regression pass by coincidence.
+// TestUploadPathNeverBuffersWholeFile (upload_streaming_test.go) is the
+// deterministic, fixture-size-independent check for that — it inspects the
+// source for the call itself rather than sampling read-buffer sizes. Kept
+// alongside it as a complementary, concrete demonstration that streaming
+// actually happens for a real (if modest) upload.
 func TestPutStreamsWithoutBufferingWholeFile(t *testing.T) {
 	s := newStore(t, 20<<20)
 	hh := household.NewHouseholdID()

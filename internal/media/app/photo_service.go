@@ -46,19 +46,10 @@ type UploadResult struct {
 // Upload streams r to storage, dedups by content hash, captures the EXIF date,
 // and persists the photo attributed to uploaderID.
 //
-// Stored objects are immutable and content-addressed, so the SAME StorageRef
-// can legitimately be shared by more than one Photo row (identical bytes
-// uploaded more than once — the common case Upload is optimizing for). That
-// sharing means the upload path never synchronously deletes stored.Ref on a
-// failure after Put succeeds: doing so could destroy bytes another photo row
-// (this household's existing match, or a concurrent upload that is about to
-// win the race below) still references, and there is no cheap, race-free way
-// from here to prove nothing else points at it. A failure after Put therefore
-// may leave an orphaned object behind — that is safe, not a leak: it has no
-// row referencing it, and NES-132/133's planned storage verify/reaper finds
-// and reclaims exactly this class of object after a grace window. Contrast
-// with Delete, which removes a row this service instance just confirmed is
-// the only owner and is expected to clean up its bytes.
+// Stored objects are immutable, content-addressed, and never synchronously
+// deleted by PhotoService — see the package-level invariant documented on
+// Delete, which this shares. A failure after Put succeeds therefore leaves the
+// object in place rather than rolling it back.
 //
 // If a photo with the same content hash already exists for householdID, Upload
 // returns that existing photo with Duplicate set — Put's write above was a
@@ -129,28 +120,29 @@ func (s *PhotoService) takenAt(ctx context.Context, ref domain.StorageRef) (*tim
 	return s.exif.TakenAt(rc), nil
 }
 
-// Delete removes the photo (verifying it belongs to householdID) and its stored
-// bytes. It returns domain.ErrPhotoNotFound for an unknown or cross-household id.
+// Delete removes the photo's metadata row only (verifying it belongs to
+// householdID) and returns domain.ErrPhotoNotFound for an unknown or
+// cross-household id. It never touches the stored bytes.
+//
+// PhotoService invariant: stored objects are immutable, content-addressed,
+// and never synchronously deleted by this service, on this path or Upload's.
+// Owning a photo's row is not the same as exclusively owning its ref: (a)
+// 00023's backfill deliberately leaves a pre-NES-123 duplicate row's
+// content_sha256 NULL rather than merging it, so more than one row in this
+// household can already share this exact ref; (b) even for a ref this row
+// currently uniquely holds, a concurrent re-upload of the same bytes could
+// create a brand-new row referencing it between this row's metadata delete
+// above and a bytes delete here — Put is racing this call, not serialized
+// after it. Deleting the object synchronously could therefore destroy bytes
+// another row still depends on, with no cheap, race-free way from here to
+// prove otherwise. The moment nothing references a ref, it becomes an orphan
+// candidate; NES-132/133's planned storage verify/reaper finds and reclaims
+// it after a grace window, rather than this service deleting it inline.
 func (s *PhotoService) Delete(ctx context.Context, householdID household.HouseholdID, id domain.PhotoID) error {
-	photo, err := s.ownedPhoto(ctx, householdID, id)
-	if err != nil {
+	if _, err := s.ownedPhoto(ctx, householdID, id); err != nil {
 		return err
 	}
-	if err := s.photos.Delete(ctx, id); err != nil {
-		return err
-	}
-	// The row (and its album memberships, via cascade) is gone; remove the bytes
-	// best-effort so a storage hiccup does not resurrect the metadata.
-	s.cleanupBytes(ctx, photo.StorageRef)
-	return nil
-}
-
-// cleanupBytes deletes stored bytes best-effort during rollback/cleanup. It uses
-// a context detached from cancellation so the cleanup still runs when the request
-// context is already canceled or timed out (often the very reason cleanup is
-// needed), avoiding an orphaned file.
-func (s *PhotoService) cleanupBytes(ctx context.Context, ref domain.StorageRef) {
-	_ = s.store.Delete(context.WithoutCancel(ctx), ref)
+	return s.photos.Delete(ctx, id)
 }
 
 // List returns the household's photos.

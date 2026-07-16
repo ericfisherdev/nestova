@@ -17,7 +17,7 @@ import (
 var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
 	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT", "MIGRATE_DATABASE_URL",
-	"TRUSTED_PROXIES",
+	"TRUSTED_PROXIES", "SERVER_REQUEST_TIMEOUT",
 	"SESSION_SECRET", "SESSION_LIFETIME", "SESSION_COOKIE_SECURE",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
@@ -69,7 +69,7 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -84,7 +84,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvTest,
-				Server:  config.ServerConfig{Addr: ":9090"},
+				Server:  config.ServerConfig{Addr: ":9090", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -96,7 +96,7 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{"PORT": ":3000"},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":3000"},
+				Server:  config.ServerConfig{Addr: ":3000", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -108,7 +108,7 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{"DATABASE_URL": "postgres://custom:pwd@dbhost:5432/mydb"},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -122,7 +122,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 48 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -140,7 +140,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvProd,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: validSecret, Secure: true, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
@@ -157,7 +157,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -173,7 +173,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:5432/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -193,7 +193,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full", MaxConns: 5, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, SSLRootCert: "/etc/ssl/supabase-ca.crt"},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -212,7 +212,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, MigrateDSN: "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require"},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -226,7 +226,19 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, 192.168.0.0/16"},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080", TrustedProxies: "10.0.0.0/8, 192.168.0.0/16"},
+				Server:  config.ServerConfig{Addr: ":8080", TrustedProxies: "10.0.0.0/8, 192.168.0.0/16", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+			},
+		},
+		{
+			name: "explicit SERVER_REQUEST_TIMEOUT override",
+			env:  map[string]string{"SERVER_REQUEST_TIMEOUT": "45s"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 45 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -242,7 +254,7 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{"SESSION_COOKIE_SECURE": "auto"},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -255,7 +267,7 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{"SESSION_COOKIE_SECURE": "true"},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: true, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -277,7 +289,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvProd,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: validSecret, Secure: false, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
@@ -294,7 +306,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -315,7 +327,7 @@ func TestLoadValid(t *testing.T) {
 			},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -330,7 +342,7 @@ func TestLoadValid(t *testing.T) {
 			env:  map[string]string{"HSTS_ENABLED": "true", "HSTS_MAX_AGE": "0s"},
 			want: config.Config{
 				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080"},
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
@@ -472,6 +484,16 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "non-positive session lifetime",
 			env:          map[string]string{"SESSION_LIFETIME": "-5m"},
 			wantContains: []string{"SESSION_LIFETIME", "positive"},
+		},
+		{
+			name:         "invalid SERVER_REQUEST_TIMEOUT duration",
+			env:          map[string]string{"SERVER_REQUEST_TIMEOUT": "5x"},
+			wantContains: []string{"SERVER_REQUEST_TIMEOUT"},
+		},
+		{
+			name:         "SERVER_REQUEST_TIMEOUT below the minimum",
+			env:          map[string]string{"SERVER_REQUEST_TIMEOUT": "10s"},
+			wantContains: []string{"SERVER_REQUEST_TIMEOUT", "at least"},
 		},
 		{
 			name: "prod rejects default secret and missing oauth",
