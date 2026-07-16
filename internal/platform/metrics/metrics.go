@@ -1,9 +1,11 @@
 // Package metrics owns the application's Prometheus instrumentation: the
-// registry (with the standard process/runtime collectors) and the HTTP request
-// metrics observed by the middleware layer. It is the only platform package
-// that imports the Prometheus client directly; consumers (middleware, the
-// composition root) work through the types defined here so the instrumentation
-// backend stays swappable behind one seam.
+// registry (with the standard process/runtime collectors), the HTTP request
+// metrics observed by the middleware layer, and the background scheduler and
+// calendar sync metrics recorded through the TickRecorder and SyncRecorder
+// ports. It is the only platform package that imports the Prometheus client
+// directly; consumers (middleware, schedulers, the composition root) work
+// through the types defined here so the instrumentation backend stays
+// swappable behind one seam.
 package metrics
 
 import (

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 )
 
 // SyncScheduler runs the calendar SyncService on a poll interval as a background
@@ -13,20 +15,28 @@ import (
 type SyncScheduler struct {
 	sync         *SyncService
 	logger       *slog.Logger
+	ticks        metrics.TickRecorder
 	pollInterval time.Duration
 	tickTimeout  time.Duration
 }
 
-// NewSyncScheduler constructs the scheduler. pollInterval is how often Run polls;
+// NewSyncScheduler constructs the scheduler. ticks records each poll cycle's
+// duration and outcome (NES-115); pass [metrics.NopTickRecorder] when tick
+// instrumentation is irrelevant. pollInterval is how often Run polls;
 // tickTimeout bounds a single sync cycle (and so how long an in-flight cycle can
 // delay shutdown). Both must be positive and are kept separate so the poll
 // cadence can be long without making shutdown wait a full interval.
-func NewSyncScheduler(sync *SyncService, logger *slog.Logger, pollInterval, tickTimeout time.Duration) (*SyncScheduler, error) {
+// Returns an error when any dependency is nil or either duration is not
+// positive.
+func NewSyncScheduler(sync *SyncService, logger *slog.Logger, ticks metrics.TickRecorder, pollInterval, tickTimeout time.Duration) (*SyncScheduler, error) {
 	if sync == nil {
 		return nil, errors.New("calendar: NewSyncScheduler requires a non-nil sync service")
 	}
 	if logger == nil {
 		return nil, errors.New("calendar: NewSyncScheduler requires a non-nil logger")
+	}
+	if ticks == nil {
+		return nil, errors.New("calendar: NewSyncScheduler requires a non-nil tick recorder")
 	}
 	if pollInterval <= 0 {
 		return nil, fmt.Errorf("calendar: NewSyncScheduler pollInterval must be positive, got %v", pollInterval)
@@ -34,7 +44,7 @@ func NewSyncScheduler(sync *SyncService, logger *slog.Logger, pollInterval, tick
 	if tickTimeout <= 0 {
 		return nil, fmt.Errorf("calendar: NewSyncScheduler tickTimeout must be positive, got %v", tickTimeout)
 	}
-	return &SyncScheduler{sync: sync, logger: logger, pollInterval: pollInterval, tickTimeout: tickTimeout}, nil
+	return &SyncScheduler{sync: sync, logger: logger, ticks: ticks, pollInterval: pollInterval, tickTimeout: tickTimeout}, nil
 }
 
 // Run polls every pollInterval until ctx is cancelled, logging start and stop.
@@ -68,7 +78,9 @@ func (s *SyncScheduler) runTick() {
 	runCtx, cancel := context.WithTimeout(context.Background(), s.tickTimeout)
 	defer cancel()
 
+	start := time.Now()
 	processed, err := s.sync.RunOnce(runCtx)
+	s.ticks.ObserveTick(metrics.SchedulerCalendarSync, time.Since(start), err)
 	if err != nil {
 		s.logger.Error("calendar sync scheduler: run once failed", "error", err)
 	}

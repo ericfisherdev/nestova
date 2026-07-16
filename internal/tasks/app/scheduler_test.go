@@ -3,11 +3,13 @@ package app_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/tasks/app"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
@@ -129,7 +131,7 @@ func newTestScheduler(
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), pollInterval)
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, pollInterval)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -142,7 +144,7 @@ func newTestScheduler(
 
 func TestNewScheduler_NilGenerator_ReturnsError(t *testing.T) {
 	instRepo := newCallCountingInstanceRepo()
-	_, err := app.NewScheduler(nil, instRepo, newFakeEnqueuer(), discardLogger(), time.Minute)
+	_, err := app.NewScheduler(nil, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil generator) error = nil, want non-nil")
 	}
@@ -154,7 +156,7 @@ func TestNewScheduler_NilInstanceRepo_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, nil, newFakeEnqueuer(), discardLogger(), time.Minute)
+	_, err = app.NewScheduler(gen, nil, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil instanceRepo) error = nil, want non-nil")
 	}
@@ -167,7 +169,7 @@ func TestNewScheduler_NilEnqueuer_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, nil, discardLogger(), time.Minute)
+	_, err = app.NewScheduler(gen, instRepo, nil, discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil enqueuer) error = nil, want non-nil")
 	}
@@ -180,7 +182,7 @@ func TestNewScheduler_NilLogger_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), nil, time.Minute)
+	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), nil, metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil logger) error = nil, want non-nil")
 	}
@@ -193,7 +195,7 @@ func TestNewScheduler_NonPositivePollInterval_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), 0)
+	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, 0)
 	if err == nil {
 		t.Error("NewScheduler(pollInterval=0) error = nil, want non-nil")
 	}
@@ -234,7 +236,7 @@ func TestScheduler_RunOnce_OverdueSweepRunsEvenWhenGenerateFails(t *testing.T) {
 	}
 
 	instRepo := newCallCountingInstanceRepo()
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), time.Minute)
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -279,7 +281,7 @@ func TestScheduler_RunOnce_GenerateFailFirst_ReturnsGenerateError(t *testing.T) 
 	instRepo := newCallCountingInstanceRepo()
 	instRepo.overdueAllErr = errors.New("db: sweep also failed")
 
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), time.Minute)
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -345,7 +347,7 @@ func TestScheduler_Run_InFlightTickCompletesBeforeStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	s, err := app.NewScheduler(gen, blockRepo, newFakeEnqueuer(), discardLogger(), 10*time.Millisecond)
+	s, err := app.NewScheduler(gen, blockRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -387,5 +389,94 @@ func TestScheduler_Run_InFlightTickCompletesBeforeStop(t *testing.T) {
 	// tick started after cancellation.
 	if n := blockRepo.calls.Load(); n != 1 {
 		t.Errorf("MarkPendingOverdueAll called %d times, want exactly 1 (no tick after cancel)", n)
+	}
+}
+
+func TestNewScheduler_NilTickRecorder_ReturnsError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	gen, err := app.NewGenerator(taskRepo, instRepo.fakeTaskInstanceRepo, discardLogger(), 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), nil, time.Minute)
+	if err == nil {
+		t.Error("NewScheduler(nil tick recorder) error = nil, want non-nil")
+	}
+}
+
+// spyTickRecorder records ObserveTick calls for assertion. A spy is used
+// instead of asserting on a real PromTickRecorder because the ObserveTick seam
+// lives in the unexported runTick; PromTickRecorder's own error/success
+// behaviour is covered once in the metrics package.
+type spyTickRecorder struct {
+	mu    sync.Mutex
+	calls []spyTickCall
+}
+
+type spyTickCall struct {
+	scheduler string
+	err       error
+}
+
+func (s *spyTickRecorder) ObserveTick(scheduler string, _ time.Duration, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, spyTickCall{scheduler: scheduler, err: err})
+}
+
+// waitForCall polls until at least one call is recorded or the deadline hits.
+func (s *spyTickRecorder) waitForCall(t *testing.T) spyTickCall {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		if len(s.calls) > 0 {
+			call := s.calls[0]
+			s.mu.Unlock()
+			return call
+		}
+		s.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ObserveTick was never called")
+	return spyTickCall{}
+}
+
+func TestScheduler_Run_FailingTickObservedWithError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	instRepo.overdueAllErr = errors.New("db error")
+	gen, err := app.NewGenerator(taskRepo, instRepo.fakeTaskInstanceRepo, discardLogger(), 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+	spy := &spyTickRecorder{}
+	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), spy, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		s.Run(ctx)
+		close(done)
+	}()
+
+	call := spy.waitForCall(t)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	if call.scheduler != metrics.SchedulerTasks {
+		t.Errorf("ObserveTick scheduler = %q, want %q", call.scheduler, metrics.SchedulerTasks)
+	}
+	if call.err == nil {
+		t.Error("ObserveTick err = nil, want the failing tick's error")
 	}
 }

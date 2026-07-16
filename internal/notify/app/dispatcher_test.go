@@ -5,12 +5,14 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 )
 
 // ----------------------------------------------------------------------------
@@ -92,7 +94,7 @@ func newInAppNotification() *domain.Notification {
 
 func newDispatcher(t *testing.T, outbox domain.Outbox, senders []domain.Sender) *app.Dispatcher {
 	t.Helper()
-	d, err := app.NewDispatcher(outbox, senders, silentLogger(), 10, time.Minute)
+	d, err := app.NewDispatcher(outbox, senders, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
 	if err != nil {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
@@ -242,35 +244,35 @@ func TestRunOnce_ClaimDueError_ReturnsError(t *testing.T) {
 }
 
 func TestNewDispatcher_NilOutbox_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(nil, []domain.Sender{alwaysSucceedSender()}, silentLogger(), 10, time.Minute)
+	_, err := app.NewDispatcher(nil, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil outbox) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_EmptySenders_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{}, silentLogger(), 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(empty senders) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_NilLogger_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, nil, 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, nil, metrics.NopTickRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil logger) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_InvalidBatchSize_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), 0, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 0, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(batchSize=0) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_InvalidPollInterval_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), 10, 0)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 10, 0)
 	if err == nil {
 		t.Error("NewDispatcher(pollInterval=0) error = nil, want non-nil")
 	}
@@ -278,21 +280,21 @@ func TestNewDispatcher_InvalidPollInterval_ReturnsError(t *testing.T) {
 
 func TestNewDispatcher_DuplicateChannel_ReturnsError(t *testing.T) {
 	s := alwaysSucceedSender()
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{s, s}, silentLogger(), 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{s, s}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(duplicate channel) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_NilSenderEntry_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{nil}, silentLogger(), 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{nil}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil sender) error = nil, want non-nil")
 	}
 }
 
 func TestRun_ReturnsWhenContextCancelled(t *testing.T) {
-	d, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), 10, 10*time.Millisecond)
+	d, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 10, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
@@ -308,5 +310,86 @@ func TestRun_ReturnsWhenContextCancelled(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+func TestNewDispatcher_NilTickRecorder_ReturnsError(t *testing.T) {
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), nil, 10, time.Minute)
+	if err == nil {
+		t.Error("NewDispatcher(nil tick recorder) error = nil, want non-nil")
+	}
+}
+
+// spyTickRecorder records ObserveTick calls for assertion. It is used instead
+// of asserting on a real PromTickRecorder because the ObserveTick seam lives in
+// the unexported runTick, so the observable contract here is "the tick recorder
+// saw the failing cycle"; PromTickRecorder's own error/success behaviour is
+// covered once in the metrics package.
+type spyTickRecorder struct {
+	mu    sync.Mutex
+	calls []spyTickCall
+}
+
+type spyTickCall struct {
+	scheduler string
+	err       error
+}
+
+func (s *spyTickRecorder) ObserveTick(scheduler string, _ time.Duration, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, spyTickCall{scheduler: scheduler, err: err})
+}
+
+// snapshot returns a copy of the recorded calls.
+func (s *spyTickRecorder) snapshot() []spyTickCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]spyTickCall(nil), s.calls...)
+}
+
+// waitForCall polls until at least one call is recorded or the deadline hits.
+func (s *spyTickRecorder) waitForCall(t *testing.T) spyTickCall {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls := s.snapshot(); len(calls) > 0 {
+			return calls[0]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ObserveTick was never called")
+	return spyTickCall{}
+}
+
+func TestRun_FailingTick_ObservedWithError(t *testing.T) {
+	outbox := &fakeOutbox{claimErr: errors.New("db error")}
+	spy := &spyTickRecorder{}
+	d, err := app.NewDispatcher(outbox, []domain.Sender{alwaysSucceedSender()}, silentLogger(), spy, 10, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		d.Run(ctx)
+		close(done)
+	}()
+
+	call := spy.waitForCall(t)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	if call.scheduler != metrics.SchedulerDispatcher {
+		t.Errorf("ObserveTick scheduler = %q, want %q", call.scheduler, metrics.SchedulerDispatcher)
+	}
+	if call.err == nil {
+		t.Error("ObserveTick err = nil, want the failing tick's error")
 	}
 }

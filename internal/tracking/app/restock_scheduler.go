@@ -11,6 +11,7 @@ import (
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/tracking/domain"
 )
 
@@ -31,15 +32,20 @@ type RestockScheduler struct {
 	shopping     domain.ShoppingListRepository
 	enqueuer     notifydomain.Enqueuer
 	logger       *slog.Logger
+	ticks        metrics.TickRecorder
 	pollInterval time.Duration
 	tickTimeout  time.Duration
 }
 
 // NewRestockScheduler constructs the scheduler with injected dependencies.
+// ticks records each poll cycle's duration and outcome (NES-115); pass
+// [metrics.NopTickRecorder] when tick instrumentation is irrelevant.
 // pollInterval is how often Run polls; tickTimeout bounds a single cycle's work
 // (and therefore how long an in-flight cycle can delay shutdown). Both must be
 // positive. Keeping them separate lets the poll cadence be long (restock is
 // slow-moving) without making shutdown wait a full interval for a stalled tick.
+// Returns an error when any dependency is nil or either duration is not
+// positive.
 func NewRestockScheduler(
 	items domain.TrackedItemRepository,
 	predictor *Predictor,
@@ -47,6 +53,7 @@ func NewRestockScheduler(
 	shopping domain.ShoppingListRepository,
 	enqueuer notifydomain.Enqueuer,
 	logger *slog.Logger,
+	ticks metrics.TickRecorder,
 	pollInterval time.Duration,
 	tickTimeout time.Duration,
 ) (*RestockScheduler, error) {
@@ -68,6 +75,9 @@ func NewRestockScheduler(
 	if logger == nil {
 		return nil, errors.New("app: NewRestockScheduler requires a non-nil logger")
 	}
+	if ticks == nil {
+		return nil, errors.New("app: NewRestockScheduler requires a non-nil tick recorder")
+	}
 	if pollInterval <= 0 {
 		return nil, fmt.Errorf("app: NewRestockScheduler pollInterval must be positive, got %v", pollInterval)
 	}
@@ -81,6 +91,7 @@ func NewRestockScheduler(
 		shopping:     shopping,
 		enqueuer:     enqueuer,
 		logger:       logger,
+		ticks:        ticks,
 		pollInterval: pollInterval,
 		tickTimeout:  tickTimeout,
 	}, nil
@@ -225,7 +236,9 @@ func (s *RestockScheduler) runTick() {
 	runCtx, cancel := context.WithTimeout(context.Background(), s.tickTimeout)
 	defer cancel()
 
-	generated, err := s.RunOnce(runCtx, time.Now())
+	start := time.Now()
+	generated, err := s.RunOnce(runCtx, start)
+	s.ticks.ObserveTick(metrics.SchedulerRestock, time.Since(start), err)
 	if err != nil {
 		s.logger.Error("restock scheduler: run once failed", "error", err)
 	}

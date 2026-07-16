@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/domain"
 )
@@ -69,7 +71,7 @@ func (f *fakeEnqueuer) Enqueue(_ context.Context, n *notifydomain.Notification) 
 
 func mustScheduler(t *testing.T, store *fakeStore, enq notifydomain.Enqueuer) *app.RenewalScheduler {
 	t.Helper()
-	s, err := app.NewRenewalScheduler(store, enq, discardLogger(), time.Hour, time.Minute)
+	s, err := app.NewRenewalScheduler(store, enq, discardLogger(), metrics.NopTickRecorder{}, time.Hour, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRenewalScheduler: %v", err)
 	}
@@ -212,24 +214,28 @@ func TestNewRenewalSchedulerValidatesDeps(t *testing.T) {
 	store := &fakeStore{}
 	enq := &fakeEnqueuer{}
 	log := discardLogger()
+	rec := metrics.NopTickRecorder{}
 	cases := []struct {
 		name string
 		fn   func() (*app.RenewalScheduler, error)
 	}{
 		{"nil store", func() (*app.RenewalScheduler, error) {
-			return app.NewRenewalScheduler(nil, enq, log, time.Hour, time.Minute)
+			return app.NewRenewalScheduler(nil, enq, log, rec, time.Hour, time.Minute)
 		}},
 		{"nil enqueuer", func() (*app.RenewalScheduler, error) {
-			return app.NewRenewalScheduler(store, nil, log, time.Hour, time.Minute)
+			return app.NewRenewalScheduler(store, nil, log, rec, time.Hour, time.Minute)
 		}},
 		{"nil logger", func() (*app.RenewalScheduler, error) {
-			return app.NewRenewalScheduler(store, enq, nil, time.Hour, time.Minute)
+			return app.NewRenewalScheduler(store, enq, nil, rec, time.Hour, time.Minute)
+		}},
+		{"nil tick recorder", func() (*app.RenewalScheduler, error) {
+			return app.NewRenewalScheduler(store, enq, log, nil, time.Hour, time.Minute)
 		}},
 		{"non-positive poll interval", func() (*app.RenewalScheduler, error) {
-			return app.NewRenewalScheduler(store, enq, log, 0, time.Minute)
+			return app.NewRenewalScheduler(store, enq, log, rec, 0, time.Minute)
 		}},
 		{"non-positive tick timeout", func() (*app.RenewalScheduler, error) {
-			return app.NewRenewalScheduler(store, enq, log, time.Hour, 0)
+			return app.NewRenewalScheduler(store, enq, log, rec, time.Hour, 0)
 		}},
 	}
 	for _, tc := range cases {
@@ -238,5 +244,75 @@ func TestNewRenewalSchedulerValidatesDeps(t *testing.T) {
 				t.Fatal("expected an error, got nil")
 			}
 		})
+	}
+}
+
+// spyTickRecorder records ObserveTick calls for assertion. A spy is used
+// instead of asserting on a real PromTickRecorder because the ObserveTick seam
+// lives in the unexported runTick; PromTickRecorder's own error/success
+// behaviour is covered once in the metrics package.
+type spyTickRecorder struct {
+	mu    sync.Mutex
+	calls []spyTickCall
+}
+
+type spyTickCall struct {
+	scheduler string
+	err       error
+}
+
+func (s *spyTickRecorder) ObserveTick(scheduler string, _ time.Duration, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, spyTickCall{scheduler: scheduler, err: err})
+}
+
+// waitForCall polls until at least one call is recorded or the deadline hits.
+func (s *spyTickRecorder) waitForCall(t *testing.T) spyTickCall {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		if len(s.calls) > 0 {
+			call := s.calls[0]
+			s.mu.Unlock()
+			return call
+		}
+		s.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ObserveTick was never called")
+	return spyTickCall{}
+}
+
+func TestRenewalScheduler_Run_FailingTickObservedWithError(t *testing.T) {
+	store := &fakeStore{listErr: errors.New("db error")}
+	spy := &spyTickRecorder{}
+	s, err := app.NewRenewalScheduler(store, &fakeEnqueuer{}, discardLogger(), spy, 10*time.Millisecond, time.Minute)
+	if err != nil {
+		t.Fatalf("NewRenewalScheduler: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		s.Run(ctx)
+		close(done)
+	}()
+
+	call := spy.waitForCall(t)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+
+	if call.scheduler != metrics.SchedulerRenewal {
+		t.Errorf("ObserveTick scheduler = %q, want %q", call.scheduler, metrics.SchedulerRenewal)
+	}
+	if call.err == nil {
+		t.Error("ObserveTick err = nil, want the failing tick's error")
 	}
 }

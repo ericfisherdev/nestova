@@ -8,6 +8,7 @@ import (
 	"time"
 
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
 
@@ -33,6 +34,7 @@ type Scheduler struct {
 	instanceRepo domain.TaskInstanceRepository
 	reminders    *Reminders
 	logger       *slog.Logger
+	ticks        metrics.TickRecorder
 	pollInterval time.Duration
 }
 
@@ -45,12 +47,17 @@ type Scheduler struct {
 //     [Reminders] service internally.
 //   - logger receives structured log lines; only task/count identifiers are
 //     logged (not PII).
+//   - ticks records each poll cycle's duration and outcome (NES-115); pass
+//     [metrics.NopTickRecorder] when tick instrumentation is irrelevant.
 //   - pollInterval controls how often [Scheduler.Run] polls. Must be positive.
+//
+// Returns an error when any dependency is nil or pollInterval is not positive.
 func NewScheduler(
 	generator *Generator,
 	instanceRepo domain.TaskInstanceRepository,
 	enqueuer notifydomain.Enqueuer,
 	logger *slog.Logger,
+	ticks metrics.TickRecorder,
 	pollInterval time.Duration,
 ) (*Scheduler, error) {
 	if generator == nil {
@@ -65,6 +72,9 @@ func NewScheduler(
 	if logger == nil {
 		return nil, errors.New("app: NewScheduler requires a non-nil logger")
 	}
+	if ticks == nil {
+		return nil, errors.New("app: NewScheduler requires a non-nil tick recorder")
+	}
 	if pollInterval <= 0 {
 		return nil, fmt.Errorf("app: NewScheduler pollInterval must be positive, got %v", pollInterval)
 	}
@@ -77,6 +87,7 @@ func NewScheduler(
 		instanceRepo: instanceRepo,
 		reminders:    reminders,
 		logger:       logger,
+		ticks:        ticks,
 		pollInterval: pollInterval,
 	}, nil
 }
@@ -167,7 +178,10 @@ func (s *Scheduler) runTick() {
 	runCtx, cancel := context.WithTimeout(context.Background(), s.pollInterval)
 	defer cancel()
 
-	if err := s.RunOnce(runCtx, time.Now()); err != nil {
+	start := time.Now()
+	err := s.RunOnce(runCtx, start)
+	s.ticks.ObserveTick(metrics.SchedulerTasks, time.Since(start), err)
+	if err != nil {
 		s.logger.Error("scheduler: run once failed", "error", err)
 	}
 }

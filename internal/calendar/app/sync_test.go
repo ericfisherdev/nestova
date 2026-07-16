@@ -11,6 +11,7 @@ import (
 	"github.com/ericfisherdev/nestova/internal/calendar/app"
 	calendardomain "github.com/ericfisherdev/nestova/internal/calendar/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 )
 
 func syncLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -102,12 +103,28 @@ func account(syncToken string, calendarIDs ...string) *calendardomain.CalendarAc
 
 func mustSyncService(t *testing.T, store *fakeSyncAccountStore, events *fakeEventRepo, source *fakeEventSource, tokens *fakeTokenProvider) *app.SyncService {
 	t.Helper()
-	svc, err := app.NewSyncService(store, events, source, tokens, syncLogger())
+	return mustSyncServiceWithRecorder(t, store, events, source, tokens, metrics.NopSyncRecorder{})
+}
+
+func mustSyncServiceWithRecorder(t *testing.T, store *fakeSyncAccountStore, events *fakeEventRepo, source *fakeEventSource, tokens *fakeTokenProvider, recorder metrics.SyncRecorder) *app.SyncService {
+	t.Helper()
+	svc, err := app.NewSyncService(store, events, source, tokens, syncLogger(), recorder)
 	if err != nil {
 		t.Fatalf("NewSyncService: %v", err)
 	}
 	return svc
 }
+
+// spySyncRecorder records SyncRecorder calls for assertion. Sync tests run the
+// service synchronously via RunOnce, so no locking is needed.
+type spySyncRecorder struct {
+	eventsSynced  int
+	accountErrors int
+}
+
+func (s *spySyncRecorder) AddEventsSynced(count int) { s.eventsSynced += count }
+
+func (s *spySyncRecorder) IncAccountError() { s.accountErrors++ }
 
 func event(id string) calendardomain.SyncedEvent {
 	return calendardomain.SyncedEvent{
@@ -262,16 +279,54 @@ func TestNewSyncServiceValidatesDeps(t *testing.T) {
 	source := &fakeEventSource{}
 	tokens := &fakeTokenProvider{}
 	log := syncLogger()
+	rec := metrics.NopSyncRecorder{}
 	cases := []func() (*app.SyncService, error){
-		func() (*app.SyncService, error) { return app.NewSyncService(nil, events, source, tokens, log) },
-		func() (*app.SyncService, error) { return app.NewSyncService(store, nil, source, tokens, log) },
-		func() (*app.SyncService, error) { return app.NewSyncService(store, events, nil, tokens, log) },
-		func() (*app.SyncService, error) { return app.NewSyncService(store, events, source, nil, log) },
-		func() (*app.SyncService, error) { return app.NewSyncService(store, events, source, tokens, nil) },
+		func() (*app.SyncService, error) { return app.NewSyncService(nil, events, source, tokens, log, rec) },
+		func() (*app.SyncService, error) { return app.NewSyncService(store, nil, source, tokens, log, rec) },
+		func() (*app.SyncService, error) { return app.NewSyncService(store, events, nil, tokens, log, rec) },
+		func() (*app.SyncService, error) { return app.NewSyncService(store, events, source, nil, log, rec) },
+		func() (*app.SyncService, error) { return app.NewSyncService(store, events, source, tokens, nil, rec) },
+		func() (*app.SyncService, error) { return app.NewSyncService(store, events, source, tokens, log, nil) },
 	}
 	for i, fn := range cases {
 		if _, err := fn(); err == nil {
 			t.Errorf("case %d: expected an error, got nil", i)
 		}
+	}
+}
+
+func TestRunOnceRecordsSyncedEventCount(t *testing.T) {
+	store := &fakeSyncAccountStore{accounts: []*calendardomain.CalendarAccount{account("", "primary")}}
+	source := &fakeEventSource{fullEvents: []calendardomain.SyncedEvent{event("a"), event("b")}, nextSyncToken: "t"}
+	spy := &spySyncRecorder{}
+	svc := mustSyncServiceWithRecorder(t, store, &fakeEventRepo{}, source, &fakeTokenProvider{}, spy)
+	if _, err := svc.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if spy.eventsSynced != 2 {
+		t.Errorf("recorded events synced = %d, want 2", spy.eventsSynced)
+	}
+	if spy.accountErrors != 0 {
+		t.Errorf("recorded account errors = %d, want 0", spy.accountErrors)
+	}
+}
+
+func TestRunOnceRecordsAccountErrorAndStillCountsHealthyAccounts(t *testing.T) {
+	bad := account("", "primary")
+	good := account("", "primary")
+	store := &fakeSyncAccountStore{accounts: []*calendardomain.CalendarAccount{bad, good}}
+	source := &fakeEventSource{fullEvents: []calendardomain.SyncedEvent{event("a")}, nextSyncToken: "t"}
+	// A token provider that fails for the first account only.
+	tokens := &fakeTokenProvider{failID: &bad.ID}
+	spy := &spySyncRecorder{}
+	svc := mustSyncServiceWithRecorder(t, store, &fakeEventRepo{}, source, tokens, spy)
+	if _, err := svc.RunOnce(context.Background()); err == nil {
+		t.Fatal("RunOnce error = nil, want the failing account's error recorded")
+	}
+	if spy.accountErrors != 1 {
+		t.Errorf("recorded account errors = %d, want 1", spy.accountErrors)
+	}
+	if spy.eventsSynced != 1 {
+		t.Errorf("recorded events synced = %d, want 1 (the healthy account's event)", spy.eventsSynced)
 	}
 }
