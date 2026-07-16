@@ -296,6 +296,182 @@ func TestCompleteAndAward_StandingInstance_ConcurrentCompletion(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Skip — standing instance respawn (CodeRabbit follow-up: the invariant must
+// hold on every terminal path, not just CompleteAndAward)
+// ---------------------------------------------------------------------------
+
+// TestSkip_StandingInstanceRespawns mirrors
+// TestCompleteAndAward_StandingInstanceRespawns for the skip path: skipping
+// the standing instance transitions it to skipped, awards no points, and
+// materialises a fresh standing instance for the same task in the same
+// transaction.
+func TestSkip_StandingInstanceRespawns(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := seedAsNeededTaskWithPoints(t, taskRepo, h.ID, 4)
+	before, err := instRepo.ListStanding(testCtx(t), h.ID)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("ListStanding (before) = %v, %v, want 1 instance", before, err)
+	}
+	original := before[0]
+
+	if err := instRepo.Skip(testCtx(t), h.ID, original.ID); err != nil {
+		t.Fatalf("Skip: %v", err)
+	}
+
+	// The original instance is now skipped.
+	got, err := instRepo.Get(testCtx(t), h.ID, original.ID)
+	if err != nil {
+		t.Fatalf("Get after Skip: %v", err)
+	}
+	if got.Status != domain.StatusSkipped {
+		t.Errorf("original instance Status = %v, want skipped", got.Status)
+	}
+
+	// No points were awarded — Skip never touches the ledger.
+	balance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if balance != 0 {
+		t.Errorf("Balance = %d, want 0 (skip awards no points)", balance)
+	}
+
+	// Exactly one open standing instance exists again, and it is a fresh row.
+	after, err := instRepo.ListStanding(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListStanding (after): %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("ListStanding (after) = %d instances, want 1", len(after))
+	}
+	if after[0].ID == original.ID {
+		t.Error("respawned standing instance has the same id as the skipped one, want a fresh row")
+	}
+	if after[0].RecurringTaskID != rt.ID {
+		t.Errorf("respawned instance RecurringTaskID = %v, want %v", after[0].RecurringTaskID, rt.ID)
+	}
+	if after[0].DueOn != nil {
+		t.Errorf("respawned instance DueOn = %v, want nil", after[0].DueOn)
+	}
+}
+
+// TestSkip_StandingInstance_ConcurrentCompleteAndSkip races a completion
+// against a skip on the SAME standing instance: exactly one transition wins,
+// the other observes the row already terminal, and exactly one replacement
+// standing instance is materialised (never zero, never two).
+func TestSkip_StandingInstance_ConcurrentCompleteAndSkip(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	seedAsNeededTaskWithPoints(t, taskRepo, h.ID, 2)
+	standing, err := instRepo.ListStanding(testCtx(t), h.ID)
+	if err != nil || len(standing) != 1 {
+		t.Fatalf("ListStanding (seed) = %v, %v, want 1 instance", standing, err)
+	}
+	instanceID := standing[0].ID
+
+	var (
+		wg          sync.WaitGroup
+		completeErr error
+		skipErr     error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		completeErr = instRepo.CompleteAndAward(context.Background(), h.ID, instanceID, m1, time.Now())
+	}()
+	go func() {
+		defer wg.Done()
+		skipErr = instRepo.Skip(context.Background(), h.ID, instanceID)
+	}()
+	wg.Wait()
+
+	// Exactly one of the two must succeed; the other must observe the
+	// terminal-state sentinel.
+	results := []error{completeErr, skipErr}
+	successes, terminalErrs := 0, 0
+	for _, err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, domain.ErrInstanceInTerminalState):
+			terminalErrs++
+		default:
+			t.Errorf("unexpected error racing complete against skip: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("successes = %d, want 1", successes)
+	}
+	if terminalErrs != 1 {
+		t.Errorf("ErrInstanceInTerminalState count = %d, want 1", terminalErrs)
+	}
+
+	// Exactly one open standing instance remains regardless of which side won.
+	// If the respawn ran twice, task_instance_standing_open_uniq would have
+	// rejected the second insert and one of the two calls above would have
+	// returned an unexpected error instead of nil/ErrInstanceInTerminalState.
+	after, err := instRepo.ListStanding(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListStanding (after race): %v", err)
+	}
+	if len(after) != 1 {
+		t.Errorf("ListStanding (after race) = %d instances, want 1", len(after))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// task_instance_standing_open_uniq — schema-level safety net
+// ---------------------------------------------------------------------------
+
+// TestTaskInstance_Insert_StandingUniquePerTask verifies that the partial
+// unique index task_instance_standing_open_uniq (recurring_task_id WHERE
+// kind='standing' AND status='pending') rejects a second open standing
+// instance for a task that already has one — the backstop that would catch a
+// respawn-logic bug producing two open standing rows for the same task.
+func TestTaskInstance_Insert_StandingUniquePerTask(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	// CreateWithRotation already seeds the task's first open standing instance.
+	rt := seedAsNeededTaskWithPoints(t, taskRepo, h.ID, 1)
+
+	dup := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h.ID,
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	}
+	err := instRepo.Insert(testCtx(t), dup)
+	if err == nil {
+		t.Fatal("Insert(second open standing instance for the same task) = nil error, want a constraint violation")
+	}
+	if errors.Is(err, domain.ErrDuplicateInstance) {
+		t.Errorf("Insert(second standing instance) = %v, want a generic error (this is a different constraint than task_instance_task_due_uniq)", err)
+	}
+
+	// The task still has exactly one open standing instance — the rejected
+	// insert did not leave a partial row behind.
+	standing, err := instRepo.ListStanding(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListStanding: %v", err)
+	}
+	if len(standing) != 1 {
+		t.Errorf("ListStanding = %d instances, want 1 (rejected duplicate must not persist)", len(standing))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Standing instances never overdue, never remind (NES-116 AC5)
 // ---------------------------------------------------------------------------
 

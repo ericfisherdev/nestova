@@ -457,11 +457,16 @@ func NewTaskInstanceRepository(dbtx db.TX) *TaskInstanceRepository {
 }
 
 // insertStandingInstance materialises a fresh, unassigned, pending standing
-// instance for taskID via q (either the pool or an open transaction). Both
-// sides of an as-needed task's lifecycle that must (re)create its one open
-// standing instance — RecurringTaskRepository.CreateWithRotation on task
-// creation and TaskInstanceRepository.CompleteAndAward on completion — share
-// this single implementation (NES-116).
+// instance for taskID via q (either the pool or an open transaction). Every
+// call site that must (re)create an as-needed task's one open standing
+// instance — RecurringTaskRepository.CreateWithRotation on task creation, and
+// TaskInstanceRepository.Complete, CompleteAndAward, and Skip on every
+// terminal transition — shares this single implementation (NES-116).
+//
+// The task_instance_standing_open_uniq partial unique index (recurring_task_id
+// WHERE kind='standing' AND status='pending') is the schema-level backstop: a
+// bug that tried to respawn twice for the same task would fail loudly here
+// rather than silently leaving two open standing instances.
 func insertStandingInstance(
 	ctx context.Context,
 	q db.TX,
@@ -477,6 +482,48 @@ func insertStandingInstance(
 		Kind:            domain.KindStanding,
 	}
 	return repo.Insert(ctx, inst)
+}
+
+// respawnIfStanding materialises a fresh standing instance for
+// recurringTaskIDStr when kindStr is domain.KindStanding, and is a no-op
+// otherwise. It is the shared post-transition step for Complete,
+// CompleteAndAward, and Skip: whichever terminal transition a standing
+// instance goes through (done or skipped), the task must have a fresh open
+// standing instance again in the same transaction (NES-116).
+func respawnIfStanding(
+	ctx context.Context,
+	tx pgx.Tx,
+	kindStr string,
+	recurringTaskIDStr string,
+	householdID household.HouseholdID,
+) error {
+	if kindStr != domain.KindStanding.String() {
+		return nil
+	}
+	recurringTaskID, err := domain.ParseRecurringTaskID(recurringTaskIDStr)
+	if err != nil {
+		return fmt.Errorf("parse recurring task id: %w", err)
+	}
+	return insertStandingInstance(ctx, tx, recurringTaskID, householdID)
+}
+
+// beginTx opens a transaction on dbtx, which must support it (either a
+// *pgxpool.Pool or an already-open pgx.Tx — see db.TX). op labels the returned
+// error with the calling method's name. Shared by every TaskInstanceRepository
+// method that must transition a row's status and, when it was a standing
+// instance, respawn its replacement atomically (NES-116).
+func beginTx(ctx context.Context, dbtx db.TX, op string) (pgx.Tx, error) {
+	beginner, ok := dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("%s: executor does not support transactions", op)
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%s: begin: %w", op, err)
+	}
+	return tx, nil
 }
 
 // Insert persists a new task instance. The caller must populate ID,
@@ -751,6 +798,12 @@ func (r *TaskInstanceRepository) disambiguateClaim(
 // by and at. An overdue chore is still actionable — it can be completed late.
 // On 0 rows affected, the instance is read to produce the precise sentinel:
 // domain.ErrInstanceNotFound or domain.ErrInstanceInTerminalState (done/skipped).
+//
+// NES-116: this method does not award points (use CompleteAndAward for the
+// user-facing completion flow), but it still transitions a standing instance
+// to done, so it respawns a fresh standing instance for the same recurring
+// task in the same transaction — the "always exactly one open standing
+// instance" invariant must hold regardless of which method completed it.
 func (r *TaskInstanceRepository) Complete(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -758,6 +811,12 @@ func (r *TaskInstanceRepository) Complete(
 	by household.MemberID,
 	at time.Time,
 ) error {
+	tx, err := beginTx(ctx, r.dbtx, "complete task instance")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	const q = `
 		UPDATE task_instance
 		   SET status       = 'done',
@@ -766,13 +825,25 @@ func (r *TaskInstanceRepository) Complete(
 		       updated_at   = now()
 		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       IN ('pending', 'overdue')`
-	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String(), by.String(), at)
+		   AND status       IN ('pending', 'overdue')
+		RETURNING recurring_task_id, kind`
+
+	var recurringTaskIDStr, kindStr string
+	err = tx.QueryRow(ctx, q, id.String(), householdID.String(), by.String(), at).
+		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return r.disambiguateTerminal(ctx, householdID, id)
+		}
 		return fmt.Errorf("complete task instance: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return r.disambiguateTerminal(ctx, householdID, id)
+
+	if err := respawnIfStanding(ctx, tx, kindStr, recurringTaskIDStr, householdID); err != nil {
+		return fmt.Errorf("complete task instance: respawn standing instance: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("complete task instance: commit: %w", err)
 	}
 	return nil
 }
@@ -794,9 +865,9 @@ func (r *TaskInstanceRepository) Complete(
 // Points = 0 optimization: the ledger INSERT is skipped entirely when
 // recurring_task.points = 0, keeping the ledger free of zero-value noise.
 //
-// NES-116: when the completed instance's kind is 'standing', step 3 inserts a
-// fresh pending standing instance for the same recurring task in the same
-// transaction, so an as-needed task always has exactly one open standing
+// NES-116: when the completed instance's kind is 'standing', the final step
+// inserts a fresh pending standing instance for the same recurring task in the
+// same transaction, so an as-needed task always has exactly one open standing
 // instance again immediately after completion.
 func (r *TaskInstanceRepository) CompleteAndAward(
 	ctx context.Context,
@@ -805,15 +876,9 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 	by household.MemberID,
 	at time.Time,
 ) error {
-	beginner, ok := r.dbtx.(interface {
-		Begin(context.Context) (pgx.Tx, error)
-	})
-	if !ok {
-		return errors.New("complete and award: executor does not support transactions")
-	}
-	tx, err := beginner.Begin(ctx)
+	tx, err := beginTx(ctx, r.dbtx, "complete and award")
 	if err != nil {
-		return fmt.Errorf("complete and award: begin: %w", err)
+		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -873,14 +938,8 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 
 	// Step 3: an as-needed task's standing instance reappears immediately after
 	// completion, in the same transaction as the completion itself.
-	if kindStr == domain.KindStanding.String() {
-		recurringTaskID, err := domain.ParseRecurringTaskID(recurringTaskIDStr)
-		if err != nil {
-			return fmt.Errorf("complete and award: parse recurring task id: %w", err)
-		}
-		if err := insertStandingInstance(ctx, tx, recurringTaskID, householdID); err != nil {
-			return fmt.Errorf("complete and award: respawn standing instance: %w", err)
-		}
+	if err := respawnIfStanding(ctx, tx, kindStr, recurringTaskIDStr, householdID); err != nil {
+		return fmt.Errorf("complete and award: respawn standing instance: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -893,24 +952,48 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 // chore is still actionable — it can be skipped late. On 0 rows affected, the
 // instance is read to produce the precise sentinel: domain.ErrInstanceNotFound
 // or domain.ErrInstanceInTerminalState (done/skipped).
+//
+// NES-116: skipping a standing instance releases it back to the pool — a
+// fresh, unassigned standing instance for the same recurring task is
+// materialised in the same transaction, so the "always exactly one open
+// standing instance" invariant holds on the skip path exactly as it does on
+// completion.
 func (r *TaskInstanceRepository) Skip(
 	ctx context.Context,
 	householdID household.HouseholdID,
 	id domain.TaskInstanceID,
 ) error {
+	tx, err := beginTx(ctx, r.dbtx, "skip task instance")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	const q = `
 		UPDATE task_instance
 		   SET status       = 'skipped',
 		       updated_at   = now()
 		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       IN ('pending', 'overdue')`
-	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String())
+		   AND status       IN ('pending', 'overdue')
+		RETURNING recurring_task_id, kind`
+
+	var recurringTaskIDStr, kindStr string
+	err = tx.QueryRow(ctx, q, id.String(), householdID.String()).
+		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return r.disambiguateTerminal(ctx, householdID, id)
+		}
 		return fmt.Errorf("skip task instance: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return r.disambiguateTerminal(ctx, householdID, id)
+
+	if err := respawnIfStanding(ctx, tx, kindStr, recurringTaskIDStr, householdID); err != nil {
+		return fmt.Errorf("skip task instance: respawn standing instance: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("skip task instance: commit: %w", err)
 	}
 	return nil
 }
