@@ -245,6 +245,28 @@ func (r *fakeTaskInstanceRepo) Claim(_ context.Context, householdID household.Ho
 	return domain.ErrInstanceNotFound
 }
 
+// respawnStandingLocked appends a fresh pending standing instance for the same
+// recurring task when inst is a standing instance, mirroring the real
+// adapter's same-transaction respawn (insertStandingInstance /
+// respawnIfStanding) on every terminal transition — Complete, CompleteAndAward,
+// and Skip alike (NES-116). Callers must already hold r.mu.
+func (r *fakeTaskInstanceRepo) respawnStandingLocked(inst *domain.TaskInstance) {
+	if inst.Kind != domain.KindStanding {
+		return
+	}
+	r.instances = append(r.instances, &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: inst.RecurringTaskID,
+		HouseholdID:     inst.HouseholdID,
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	})
+}
+
+// Complete does not award points (no ledger exists in this fake); it does not
+// accept overdue instances either — see CompleteAndAward for both differences.
+// NES-116: like every terminal transition, completing a standing instance
+// respawns its replacement.
 func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -256,6 +278,7 @@ func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household
 			inst.Status = domain.StatusDone
 			inst.CompletedBy = &by
 			inst.CompletedAt = &at
+			r.respawnStandingLocked(inst)
 			return nil
 		}
 	}
@@ -284,21 +307,17 @@ func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID h
 			inst.Status = domain.StatusDone
 			inst.CompletedBy = &by
 			inst.CompletedAt = &at
-			if inst.Kind == domain.KindStanding {
-				r.instances = append(r.instances, &domain.TaskInstance{
-					ID:              domain.NewTaskInstanceID(),
-					RecurringTaskID: inst.RecurringTaskID,
-					HouseholdID:     inst.HouseholdID,
-					Status:          domain.StatusPending,
-					Kind:            domain.KindStanding,
-				})
-			}
+			r.respawnStandingLocked(inst)
 			return nil
 		}
 	}
 	return domain.ErrInstanceNotFound
 }
 
+// Skip transitions a pending instance to skipped. NES-116: skipping a
+// standing instance respawns its replacement, exactly like Complete and
+// CompleteAndAward — the "always exactly one open standing instance"
+// invariant does not depend on which terminal transition ended it.
 func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -308,6 +327,7 @@ func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.Hou
 				return domain.ErrInstanceInTerminalState
 			}
 			inst.Status = domain.StatusSkipped
+			r.respawnStandingLocked(inst)
 			return nil
 		}
 	}
@@ -1047,6 +1067,70 @@ func TestTaskService_CompleteInstance_StandingRespawns(t *testing.T) {
 	}
 	if after[0].ID == standing.ID {
 		t.Error("the open standing instance after completion is the same row that was just completed, want a fresh replacement")
+	}
+	if after[0].DueOn != nil {
+		t.Errorf("respawned standing instance DueOn = %v, want nil", after[0].DueOn)
+	}
+}
+
+// TestTaskService_SkipInstance_StandingRespawns is the CodeRabbit follow-up
+// regression test for NES-116: the "always exactly one open standing
+// instance" invariant must hold on the skip path too, not just completion.
+// Skipping an as-needed task's standing instance transitions it to skipped,
+// awards no points, and materialises a fresh pending standing instance for
+// the same task.
+func TestTaskService_SkipInstance_StandingRespawns(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := newAsNeededTask(domain.RotationClaimable)
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	standing := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: task.ID,
+		HouseholdID:     task.HouseholdID,
+		Status:          domain.StatusPending,
+		Kind:            domain.KindStanding,
+	}
+	if err := instanceRepo.Insert(context.Background(), standing); err != nil {
+		t.Fatalf("seed standing instance: %v", err)
+	}
+
+	if err := svc.SkipInstance(context.Background(), task.HouseholdID, standing.ID); err != nil {
+		t.Fatalf("SkipInstance(standing): %v", err)
+	}
+
+	// The original instance is now skipped, not completed — no award path was
+	// ever invoked (SkipInstance calls Skip, never CompleteAndAward).
+	got, err := instanceRepo.Get(context.Background(), task.HouseholdID, standing.ID)
+	if err != nil {
+		t.Fatalf("Get after skip: %v", err)
+	}
+	if got.Status != domain.StatusSkipped {
+		t.Errorf("original standing instance status = %v, want skipped", got.Status)
+	}
+	if got.CompletedAt != nil || got.CompletedBy != nil {
+		t.Errorf("skipped standing instance has completion fields set: CompletedAt=%v CompletedBy=%v, want both nil (no award)", got.CompletedAt, got.CompletedBy)
+	}
+
+	// After the skip: still exactly one open standing instance, and it is a
+	// fresh row, not the one just skipped.
+	after, err := instanceRepo.ListStanding(context.Background(), task.HouseholdID)
+	if err != nil {
+		t.Fatalf("ListStanding (after skip): %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("ListStanding (after skip) = %d instances, want 1", len(after))
+	}
+	if after[0].ID == standing.ID {
+		t.Error("the open standing instance after skip is the same row that was just skipped, want a fresh replacement")
 	}
 	if after[0].DueOn != nil {
 		t.Errorf("respawned standing instance DueOn = %v, want nil", after[0].DueOn)

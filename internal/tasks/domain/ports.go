@@ -115,7 +115,10 @@ type RecurringTaskRepository interface {
 //   - Complete transitions status from pending OR overdue to done and records
 //     completed_at and completed_by. Skip transitions pending OR overdue to
 //     skipped. Both refresh updated_at. An overdue chore is still actionable: it
-//     can be completed or skipped late.
+//     can be completed or skipped late. NES-116: both (and CompleteAndAward)
+//     respawn a fresh standing instance in the same transaction when the row
+//     transitioned was kind=standing — the invariant holds on every terminal
+//     path, not just completion.
 //   - MarkPendingOverdue bulk-transitions pending, [KindScheduled] instances
 //     whose due_on < asOf to overdue, scoped to the household, refreshing
 //     updated_at. [KindStanding] instances are never affected: they have no due
@@ -178,7 +181,12 @@ type TaskInstanceRepository interface {
 	Claim(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID) error
 
 	// Complete transitions the instance from pending or overdue to done, recording
-	// by and at.
+	// by and at. It does not award points (see CompleteAndAward for the
+	// user-facing completion flow). NES-116: like every terminal transition on a
+	// [KindStanding] instance, a fresh pending standing instance for the same
+	// recurring task is materialised in the same transaction — the "always
+	// exactly one open standing instance" invariant does not depend on which
+	// method performed the transition.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Complete(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
@@ -195,7 +203,9 @@ type TaskInstanceRepository interface {
 	// NES-116: when the completed instance is [KindStanding], a fresh pending
 	// standing instance for the same recurring task is materialised in the same
 	// transaction, so an as-needed task always has exactly one open standing
-	// instance both before and immediately after completion.
+	// instance both before and immediately after completion. The same holds for
+	// [Complete] and [Skip]: the invariant is enforced on every terminal
+	// transition of a standing instance, not just this one.
 	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another
 	// household.
@@ -203,10 +213,16 @@ type TaskInstanceRepository interface {
 	// skipped (no award is made, no replacement instance is materialised). Two
 	// concurrent completions of the same standing instance race on this guard:
 	// exactly one succeeds and awards points; the other observes the row already
-	// done and returns this sentinel.
+	// done and returns this sentinel. The same race resolution applies when a
+	// completion and a skip target the same standing instance concurrently —
+	// exactly one transition wins and exactly one respawn happens.
 	CompleteAndAward(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
 
-	// Skip transitions the instance from pending or overdue to skipped.
+	// Skip transitions the instance from pending or overdue to skipped. NES-116:
+	// skipping a [KindStanding] instance releases it back to the pool — a fresh,
+	// unassigned standing instance for the same recurring task is materialised
+	// in the same transaction, exactly as [Complete] and [CompleteAndAward] do
+	// on their own terminal transitions.
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Skip(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) error
