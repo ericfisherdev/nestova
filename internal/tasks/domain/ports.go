@@ -415,6 +415,19 @@ type TaskInstanceRepository interface {
 	// system-process recovery method reserved for the background scheduler
 	// and must not be called from user-facing request handlers.
 	ClearClaimWarning(ctx context.Context, id TaskInstanceID, expiresAt time.Time) error
+
+	// ListTradeableAssignedToOthers returns every instance that satisfies
+	// [IsInstanceTradeable] AND is assigned to a member OTHER than
+	// excludeMemberID (NES-122). It is the picker query behind "propose a
+	// trade": given the member proposing a trade, it lists every chore a
+	// sibling currently holds that could be requested in exchange. The
+	// predicate mirrors IsInstanceTradeable exactly (pending, kind=scheduled,
+	// unclaimed, has a due date) plus the assignee exclusion — it does not
+	// duplicate IsInstanceTradeable's Go-level check, which callers still run
+	// against the OFFERED side once a candidate is chosen.
+	// Ordered by due_on so the nearest-due chores surface first. Returns an
+	// empty slice (not an error) when none match.
+	ListTradeableAssignedToOthers(ctx context.Context, householdID household.HouseholdID, excludeMemberID household.MemberID) ([]*TaskInstance, error)
 }
 
 // ChoreTradeRepository is the persistence port for [ChoreTrade] aggregates —
@@ -491,8 +504,10 @@ type ChoreTradeRepository interface {
 	// trade.Status ([TradeProposed]), trade.CreatedAt, and trade.ExpiresAt
 	// (the earlier of the two instances' due dates — both are guaranteed
 	// non-nil once tradeability is confirmed, since [IsInstanceTradeable]
-	// requires [KindScheduled]).
-	Propose(ctx context.Context, householdID household.HouseholdID, trade *ChoreTrade) error
+	// requires [KindScheduled]). Returns a [ProposedTrade] describing the new
+	// proposal (NES-122) so the caller can notify the responder without an
+	// additional query, mirroring [Accept]'s [AcceptedTrade] return.
+	Propose(ctx context.Context, householdID household.HouseholdID, trade *ChoreTrade) (ProposedTrade, error)
 
 	// Get returns the trade identified by id within the household.
 	Get(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID) (*ChoreTrade, error)
@@ -511,8 +526,10 @@ type ChoreTradeRepository interface {
 	Accept(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID, responderID household.MemberID, at time.Time) (AcceptedTrade, error)
 
 	// Decline transitions the trade from proposed to declined. No instance
-	// assignment is touched.
-	Decline(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID, responderID household.MemberID) error
+	// assignment is touched. Returns a [DeclinedTrade] describing the
+	// resolution (NES-122) so the caller can notify the proposer without an
+	// additional query, mirroring [Accept]'s [AcceptedTrade] return.
+	Decline(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID, responderID household.MemberID) (DeclinedTrade, error)
 
 	// Cancel transitions the trade from proposed to cancelled. No instance
 	// assignment is touched.
@@ -530,4 +547,30 @@ type ChoreTradeRepository interface {
 	// not be called from user-facing request handlers, matching the
 	// precedent set by [TaskInstanceRepository.SweepExpiredClaims].
 	SweepExpiredTrades(ctx context.Context, asOf time.Time) ([]ExpiredTrade, error)
+
+	// ListPendingByMember returns every live (status = [TradeProposed]) trade
+	// within the household where memberID is either the proposer or the
+	// responder (NES-122), as [TradeSummary] values pre-joined with both
+	// referenced chores' titles/points — the read behind the dashboard's
+	// trade cards. The caller distinguishes "awaiting your decision" from
+	// "your own outgoing proposal" by comparing TradeSummary.ResponderID and
+	// TradeSummary.ProposerID against memberID — this method does not split
+	// them, since a member could in principle be involved in both roles
+	// across different trades and the caller already needs the comparison to
+	// render the right actions (Accept/Decline vs Cancel). Ordered by
+	// created_at ascending (oldest proposal first). Returns an empty slice
+	// (not an error) when memberID has no live trades.
+	ListPendingByMember(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID) ([]TradeSummary, error)
+
+	// ListHistory returns the household's most recent trades, regardless of
+	// status, as [TradeSummary] values pre-joined the same way
+	// ListPendingByMember's are — the read behind the parent-only
+	// trade-history page (NES-122). Ordered by created_at descending (most
+	// recent first) and capped at [TradeHistoryLimit] rows: this is a
+	// recent-activity view, not an unbounded audit log. Access control
+	// (parents only) is enforced by the caller, not this method: tenant
+	// scoping to householdID is this repository's only concern, matching
+	// every other List* method in this package. Returns an empty slice (not
+	// an error) when the household has no trades.
+	ListHistory(ctx context.Context, householdID household.HouseholdID) ([]TradeSummary, error)
 }

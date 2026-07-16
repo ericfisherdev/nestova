@@ -75,6 +75,7 @@ func registerWebRoutes(
 	onboardingHandlers *authadapter.OnboardingHandlers,
 	households household.HouseholdRepository,
 	taskHandlers *tasksadapter.WebHandlers,
+	tradeHandlers *tasksadapter.TradeWebHandlers,
 	gamificationHandlers *tasksadapter.GamificationWebHandlers,
 	groceryHandlers *trackingadapter.WebHandlers,
 	mealsHandlers *mealsadapter.WebHandlers,
@@ -111,7 +112,12 @@ func registerWebRoutes(
 		layout := func(c templ.Component) templ.Component {
 			return components.Layout(props, nav, c)
 		}
-		if err := render.Page(r.Context(), w, r, layout, components.Dashboard()); err != nil {
+		// NES-122: pending chore-trade cards are cross-cutting dashboard
+		// content (tasks bounded context), composed here rather than inside
+		// components.Dashboard itself, matching how this route already
+		// composes ShellProps/nav from the household repository.
+		trades := tradeHandlers.DashboardSections(r, member)
+		if err := render.Page(r.Context(), w, r, layout, components.Dashboard(trades)); err != nil {
 			logger.ErrorContext(r.Context(), "render dashboard", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
@@ -165,6 +171,45 @@ func registerWebRoutes(
 	// correct heading (not just updated in place under the wrong one)
 	// without a full page reload.
 	mux.Handle("GET /tasks/groups", requireMember(http.HandlerFunc(taskHandlers.Groups)))
+
+	// Chore trade routes (NES-122) — RequireMember-gated.
+	// GET  /tasks/{id}/propose-trade   renders the propose-trade picker for
+	//                                  one of the viewing member's own chores.
+	// POST /trades                     creates a new trade proposal.
+	// POST /trades/{id}/accept         responder accepts a pending proposal.
+	// POST /trades/{id}/decline        responder declines a pending proposal.
+	// POST /trades/{id}/cancel         proposer withdraws a pending proposal.
+	// GET  /trades/history             parent-only (owner/adult) trade history.
+	mux.Handle("GET /tasks/{id}/propose-trade", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				return components.Layout(props, nav, c)
+			}
+		}
+		tradeHandlers.ProposePickerPage(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /trades", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				return components.Layout(props, nav, c)
+			}
+		}
+		tradeHandlers.ProposeTrade(layoutFn)(w, r)
+	})))
+	mux.Handle("POST /trades/{id}/accept", requireMember(http.HandlerFunc(tradeHandlers.Accept)))
+	mux.Handle("POST /trades/{id}/decline", requireMember(http.HandlerFunc(tradeHandlers.Decline)))
+	mux.Handle("POST /trades/{id}/cancel", requireMember(http.HandlerFunc(tradeHandlers.Cancel)))
+	mux.Handle("GET /trades/history", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "")
+				return components.Layout(props, nav, c)
+			}
+		}
+		tradeHandlers.HistoryPage(layoutFn)(w, r)
+	})))
 
 	// Rewards / scoreboard routes — RequireMember-gated.
 	// GET /rewards            renders the scoreboard + rewards catalog.

@@ -57,7 +57,7 @@ func proposeTrade(
 		OfferedInstanceID:   offeredID,
 		RequestedInstanceID: requestedID,
 	}
-	if err := tradeRepo.Propose(testCtx(t), householdID, trade); err != nil {
+	if _, err := tradeRepo.Propose(testCtx(t), householdID, trade); err != nil {
 		t.Fatalf("proposeTrade: Propose: %v", err)
 	}
 	return trade
@@ -201,7 +201,7 @@ func TestTrade_Propose_InstanceNotFound_ReturnsErrInstanceNotFound(t *testing.T)
 		OfferedInstanceID:   offered.ID,
 		RequestedInstanceID: domain.NewTaskInstanceID(),
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade)
 	if !errors.Is(err, domain.ErrInstanceNotFound) {
 		t.Errorf("Propose(unknown requested instance) error = %v, want ErrInstanceNotFound", err)
 	}
@@ -234,7 +234,7 @@ func TestTrade_Propose_ClaimedOfferedInstance_ReturnsErrInstanceNotTradeable(t *
 		OfferedInstanceID:   offered.ID,
 		RequestedInstanceID: requested.ID,
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade)
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(claimed offered instance) error = %v, want ErrInstanceNotTradeable", err)
 	}
@@ -264,7 +264,7 @@ func TestTrade_Propose_ClaimedRequestedInstance_ReturnsErrInstanceNotTradeable(t
 		OfferedInstanceID:   offered.ID,
 		RequestedInstanceID: requested.ID,
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade)
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(claimed requested instance) error = %v, want ErrInstanceNotTradeable", err)
 	}
@@ -292,7 +292,7 @@ func TestTrade_Propose_OfferedInstanceAlreadyLive_ReturnsErrInstanceNotTradeable
 		OfferedInstanceID:   offered.ID,
 		RequestedInstanceID: requested2.ID,
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade)
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(offered instance already live) error = %v, want ErrInstanceNotTradeable", err)
 	}
@@ -320,7 +320,7 @@ func TestTrade_Propose_RequestedInstanceAlreadyLive_ReturnsErrInstanceNotTradeab
 		OfferedInstanceID:   offered2.ID,
 		RequestedInstanceID: requested.ID,
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade)
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(requested instance already live) error = %v, want ErrInstanceNotTradeable", err)
 	}
@@ -357,7 +357,7 @@ func TestTrade_Propose_OfferedAlreadyRequestedElsewhere_ReturnsErrInstanceNotTra
 		OfferedInstanceID:   y.ID, // already requested by trade1
 		RequestedInstanceID: z.ID,
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade2)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade2)
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(offered already requested elsewhere) error = %v, want ErrInstanceNotTradeable", err)
 	}
@@ -386,7 +386,7 @@ func TestTrade_Propose_RequestedAlreadyOfferedElsewhere_ReturnsErrInstanceNotTra
 		OfferedInstanceID:   z.ID,
 		RequestedInstanceID: x.ID, // already offered by trade1
 	}
-	err := tradeRepo.Propose(testCtx(t), h.ID, trade2)
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade2)
 	if !errors.Is(err, domain.ErrInstanceNotTradeable) {
 		t.Errorf("Propose(requested already offered elsewhere) error = %v, want ErrInstanceNotTradeable", err)
 	}
@@ -623,7 +623,7 @@ func TestTrade_Decline_NoAssignmentChange(t *testing.T) {
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
 	trade := proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
 
-	if err := tradeRepo.Decline(testCtx(t), h.ID, trade.ID, m2); err != nil {
+	if _, err := tradeRepo.Decline(testCtx(t), h.ID, trade.ID, m2); err != nil {
 		t.Fatalf("Decline: %v", err)
 	}
 
@@ -653,10 +653,10 @@ func TestTrade_Decline_Twice_ReturnsErrTradeNotPending(t *testing.T) {
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
 	trade := proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
 
-	if err := tradeRepo.Decline(testCtx(t), h.ID, trade.ID, m2); err != nil {
+	if _, err := tradeRepo.Decline(testCtx(t), h.ID, trade.ID, m2); err != nil {
 		t.Fatalf("Decline (first): %v", err)
 	}
-	err := tradeRepo.Decline(testCtx(t), h.ID, trade.ID, m2)
+	_, err := tradeRepo.Decline(testCtx(t), h.ID, trade.ID, m2)
 	if !errors.Is(err, domain.ErrTradeNotPending) {
 		t.Errorf("Decline (second) error = %v, want ErrTradeNotPending", err)
 	}
@@ -844,7 +844,7 @@ func TestTrade_Accept_FreesReservationForFollowUpTrade(t *testing.T) {
 		OfferedInstanceID:   x.ID,
 		RequestedInstanceID: z.ID,
 	}
-	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+	if _, err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
 		t.Errorf("Propose(follow-up after accept) error = %v, want nil (reservation must be freed)", err)
 	}
 }
@@ -863,7 +863,7 @@ func TestTrade_Decline_FreesReservationForFollowUpTrade(t *testing.T) {
 	dueOn := refDate.AddDate(0, 0, 5)
 	x, y, z := seedThreeTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, m3, dueOn)
 	trade1 := proposeTrade(t, tradeRepo, h.ID, m1, m2, x.ID, y.ID)
-	if err := tradeRepo.Decline(testCtx(t), h.ID, trade1.ID, m2); err != nil {
+	if _, err := tradeRepo.Decline(testCtx(t), h.ID, trade1.ID, m2); err != nil {
 		t.Fatalf("Decline: %v", err)
 	}
 
@@ -874,7 +874,7 @@ func TestTrade_Decline_FreesReservationForFollowUpTrade(t *testing.T) {
 		OfferedInstanceID:   x.ID,
 		RequestedInstanceID: z.ID,
 	}
-	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+	if _, err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
 		t.Errorf("Propose(follow-up after decline) error = %v, want nil (reservation must be freed)", err)
 	}
 }
@@ -902,7 +902,7 @@ func TestTrade_Cancel_FreesReservationForFollowUpTrade(t *testing.T) {
 		OfferedInstanceID:   x.ID,
 		RequestedInstanceID: z.ID,
 	}
-	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+	if _, err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
 		t.Errorf("Propose(follow-up after cancel) error = %v, want nil (reservation must be freed)", err)
 	}
 }
@@ -935,7 +935,7 @@ func TestTrade_Expire_FreesReservationForFollowUpTrade(t *testing.T) {
 		OfferedInstanceID:   x.ID,
 		RequestedInstanceID: z.ID,
 	}
-	if err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
+	if _, err := tradeRepo.Propose(testCtx(t), h.ID, trade2); err != nil {
 		t.Errorf("Propose(follow-up after expiry) error = %v, want nil (reservation must be freed)", err)
 	}
 }
@@ -1132,7 +1132,7 @@ func TestTrade_ProposeVsAccept_NoDeadlock(t *testing.T) {
 			OfferedInstanceID:   x.ID,
 			RequestedInstanceID: z.ID,
 		}
-		proposeErr = tradeRepo.Propose(context.Background(), h.ID, trade2)
+		_, proposeErr = tradeRepo.Propose(context.Background(), h.ID, trade2)
 	}()
 
 	done := make(chan struct{})
@@ -1199,7 +1199,7 @@ func TestTrade_ProposeVsPropose_CrossRoleRace_ExactlyOneWins(t *testing.T) {
 			ID: domain.NewChoreTradeID(), ProposerID: m1, ResponderID: m2,
 			OfferedInstanceID: x.ID, RequestedInstanceID: y.ID,
 		}
-		errA = tradeRepo.Propose(context.Background(), h.ID, tradeA)
+		_, errA = tradeRepo.Propose(context.Background(), h.ID, tradeA)
 	}()
 	go func() {
 		defer wg.Done()
@@ -1207,7 +1207,7 @@ func TestTrade_ProposeVsPropose_CrossRoleRace_ExactlyOneWins(t *testing.T) {
 			ID: domain.NewChoreTradeID(), ProposerID: m3, ResponderID: m1,
 			OfferedInstanceID: z.ID, RequestedInstanceID: x.ID,
 		}
-		errB = tradeRepo.Propose(context.Background(), h.ID, tradeB)
+		_, errB = tradeRepo.Propose(context.Background(), h.ID, tradeB)
 	}()
 
 	done := make(chan struct{})

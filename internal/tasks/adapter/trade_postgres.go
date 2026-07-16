@@ -59,38 +59,38 @@ func (r *TradeRepository) Propose(
 	ctx context.Context,
 	householdID household.HouseholdID,
 	trade *domain.ChoreTrade,
-) error {
+) (domain.ProposedTrade, error) {
 	if trade == nil {
-		return errors.New("adapter: propose trade: nil trade")
+		return domain.ProposedTrade{}, errors.New("adapter: propose trade: nil trade")
 	}
 
 	tx, err := beginTx(ctx, r.dbtx, "propose trade")
 	if err != nil {
-		return err
+		return domain.ProposedTrade{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	offered, requested, err := lockTradeInstances(ctx, tx, householdID, trade.OfferedInstanceID, trade.RequestedInstanceID)
 	if err != nil {
-		return fmt.Errorf("propose trade: %w", err)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", err)
 	}
 
 	if !domain.IsInstanceTradeable(offered) || !domain.IsInstanceTradeable(requested) {
-		return fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
 	}
 	if offered.AssigneeID == nil || *offered.AssigneeID != trade.ProposerID {
-		return fmt.Errorf("propose trade: %w", domain.ErrNotYourChore)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrNotYourChore)
 	}
 	if requested.AssigneeID == nil || *requested.AssigneeID != trade.ResponderID {
-		return fmt.Errorf("propose trade: %w", domain.ErrNotYourChore)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrNotYourChore)
 	}
 
 	live, err := hasLiveTradeProposal(ctx, tx, householdID, trade.OfferedInstanceID, trade.RequestedInstanceID)
 	if err != nil {
-		return fmt.Errorf("propose trade: %w", err)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", err)
 	}
 	if live {
-		return fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
 	}
 
 	expiresAt := earlierDueOn(offered, requested)
@@ -114,24 +114,41 @@ func (r *TradeRepository) Propose(
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == sqlstateUniqueViolation &&
 			pgErr.ConstraintName == constraintChoreTradeReservationPK {
-			return fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
+			return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
 		}
-		return fmt.Errorf("propose trade: insert: %w", err)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: insert: %w", err)
 	}
 
 	status, err := domain.ParseTradeStatus(statusStr)
 	if err != nil {
-		return fmt.Errorf("propose trade: %w", err)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", err)
+	}
+
+	// Resolve both instances' titles within the same transaction as the
+	// insert (NES-122), mirroring Accept's fetchInstanceTitles call, so the
+	// caller can build the "proposal received" notification without a
+	// separate round trip.
+	titles, err := fetchInstanceTitles(ctx, tx, []string{trade.OfferedInstanceID.String(), trade.RequestedInstanceID.String()})
+	if err != nil {
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: fetch titles: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("propose trade: commit: %w", err)
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: commit: %w", err)
 	}
 
 	trade.HouseholdID = householdID
 	trade.Status = status
 	trade.ExpiresAt = expiresAt
-	return nil
+
+	return domain.ProposedTrade{
+		TradeID:        trade.ID,
+		HouseholdID:    householdID,
+		ProposerID:     trade.ProposerID,
+		ResponderID:    trade.ResponderID,
+		OfferedTitle:   titles[trade.OfferedInstanceID.String()],
+		RequestedTitle: titles[trade.RequestedInstanceID.String()],
+	}, nil
 }
 
 // lockTradeInstances SELECTs and FOR UPDATE-locks the two task_instance rows
@@ -458,28 +475,61 @@ func fetchInstanceTitles(ctx context.Context, tx pgx.Tx, instanceIDs []string) (
 // Decline transitions the trade from proposed to declined. On 0 rows
 // affected, domain.ErrTradeNotPending is returned without disambiguation —
 // see domain.ErrTradeNotPending's doc for why unknown/wrong-member/
-// already-resolved are not distinguished.
+// already-resolved are not distinguished. Returns a domain.DeclinedTrade
+// (NES-122), resolved within the same transaction as the UPDATE (mirroring
+// Accept's fetchInstanceTitles call), so the caller can notify the proposer
+// without a separate round trip.
 func (r *TradeRepository) Decline(
 	ctx context.Context,
 	householdID household.HouseholdID,
 	id domain.ChoreTradeID,
 	responderID household.MemberID,
-) error {
-	const q = `
+) (domain.DeclinedTrade, error) {
+	tx, err := beginTx(ctx, r.dbtx, "decline trade")
+	if err != nil {
+		return domain.DeclinedTrade{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const resolveQ = `
 		UPDATE chore_trade
 		   SET status = 'declined', resolved_at = now()
 		 WHERE id           = $1
 		   AND household_id = $2
 		   AND responder_id = $3
-		   AND status       = 'proposed'`
-	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String(), responderID.String())
+		   AND status       = 'proposed'
+		RETURNING proposer_id, offered_instance_id, requested_instance_id`
+	var proposerIDStr, offeredIDStr, requestedIDStr string
+	err = tx.QueryRow(ctx, resolveQ, id.String(), householdID.String(), responderID.String()).
+		Scan(&proposerIDStr, &offeredIDStr, &requestedIDStr)
 	if err != nil {
-		return fmt.Errorf("decline trade: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.DeclinedTrade{}, fmt.Errorf("decline trade: %w", domain.ErrTradeNotPending)
+		}
+		return domain.DeclinedTrade{}, fmt.Errorf("decline trade: resolve: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("decline trade: %w", domain.ErrTradeNotPending)
+
+	proposerID, err := household.ParseMemberID(proposerIDStr)
+	if err != nil {
+		return domain.DeclinedTrade{}, fmt.Errorf("decline trade: parse proposer id: %w", err)
 	}
-	return nil
+
+	titles, err := fetchInstanceTitles(ctx, tx, []string{offeredIDStr, requestedIDStr})
+	if err != nil {
+		return domain.DeclinedTrade{}, fmt.Errorf("decline trade: fetch titles: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.DeclinedTrade{}, fmt.Errorf("decline trade: commit: %w", err)
+	}
+
+	return domain.DeclinedTrade{
+		TradeID:        id,
+		HouseholdID:    householdID,
+		ProposerID:     proposerID,
+		OfferedTitle:   titles[offeredIDStr],
+		RequestedTitle: titles[requestedIDStr],
+	}, nil
 }
 
 // Cancel transitions the trade from proposed to cancelled. On 0 rows
@@ -622,6 +672,166 @@ func (r *TradeRepository) SweepExpiredTrades(ctx context.Context, asOf time.Time
 		return nil, fmt.Errorf("sweep expired trades: commit: %w", err)
 	}
 	return result, nil
+}
+
+// tradeSummarySelectSQL joins chore_trade to both referenced task_instance
+// rows and their recurring_task parents, in one query, so a caller can
+// render a trade card/row's titles and point values without a per-trade
+// TaskInstanceRepository.Get + RecurringTaskRepository.Get round trip
+// (NES-122 — see domain.TradeSummary's doc for the N+1 this replaced).
+//
+// Both task_instance joins are INNER: chore_trade's composite FKs
+// (chore_trade_offered_instance_fk / chore_trade_requested_instance_fk,
+// ON DELETE CASCADE) guarantee a chore_trade row can never outlive either
+// referenced instance. Both recurring_task joins are likewise INNER for the
+// same reason (task_instance_task_fk, ON DELETE CASCADE): a recurring task
+// row can be deactivated (active = false) but is never hard-deleted while a
+// task_instance still references it, so it always exists — active is
+// carried through so the Go layer can still render "(archived)" for an
+// inactive parent, mirroring WebHandlers.buildInstanceRow's precedent.
+const tradeSummarySelectSQL = `
+	SELECT ct.id, ct.household_id, ct.proposer_id, ct.responder_id,
+	       ct.status, ct.created_at, ct.resolved_at,
+	       ort.title, ort.active, ort.points,
+	       rrt.title, rrt.active, rrt.points
+	  FROM chore_trade ct
+	  JOIN task_instance oi ON oi.id = ct.offered_instance_id
+	  JOIN task_instance ri ON ri.id = ct.requested_instance_id
+	  JOIN recurring_task ort ON ort.id = oi.recurring_task_id
+	  JOIN recurring_task rrt ON rrt.id = ri.recurring_task_id`
+
+// ListPendingByMember returns every live (status = 'proposed') trade within
+// the household where memberID is either the proposer or the responder
+// (NES-122). See the port doc for why the two roles are not split into
+// separate return values.
+func (r *TradeRepository) ListPendingByMember(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+) ([]domain.TradeSummary, error) {
+	q := tradeSummarySelectSQL + `
+		 WHERE ct.household_id = $1
+		   AND ct.status       = 'proposed'
+		   AND (ct.proposer_id = $2 OR ct.responder_id = $2)
+		 ORDER BY ct.created_at`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String(), memberID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list pending trades by member: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]domain.TradeSummary, 0)
+	for rows.Next() {
+		summary, err := scanTradeSummary(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list pending trades by member: scan: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list pending trades by member: %w", err)
+	}
+	return summaries, nil
+}
+
+// ListHistory returns the household's most recent trades, regardless of
+// status, newest first, capped at domain.TradeHistoryLimit rows (NES-122).
+func (r *TradeRepository) ListHistory(
+	ctx context.Context,
+	householdID household.HouseholdID,
+) ([]domain.TradeSummary, error) {
+	q := tradeSummarySelectSQL + `
+		 WHERE ct.household_id = $1
+		 ORDER BY ct.created_at DESC
+		 LIMIT $2`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String(), domain.TradeHistoryLimit)
+	if err != nil {
+		return nil, fmt.Errorf("list trade history: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]domain.TradeSummary, 0)
+	for rows.Next() {
+		summary, err := scanTradeSummary(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list trade history: scan: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list trade history: %w", err)
+	}
+	return summaries, nil
+}
+
+// scanTradeSummary scans one row produced by tradeSummarySelectSQL into a
+// domain.TradeSummary. An inactive recurring task's title/points are
+// discarded in favor of the "(archived)"/0 fallback, matching
+// WebHandlers.buildInstanceRow's precedent.
+func scanTradeSummary(r row) (domain.TradeSummary, error) {
+	var (
+		idStr, householdIDStr, proposerIDStr, responderIDStr string
+		statusStr                                            string
+		createdAt                                            time.Time
+		resolvedAt                                           *time.Time
+		offeredTitle                                         string
+		offeredActive                                        bool
+		offeredPoints                                        int
+		requestedTitle                                       string
+		requestedActive                                      bool
+		requestedPoints                                      int
+	)
+	err := r.Scan(
+		&idStr, &householdIDStr, &proposerIDStr, &responderIDStr,
+		&statusStr, &createdAt, &resolvedAt,
+		&offeredTitle, &offeredActive, &offeredPoints,
+		&requestedTitle, &requestedActive, &requestedPoints,
+	)
+	if err != nil {
+		return domain.TradeSummary{}, err
+	}
+
+	id, err := domain.ParseChoreTradeID(idStr)
+	if err != nil {
+		return domain.TradeSummary{}, fmt.Errorf("scan trade summary: %w", err)
+	}
+	householdID, err := household.ParseHouseholdID(householdIDStr)
+	if err != nil {
+		return domain.TradeSummary{}, fmt.Errorf("scan trade summary: %w", err)
+	}
+	proposerID, err := household.ParseMemberID(proposerIDStr)
+	if err != nil {
+		return domain.TradeSummary{}, fmt.Errorf("scan trade summary: %w", err)
+	}
+	responderID, err := household.ParseMemberID(responderIDStr)
+	if err != nil {
+		return domain.TradeSummary{}, fmt.Errorf("scan trade summary: %w", err)
+	}
+	status, err := domain.ParseTradeStatus(statusStr)
+	if err != nil {
+		return domain.TradeSummary{}, fmt.Errorf("scan trade summary: %w", err)
+	}
+
+	summary := domain.TradeSummary{
+		TradeID:     id,
+		HouseholdID: householdID,
+		ProposerID:  proposerID,
+		ResponderID: responderID,
+		Status:      status,
+		CreatedAt:   createdAt,
+		ResolvedAt:  resolvedAt,
+	}
+	if offeredActive {
+		summary.OfferedTitle, summary.OfferedPoints = offeredTitle, offeredPoints
+	} else {
+		summary.OfferedTitle = "(archived)"
+	}
+	if requestedActive {
+		summary.RequestedTitle, summary.RequestedPoints = requestedTitle, requestedPoints
+	} else {
+		summary.RequestedTitle = "(archived)"
+	}
+	return summary, nil
 }
 
 // scanChoreTrade scans a single chore_trade row (id, household_id,

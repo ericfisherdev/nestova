@@ -233,9 +233,13 @@ func runServer(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create task generator: %w", err)
 	}
-	// NES-121: chore trade wiring. choreTradeRepo is only needed here for the
-	// scheduler's trade-expiry sweep step; a separate TradeService for the
-	// propose/accept/decline/cancel HTTP handlers is wired by NES-122.
+	// NES-121: chore trade wiring. choreTradeRepo is shared by the
+	// scheduler's own internal TradeService (its trade-expiry sweep step,
+	// constructed inside NewScheduler) and by the web-facing TradeService
+	// constructed below for the propose/accept/decline/cancel HTTP handlers
+	// (NES-122) — two TradeService instances over the same repository, one
+	// per consumer, mirroring how taskInstanceRepo is shared without a
+	// shared service.
 	choreTradeRepo := tasksadapter.NewTradeRepository(pool)
 	// outboxRepo satisfies notifydomain.Enqueuer (it embeds Enqueue); passing it
 	// here lets the scheduler emit due-soon and overdue reminders via the same
@@ -285,6 +289,20 @@ func runServer(logger *slog.Logger) error {
 		return fmt.Errorf("create task service: %w", err)
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringTaskRepo, taskInstanceRepo, householdRepo, sm, logger)
+
+	// NES-122: chore trade UI wiring — TradeService (web-facing instance, see
+	// choreTradeRepo's comment above) + HTTP handlers for the propose-trade
+	// picker, the four mutation actions, and the parent-only trade history
+	// page. taskWebHandlers satisfies the handlers' taskGroupsBuilder
+	// dependency via its BuildGroups method, so an accept can refresh an
+	// already-open /tasks page's #task-groups fragment.
+	tradeService, err := tasksapp.NewTradeService(choreTradeRepo, outboxRepo, logger)
+	if err != nil {
+		return fmt.Errorf("create trade service: %w", err)
+	}
+	tradeWebHandlers := tasksadapter.NewTradeWebHandlers(
+		tradeService, choreTradeRepo, taskInstanceRepo, recurringTaskRepo, householdRepo, taskWebHandlers, sm, logger,
+	)
 
 	// NES-37: gamification UI wiring — scoreboard, streaks, and reward redemption.
 	pointLedgerRepo := tasksadapter.NewPointLedgerPostgresRepository(pool)
@@ -456,7 +474,7 @@ func runServer(logger *slog.Logger) error {
 			authadapter.Authenticate(sm, householdRepo),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 		},

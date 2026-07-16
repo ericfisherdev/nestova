@@ -723,6 +723,52 @@ func (r *TaskInstanceRepository) ListStanding(
 	return instances, nil
 }
 
+// ListTradeableAssignedToOthers returns every instance assigned to a member
+// OTHER than excludeMemberID that satisfies domain.IsInstanceTradeable
+// (NES-122): status = pending, kind = scheduled, claimed_by IS NULL, and
+// due_on IS NOT NULL. The predicate mirrors IsInstanceTradeable's Go-level
+// check exactly (see that function's doc) rather than duplicating its rules
+// independently — a future change to tradeability must be made in exactly
+// one place (the Go function) and mirrored here.
+func (r *TaskInstanceRepository) ListTradeableAssignedToOthers(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	excludeMemberID household.MemberID,
+) ([]*domain.TaskInstance, error) {
+	const q = `
+		SELECT id, household_id, recurring_task_id, assignee_id,
+		       due_on, status, completed_at, completed_by,
+		       created_at, updated_at, kind,
+		       claimed_by, claimed_at, claim_expires_at, claim_warned_at
+		  FROM task_instance
+		 WHERE household_id = $1
+		   AND status = 'pending'
+		   AND kind = 'scheduled'
+		   AND claimed_by IS NULL
+		   AND due_on IS NOT NULL
+		   AND assignee_id IS NOT NULL
+		   AND assignee_id <> $2
+		 ORDER BY due_on`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String(), excludeMemberID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list tradeable task instances assigned to others: %w", err)
+	}
+	defer rows.Close()
+
+	instances := make([]*domain.TaskInstance, 0)
+	for rows.Next() {
+		inst, err := scanTaskInstance(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list tradeable task instances assigned to others: scan: %w", err)
+		}
+		instances = append(instances, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list tradeable task instances assigned to others: %w", err)
+	}
+	return instances, nil
+}
+
 // LatestDueOn returns the most recent due_on materialised for the task within
 // the household and ok=true, or the zero time and ok=false when no instances
 // exist yet.

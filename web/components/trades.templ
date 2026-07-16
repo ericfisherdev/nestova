@@ -1,0 +1,325 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// View models
+// ---------------------------------------------------------------------------
+
+// TradeChoreSummary is the view model for one side of a chore trade — the
+// chore's title and its point value, shown together so a member can judge
+// whether a proposed trade is lopsided before accepting or proposing it
+// (NES-122).
+type TradeChoreSummary struct {
+	Title  string
+	Points int
+}
+
+// TradeCard is the view model for a single chore_trade row, rendered either
+// as a dashboard proposal card or as a row in the parent-only trade history
+// (NES-122).
+type TradeCard struct {
+	// TradeID is the string form of the ChoreTradeID UUID; used as the
+	// stable HTML anchor id and the HTMX action URL segment.
+	TradeID string
+	// ProposerName and ResponderName are the two parties' display names.
+	ProposerName  string
+	ResponderName string
+	// Offered is the proposer's chore (what they're giving up); Requested is
+	// the responder's chore (what the proposer wants in exchange).
+	Offered   TradeChoreSummary
+	Requested TradeChoreSummary
+	// Status is the trade's lifecycle status ("proposed", "accepted",
+	// "declined", "cancelled", "expired").
+	Status string
+	// CreatedAt is the pre-formatted date the trade was proposed.
+	CreatedAt string
+	// ResolvedAt is the pre-formatted date the trade resolved, or empty
+	// while still proposed.
+	ResolvedAt string
+	// IsResponder is true when the viewing member is this trade's
+	// responder — they get Accept/Decline actions.
+	IsResponder bool
+	// IsProposer is true when the viewing member is this trade's proposer —
+	// they get a Cancel action while the trade is still proposed.
+	IsProposer bool
+	// CSRFToken is the per-session CSRF token embedded in every action form.
+	CSRFToken string
+}
+
+// TradeSections groups a member's live trade cards for the dashboard
+// (NES-122): cards awaiting the viewing member's own decision (they are the
+// responder) and the member's own outgoing proposals (they are the
+// proposer, cancelable while still pending).
+type TradeSections struct {
+	// AwaitingYou holds trades where the viewing member is the responder.
+	AwaitingYou []TradeCard
+	// AwaitingThem holds the viewing member's own pending proposals.
+	AwaitingThem []TradeCard
+	// CanViewHistory is true for parents (owner/adult roles), who get a link
+	// to the full household trade history.
+	CanViewHistory bool
+}
+
+// TradeCandidate is one selectable "their chore" option in the propose-trade
+// picker (NES-122).
+type TradeCandidate struct {
+	InstanceID   string
+	Title        string
+	Points       int
+	AssigneeName string
+}
+
+// ProposeTradeForm is the view model for GET /tasks/{id}/propose-trade
+// (NES-122).
+type ProposeTradeForm struct {
+	OfferedInstanceID string
+	OfferedTitle      string
+	OfferedPoints     int
+	Candidates        []TradeCandidate
+	CSRFToken         string
+	// Error is a validation error shown above the submit button. Empty means
+	// no error is shown.
+	Error string
+}
+
+// TradeHistoryPage is the view model for the parent-only GET /trades/history
+// page (NES-122).
+type TradeHistoryPage struct {
+	Trades []TradeCard
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard trade sections
+// ---------------------------------------------------------------------------
+
+// TradeProposalsSection renders the dashboard's pending-trade cards (NES-122):
+// proposals awaiting the viewing member's decision, and the member's own
+// pending outgoing proposals. Renders nothing when both lists are empty AND
+// the viewer cannot view trade history — CanViewHistory alone must still
+// render the section (with its link) for a parent who has no pending trades
+// right now, so the history page always has a reachable entry point rather
+// than only appearing incidentally alongside a live proposal.
+templ TradeProposalsSection(sections TradeSections) {
+	if len(sections.AwaitingYou) > 0 || len(sections.AwaitingThem) > 0 || sections.CanViewHistory {
+		<div class="mb-6 flex flex-col gap-4">
+			if len(sections.AwaitingYou) > 0 {
+				<div>
+					<h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-muted">Trade requests for you</h2>
+					<div class="flex flex-col gap-3">
+						for _, card := range sections.AwaitingYou {
+							@TradeProposalCard(card)
+						}
+					</div>
+				</div>
+			}
+			if len(sections.AwaitingThem) > 0 {
+				<div>
+					<h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-muted">Your pending trade proposals</h2>
+					<div class="flex flex-col gap-3">
+						for _, card := range sections.AwaitingThem {
+							@TradeProposalCard(card)
+						}
+					</div>
+				</div>
+			}
+			if sections.CanViewHistory {
+				<a href="/trades/history" class="self-start text-sm font-medium text-sage hover:underline">View trade history</a>
+			}
+		</div>
+	}
+}
+
+// TradeProposalCard renders a single live trade proposal with the offered and
+// requested chores' titles and point values (informed consent on lopsided
+// trades), and the action(s) available to the viewing member: Accept/Decline
+// for the responder, Cancel for the proposer. Accept's HTMX response also
+// carries an out-of-band refresh of #task-groups (NES-118's fragment),
+// because Accept swaps both instances' assignees — see the accept form's
+// hx-swap-oob wiring below.
+templ TradeProposalCard(card TradeCard) {
+	<div
+		id={ fmt.Sprintf("trade-%s", card.TradeID) }
+		class="flex flex-col gap-2 rounded-card bg-surface px-4 py-3 shadow-warm"
+	>
+		<div class="flex flex-wrap items-center justify-between gap-2 text-sm">
+			<p class="text-ink">
+				<span class="font-medium">{ card.ProposerName }</span> offers <span class="font-medium">{ fmt.Sprintf("%q (%d pts)", card.Offered.Title, card.Offered.Points) }</span>{ " for " }<span class="font-medium">{ card.ResponderName }</span>'s <span class="font-medium">{ fmt.Sprintf("%q (%d pts)", card.Requested.Title, card.Requested.Points) }</span>
+			</p>
+		</div>
+		<div class="flex shrink-0 items-center gap-2">
+			if card.IsResponder {
+				<form
+					method="post"
+					action={ templ.SafeURL(fmt.Sprintf("/trades/%s/accept", card.TradeID)) }
+					hx-post={ fmt.Sprintf("/trades/%s/accept", card.TradeID) }
+					hx-target={ fmt.Sprintf("#trade-%s", card.TradeID) }
+					hx-swap="outerHTML"
+				>
+					<input type="hidden" name="csrf_token" value={ card.CSRFToken }/>
+					@Button("Accept", ButtonPrimary, "submit")
+				</form>
+				<form
+					method="post"
+					action={ templ.SafeURL(fmt.Sprintf("/trades/%s/decline", card.TradeID)) }
+					hx-post={ fmt.Sprintf("/trades/%s/decline", card.TradeID) }
+					hx-target={ fmt.Sprintf("#trade-%s", card.TradeID) }
+					hx-swap="outerHTML"
+				>
+					<input type="hidden" name="csrf_token" value={ card.CSRFToken }/>
+					@Button("Decline", ButtonSecondary, "submit")
+				</form>
+			} else if card.IsProposer {
+				<form
+					method="post"
+					action={ templ.SafeURL(fmt.Sprintf("/trades/%s/cancel", card.TradeID)) }
+					hx-post={ fmt.Sprintf("/trades/%s/cancel", card.TradeID) }
+					hx-target={ fmt.Sprintf("#trade-%s", card.TradeID) }
+					hx-swap="outerHTML"
+				>
+					<input type="hidden" name="csrf_token" value={ card.CSRFToken }/>
+					@Button("Cancel", ButtonSecondary, "submit")
+				</form>
+			}
+		</div>
+	</div>
+}
+
+// TradeCardRemoved renders an empty placeholder replacing a resolved trade's
+// card in place (its own hx-target), used by the Decline and Cancel actions
+// — neither changes any instance's assignee, so no #task-groups refresh is
+// needed alongside it.
+templ TradeCardRemoved(tradeID string) {
+	<div id={ fmt.Sprintf("trade-%s", tradeID) } class="hidden"></div>
+}
+
+// TradeAcceptResponse renders the accept action's full HTMX response: the
+// resolved trade card's own removal (via TradeCardRemoved) plus an
+// out-of-band #task-groups refresh (NES-118/NES-122). Accept swaps both
+// referenced instances' assignees, so any already-open /tasks page needs its
+// groups list refreshed the same way a claim's expiry already does — see
+// TaskGroupsFragment's oob parameter doc. If the requesting page's DOM has
+// no #task-groups element (e.g. the dashboard, which does not embed one),
+// htmx drops the out-of-band fragment with no effect.
+templ TradeAcceptResponse(tradeID string, groups []TaskGroup) {
+	@TradeCardRemoved(tradeID)
+	@TaskGroupsFragment(groups, true)
+}
+
+// ---------------------------------------------------------------------------
+// Propose-trade picker
+// ---------------------------------------------------------------------------
+
+// ProposeTradePage renders the "propose a trade" picker: the offered chore's
+// title and point value, and a radio-selectable list of other members'
+// tradeable chores (each showing its own title, points, and current
+// assignee), so the proposer can judge whether the trade is lopsided before
+// submitting (NES-122).
+templ ProposeTradePage(form ProposeTradeForm) {
+	<div class="p-6">
+		<div class="mb-6">
+			<h1 class="text-2xl font-semibold">Propose a chore trade</h1>
+			<p class="mt-1 text-sm text-ink-muted">Offer your chore in exchange for a sibling's.</p>
+		</div>
+		<div class="max-w-lg rounded-card bg-surface p-6 shadow-warm">
+			if form.Error != "" {
+				<div role="alert" class="mb-4 rounded-card border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+					{ form.Error }
+				</div>
+			}
+			<div class="mb-4 rounded-control border border-sidebar-border bg-surface-warm px-4 py-3">
+				<p class="text-sm text-ink-muted">You're offering</p>
+				<p class="font-medium text-ink">{ fmt.Sprintf("%s (%d pts)", form.OfferedTitle, form.OfferedPoints) }</p>
+			</div>
+			if len(form.Candidates) == 0 {
+				<p class="text-sm text-ink-muted">No sibling chores are available to trade for right now.</p>
+			} else {
+				<form method="post" action="/trades">
+					<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+					<input type="hidden" name="offered_instance_id" value={ form.OfferedInstanceID }/>
+					<fieldset class="flex flex-col gap-2">
+						<legend class="mb-2 text-sm font-semibold text-ink-secondary">In exchange for</legend>
+						for i, candidate := range form.Candidates {
+							<label class="flex items-center gap-2 rounded-control border border-sidebar-border px-3 py-2 text-sm">
+								<input
+									type="radio"
+									name="requested_instance_id"
+									value={ candidate.InstanceID }
+									checked?={ i == 0 }
+									required
+									class="accent-sage"
+								/>
+								<span class="flex-1">{ fmt.Sprintf("%s (%d pts) — %s", candidate.Title, candidate.Points, candidate.AssigneeName) }</span>
+							</label>
+						}
+					</fieldset>
+					<div class="mt-4">
+						@Button("Propose trade", ButtonPrimary, "submit")
+					</div>
+				</form>
+			}
+		</div>
+	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Trade history (parent-only)
+// ---------------------------------------------------------------------------
+
+// TradeHistoryPageComponent renders the household's most recent trades,
+// newest first, capped at domain.TradeHistoryLimit rows (NES-122) —
+// role-gated to parents by the handler.
+templ TradeHistoryPageComponent(page TradeHistoryPage) {
+	<div class="p-6">
+		<div class="mb-6">
+			<h1 class="text-2xl font-semibold">Trade History</h1>
+			<p class="mt-1 text-sm text-ink-muted">Your household's most recent chore trades (last 50).</p>
+		</div>
+		if len(page.Trades) == 0 {
+			<div class="rounded-card bg-surface p-8 text-center shadow-warm">
+				<p class="text-ink-secondary">No trades have been proposed yet.</p>
+			</div>
+		} else {
+			<div class="flex flex-col gap-2">
+				for _, card := range page.Trades {
+					@tradeHistoryRow(card)
+				}
+			</div>
+		}
+	</div>
+}
+
+// tradeHistoryRow renders one trade-history entry: both chores, both
+// parties, the trade's status, and its created/resolved timestamps.
+templ tradeHistoryRow(card TradeCard) {
+	<div class="flex flex-wrap items-center justify-between gap-3 rounded-card bg-surface px-4 py-3 shadow-warm">
+		<div class="min-w-0 flex-1">
+			<p class="text-sm text-ink">
+				<span class="font-medium">{ card.ProposerName }</span> offered <span class="font-medium">{ fmt.Sprintf("%q (%d pts)", card.Offered.Title, card.Offered.Points) }</span>{ " for " }<span class="font-medium">{ card.ResponderName }</span>'s <span class="font-medium">{ fmt.Sprintf("%q (%d pts)", card.Requested.Title, card.Requested.Points) }</span>
+			</p>
+			<p class="text-xs text-ink-muted">
+				Proposed { card.CreatedAt }
+				if card.ResolvedAt != "" {
+					{ " · Resolved " + card.ResolvedAt }
+				}
+			</p>
+		</div>
+		@tradeStatusBadge(card.Status)
+	</div>
+}
+
+// tradeStatusBadge renders a small pill for the trade's status.
+templ tradeStatusBadge(status string) {
+	switch status {
+		case "accepted":
+			<span class="inline-flex items-center rounded-control bg-member-sage-tint px-2 py-0.5 text-xs font-medium text-member-sage-fg">Accepted</span>
+		case "declined":
+			<span class="inline-flex items-center rounded-control bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">Declined</span>
+		case "cancelled":
+			<span class="inline-flex items-center rounded-control bg-surface-warm px-2 py-0.5 text-xs font-medium text-ink-muted">Cancelled</span>
+		case "expired":
+			<span class="inline-flex items-center rounded-control bg-member-ochre-tint px-2 py-0.5 text-xs font-medium text-member-ochre-fg">Expired</span>
+		default:
+			<span class="inline-flex items-center rounded-control bg-member-clay-tint px-2 py-0.5 text-xs font-medium text-member-clay-fg">Pending</span>
+	}
+}

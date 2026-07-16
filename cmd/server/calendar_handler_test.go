@@ -148,7 +148,7 @@ func buildCalendarTestHandler(t *testing.T, member *household.Member, repo calen
 	calendarHandlers := calendaradapter.NewWebHandlers(buildCalendarTestService(t, repo, exchanger, logger), sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), calendarHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), calendarHandlers)
 	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm
 }
 

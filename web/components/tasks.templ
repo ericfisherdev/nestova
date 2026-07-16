@@ -58,6 +58,17 @@ type TaskRow struct {
 	ClaimExpiresAtISO string
 	// CSRFToken is the per-session CSRF token embedded in every action form.
 	CSRFToken string
+	// Mine is true when the row is assigned to the member viewing the list
+	// (NES-122): the "Propose trade" action only makes sense on a chore that
+	// is currently the viewer's own responsibility.
+	Mine bool
+	// Tradeable mirrors domain.IsInstanceTradeable computed by the handler
+	// (NES-122): true only for a pending, kind=scheduled, unclaimed instance
+	// with a due date. The "Propose trade" action renders only when both
+	// Mine and Tradeable are true — an overdue, claimed, or standing chore
+	// is never offerable, matching the trade domain's own rules exactly
+	// rather than re-deriving them here.
+	Tradeable bool
 }
 
 // TaskGroup is a named group of task rows shown together in the list (e.g.
@@ -86,26 +97,44 @@ templ TasksPage(groups []TaskGroup) {
 				class="inline-flex items-center justify-center rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm transition-colors hover:bg-sage-dark"
 			>Add chore</a>
 		</div>
-		@TaskGroupsFragment(groups)
+		@TaskGroupsFragment(groups, false)
 	</div>
 }
 
 // TaskGroupsFragment renders just the grouped task list (or the "all caught
 // up" empty state), wrapped in a stable id="task-groups" container. It is
-// shared by TasksPage's full-page render and by GET /tasks/groups, the HTMX
-// fragment endpoint a claimed row's countdown badge refreshes on expiry
-// (NES-118).
+// shared by TasksPage's full-page render, by GET /tasks/groups (the HTMX
+// fragment endpoint a claimed row's countdown badge refreshes on expiry,
+// NES-118), and by a chore trade's Accept response (NES-122, via
+// components.TradeAcceptResponse), which swaps both traded instances'
+// assignees and so needs the same refresh.
+//
+// oob selects between the fragment's two response roles: false (the normal
+// case) renders a plain container — the primary swap target for GET
+// /tasks/groups and the initial page load. true adds hx-swap-oob="true" so
+// htmx instead treats this element as an OUT-OF-BAND update, applied to
+// whatever #task-groups element already exists in the requesting page's DOM
+// regardless of the response's own primary swap target (a trade card, for
+// TradeAcceptResponse) — a response can only carry one primary swap target,
+// so a mutation that needs to update #task-groups AND something else must
+// mark #task-groups out-of-band.
 //
 // The container — not a single row — is the swap target deliberately: a
-// row whose claim expired reverts to unassigned/claimable, which moves it
+// row whose claim expired (or a trade that reassigns it) reverts/moves it
 // out of its former assignee's group and into "Up for grabs" (or wherever
 // groupTaskRows now places it). Swapping only that one row in place would
 // update its buttons but leave it displayed under the wrong group heading
 // until a full page reload re-ran the grouping. Refreshing the whole
 // container re-runs groupTaskRows server-side, so the row always lands under
 // its correct heading in the same request.
-templ TaskGroupsFragment(groups []TaskGroup) {
-	<div id="task-groups" class="flex flex-col gap-6">
+templ TaskGroupsFragment(groups []TaskGroup, oob bool) {
+	<div
+		id="task-groups"
+		class="flex flex-col gap-6"
+		if oob {
+			hx-swap-oob="true"
+		}
+	>
 		if len(groups) == 0 {
 			<div class="rounded-card bg-surface p-8 text-center shadow-warm">
 				<p class="text-ink-secondary">No upcoming or overdue tasks — you're all caught up!</p>
@@ -221,6 +250,12 @@ templ TaskRowItem(row TaskRow) {
 						<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
 						@Button("Skip", ButtonSecondary, "submit")
 					</form>
+					if row.Mine && row.Tradeable {
+						<a
+							href={ templ.SafeURL(fmt.Sprintf("/tasks/%s/propose-trade", row.InstanceID)) }
+							class="inline-flex items-center justify-center rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink transition-colors hover:bg-surface-warm"
+						>Trade</a>
+					}
 				}
 			} else if row.Status == "done" {
 				<span class="text-sm font-medium text-sage">Completed</span>

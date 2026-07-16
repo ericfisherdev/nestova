@@ -49,7 +49,13 @@ func NewTradeService(
 
 // Propose validates and persists a new trade proposal: proposerID is
 // offering offeredInstanceID (which must currently be assigned to them) in
-// exchange for responderID's requestedInstanceID.
+// exchange for responderID's requestedInstanceID. On success, a "proposal
+// received" notification is enqueued to the responder (NES-122).
+//
+// Notification enqueue failures are logged but never surface as this
+// method's error: the proposal has already committed by the time
+// notification building starts, mirroring Accept's post-commit,
+// best-effort notification contract (see Accept's doc).
 //
 // Error contracts:
 //   - Returns domain.ErrTradeSelf when proposerID equals responderID.
@@ -82,9 +88,11 @@ func (s *TradeService) Propose(
 		OfferedInstanceID:   offeredInstanceID,
 		RequestedInstanceID: requestedInstanceID,
 	}
-	if err := s.tradeRepo.Propose(ctx, householdID, trade); err != nil {
+	proposed, err := s.tradeRepo.Propose(ctx, householdID, trade)
+	if err != nil {
 		return nil, fmt.Errorf("propose trade: %w", err)
 	}
+	s.notifyProposed(ctx, time.Now(), proposed)
 	return trade, nil
 }
 
@@ -125,7 +133,12 @@ func (s *TradeService) Accept(
 }
 
 // Decline resolves the trade against acceptance: no instance assignment
-// changes.
+// changes. On success, a "trade declined" notification is enqueued to the
+// proposer (NES-122).
+//
+// Notification enqueue failure is logged but never surfaces as this method's
+// error, mirroring Propose's and Accept's post-commit, best-effort
+// notification contract (see Accept's doc).
 //
 // Error contracts:
 //   - Returns domain.ErrTradeNotPending when the trade is unknown, belongs to
@@ -137,9 +150,11 @@ func (s *TradeService) Decline(
 	id domain.ChoreTradeID,
 	responderID household.MemberID,
 ) error {
-	if err := s.tradeRepo.Decline(ctx, householdID, id, responderID); err != nil {
+	declined, err := s.tradeRepo.Decline(ctx, householdID, id, responderID)
+	if err != nil {
 		return fmt.Errorf("decline trade: %w", err)
 	}
+	s.notifyDeclined(ctx, time.Now(), declined)
 	return nil
 }
 
@@ -235,6 +250,60 @@ func (s *TradeService) notifyAccepted(ctx context.Context, at time.Time, resolve
 				"error", err,
 			)
 		}
+	}
+}
+
+// notifyProposed enqueues a single "proposal received" notification to the
+// responder, addressed by proposed.ResponderID. Failure is logged only — see
+// Propose's doc for why it is not surfaced as an error.
+func (s *TradeService) notifyProposed(ctx context.Context, at time.Time, proposed domain.ProposedTrade) {
+	tradeUUID := uuid.UUID(proposed.TradeID)
+	responderID := proposed.ResponderID
+	n := &notifydomain.Notification{
+		ID:          notifydomain.NewNotificationID(),
+		HouseholdID: proposed.HouseholdID,
+		MemberID:    &responderID,
+		Channel:     notifydomain.ChannelInApp,
+		Title:       "New chore trade proposal",
+		Body: fmt.Sprintf("You've been offered a trade: %q for your %q.",
+			proposed.OfferedTitle, proposed.RequestedTitle),
+		ScheduledFor: at,
+		Status:       notifydomain.StatusPending,
+		SourceType:   "chore_trade",
+		SourceID:     &tradeUUID,
+	}
+	if err := s.enqueuer.Enqueue(ctx, n); err != nil {
+		s.logger.Error("trades: proposal notification enqueue failed",
+			"trade_id", proposed.TradeID.String(),
+			"error", err,
+		)
+	}
+}
+
+// notifyDeclined enqueues a single "trade declined" notification to the
+// proposer, addressed by declined.ProposerID. Failure is logged only — see
+// Decline's doc for why it is not surfaced as an error.
+func (s *TradeService) notifyDeclined(ctx context.Context, at time.Time, declined domain.DeclinedTrade) {
+	tradeUUID := uuid.UUID(declined.TradeID)
+	proposerID := declined.ProposerID
+	n := &notifydomain.Notification{
+		ID:          notifydomain.NewNotificationID(),
+		HouseholdID: declined.HouseholdID,
+		MemberID:    &proposerID,
+		Channel:     notifydomain.ChannelInApp,
+		Title:       "Chore trade declined",
+		Body: fmt.Sprintf("Your trade proposal (%q for %q) was declined.",
+			declined.OfferedTitle, declined.RequestedTitle),
+		ScheduledFor: at,
+		Status:       notifydomain.StatusPending,
+		SourceType:   "chore_trade",
+		SourceID:     &tradeUUID,
+	}
+	if err := s.enqueuer.Enqueue(ctx, n); err != nil {
+		s.logger.Error("trades: decline notification enqueue failed",
+			"trade_id", declined.TradeID.String(),
+			"error", err,
+		)
 	}
 }
 
