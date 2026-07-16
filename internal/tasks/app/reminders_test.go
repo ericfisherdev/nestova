@@ -562,14 +562,24 @@ func TestEmitClaimExpiry_EmptyClaims_EnqueuesNothing(t *testing.T) {
 // fakeInstanceRepoWithClaimExpiry.
 // ---------------------------------------------------------------------------
 
+// clearedClaimWarning records one ClearClaimWarning call's arguments so
+// recovery tests can assert not just that the un-stamp path ran, but that it
+// was scoped to the correct claim window (the InstanceID/ExpiresAt pair
+// EmitClaimWarnings actually received from ClaimWarnings).
+type clearedClaimWarning struct {
+	instanceID domain.TaskInstanceID
+	expiresAt  time.Time
+}
+
 type fakeInstanceRepoWithClaimWarnings struct {
 	*fakeTaskInstanceRepo
 	warnings []domain.ClaimWarning
 	err      error
-	// clearedIDs records the instance IDs passed to ClearClaimWarning so
-	// recovery tests can assert the un-stamp path ran, mirroring
-	// fakeInstanceRepoWithDueSoon's clearedIDs.
-	clearedIDs []domain.TaskInstanceID
+	// clearedWarnings records every ClearClaimWarning call's arguments,
+	// mirroring fakeInstanceRepoWithDueSoon's clearedIDs but also capturing
+	// ExpiresAt so tests can verify the window-scope guard is exercised with
+	// the right value, not just that a clear happened.
+	clearedWarnings []clearedClaimWarning
 	// clearErr, when set, makes ClearClaimWarning fail.
 	clearErr error
 }
@@ -581,8 +591,8 @@ func (r *fakeInstanceRepoWithClaimWarnings) ClaimWarnings(_ context.Context, _ t
 	return r.warnings, nil
 }
 
-func (r *fakeInstanceRepoWithClaimWarnings) ClearClaimWarning(_ context.Context, id domain.TaskInstanceID, _ time.Time) error {
-	r.clearedIDs = append(r.clearedIDs, id)
+func (r *fakeInstanceRepoWithClaimWarnings) ClearClaimWarning(_ context.Context, id domain.TaskInstanceID, expiresAt time.Time) error {
+	r.clearedWarnings = append(r.clearedWarnings, clearedClaimWarning{instanceID: id, expiresAt: expiresAt})
 	return r.clearErr
 }
 
@@ -654,7 +664,7 @@ func TestEmitClaimWarnings_EnqueuesOneNotificationPerWarning(t *testing.T) {
 	if n.Status != notifydomain.StatusPending {
 		t.Errorf("Status = %v, want StatusPending", n.Status)
 	}
-	if want := "Your claim on Mow the lawn expires in less than 2 hours — complete it soon to avoid a point penalty."; n.Body != want {
+	if want := "Your claim on Mow the lawn expires within 2 hours — complete it soon to avoid a point penalty."; n.Body != want {
 		t.Errorf("Body = %q, want %q", n.Body, want)
 	}
 	if want := "Claim expiring soon: Mow the lawn"; n.Title != want {
@@ -767,12 +777,18 @@ func TestEmitClaimWarnings_OneEnqueueErrorClearsAndSurfaces(t *testing.T) {
 		t.Errorf("enqueued %d notifications, want 1 (second warning succeeded)", len(enqueuer.notifications))
 	}
 
-	// The failed warning's claim_warned_at must have been cleared for retry.
-	if len(instRepo.clearedIDs) != 1 {
-		t.Fatalf("ClearClaimWarning called %d times, want 1", len(instRepo.clearedIDs))
+	// The failed warning's claim_warned_at must have been cleared for retry,
+	// scoped to the exact claim window (ExpiresAt) the warning was generated
+	// for.
+	if len(instRepo.clearedWarnings) != 1 {
+		t.Fatalf("ClearClaimWarning called %d times, want 1", len(instRepo.clearedWarnings))
 	}
-	if instRepo.clearedIDs[0] != failedWarning.InstanceID {
-		t.Errorf("cleared instance = %v, want failed warning %v", instRepo.clearedIDs[0], failedWarning.InstanceID)
+	cleared := instRepo.clearedWarnings[0]
+	if cleared.instanceID != failedWarning.InstanceID {
+		t.Errorf("cleared instance = %v, want failed warning %v", cleared.instanceID, failedWarning.InstanceID)
+	}
+	if !cleared.expiresAt.Equal(failedWarning.ExpiresAt) {
+		t.Errorf("cleared expiresAt = %v, want %v", cleared.expiresAt, failedWarning.ExpiresAt)
 	}
 }
 
@@ -800,9 +816,12 @@ func TestEmitClaimWarnings_ClearFailureStillSurfacesEnqueueError(t *testing.T) {
 	if emitErr == nil {
 		t.Error("EmitClaimWarnings error = nil, want non-nil when enqueue failed (even though clear also failed)")
 	}
-	// The clear was still attempted.
-	if len(instRepo.clearedIDs) != 1 {
-		t.Errorf("ClearClaimWarning called %d times, want 1", len(instRepo.clearedIDs))
+	// The clear was still attempted, with the correct claim window.
+	if len(instRepo.clearedWarnings) != 1 {
+		t.Fatalf("ClearClaimWarning called %d times, want 1", len(instRepo.clearedWarnings))
+	}
+	if !instRepo.clearedWarnings[0].expiresAt.Equal(warning.ExpiresAt) {
+		t.Errorf("cleared expiresAt = %v, want %v", instRepo.clearedWarnings[0].expiresAt, warning.ExpiresAt)
 	}
 }
 
@@ -827,8 +846,8 @@ func TestEmitClaimWarnings_RetriesAfterClear(t *testing.T) {
 	if emitErr := r.EmitClaimWarnings(context.Background(), time.Now()); emitErr == nil {
 		t.Fatal("EmitClaimWarnings (first tick) error = nil, want non-nil enqueue failure")
 	}
-	if len(instRepo.clearedIDs) != 1 {
-		t.Fatalf("ClearClaimWarning called %d times after first tick, want 1", len(instRepo.clearedIDs))
+	if len(instRepo.clearedWarnings) != 1 {
+		t.Fatalf("ClearClaimWarning called %d times after first tick, want 1", len(instRepo.clearedWarnings))
 	}
 
 	// Second tick: a fresh (non-failing) enqueuer over the same, now-cleared

@@ -232,43 +232,32 @@ func (h *WebHandlers) Claim(w http.ResponseWriter, r *http.Request) {
 	h.respondAfterTaskMutation(w, r, member, id)
 }
 
-// Row handles GET /tasks/{id}/row. It re-reads the instance and renders its
-// current row for an in-place HTMX swap (NES-118): the claim countdown timer
-// (web/static/js/claim-countdown.js) triggers this endpoint client-side once
-// a claim's expiry passes, so a row whose claim was reverted by the
-// background sweep flips back to its claimable state without a full page
-// reload. Unlike Complete/Skip/Claim there is no state to change here — this
-// is a passive read, so it is a GET and always succeeds unless the instance
-// itself cannot be found.
-//
-// Error mapping:
-//   - malformed id              → 400
-//   - domain.ErrInstanceNotFound → 404
-//   - other                     → 500
-func (h *WebHandlers) Row(w http.ResponseWriter, r *http.Request) {
+// Groups handles GET /tasks/groups. It rebuilds the grouped task list and
+// renders just the #task-groups container fragment (NES-118): a claimed
+// row's countdown badge, on its claim's expiry, targets this endpoint
+// instead of re-rendering only itself, so the reverted claim's row is
+// re-grouped under its correct heading (e.g. moving from its former
+// assignee's section into "Up for grabs") in the same request, rather than
+// rendering correctly in place but staying nested under the wrong group
+// heading until a full page reload re-ran the grouping. This is a passive
+// read with no state to change, so it is a GET and always succeeds.
+func (h *WebHandlers) Groups(w http.ResponseWriter, r *http.Request) {
 	member, ok := authadapter.CurrentMember(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	id, ok := h.parseInstanceID(w, r)
-	if !ok {
-		return
-	}
-
-	row, err := h.buildInstanceRow(r, member, id)
+	rows, err := h.buildTaskRows(r, member)
 	if err != nil {
-		if errors.Is(err, domain.ErrInstanceNotFound) {
-			http.Error(w, "task not found", http.StatusNotFound)
-			return
-		}
-		h.logger.ErrorContext(r.Context(), "tasks: build row for refresh", "error", err)
+		h.logger.ErrorContext(r.Context(), "tasks: build task rows for group refresh", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	if err := render.Render(r.Context(), w, http.StatusOK, components.TaskRowItem(row)); err != nil {
-		h.logger.ErrorContext(r.Context(), "tasks: render row for refresh", "error", err)
+
+	groups := groupTaskRows(rows)
+	if err := render.Render(r.Context(), w, http.StatusOK, components.TaskGroupsFragment(groups)); err != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: render group refresh", "error", err)
 	}
 }
 

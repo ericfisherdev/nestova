@@ -13,6 +13,22 @@ import (
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
 
+// recoveryClearTimeout bounds how long a recovery clear (un-stamping a
+// reminded/warned row after a failed enqueue) is allowed to take.
+const recoveryClearTimeout = 5 * time.Second
+
+// recoveryContext returns a context for a recovery clear, detached from
+// ctx's cancellation but still carrying its values, bounded by
+// recoveryClearTimeout. A recovery clear runs because ctx already caused (or
+// coincided with) an enqueue failure — if ctx is itself cancelled (e.g. a
+// shutting-down tick), deriving the clear's context from it would let the
+// clear be skipped too, permanently stranding the row as reminded/warned
+// instead of retried. The returned cancel func must be called once the clear
+// completes.
+func recoveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), recoveryClearTimeout)
+}
+
 // categoryLabel returns a human-readable prefix for a task category, used in
 // notification title text. It is kept simple and contains no PII.
 func categoryLabel(cat domain.Category) string {
@@ -91,9 +107,12 @@ func (r *Reminders) EmitOverdue(ctx context.Context, asOf time.Time, targets []d
 // enqueues, so a failed enqueue would otherwise drop the reminder permanently.
 // To make it recoverable, a failed enqueue triggers
 // [domain.TaskInstanceRepository.ClearDueSoonReminder] to reset reminded_at to
-// NULL, so the next tick re-claims and retries the row. A failed clear is
-// logged (the reminder is then lost until the row's state changes, which is the
-// best we can do).
+// NULL, so the next tick re-claims and retries the row. The clear runs under
+// [recoveryContext] rather than ctx directly: ctx may already be cancelled by
+// the time an enqueue fails (e.g. a shutting-down tick), and deriving the
+// clear from a cancelled ctx would skip it too, permanently stranding the
+// row instead of retrying it. A failed clear is logged (the reminder is then
+// lost until the row's state changes, which is the best we can do).
 //
 // Returns a non-nil error when ClaimDueSoonReminders fails OR when any enqueue
 // failed, so the scheduler surfaces the failure instead of masking it.
@@ -108,7 +127,10 @@ func (r *Reminders) EmitDueSoon(ctx context.Context, asOf time.Time) error {
 		if enqErr := r.enqueueReminder(ctx, asOf, tgt); enqErr != nil {
 			failures++
 			// Un-stamp reminded_at so the row is re-claimed and retried next tick.
-			if clearErr := r.instanceRepo.ClearDueSoonReminder(ctx, tgt.InstanceID); clearErr != nil {
+			clearCtx, cancel := recoveryContext(ctx)
+			clearErr := r.instanceRepo.ClearDueSoonReminder(clearCtx, tgt.InstanceID)
+			cancel()
+			if clearErr != nil {
 				r.logger.Error("reminders: clear due-soon reminder failed; reminder may be lost until row changes",
 					"instance_id", tgt.InstanceID.String(),
 					"error", clearErr,
@@ -169,7 +191,11 @@ func (r *Reminders) EmitClaimExpiry(ctx context.Context, asOf time.Time) error {
 // permanently. To make it recoverable, a failed enqueue triggers
 // [domain.TaskInstanceRepository.ClearClaimWarning] to reset claim_warned_at
 // to NULL for that specific claim window, so the next tick re-selects and
-// retries the row. A failed clear is logged (the warning is then lost until
+// retries the row. The clear runs under [recoveryContext] rather than ctx
+// directly, for the same reason EmitDueSoon's recovery does: ctx may already
+// be cancelled by the time an enqueue fails, and a clear derived from a
+// cancelled ctx would be skipped too, permanently stranding the row instead
+// of retrying it. A failed clear is logged (the warning is then lost until
 // the row's claim state changes, which is the best we can do).
 //
 // Returns a non-nil error when ClaimWarnings fails OR when any enqueue
@@ -186,7 +212,10 @@ func (r *Reminders) EmitClaimWarnings(ctx context.Context, asOf time.Time) error
 			failures++
 			// Un-stamp claim_warned_at (scoped to this claim window) so the row is
 			// re-selected and retried next tick.
-			if clearErr := r.instanceRepo.ClearClaimWarning(ctx, warning.InstanceID, warning.ExpiresAt); clearErr != nil {
+			clearCtx, cancel := recoveryContext(ctx)
+			clearErr := r.instanceRepo.ClearClaimWarning(clearCtx, warning.InstanceID, warning.ExpiresAt)
+			cancel()
+			if clearErr != nil {
 				r.logger.Error("reminders: clear claim warning failed; warning may be lost until row changes",
 					"instance_id", warning.InstanceID.String(),
 					"error", clearErr,
@@ -227,7 +256,7 @@ func (r *Reminders) enqueueClaimWarning(ctx context.Context, asOf time.Time, war
 		Channel:     notifydomain.ChannelInApp,
 		Title:       fmt.Sprintf("Claim expiring soon: %s", warning.Title),
 		Body: fmt.Sprintf(
-			"Your claim on %s expires in less than %d hours — complete it soon to avoid a point penalty.",
+			"Your claim on %s expires within %d hours — complete it soon to avoid a point penalty.",
 			warning.Title, int(domain.ClaimWarningWindow.Hours()),
 		),
 		ScheduledFor: asOf,

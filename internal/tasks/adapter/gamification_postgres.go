@@ -153,7 +153,9 @@ func (r *PointLedgerPostgresRepository) Leaderboard(
 // additional query per entry. The two LEFT JOIN chains are each gated by
 // source_type so a row only ever matches the chain relevant to its own kind;
 // COALESCE collapses an unresolved or inapplicable join to "" rather than a
-// NULL scan target.
+// NULL scan target. The ordering tiebreaks on pl.id (a UUIDv7, so
+// time-ordered) after created_at, so the result is deterministic even when
+// two entries share the same created_at value.
 // Returns an empty slice (not an error) when the member has no entries.
 func (r *PointLedgerPostgresRepository) History(
 	ctx context.Context,
@@ -175,7 +177,7 @@ func (r *PointLedgerPostgresRepository) History(
 		  LEFT JOIN reward rw ON rw.id = rr.reward_id
 		 WHERE pl.household_id = $1
 		   AND pl.member_id    = $2
-		 ORDER BY pl.created_at DESC
+		 ORDER BY pl.created_at DESC, pl.id DESC
 		 LIMIT $4`
 	rows, err := r.dbtx.Query(ctx, q,
 		householdID.String(),
