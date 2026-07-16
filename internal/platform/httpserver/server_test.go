@@ -17,8 +17,16 @@ import (
 )
 
 // testConfig returns a minimal config for building the server in tests.
+// RequestTimeout is set explicitly (rather than left at its zero value) since
+// New derives both the connection-level ReadTimeout/WriteTimeout and the
+// per-request middleware.Timeout deadline from it; a zero RequestTimeout would
+// produce a negative per-request deadline (already-expired) once
+// requestTimeoutMargin is subtracted.
 func testConfig() config.Config {
-	return config.Config{Server: config.ServerConfig{Addr: ":0"}, Env: config.EnvTest}
+	return config.Config{
+		Server: config.ServerConfig{Addr: ":0", RequestTimeout: 30 * time.Second},
+		Env:    config.EnvTest,
+	}
 }
 
 // doRequest builds the server's handler and serves a single GET request to path.

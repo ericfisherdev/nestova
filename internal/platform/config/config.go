@@ -55,6 +55,18 @@ const (
 	cookieSecureAuto  = "auto"
 	cookieSecureTrue  = "true"
 	cookieSecureFalse = "false"
+
+	// defaultServerRequestTimeout is SERVER_REQUEST_TIMEOUT's default: generous
+	// enough that a phone on weak Wi-Fi can finish uploading a photo near
+	// MediaConfig.MaxUploadBytes without the connection or the per-request
+	// context deadline cutting it off mid-upload.
+	defaultServerRequestTimeout = 120 * time.Second
+	// minServerRequestTimeout is the floor Load enforces for
+	// SERVER_REQUEST_TIMEOUT: below this, ordinary requests (not just large
+	// uploads) would risk spurious timeouts, and httpserver's derived
+	// per-request context deadline (RequestTimeout minus its margin) could be
+	// squeezed uncomfortably thin.
+	minServerRequestTimeout = 15 * time.Second
 )
 
 // Config holds the validated runtime configuration, grouped by concern so each
@@ -134,6 +146,16 @@ type ServerConfig struct {
 	// of these networks, so an external client cannot spoof a secure context. An
 	// empty value trusts no proxy.
 	TrustedProxies string
+	// RequestTimeout bounds how long the server allows a single request to take
+	// end to end — it backs both the connection-level ReadTimeout/WriteTimeout
+	// (httpserver.New) and (minus a small margin) the per-request context
+	// deadline applied to every handler. It must be generous enough for the
+	// slowest legitimate request the server handles: uploading a photo near
+	// MediaConfig.MaxUploadBytes over a weak connection, not just a fast LAN
+	// request, since ReadTimeout bounds the whole request body read and
+	// WriteTimeout's deadline is set once when headers finish reading and does
+	// not reset while the body is still being read (net/http.conn.readRequest).
+	RequestTimeout time.Duration
 }
 
 // TrustedProxyPrefixes parses TrustedProxies into netip prefixes for the
@@ -325,6 +347,8 @@ func Load() (Config, error) {
 	collect(err)
 	connTimeout, err := getduration("DB_CONNECT_TIMEOUT", 5*time.Second)
 	collect(err)
+	serverRequestTimeout, err := getduration("SERVER_REQUEST_TIMEOUT", defaultServerRequestTimeout)
+	collect(err)
 	sessionLifetime, err := getduration("SESSION_LIFETIME", 12*time.Hour)
 	collect(err)
 	recipesExternalEnabled, err := getbool("RECIPES_EXTERNAL_ENABLED", false)
@@ -394,7 +418,7 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		Env:    env,
-		Server: ServerConfig{Addr: ":" + port, TrustedProxies: trustedProxies},
+		Server: ServerConfig{Addr: ":" + port, TrustedProxies: trustedProxies, RequestTimeout: serverRequestTimeout},
 		DB: DBConfig{
 			DSN:         dsn,
 			MaxConns:    maxConns,
@@ -490,6 +514,10 @@ func (c Config) validate() []error {
 	}
 	if c.DB.ConnTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("DB_CONNECT_TIMEOUT must be positive, got %v", c.DB.ConnTimeout))
+	}
+	if c.Server.RequestTimeout < minServerRequestTimeout {
+		errs = append(errs, fmt.Errorf("SERVER_REQUEST_TIMEOUT must be at least %v, got %v",
+			minServerRequestTimeout, c.Server.RequestTimeout))
 	}
 	if len(c.Session.Secret) < minSecretLen {
 		errs = append(errs, fmt.Errorf("SESSION_SECRET must be at least %d bytes, got %d",

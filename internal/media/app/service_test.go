@@ -386,6 +386,30 @@ func TestPhotoServiceDeleteRejectsOtherHousehold(t *testing.T) {
 	}
 }
 
+// TestPhotoServiceDeleteIsRowsOnly covers the invariant documented on
+// Delete: a successful delete removes the metadata row but never touches the
+// stored bytes, since owning a row is not the same as exclusively owning its
+// ref (a legacy duplicate row, or a concurrent re-upload racing this delete,
+// can still depend on it).
+func TestPhotoServiceDeleteIsRowsOnly(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+	id := domain.NewPhotoID()
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "hh/aa/x.jpg"}
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+
+	if err := svc.Delete(context.Background(), hh, id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if len(repo.deleted) != 1 || repo.deleted[0] != id {
+		t.Fatalf("Delete did not remove the metadata row: deleted=%v", repo.deleted)
+	}
+	if len(store.deleted) != 0 {
+		t.Fatalf("Delete must never remove stored bytes, got deleted=%v", store.deleted)
+	}
+}
+
 // --- AlbumService ---
 
 func TestAlbumServiceCreateValidates(t *testing.T) {

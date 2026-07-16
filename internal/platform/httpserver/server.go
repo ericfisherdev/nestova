@@ -21,11 +21,14 @@ const (
 	// readinessTimeout bounds the dependency check performed by the readiness
 	// probe so a stalled dependency cannot hang the endpoint.
 	readinessTimeout = 2 * time.Second
-	// requestTimeout bounds in-handler work via the request context. It must be
-	// less than the connection-level WriteTimeout below so a handler has time to
-	// write a clean 500/503 after its context cancels, rather than racing the
-	// connection's write deadline.
-	requestTimeout = 13 * time.Second
+	// requestTimeoutMargin is subtracted from cfg.Server.RequestTimeout to get
+	// the per-request context deadline (middleware.Timeout): it must stay
+	// short of the connection-level WriteTimeout (set to the same
+	// RequestTimeout) so a handler has time to write a clean 500/503 after its
+	// context cancels, rather than racing the connection's write deadline.
+	// config.minServerRequestTimeout keeps RequestTimeout comfortably above
+	// this margin.
+	requestTimeoutMargin = 5 * time.Second
 )
 
 // ReadinessFunc reports whether the server's backing dependencies (e.g. the
@@ -61,14 +64,25 @@ type Deps struct {
 
 // New builds the application's HTTP server from cfg and deps with the core
 // middleware (request id, structured logging, panic recovery, per-request
-// timeout) applied to every route. Connection timeouts are set to conservative
-// defaults to avoid Slowloris-style resource exhaustion on a public listener.
+// timeout) applied to every route. ReadHeaderTimeout stays a short, fixed
+// guard against Slowloris-style header trickling regardless of upload size;
+// ReadTimeout/WriteTimeout and the per-request context deadline all derive
+// from cfg.Server.RequestTimeout, since a legitimate large photo upload over a
+// slow connection needs a body-read (and therefore also a write-deadline)
+// budget well beyond what a small fast request needs — see RequestTimeout's
+// doc comment for why WriteTimeout must grow too, not just ReadTimeout.
 func New(cfg config.Config, deps Deps) *http.Server {
 	// Logger is required: the logging and recovery middleware use it on every
 	// request. Fail loudly at construction rather than panicking mid-request.
 	if deps.Logger == nil {
 		panic("httpserver: Deps.Logger is required")
 	}
+	// The per-request context deadline stays requestTimeoutMargin short of
+	// RequestTimeout (used below for the connection-level ReadTimeout and
+	// WriteTimeout) so a handler whose context expires still has that margin
+	// to write a clean 500/503 before the connection's own write deadline
+	// would cut it off. config.minServerRequestTimeout keeps this positive.
+	requestTimeout := cfg.Server.RequestTimeout - requestTimeoutMargin
 	// Canonical middleware order (outermost first): request id wraps everything so
 	// every request is logged with an id even on panic; ForwardedHeaders resolves
 	// the effective scheme/client IP from a trusted proxy before anything reads
@@ -100,13 +114,25 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	handler := middleware.Chain(chain...)(routes(deps))
 
 	return &http.Server{
-		Addr:              cfg.Server.Addr,
-		Handler:           handler,
-		MaxHeaderBytes:    1 << 20, // 1 MiB, bounding header memory per connection.
+		Addr:           cfg.Server.Addr,
+		Handler:        handler,
+		MaxHeaderBytes: 1 << 20, // 1 MiB, bounding header memory per connection.
+		// Short and fixed: headers are small regardless of upload size, so this
+		// guards against Slowloris-style header trickling without needing to
+		// grow alongside RequestTimeout.
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// Bounds reading the entire request, body included (net/http docs) — so
+		// this must cover the slowest legitimate upload, not just headers.
+		ReadTimeout: cfg.Server.RequestTimeout,
+		// The write deadline is armed once, when headers finish being read
+		// (net/http.conn.readRequest), and does not reset while the body is
+		// still being read afterward — so if this were shorter than the time a
+		// slow upload's body read takes, the deadline would already be past by
+		// the time the handler tries to write its response, even though the
+		// upload itself succeeded. Matching it to RequestTimeout (the same
+		// budget ReadTimeout uses) avoids that.
+		WriteTimeout: cfg.Server.RequestTimeout,
+		IdleTimeout:  60 * time.Second,
 		// Secure floor for the app-terminated TLS path (NES-54); unused when the
 		// server serves plain HTTP behind a TLS-terminating proxy. Go negotiates
 		// TLS 1.3 when available and falls back no lower than 1.2.
