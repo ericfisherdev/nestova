@@ -435,16 +435,22 @@ type TaskInstanceRepository interface {
 // Lock-ordering convention (to avoid a Propose/Accept deadlock): Propose
 // acquires row locks on the two referenced task_instance rows only (ordered
 // by id); it never takes an explicit lock on any chore_trade row — the
-// partial unique indexes (chore_trade_offered_live_uniq /
-// chore_trade_requested_live_uniq) are the sole atomic mechanism preventing a
-// duplicate live proposal, so no additional locking is needed for
-// correctness. Accept, in the opposite order, locks its own chore_trade row
-// first (via its own UPDATE) and then the two task_instance rows (via the
-// swap). Because Propose never holds a task_instance lock while ALSO waiting
-// to acquire a chore_trade lock, and Accept never holds a chore_trade lock
-// while waiting on a task_instance lock held by a third party other than
-// another Accept, this asymmetric ordering cannot form a reverse-order lock
-// cycle between a concurrent Propose and Accept. Every method that begins a
+// chore_trade_reservation table's PRIMARY KEY on instance_id (maintained by a
+// trigger on chore_trade, see the migration) is the sole, schema-enforced
+// mechanism preventing a duplicate live proposal — in either role, offered or
+// requested — so no additional locking is needed for correctness, and it
+// holds for every writer, not just this repository. Accept, in the opposite
+// order, locks its own chore_trade row first (via its own UPDATE) and then
+// the two task_instance rows (via the swap). Because Propose never holds a
+// task_instance lock while ALSO waiting to acquire a chore_trade lock, and
+// Accept never holds a chore_trade lock while waiting on a task_instance lock
+// held by a third party other than another Accept, this asymmetric ordering
+// cannot form a reverse-order lock cycle between a concurrent Propose and
+// Accept — this holds even though Propose's insert and Accept's update each
+// drive the reservation trigger, because the trigger's own reservation-row
+// change is always committed atomically together with the very
+// chore_trade.status change hasLiveTradeProposal already reads (see that
+// function's doc for the full argument). Every method that begins a
 // transaction and acquires more than one lock must preserve this invariant —
 // see TestTrade_ProposeVsAccept_NoDeadlock in the adapter's test suite.
 //

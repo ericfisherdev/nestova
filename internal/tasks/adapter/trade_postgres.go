@@ -17,14 +17,13 @@ import (
 // Constraint names from 00021_chore_trade.sql used to map database errors to
 // domain sentinels (NES-121).
 const (
-	// constraintChoreTradeOfferedLiveUniq is the partial unique index on
-	// offered_instance_id WHERE status = 'proposed' whose violation maps to
-	// domain.ErrInstanceNotTradeable.
-	constraintChoreTradeOfferedLiveUniq = "chore_trade_offered_live_uniq"
-	// constraintChoreTradeRequestedLiveUniq is the partial unique index on
-	// requested_instance_id WHERE status = 'proposed' whose violation maps to
-	// domain.ErrInstanceNotTradeable.
-	constraintChoreTradeRequestedLiveUniq = "chore_trade_requested_live_uniq"
+	// constraintChoreTradeReservationPK is the PRIMARY KEY on
+	// chore_trade_reservation.instance_id, maintained by the
+	// chore_trade_reservation_sync_trigger AFTER INSERT on chore_trade. Its
+	// violation means one of the two instances being proposed already has a
+	// live reservation — in EITHER role, offered or requested — held by a
+	// different trade, and maps to domain.ErrInstanceNotTradeable.
+	constraintChoreTradeReservationPK = "chore_trade_reservation_pkey"
 )
 
 // TradeRepository is the pgx-backed implementation of
@@ -114,8 +113,7 @@ func (r *TradeRepository) Propose(
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == sqlstateUniqueViolation &&
-			(pgErr.ConstraintName == constraintChoreTradeOfferedLiveUniq ||
-				pgErr.ConstraintName == constraintChoreTradeRequestedLiveUniq) {
+			pgErr.ConstraintName == constraintChoreTradeReservationPK {
 			return fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
 		}
 		return fmt.Errorf("propose trade: insert: %w", err)
@@ -197,12 +195,13 @@ func lockTradeInstances(
 // This is a plain (non-locking) read: it exists only to give Propose a
 // friendly, early ErrInstanceNotTradeable rather than always falling through
 // to a raw unique-constraint violation. It is NOT the source of correctness
-// for "at most one live proposal per instance" — chore_trade_offered_live_uniq
-// and chore_trade_requested_live_uniq (the two partial unique indexes) are the
-// sole atomic backstop for that guarantee, catching same-column collisions
-// even when this early read races another transaction's not-yet-committed
-// insert (see the migration's doc comment for the known cross-column gap
-// those indexes don't close).
+// for "at most one live proposal per instance, in either role" — the
+// chore_trade_reservation table's PRIMARY KEY (maintained by
+// chore_trade_reservation_sync_trigger, see the migration) is the sole,
+// schema-enforced backstop for that guarantee, and holds for every writer —
+// not just callers that go through this method first. This read can race a
+// concurrent transaction's not-yet-committed insert without any correctness
+// impact, precisely because it's advisory only.
 //
 // Deliberately no FOR UPDATE: an earlier version locked the matched rows,
 // which meant Propose — already holding locks on the two task_instance rows
@@ -213,8 +212,15 @@ func lockTradeInstances(
 // already-live trade's instance and a concurrent Accept of that same trade
 // could deadlock. A plain, non-blocking MVCC read never enters that lock
 // wait at all, which is what the lock-ordering convention documented on
-// domain.ChoreTradeRepository requires of Propose. See
-// TestTrade_ProposeVsAccept_NoDeadlock for the regression coverage.
+// domain.ChoreTradeRepository requires of Propose. This property is preserved
+// by chore_trade_reservation_sync_trigger firing within the SAME transaction
+// as every chore_trade status change: this read (on chore_trade.status) and
+// the reservation table's enforcement (driven by that same status change) are
+// always resolved together, atomically, at that transaction's commit — there
+// is no instant where this read could say "not live" while a reservation row
+// for the same trade is still a different, uncommitted transaction's problem
+// to resolve. See TestTrade_ProposeVsAccept_NoDeadlock for the regression
+// coverage.
 func hasLiveTradeProposal(
 	ctx context.Context,
 	tx pgx.Tx,
