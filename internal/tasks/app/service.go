@@ -146,9 +146,19 @@ func (s *TaskService) SkipInstance(
 	return nil
 }
 
-// ClaimInstance assigns an unassigned pending or overdue instance to assignee.
-// An overdue chore is still claimable: it can be picked up late. Claiming is
-// first-come: an already-assigned instance cannot be re-claimed.
+// ClaimInstance assigns a pending or overdue instance to assignee. An
+// overdue chore is still claimable: it can be picked up late. Claiming is
+// first-come for anyone else: an instance already assigned to a DIFFERENT
+// member cannot be taken over.
+//
+// NES-117: when the instance was previously unassigned (claimable, or a
+// NES-116 standing instance), the claim is at risk — it expires
+// [domain.ClaimWindow] after being claimed and incurs
+// [domain.ClaimExpiryPenalty] if not completed by then (enforced by the
+// background scheduler's claim-expiry sweep). When assignee already held the
+// instance (a self-claim, always true for a fixed/round-robin instance),
+// claiming it records the claim but carries no expiry — see
+// [domain.TaskInstanceRepository.Claim] for the full contract.
 //
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
@@ -156,7 +166,7 @@ func (s *TaskService) SkipInstance(
 //   - Returns [domain.ErrInstanceInTerminalState] when the instance is done or
 //     skipped.
 //   - Returns [domain.ErrInstanceAlreadyClaimed] when a pending or overdue
-//     instance is already assigned to a member.
+//     instance is already assigned to a different member than assignee.
 func (s *TaskService) ClaimInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,

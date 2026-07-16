@@ -622,7 +622,8 @@ func (r *TaskInstanceRepository) Get(
 	const q = `
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
-		       created_at, updated_at, kind
+		       created_at, updated_at, kind,
+		       claimed_by, claimed_at, claim_expires_at
 		  FROM task_instance
 		 WHERE id = $1
 		   AND household_id = $2`
@@ -651,7 +652,8 @@ func (r *TaskInstanceRepository) ListByHousehold(
 	const q = `
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
-		       created_at, updated_at, kind
+		       created_at, updated_at, kind,
+		       claimed_by, claimed_at, claim_expires_at
 		  FROM task_instance
 		 WHERE household_id = $1
 		   AND status = $2
@@ -694,7 +696,8 @@ func (r *TaskInstanceRepository) ListStanding(
 	const q = `
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
-		       created_at, updated_at, kind
+		       created_at, updated_at, kind,
+		       claimed_by, claimed_at, claim_expires_at
 		  FROM task_instance
 		 WHERE household_id = $1
 		   AND status = 'pending'
@@ -744,10 +747,22 @@ func (r *TaskInstanceRepository) LatestDueOn(
 }
 
 // Claim assigns the instance to assignee when it is pending or overdue and
-// currently unassigned. An overdue chore is still claimable — it can be picked
-// up late. On 0 rows affected, the instance is read to produce the precise
-// sentinel: domain.ErrInstanceNotFound, domain.ErrInstanceInTerminalState
-// (done/skipped), or domain.ErrInstanceAlreadyClaimed (already assigned).
+// either currently unassigned or already assigned to assignee (a self-claim).
+// An overdue chore is still claimable — it can be picked up late. On 0 rows
+// affected, the instance is read to produce the precise sentinel:
+// domain.ErrInstanceNotFound, domain.ErrInstanceInTerminalState
+// (done/skipped), or domain.ErrInstanceAlreadyClaimed (assigned to someone
+// else).
+//
+// NES-117: the CASE expression on claim_expires_at reads assignee_id's
+// PRE-UPDATE value — standard SQL evaluates every expression in a single
+// UPDATE's SET list against the row as it existed before the statement, so
+// this is correct even though assignee_id is itself being set in the same
+// statement. When the pre-update assignee_id was NULL (the instance was not
+// originally assigned to anyone), the claim is at risk and gets an expiry
+// [domain.ClaimWindow] out; when it already equalled assignee (a
+// fixed/round-robin instance's own assignee "claiming" it, or a re-claim by
+// the same member), no expiry applies.
 func (r *TaskInstanceRepository) Claim(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -756,13 +771,25 @@ func (r *TaskInstanceRepository) Claim(
 ) error {
 	const q = `
 		UPDATE task_instance
-		   SET assignee_id = $3,
-		       updated_at  = now()
-		 WHERE id          = $1
+		   SET assignee_id      = $3,
+		       claimed_by       = $3,
+		       claimed_at       = now(),
+		       claim_expires_at = CASE
+		                              WHEN assignee_id IS NULL
+		                              THEN now() + make_interval(hours => $4)
+		                              ELSE NULL
+		                          END,
+		       updated_at       = now()
+		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       IN ('pending', 'overdue')
-		   AND assignee_id IS NULL`
-	tag, err := r.dbtx.Exec(ctx, q, id.String(), householdID.String(), assignee.String())
+		   AND status        IN ('pending', 'overdue')
+		   AND (assignee_id IS NULL OR assignee_id = $3)`
+	tag, err := r.dbtx.Exec(ctx, q,
+		id.String(),
+		householdID.String(),
+		assignee.String(),
+		int(domain.ClaimWindow.Hours()),
+	)
 	if err != nil {
 		return fmt.Errorf("claim task instance: %w", err)
 	}
@@ -1222,6 +1249,253 @@ func (r *TaskInstanceRepository) ClearDueSoonReminder(ctx context.Context, id do
 	return nil
 }
 
+// expiredClaimRow is the intermediate representation for a single row
+// returned by the revert step of SweepExpiredClaims, before recurring_task
+// metadata (title, points) is joined in memory.
+type expiredClaimRow struct {
+	instanceID      domain.TaskInstanceID
+	householdID     household.HouseholdID
+	recurringTaskID domain.RecurringTaskID
+	claimedBy       household.MemberID
+	claimedAt       time.Time
+}
+
+// SweepExpiredClaims atomically reverts every claim whose claim_expires_at is
+// at or before asOf and whose instance is still pending or overdue, then
+// appends a point_ledger penalty entry for each claimant. Both the revert and
+// every penalty INSERT happen inside a single transaction so a claimant's
+// balance always reflects an actually-reverted claim (NES-117).
+//
+// A CTE selects candidate rows with FOR UPDATE OF ti SKIP LOCKED (mirroring
+// ClaimDueSoonReminders) so two concurrent sweeps never process the same row
+// twice; the UPDATE then reverts them in one statement. The revert always
+// clears assignee_id to NULL: a row only ever reaches this query when its
+// claim carried a real expiry, which — per Claim's contract — only happens
+// when the pre-claim assignee_id was NULL (an originally-unassigned
+// claimable or standing instance). A fixed/round-robin instance's own
+// assignee "claiming" it never sets an expiry, so it never appears here and
+// its assignee_id is never touched — "reverting to the original assignee"
+// is therefore automatic: that assignee_id never moved in the first place.
+//
+// The penalty for each claimant is computed in Go via
+// [domain.ClaimExpiryPenalty] (the single source of truth for the formula)
+// and inserted with ON CONFLICT DO NOTHING against the partial unique index
+// point_ledger_claim_expiry_uniq (source_id, claim_started_at) WHERE
+// source_type = 'claim_expiry': belt-and-suspenders idempotency alongside the
+// SKIP LOCKED guard, keyed on the specific claim window (instance id +
+// claimed_at) so a later, independent claim on the same instance is
+// penalized again if it also expires.
+func (r *TaskInstanceRepository) SweepExpiredClaims(ctx context.Context, asOf time.Time) ([]domain.ExpiredClaim, error) {
+	tx, err := beginTx(ctx, r.dbtx, "sweep expired claims")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	reverted, err := revertExpiredClaims(ctx, tx, asOf)
+	if err != nil {
+		return nil, fmt.Errorf("sweep expired claims: %w", err)
+	}
+	if len(reverted) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("sweep expired claims: commit: %w", err)
+		}
+		return nil, nil
+	}
+
+	taskIDSet := make(map[domain.RecurringTaskID]bool, len(reverted))
+	for _, row := range reverted {
+		taskIDSet[row.recurringTaskID] = true
+	}
+	meta, err := fetchClaimTaskMeta(ctx, tx, taskIDSet)
+	if err != nil {
+		return nil, fmt.Errorf("sweep expired claims: fetch task meta: %w", err)
+	}
+
+	claims := make([]domain.ExpiredClaim, 0, len(reverted))
+	for _, row := range reverted {
+		m := meta[row.recurringTaskID]
+		penalty := domain.ClaimExpiryPenalty(m.points)
+
+		if err := insertClaimExpiryPenalty(ctx, tx, row, penalty); err != nil {
+			return nil, fmt.Errorf("sweep expired claims: insert penalty: %w", err)
+		}
+
+		claims = append(claims, domain.ExpiredClaim{
+			InstanceID:      row.instanceID,
+			HouseholdID:     row.householdID,
+			RecurringTaskID: row.recurringTaskID,
+			ClaimedBy:       row.claimedBy,
+			Title:           m.title,
+			PenaltyPoints:   penalty,
+		})
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("sweep expired claims: commit: %w", err)
+	}
+	return claims, nil
+}
+
+// revertExpiredClaims selects every claim expired as of asOf with FOR UPDATE
+// SKIP LOCKED and reverts its claim fields (assignee_id, claimed_by,
+// claimed_at, claim_expires_at all cleared) in one statement, returning the
+// pre-revert claimant and parent task for each row so the caller can compute
+// and insert the penalty.
+func revertExpiredClaims(ctx context.Context, tx pgx.Tx, asOf time.Time) ([]expiredClaimRow, error) {
+	const revertQ = `
+		WITH expired AS (
+			SELECT ti.id, ti.household_id, ti.recurring_task_id,
+			       ti.claimed_by, ti.claimed_at
+			  FROM task_instance ti
+			 WHERE ti.claim_expires_at IS NOT NULL
+			   AND ti.claim_expires_at <= $1
+			   AND ti.status IN ('pending', 'overdue')
+			   FOR UPDATE OF ti SKIP LOCKED
+		)
+		UPDATE task_instance ti
+		   SET assignee_id      = NULL,
+		       claimed_by       = NULL,
+		       claimed_at       = NULL,
+		       claim_expires_at = NULL,
+		       updated_at       = now()
+		  FROM expired
+		 WHERE ti.id = expired.id
+		RETURNING ti.id, expired.household_id, expired.recurring_task_id,
+		          expired.claimed_by, expired.claimed_at`
+
+	rows, err := tx.Query(ctx, revertQ, asOf)
+	if err != nil {
+		return nil, fmt.Errorf("revert: %w", err)
+	}
+	defer rows.Close()
+
+	var reverted []expiredClaimRow
+	for rows.Next() {
+		var (
+			instStr, hhStr, rtStr string
+			claimedByStr          *string
+			claimedAt             *time.Time
+		)
+		if err := rows.Scan(&instStr, &hhStr, &rtStr, &claimedByStr, &claimedAt); err != nil {
+			return nil, fmt.Errorf("revert: scan: %w", err)
+		}
+		if claimedByStr == nil || claimedAt == nil {
+			// Defensive: claim_expires_at is only ever set alongside claimed_by
+			// and claimed_at (see Claim and the task_instance_claim_consistency /
+			// task_instance_claim_expiry_requires_claim CHECK constraints), so
+			// this shape should be unreachable. Skip rather than penalize an
+			// unknown claimant.
+			continue
+		}
+		instID, err := domain.ParseTaskInstanceID(instStr)
+		if err != nil {
+			return nil, fmt.Errorf("revert: parse instance id: %w", err)
+		}
+		hhID, err := household.ParseHouseholdID(hhStr)
+		if err != nil {
+			return nil, fmt.Errorf("revert: parse household id: %w", err)
+		}
+		rtID, err := domain.ParseRecurringTaskID(rtStr)
+		if err != nil {
+			return nil, fmt.Errorf("revert: parse recurring task id: %w", err)
+		}
+		claimedBy, err := household.ParseMemberID(*claimedByStr)
+		if err != nil {
+			return nil, fmt.Errorf("revert: parse claimed_by id: %w", err)
+		}
+		reverted = append(reverted, expiredClaimRow{
+			instanceID:      instID,
+			householdID:     hhID,
+			recurringTaskID: rtID,
+			claimedBy:       claimedBy,
+			claimedAt:       *claimedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("revert: %w", err)
+	}
+	return reverted, nil
+}
+
+// claimTaskMeta holds the recurring_task fields SweepExpiredClaims needs to
+// compute and describe a penalty: points (for domain.ClaimExpiryPenalty) and
+// title (for the resulting domain.ExpiredClaim's notification text).
+type claimTaskMeta struct {
+	title  string
+	points int
+}
+
+// fetchClaimTaskMeta performs a single SELECT, scoped to the open transaction
+// tx, to look up title and points for the recurring tasks identified by
+// taskIDSet.
+func fetchClaimTaskMeta(
+	ctx context.Context,
+	tx pgx.Tx,
+	taskIDSet map[domain.RecurringTaskID]bool,
+) (map[domain.RecurringTaskID]claimTaskMeta, error) {
+	ids := make([]string, 0, len(taskIDSet))
+	for id := range taskIDSet {
+		ids = append(ids, id.String())
+	}
+
+	const q = `
+		SELECT id, title, points
+		  FROM recurring_task
+		 WHERE id = ANY($1::uuid[])`
+	rows, err := tx.Query(ctx, q, ids)
+	if err != nil {
+		return nil, fmt.Errorf("fetch claim task meta: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[domain.RecurringTaskID]claimTaskMeta, len(taskIDSet))
+	for rows.Next() {
+		var idStr, title string
+		var points int
+		if err := rows.Scan(&idStr, &title, &points); err != nil {
+			return nil, fmt.Errorf("fetch claim task meta: scan: %w", err)
+		}
+		id, err := domain.ParseRecurringTaskID(idStr)
+		if err != nil {
+			return nil, fmt.Errorf("fetch claim task meta: parse id: %w", err)
+		}
+		result[id] = claimTaskMeta{title: title, points: points}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fetch claim task meta: %w", err)
+	}
+	return result, nil
+}
+
+// insertClaimExpiryPenalty appends a negative point_ledger entry of
+// -penalty for row.claimedBy, keyed for idempotency by
+// point_ledger_claim_expiry_uniq (source_id, claim_started_at) WHERE
+// source_type = 'claim_expiry'. A conflict (the same claim window already
+// penalized) is silently ignored — belt-and-suspenders alongside the SKIP
+// LOCKED guard in revertExpiredClaims.
+func insertClaimExpiryPenalty(ctx context.Context, tx pgx.Tx, row expiredClaimRow, penalty int) error {
+	const q = `
+		INSERT INTO point_ledger
+			(id, household_id, member_id, source_type, source_id, points, claim_started_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+		ON CONFLICT (source_id, claim_started_at) WHERE source_type = 'claim_expiry'
+		DO NOTHING`
+	_, err := tx.Exec(ctx, q,
+		domain.NewPointEntryID().String(),
+		row.householdID.String(),
+		row.claimedBy.String(),
+		domain.SourceTypeClaimExpiry,
+		row.instanceID.String(),
+		-penalty,
+		row.claimedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert claim expiry penalty: %w", err)
+	}
+	return nil
+}
+
 // reminderRow is the intermediate representation for a single row returned by
 // MarkPendingOverdueAll or ClaimDueSoonReminders before task metadata is joined
 // in memory.
@@ -1369,15 +1643,16 @@ func (r *TaskInstanceRepository) fetchTaskMeta(
 }
 
 // scanTaskInstance scans a task_instance row from r. Nullable columns
-// (assignee_id, completed_at, completed_by, due_on) are read into pointer
-// types and converted to domain pointer fields. DueOn is nil for a standing
-// instance (NES-116); when present it is normalized with domain.DateOf.
+// (assignee_id, completed_at, completed_by, due_on, claimed_by, claimed_at,
+// claim_expires_at) are read into pointer types and converted to domain
+// pointer fields. DueOn is nil for a standing instance (NES-116); when
+// present it is normalized with domain.DateOf.
 func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 	var (
 		inst                                                     domain.TaskInstance
 		idStr, householdIDStr, recurringTaskIDStr, status, kindS string
-		assigneeIDStr, completedByStr                            *string
-		completedAt, dueOn                                       *time.Time
+		assigneeIDStr, completedByStr, claimedByStr              *string
+		completedAt, dueOn, claimedAt, claimExpiresAt            *time.Time
 	)
 	err := r.Scan(
 		&idStr,
@@ -1391,6 +1666,9 @@ func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 		&inst.CreatedAt,
 		&inst.UpdatedAt,
 		&kindS,
+		&claimedByStr,
+		&claimedAt,
+		&claimExpiresAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1441,5 +1719,14 @@ func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 		}
 		inst.CompletedBy = &memberID
 	}
+	if claimedByStr != nil {
+		memberID, err := household.ParseMemberID(*claimedByStr)
+		if err != nil {
+			return nil, fmt.Errorf("scan task instance: parse claimed_by id: %w", err)
+		}
+		inst.ClaimedBy = &memberID
+	}
+	inst.ClaimedAt = claimedAt
+	inst.ClaimExpiresAt = claimExpiresAt
 	return &inst, nil
 }

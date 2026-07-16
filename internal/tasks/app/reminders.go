@@ -126,6 +126,76 @@ func (r *Reminders) EmitDueSoon(ctx context.Context, asOf time.Time) error {
 	return nil
 }
 
+// EmitClaimExpiry calls [domain.TaskInstanceRepository.SweepExpiredClaims] to
+// atomically revert every expired claim and penalize its claimant, then
+// enqueues one in-app notification per expired claim informing the claimant
+// of the point loss (NES-117).
+//
+// Like EmitOverdue, an expired claim cannot be "un-swept": the penalty has
+// already been applied and the instance already reverted by the time this
+// method enqueues, so a failed enqueue has nothing to recover — the returned
+// error exists only to make the failure observable upstream.
+func (r *Reminders) EmitClaimExpiry(ctx context.Context, asOf time.Time) error {
+	claims, err := r.instanceRepo.SweepExpiredClaims(ctx, asOf)
+	if err != nil {
+		return fmt.Errorf("reminders: sweep expired claims: %w", err)
+	}
+
+	var failures int
+	for _, claim := range claims {
+		if enqErr := r.enqueueClaimExpiry(ctx, asOf, claim); enqErr != nil {
+			failures++
+		}
+	}
+
+	if len(claims) > 0 {
+		r.logger.Info("reminders: claim expiry emitted",
+			"count", len(claims), "failures", failures)
+	}
+
+	if failures > 0 {
+		return fmt.Errorf("reminders: %d of %d claim-expiry enqueues failed", failures, len(claims))
+	}
+	return nil
+}
+
+// enqueueClaimExpiry builds and enqueues a single claim-expiry notification
+// for claim, addressed to the member who incurred the penalty. A
+// blank-title claim is logged and skipped, returning nil (nothing to
+// retry) — mirroring enqueueReminder's handling of an unresolved task title.
+// No PII is logged — only task instance ID.
+func (r *Reminders) enqueueClaimExpiry(ctx context.Context, asOf time.Time, claim domain.ExpiredClaim) error {
+	if claim.Title == "" {
+		r.logger.Warn("reminders: skipping claim-expiry target with no resolved task title",
+			"instance_id", claim.InstanceID.String())
+		return nil
+	}
+
+	instUUID := uuid.UUID(claim.InstanceID)
+	claimedBy := claim.ClaimedBy
+	n := &notifydomain.Notification{
+		ID:           notifydomain.NewNotificationID(),
+		HouseholdID:  claim.HouseholdID,
+		MemberID:     &claimedBy,
+		Channel:      notifydomain.ChannelInApp,
+		Title:        fmt.Sprintf("Claim expired: %s", claim.Title),
+		Body:         fmt.Sprintf("Your claim on %s expired, -%d points.", claim.Title, claim.PenaltyPoints),
+		ScheduledFor: asOf,
+		Status:       notifydomain.StatusPending,
+		SourceType:   "task_instance",
+		SourceID:     &instUUID,
+	}
+
+	if err := r.enqueuer.Enqueue(ctx, n); err != nil {
+		r.logger.Error("reminders: claim-expiry enqueue failed",
+			"instance_id", claim.InstanceID.String(),
+			"error", err,
+		)
+		return fmt.Errorf("reminders: enqueue claim expiry instance %s: %w", claim.InstanceID.String(), err)
+	}
+	return nil
+}
+
 // enqueueReminder builds and enqueues a single notification for the target. It
 // returns the enqueue error (nil on success) so callers can take recovery
 // action; the error is also logged here. A blank-title target or unknown kind

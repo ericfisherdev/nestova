@@ -136,7 +136,10 @@ type RecurringTaskRepository interface {
 //   - Claim, Complete, and Skip return [ErrInstanceNotFound] when id is unknown
 //     or belongs to another household.
 //   - Claim returns [ErrInstanceAlreadyClaimed] when the instance is already
-//     assigned to a member.
+//     assigned to a DIFFERENT member than the one claiming. Claiming an
+//     instance already assigned to the calling member (a self-claim) succeeds
+//     idempotently instead (NES-117): see Claim's own doc for the full
+//     assignee/claim-expiry contract.
 //   - Complete, Skip, and Claim return [ErrInstanceInTerminalState] when the
 //     instance is already in a terminal state. As of NES-32, terminal means done
 //     or skipped only — overdue is no longer terminal for these transitions.
@@ -174,10 +177,26 @@ type TaskInstanceRepository interface {
 	LatestDueOn(ctx context.Context, householdID household.HouseholdID, id RecurringTaskID) (time.Time, bool, error)
 
 	// Claim assigns the instance to assignee when it is pending or overdue and
-	// currently unassigned. Claiming is first-come, not reassignment.
+	// either currently unassigned or already assigned to assignee. Claiming is
+	// first-come for anyone else: an instance assigned to a DIFFERENT member
+	// cannot be taken over.
+	//
+	// NES-117 claim-expiry semantics (evaluated against the instance's
+	// pre-update assignee_id):
+	//   - Previously unassigned (claimable, or a NES-116 standing instance) →
+	//     this is a claim on a chore not originally assigned to anyone, so
+	//     ClaimedBy/ClaimedAt are set and ClaimExpiresAt is set to
+	//     claimed_at + [ClaimWindow]. AssigneeID becomes assignee.
+	//   - Already assigned to assignee (a self-claim — always true for a
+	//     fixed/round-robin instance, whose AssigneeID is never nil) →
+	//     ClaimedBy/ClaimedAt are set but ClaimExpiresAt is cleared to nil: no
+	//     risk, since the chore was already assignee's responsibility.
+	//     AssigneeID is unchanged.
+	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is done or skipped.
-	// Returns [ErrInstanceAlreadyClaimed] when a pending/overdue instance is already assigned.
+	// Returns [ErrInstanceAlreadyClaimed] when a pending/overdue instance is
+	// already assigned to a different member than assignee.
 	Claim(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID) error
 
 	// Complete transitions the instance from pending or overdue to done, recording
@@ -289,4 +308,35 @@ type TaskInstanceRepository interface {
 	// Returns an empty slice (not an error) when no completions match.
 	// Used by the NES-37 streak calculation.
 	CompletionDays(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, since time.Time) ([]time.Time, error)
+
+	// SweepExpiredClaims atomically reverts every claim whose ClaimExpiresAt is
+	// at or before asOf and whose instance is still pending or overdue: the
+	// claim fields (AssigneeID, ClaimedBy, ClaimedAt, ClaimExpiresAt) are
+	// cleared back to their unclaimed state, and a negative point_ledger entry
+	// (source_type [SourceTypeClaimExpiry]) of -[ClaimExpiryPenalty] is
+	// appended for each claimant in the SAME transaction as the revert, so a
+	// claimant's balance always reflects an actually-reverted claim. The
+	// penalty is applied unconditionally — it is never clamped or skipped
+	// because a member's balance is already zero or negative.
+	//
+	// NES-116: reverting a standing instance's claim is not a terminal
+	// transition. The row keeps its id, stays pending, and is not respawned —
+	// it simply becomes an unclaimed standing instance again, preserving the
+	// "exactly one open standing instance per as-needed task" invariant
+	// without special-casing.
+	//
+	// Idempotency: implementations must guarantee that the same claim window
+	// (an instance's specific claimed-then-expired episode) is never
+	// penalized twice, while a later, independent claim on the same instance
+	// that also expires IS penalized again on its own.
+	//
+	// Returns the reverted claims as [ExpiredClaim] values so the caller can
+	// enqueue a notification per claimant without an additional query. Returns
+	// an empty slice (not an error) when no claims are expired as of asOf.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process method reserved for the background scheduler and must
+	// not be called from user-facing request handlers, matching the
+	// precedent set by [MarkPendingOverdueAll] and [ClaimDueSoonReminders].
+	SweepExpiredClaims(ctx context.Context, asOf time.Time) ([]ExpiredClaim, error)
 }

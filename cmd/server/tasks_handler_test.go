@@ -131,6 +131,10 @@ func (f *fakeTaskInstanceRepo) CompletionDays(_ context.Context, _ household.Hou
 	return nil, nil
 }
 
+func (f *fakeTaskInstanceRepo) SweepExpiredClaims(_ context.Context, _ time.Time) ([]tasksdomain.ExpiredClaim, error) {
+	return nil, nil
+}
+
 // Compile-time assertion.
 var _ tasksdomain.TaskInstanceRepository = (*fakeTaskInstanceRepo)(nil)
 

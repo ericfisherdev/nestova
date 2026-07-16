@@ -41,6 +41,12 @@ type callCountingInstanceRepo struct {
 	overdueAllCalls atomic.Int64
 	overdueAllErr   error
 	overdueAllCount int
+	// claimExpiryCalls/claimExpiryErr/claimExpiryCount let scheduler tests
+	// assert that RunOnce's NES-117 step ran and surface its errors, mirroring
+	// the overdueAll* fields above.
+	claimExpiryCalls atomic.Int64
+	claimExpiryErr   error
+	claimExpiryCount int
 }
 
 func newCallCountingInstanceRepo() *callCountingInstanceRepo {
@@ -60,6 +66,14 @@ func (r *callCountingInstanceRepo) MarkPendingOverdueAll(_ context.Context, _ ti
 
 func (r *callCountingInstanceRepo) ClaimDueSoonReminders(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
 	return nil, nil
+}
+
+func (r *callCountingInstanceRepo) SweepExpiredClaims(_ context.Context, _ time.Time) ([]domain.ExpiredClaim, error) {
+	r.claimExpiryCalls.Add(1)
+	if r.claimExpiryErr != nil {
+		return nil, r.claimExpiryErr
+	}
+	return make([]domain.ExpiredClaim, r.claimExpiryCount), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +234,46 @@ func TestScheduler_RunOnce_CallsBothSteps(t *testing.T) {
 	}
 	if got := instRepo.overdueAllCalls.Load(); got != 1 {
 		t.Errorf("MarkPendingOverdueAll calls = %d, want 1", got)
+	}
+}
+
+// TestScheduler_RunOnce_CallsClaimExpirySweep verifies that RunOnce's NES-117
+// step calls SweepExpiredClaims exactly once per cycle, alongside the
+// pre-existing overdue sweep.
+func TestScheduler_RunOnce_CallsClaimExpirySweep(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+
+	s := newTestScheduler(t, taskRepo, instRepo, time.Minute)
+
+	if err := s.RunOnce(context.Background(), time.Now()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := instRepo.claimExpiryCalls.Load(); got != 1 {
+		t.Errorf("SweepExpiredClaims calls = %d, want 1", got)
+	}
+}
+
+// TestScheduler_RunOnce_ClaimExpiryError_ReturnsError verifies that when
+// SweepExpiredClaims fails and every earlier step succeeds, RunOnce surfaces
+// the claim-expiry error.
+func TestScheduler_RunOnce_ClaimExpiryError_ReturnsError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	instRepo.claimExpiryErr = errors.New("db: claim expiry sweep failed")
+
+	s := newTestScheduler(t, taskRepo, instRepo, time.Minute)
+
+	err := s.RunOnce(context.Background(), time.Now())
+	if !errors.Is(err, instRepo.claimExpiryErr) {
+		t.Errorf("RunOnce error = %v, want the claim-expiry error %v", err, instRepo.claimExpiryErr)
+	}
+	if got := instRepo.claimExpiryCalls.Load(); got != 1 {
+		t.Errorf("SweepExpiredClaims calls = %d, want 1", got)
+	}
+	// The overdue sweep must still have run despite the later step's failure.
+	if got := instRepo.overdueAllCalls.Load(); got != 1 {
+		t.Errorf("MarkPendingOverdueAll calls = %d, want 1 even when claim-expiry sweep fails", got)
 	}
 }
 
