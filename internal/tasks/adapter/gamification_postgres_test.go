@@ -81,6 +81,13 @@ func TestCompleteAndAward_CreditsPoints(t *testing.T) {
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 5)
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 1))
 
+	// Claim before completing so the NES-117 claim-clearing assertion below is
+	// meaningful — an instance that was never claimed trivially has nil claim
+	// fields regardless of whether CompleteAndAward clears them.
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
 	if err := instRepo.CompleteAndAward(testCtx(t), h.ID, inst.ID, m1, time.Now()); err != nil {
 		t.Fatalf("CompleteAndAward: %v", err)
 	}
@@ -98,6 +105,16 @@ func TestCompleteAndAward_CreditsPoints(t *testing.T) {
 	}
 	if got.CompletedAt == nil || got.CompletedAt.IsZero() {
 		t.Errorf("CompletedAt = %v, want a non-zero timestamp", got.CompletedAt)
+	}
+	// NES-117: a done instance has no CURRENT claim.
+	if got.ClaimedBy != nil {
+		t.Errorf("ClaimedBy = %v, want nil (cleared on completion)", got.ClaimedBy)
+	}
+	if got.ClaimedAt != nil {
+		t.Errorf("ClaimedAt = %v, want nil (cleared on completion)", got.ClaimedAt)
+	}
+	if got.ClaimExpiresAt != nil {
+		t.Errorf("ClaimExpiresAt = %v, want nil (cleared on completion)", got.ClaimExpiresAt)
 	}
 
 	// Balance must reflect exactly one award.

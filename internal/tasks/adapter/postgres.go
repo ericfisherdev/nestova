@@ -754,15 +754,25 @@ func (r *TaskInstanceRepository) LatestDueOn(
 // (done/skipped), or domain.ErrInstanceAlreadyClaimed (assigned to someone
 // else).
 //
-// NES-117: the CASE expression on claim_expires_at reads assignee_id's
-// PRE-UPDATE value — standard SQL evaluates every expression in a single
-// UPDATE's SET list against the row as it existed before the statement, so
-// this is correct even though assignee_id is itself being set in the same
-// statement. When the pre-update assignee_id was NULL (the instance was not
-// originally assigned to anyone), the claim is at risk and gets an expiry
-// [domain.ClaimWindow] out; when it already equalled assignee (a
-// fixed/round-robin instance's own assignee "claiming" it, or a re-claim by
-// the same member), no expiry applies.
+// NES-117: every CASE expression reads the row's PRE-UPDATE values — standard
+// SQL evaluates every expression in a single UPDATE's SET list against the
+// row as it existed before the statement, so this is correct even though the
+// same columns are simultaneously being written. Three cases:
+//   - claimed_by (pre-update) already equals assignee — an active claim by
+//     this same member already exists (whether still ticking or, for a
+//     rotation instance, permanently risk-free). claimed_at and
+//     claim_expires_at are left UNCHANGED. This is what stops a member from
+//     calling Claim repeatedly on their own active claim to keep resetting
+//     (and thereby evading) the expiry timer — a call that only re-asserts an
+//     existing claim must never extend or clear it.
+//   - Otherwise, assignee_id (pre-update) was NULL — the instance was not
+//     originally assigned to anyone, so this is a new at-risk claim:
+//     claimed_at is stamped now and claim_expires_at is set
+//     [domain.ClaimWindow] out.
+//   - Otherwise, assignee_id (pre-update) already equalled assignee (a
+//     fixed/round-robin instance's own assignee claiming it for the first
+//     time) — claimed_at is stamped now but claim_expires_at is left NULL:
+//     no risk, since the chore was already assignee's responsibility.
 func (r *TaskInstanceRepository) Claim(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -773,8 +783,12 @@ func (r *TaskInstanceRepository) Claim(
 		UPDATE task_instance
 		   SET assignee_id      = $3,
 		       claimed_by       = $3,
-		       claimed_at       = now(),
+		       claimed_at       = CASE
+		                              WHEN claimed_by = $3 THEN claimed_at
+		                              ELSE now()
+		                          END,
 		       claim_expires_at = CASE
+		                              WHEN claimed_by = $3 THEN claim_expires_at
 		                              WHEN assignee_id IS NULL
 		                              THEN now() + make_interval(hours => $4)
 		                              ELSE NULL
@@ -831,6 +845,13 @@ func (r *TaskInstanceRepository) disambiguateClaim(
 // to done, so it respawns a fresh standing instance for the same recurring
 // task in the same transaction — the "always exactly one open standing
 // instance" invariant must hold regardless of which method completed it.
+//
+// NES-117: claimed_by/claimed_at/claim_expires_at are cleared in the same
+// UPDATE. They are "current claim" fields per entities.go's contract, and a
+// done instance has no current claim; leaving them set would also let a
+// completed instance's stale claim_expires_at linger in
+// task_instance_claim_expires_idx until some later sweep happened to notice
+// the status no longer matches.
 func (r *TaskInstanceRepository) Complete(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -846,10 +867,13 @@ func (r *TaskInstanceRepository) Complete(
 
 	const q = `
 		UPDATE task_instance
-		   SET status       = 'done',
-		       completed_by = $3,
-		       completed_at = $4,
-		       updated_at   = now()
+		   SET status           = 'done',
+		       completed_by     = $3,
+		       completed_at     = $4,
+		       claimed_by       = NULL,
+		       claimed_at       = NULL,
+		       claim_expires_at = NULL,
+		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
 		   AND status       IN ('pending', 'overdue')
@@ -896,6 +920,10 @@ func (r *TaskInstanceRepository) Complete(
 // inserts a fresh pending standing instance for the same recurring task in the
 // same transaction, so an as-needed task always has exactly one open standing
 // instance again immediately after completion.
+//
+// NES-117: claimed_by/claimed_at/claim_expires_at are cleared in the same
+// UPDATE as the status transition — see Complete's doc for why a done
+// instance must not keep "current claim" metadata set.
 func (r *TaskInstanceRepository) CompleteAndAward(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -917,10 +945,13 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 	// done) and falls through to disambiguateTerminal below.
 	const updateQ = `
 		UPDATE task_instance
-		   SET status       = 'done',
-		       completed_by = $3,
-		       completed_at = $4,
-		       updated_at   = now()
+		   SET status           = 'done',
+		       completed_by     = $3,
+		       completed_at     = $4,
+		       claimed_by       = NULL,
+		       claimed_at       = NULL,
+		       claim_expires_at = NULL,
+		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
 		   AND status       IN ('pending', 'overdue')
@@ -985,6 +1016,13 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 // materialised in the same transaction, so the "always exactly one open
 // standing instance" invariant holds on the skip path exactly as it does on
 // completion.
+//
+// NES-117: claimed_by/claimed_at/claim_expires_at are cleared in the same
+// UPDATE — see Complete's doc for why a terminal instance must not keep
+// "current claim" metadata set. This is distinct from (and simpler than)
+// SweepExpiredClaims' revert: Skip does not touch assignee_id, since a
+// skipped instance's assignee (whoever it was) is not being released back to
+// the pool the way an expiry reverts one — it is simply no longer actionable.
 func (r *TaskInstanceRepository) Skip(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -998,8 +1036,11 @@ func (r *TaskInstanceRepository) Skip(
 
 	const q = `
 		UPDATE task_instance
-		   SET status       = 'skipped',
-		       updated_at   = now()
+		   SET status           = 'skipped',
+		       claimed_by       = NULL,
+		       claimed_at       = NULL,
+		       claim_expires_at = NULL,
+		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
 		   AND status       IN ('pending', 'overdue')
@@ -1285,6 +1326,15 @@ type expiredClaimRow struct {
 // SKIP LOCKED guard, keyed on the specific claim window (instance id +
 // claimed_at) so a later, independent claim on the same instance is
 // penalized again if it also expires.
+//
+// Orphaned claims: if the claimant's member row was deleted before expiry,
+// ON DELETE SET NULL (claimed_by) has already nulled claimed_by while
+// claimed_at/claim_expires_at survive (task_instance_claim_consistency is
+// directional to allow exactly this). revertExpiredClaims still reverts such
+// a row — it is part of the same unconditional UPDATE as every other
+// candidate — but skips it before penalty computation: there is no member to
+// credit a penalty against, and point_ledger.member_id is NOT NULL, so an
+// insert would fail outright even if a penalty were attempted.
 func (r *TaskInstanceRepository) SweepExpiredClaims(ctx context.Context, asOf time.Time) ([]domain.ExpiredClaim, error) {
 	tx, err := beginTx(ctx, r.dbtx, "sweep expired claims")
 	if err != nil {
@@ -1380,12 +1430,24 @@ func revertExpiredClaims(ctx context.Context, tx pgx.Tx, asOf time.Time) ([]expi
 		if err := rows.Scan(&instStr, &hhStr, &rtStr, &claimedByStr, &claimedAt); err != nil {
 			return nil, fmt.Errorf("revert: scan: %w", err)
 		}
-		if claimedByStr == nil || claimedAt == nil {
-			// Defensive: claim_expires_at is only ever set alongside claimed_by
-			// and claimed_at (see Claim and the task_instance_claim_consistency /
-			// task_instance_claim_expiry_requires_claim CHECK constraints), so
-			// this shape should be unreachable. Skip rather than penalize an
-			// unknown claimant.
+		if claimedByStr == nil {
+			// A legitimate, expected shape (NES-117): claimed_by is nulled by
+			// ON DELETE SET NULL (claimed_by) when the claimant's member row is
+			// deleted, while claimed_at/claim_expires_at deliberately survive
+			// that (task_instance_claim_consistency is directional precisely to
+			// allow it). The revert UPDATE above has already reverted this row
+			// unconditionally regardless of this skip; there is simply no one
+			// left to penalize or notify, and the point_ledger member FK would
+			// reject an insert with a NULL member_id anyway.
+			continue
+		}
+		if claimedAt == nil {
+			// Defensive only: task_instance_claim_expiry_requires_claim ties
+			// claim_expires_at to claimed_at (not claimed_by, which member
+			// deletion can null independently — see above), so a row selected by
+			// this query's "claim_expires_at IS NOT NULL" predicate should never
+			// have a nil claimed_at. Skip rather than penalize with a
+			// nonsensical claim window.
 			continue
 		}
 		instID, err := domain.ParseTaskInstanceID(instStr)

@@ -26,18 +26,26 @@ ALTER TABLE task_instance
         FOREIGN KEY (household_id, claimed_by)
         REFERENCES member (household_id, id) ON DELETE SET NULL (claimed_by);
 
--- claimed_by and claimed_at move together: a claim record is either fully
--- present or fully absent.
+-- claimed_by may only be set when a claim timestamp is on record — but NOT
+-- the reverse. claimed_by is nulled by ON DELETE SET NULL (claimed_by) when
+-- the claimant's member row is deleted, while claimed_at deliberately
+-- survives that as "claimed by someone since deleted" so the row still
+-- carries enough information for the sweep to revert it cleanly (NES-117).
+-- This is the same directional pattern task_instance_completed_by_done
+-- already uses for completed_by vs completed_at/status (00003_tasks.sql): a
+-- symmetric CHECK here would make member deletion fail whenever the deleted
+-- member held an active claim.
 ALTER TABLE task_instance
     ADD CONSTRAINT task_instance_claim_consistency
-        CHECK ((claimed_by IS NULL) = (claimed_at IS NULL));
+        CHECK (claimed_by IS NULL OR claimed_at IS NOT NULL);
 
--- An expiry timer can only exist alongside an actual claimant; a self-claim
--- (an already-assigned member "claiming" their own instance) records
--- claimed_by/claimed_at but leaves claim_expires_at NULL.
+-- An expiry timer can only exist alongside a recorded claim timestamp. This
+-- is anchored to claimed_at rather than claimed_by deliberately: claimed_at
+-- has no ON DELETE action and so is never independently nulled out from under
+-- this constraint the way claimed_by can be by a member deletion.
 ALTER TABLE task_instance
     ADD CONSTRAINT task_instance_claim_expiry_requires_claim
-        CHECK (claim_expires_at IS NULL OR claimed_by IS NOT NULL);
+        CHECK (claim_expires_at IS NULL OR claimed_at IS NOT NULL);
 
 -- Supports the background sweep's "find expired claims" query
 -- (TaskInstanceRepository.SweepExpiredClaims). Partial so the index stays

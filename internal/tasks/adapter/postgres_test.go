@@ -707,6 +707,13 @@ func TestTaskInstance_Complete_Success(t *testing.T) {
 	rt := seedRecurringTask(t, taskRepo, h.ID)
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
 
+	// Claim before completing so the NES-117 claim-clearing assertion below is
+	// meaningful — an instance that was never claimed trivially has nil claim
+	// fields regardless of whether Complete clears them.
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
 	completedAt := refDate.AddDate(0, 0, 8)
 	if err := instRepo.Complete(testCtx(t), h.ID, inst.ID, m1, completedAt); err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -727,6 +734,16 @@ func TestTaskInstance_Complete_Success(t *testing.T) {
 	}
 	if !got.CompletedAt.Equal(completedAt) {
 		t.Errorf("CompletedAt = %s, want %s", got.CompletedAt.Format(time.RFC3339), completedAt.Format(time.RFC3339))
+	}
+	// NES-117: a done instance has no CURRENT claim.
+	if got.ClaimedBy != nil {
+		t.Errorf("ClaimedBy = %v, want nil (cleared on completion)", got.ClaimedBy)
+	}
+	if got.ClaimedAt != nil {
+		t.Errorf("ClaimedAt = %v, want nil (cleared on completion)", got.ClaimedAt)
+	}
+	if got.ClaimExpiresAt != nil {
+		t.Errorf("ClaimExpiresAt = %v, want nil (cleared on completion)", got.ClaimExpiresAt)
 	}
 }
 
@@ -759,10 +776,17 @@ func TestTaskInstance_Skip_Success(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	h, _, _ := seedHousehold(t, pool)
+	h, m1, _ := seedHousehold(t, pool)
 
 	rt := seedRecurringTask(t, taskRepo, h.ID)
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+
+	// Claim before skipping so the NES-117 claim-clearing assertion below is
+	// meaningful — an instance that was never claimed trivially has nil claim
+	// fields regardless of whether Skip clears them.
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
 
 	if err := instRepo.Skip(testCtx(t), h.ID, inst.ID); err != nil {
 		t.Fatalf("Skip: %v", err)
@@ -774,6 +798,16 @@ func TestTaskInstance_Skip_Success(t *testing.T) {
 	}
 	if got.Status != domain.StatusSkipped {
 		t.Errorf("Status = %v, want skipped", got.Status)
+	}
+	// NES-117: a skipped instance has no CURRENT claim.
+	if got.ClaimedBy != nil {
+		t.Errorf("ClaimedBy = %v, want nil (cleared on skip)", got.ClaimedBy)
+	}
+	if got.ClaimedAt != nil {
+		t.Errorf("ClaimedAt = %v, want nil (cleared on skip)", got.ClaimedAt)
+	}
+	if got.ClaimExpiresAt != nil {
+		t.Errorf("ClaimExpiresAt = %v, want nil (cleared on skip)", got.ClaimExpiresAt)
 	}
 }
 
