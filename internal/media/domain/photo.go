@@ -4,11 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
+
+// Accepted image content types — the upload accept-list. Both Photo.Validate
+// and the adapter's storage-extension mapping (LocalPhotoStore's
+// acceptedTypes) key off these constants, so there is a single source of
+// truth for "what image type does the upload path accept."
+const (
+	ContentTypeJPEG = "image/jpeg"
+	ContentTypePNG  = "image/png"
+	ContentTypeWebP = "image/webp"
+)
+
+// acceptedContentTypes is the set Photo.Validate checks ContentType against.
+var acceptedContentTypes = map[string]struct{}{
+	ContentTypeJPEG: {},
+	ContentTypePNG:  {},
+	ContentTypeWebP: {},
+}
+
+// contentHashPattern matches a hex-encoded sha256 sum: exactly 64 lowercase
+// hex characters, the shape PhotoStore.Put always produces.
+var contentHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Photo errors.
 var (
@@ -23,6 +45,12 @@ var (
 	// ErrPhotoTooLarge is returned when an upload exceeds the configured size
 	// limit. The web layer maps it to 413.
 	ErrPhotoTooLarge = errors.New("media: photo exceeds the maximum size")
+	// ErrDuplicatePhoto is returned by PhotoRepository.Create when a photo with
+	// the same content hash already exists for the household (the
+	// photo_household_content_hash_uniq index added in 00023). PhotoService
+	// resolves it by fetching and returning the existing photo instead of
+	// surfacing an error, so callers never see it directly.
+	ErrDuplicatePhoto = errors.New("media: duplicate photo content")
 )
 
 // StorageRef is an opaque key identifying a photo's bytes in the PhotoStore. The
@@ -33,13 +61,21 @@ type StorageRef string
 func (r StorageRef) String() string { return string(r) }
 
 // Photo is one household image. StorageRef points at the bytes behind the
-// PhotoStore; TakenAt is the EXIF capture time (UTC) when the upload carried one;
-// UploadedBy is the member who added it, nilled (not deleted) if that member is
-// removed so the photo survives.
+// PhotoStore; ContentHash is the hex sha256 of those bytes (computed once,
+// while streaming the upload to storage) and is what content-hash dedup keys
+// on — empty for a photo uploaded before NES-123, which never matches a
+// duplicate check. SizeBytes and ContentType are the other server-verified
+// upload facts, recorded for a future NES-124 queue UI (zero/empty for a
+// pre-NES-123 photo, same as ContentHash). TakenAt is the EXIF capture time
+// (UTC) when the upload carried one; UploadedBy is the member who added it,
+// nilled (not deleted) if that member is removed so the photo survives.
 type Photo struct {
 	ID          PhotoID
 	HouseholdID household.HouseholdID
 	StorageRef  StorageRef
+	ContentHash string
+	SizeBytes   int64
+	ContentType string
 	TakenAt     *time.Time
 	Caption     string
 	UploadedBy  *household.MemberID
@@ -47,21 +83,41 @@ type Photo struct {
 }
 
 // Validate reports whether the photo is well-formed, wrapping ErrInvalidPhoto.
+// ContentHash, SizeBytes, and ContentType are all required in their canonical
+// server-verified shape because every photo constructed by
+// PhotoService.Upload has them (PhotoStore.Put always computes them) — a
+// violation here signals a PhotoStore implementation bug, not a legitimate
+// legacy photo (those are read back from storage, not built fresh through
+// Validate, and may carry a zero/blank value for a field that predates it).
 func (p Photo) Validate() error {
 	if strings.TrimSpace(p.StorageRef.String()) == "" {
 		return fmt.Errorf("%w: storage ref must not be blank", ErrInvalidPhoto)
+	}
+	if !contentHashPattern.MatchString(p.ContentHash) {
+		return fmt.Errorf("%w: content hash must be a 64-character lowercase hex sha256, got %q", ErrInvalidPhoto, p.ContentHash)
+	}
+	if p.SizeBytes <= 0 {
+		return fmt.Errorf("%w: size bytes must be positive, got %d", ErrInvalidPhoto, p.SizeBytes)
+	}
+	if _, ok := acceptedContentTypes[p.ContentType]; !ok {
+		return fmt.Errorf("%w: content type %q is not accepted", ErrInvalidPhoto, p.ContentType)
 	}
 	return nil
 }
 
 // PhotoRepository persists photo metadata (not the bytes). Get returns
 // ErrPhotoNotFound for an unknown id; a Create with an unknown HouseholdID
-// returns household.ErrHouseholdNotFound and an unknown UploadedBy returns
-// household.ErrMemberNotFound (both mapped from the tenant FK violations by the
-// adapter). ListByHousehold returns an empty slice (not an error) when none match.
+// returns household.ErrHouseholdNotFound, an unknown UploadedBy returns
+// household.ErrMemberNotFound, and a content hash that collides with another
+// household photo returns ErrDuplicatePhoto (all mapped from the tenant/unique
+// constraint violations by the adapter). ListByHousehold returns an empty slice
+// (not an error) when none match. FindByContentHash returns ErrPhotoNotFound
+// when no household photo carries that hash — the expected "not a duplicate"
+// outcome, not an exceptional one.
 type PhotoRepository interface {
 	Create(ctx context.Context, photo *Photo) error
 	Get(ctx context.Context, id PhotoID) (*Photo, error)
+	FindByContentHash(ctx context.Context, householdID household.HouseholdID, hash string) (*Photo, error)
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*Photo, error)
 	Delete(ctx context.Context, id PhotoID) error
 }

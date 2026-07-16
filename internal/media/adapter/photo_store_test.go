@@ -9,6 +9,8 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"io/fs"
+	"path/filepath"
 	"testing"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -40,6 +42,25 @@ func jpegBytes(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+// largeJPEGBytes builds a real, decodable w-by-h JPEG large enough (a few
+// hundred KB or more, depending on dimensions) that reading it in a single
+// buffered chunk would be obviously larger than any reasonable streaming
+// chunk size — used to prove Put streams rather than buffers.
+func largeJPEGBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: uint8((x + y) % 256), A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatalf("jpeg.Encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func newStore(t *testing.T, maxBytes int64) *adapter.LocalPhotoStore {
 	t.Helper()
 	s, err := adapter.NewLocalPhotoStore(t.TempDir(), maxBytes)
@@ -49,20 +70,50 @@ func newStore(t *testing.T, maxBytes int64) *adapter.LocalPhotoStore {
 	return s
 }
 
+// maxChunkReader tracks the largest single read buffer the caller ever
+// requested (len(p), not the bytes actually returned), so a test can assert
+// the caller never tried to slurp the whole source in one shot. Tracking the
+// requested size rather than the returned count matters: an io.ReadAll-style
+// caller reveals its intent to buffer everything by asking for very large
+// buffers as its internal buffer grows, regardless of how much the
+// underlying source happens to have left to hand back on any given call — a
+// check keyed on the returned byte count could pass by coincidence if the
+// source's remaining data is small.
+type maxChunkReader struct {
+	r            io.Reader
+	maxRequested int
+}
+
+func (m *maxChunkReader) Read(p []byte) (int, error) {
+	if len(p) > m.maxRequested {
+		m.maxRequested = len(p)
+	}
+	return m.r.Read(p)
+}
+
 func TestPutStoresAndOpensAndDeletes(t *testing.T) {
 	s := newStore(t, 10<<20)
 	hh := household.NewHouseholdID()
 	want := pngBytes(t)
 
-	ref, err := s.Put(context.Background(), hh, want, "image/png")
+	result, err := s.Put(context.Background(), hh, bytes.NewReader(want))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if ref == "" {
+	if result.Ref == "" {
 		t.Fatal("Put returned an empty ref")
 	}
+	if result.ContentHash == "" {
+		t.Fatal("Put returned an empty content hash")
+	}
+	if result.SizeBytes != int64(len(want)) {
+		t.Fatalf("Put SizeBytes = %d, want %d", result.SizeBytes, len(want))
+	}
+	if result.ContentType != "image/png" {
+		t.Fatalf("Put ContentType = %q, want image/png", result.ContentType)
+	}
 
-	rc, err := s.Open(context.Background(), ref)
+	rc, err := s.Open(context.Background(), result.Ref)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -72,14 +123,14 @@ func TestPutStoresAndOpensAndDeletes(t *testing.T) {
 		t.Fatalf("Open returned %d bytes, want %d", len(got), len(want))
 	}
 
-	if err := s.Delete(context.Background(), ref); err != nil {
+	if err := s.Delete(context.Background(), result.Ref); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	// Delete is idempotent.
-	if err := s.Delete(context.Background(), ref); err != nil {
+	if err := s.Delete(context.Background(), result.Ref); err != nil {
 		t.Fatalf("second Delete: %v", err)
 	}
-	if _, err := s.Open(context.Background(), ref); !errors.Is(err, domain.ErrPhotoNotFound) {
+	if _, err := s.Open(context.Background(), result.Ref); !errors.Is(err, domain.ErrPhotoNotFound) {
 		t.Fatalf("Open after delete error = %v, want ErrPhotoNotFound", err)
 	}
 }
@@ -88,39 +139,101 @@ func TestPutContentAddressedDeduplicates(t *testing.T) {
 	s := newStore(t, 10<<20)
 	hh := household.NewHouseholdID()
 	data := jpegBytes(t)
-	r1, err := s.Put(context.Background(), hh, data, "image/jpeg")
+	r1, err := s.Put(context.Background(), hh, bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("first Put: %v", err)
 	}
-	r2, err := s.Put(context.Background(), hh, data, "image/jpeg")
+	r2, err := s.Put(context.Background(), hh, bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("second Put: %v", err)
 	}
-	if r1 != r2 {
-		t.Fatalf("identical bytes produced different refs: %s vs %s", r1, r2)
+	if r1.Ref != r2.Ref {
+		t.Fatalf("identical bytes produced different refs: %s vs %s", r1.Ref, r2.Ref)
+	}
+	if r1.ContentHash != r2.ContentHash {
+		t.Fatalf("identical bytes produced different hashes: %s vs %s", r1.ContentHash, r2.ContentHash)
 	}
 }
 
 func TestPutRejections(t *testing.T) {
 	hh := household.NewHouseholdID()
+	// Sniffs as image/jpeg (the magic prefix Put's http.DetectContentType call
+	// keys on) but has no valid JPEG structure beyond that, so the
+	// image.DecodeConfig cross-check must still reject it.
+	sniffsAsJPEGButUndecodable := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01}
 	cases := []struct {
-		name        string
-		store       *adapter.LocalPhotoStore
-		data        []byte
-		contentType string
-		wantErr     error
+		name    string
+		store   *adapter.LocalPhotoStore
+		data    []byte
+		wantErr error
 	}{
-		{"unsupported type", newStore(t, 10<<20), pngBytes(t), "application/pdf", domain.ErrUnsupportedMediaType},
-		{"oversize", newStore(t, 8), pngBytes(t), "image/png", domain.ErrPhotoTooLarge},
-		{"not an image", newStore(t, 10<<20), []byte("this is not an image"), "image/png", domain.ErrInvalidPhoto},
-		{"type mismatch (png bytes declared jpeg)", newStore(t, 10<<20), pngBytes(t), "image/jpeg", domain.ErrInvalidPhoto},
+		// A renamed .txt (AC2): Put never looks at a filename or client-declared
+		// type, only the sniffed bytes, so plain text is rejected regardless of
+		// what extension or Content-Type a client might have sent it under.
+		{"renamed .txt / plain text content", newStore(t, 10<<20), []byte("this is not an image, just plain text"), domain.ErrUnsupportedMediaType},
+		{"oversize", newStore(t, 8), pngBytes(t), domain.ErrPhotoTooLarge},
+		{"sniffs as an image but does not decode", newStore(t, 10<<20), sniffsAsJPEGButUndecodable, domain.ErrInvalidPhoto},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := tc.store.Put(context.Background(), hh, tc.data, tc.contentType); !errors.Is(err, tc.wantErr) {
+			if _, err := tc.store.Put(context.Background(), hh, bytes.NewReader(tc.data)); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Put error = %v, want %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestPutRejectionLeavesNoPartialFile covers AC1: a rejected (oversize)
+// upload must not leave a partial file behind in the store root.
+func TestPutRejectionLeavesNoPartialFile(t *testing.T) {
+	root := t.TempDir()
+	s, err := adapter.NewLocalPhotoStore(root, 8)
+	if err != nil {
+		t.Fatalf("NewLocalPhotoStore: %v", err)
+	}
+	hh := household.NewHouseholdID()
+	if _, err := s.Put(context.Background(), hh, bytes.NewReader(pngBytes(t))); !errors.Is(err, domain.ErrPhotoTooLarge) {
+		t.Fatalf("Put error = %v, want ErrPhotoTooLarge", err)
+	}
+
+	var files []string
+	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk store root: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("rejected upload left files behind in the store root: %v", files)
+	}
+}
+
+// TestPutStreamsWithoutBufferingWholeFile covers AC4 by construction: Put must
+// read its source in bounded chunks (io.Copy's default buffer), never in one
+// call sized to the whole upload, so memory use stays flat regardless of file
+// size.
+func TestPutStreamsWithoutBufferingWholeFile(t *testing.T) {
+	s := newStore(t, 20<<20)
+	hh := household.NewHouseholdID()
+	big := largeJPEGBytes(t, 900, 900)
+	tracker := &maxChunkReader{r: bytes.NewReader(big)}
+
+	if _, err := s.Put(context.Background(), hh, tracker); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if tracker.maxRequested == 0 {
+		t.Fatal("Put never read from the source reader")
+	}
+	// io.Copy's default internal buffer is 32 KiB; allow headroom for the
+	// sniff read without permitting anything close to len(big).
+	const maxReasonableChunk = 128 << 10
+	if tracker.maxRequested > maxReasonableChunk {
+		t.Fatalf("Put requested a %d-byte read buffer (upload was %d bytes); it must stream in bounded chunks, not buffer the whole upload", tracker.maxRequested, len(big))
 	}
 }
 

@@ -1,7 +1,10 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,20 +20,46 @@ import (
 
 type fakePhotoStore struct {
 	putErr  error
+	openErr error
 	puts    int
 	deleted []domain.StorageRef
 }
 
-func (f *fakePhotoStore) Put(_ context.Context, _ household.HouseholdID, _ []byte, _ string) (domain.StorageRef, error) {
+// Put hashes the bytes it's given and derives Ref from the hash — like the
+// real content-addressed LocalPhotoStore — so identical content always
+// produces the identical ref, letting a test detect an unsafe delete of a ref
+// a still-valid photo row shares (rather than an incrementing counter, which
+// would give every Put a distinct ref and hide that class of bug).
+func (f *fakePhotoStore) Put(_ context.Context, _ household.HouseholdID, r io.Reader) (domain.PutResult, error) {
 	if f.putErr != nil {
-		return "", f.putErr
+		return domain.PutResult{}, f.putErr
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return domain.PutResult{}, err
 	}
 	f.puts++
-	return domain.StorageRef(fmt.Sprintf("hh/aa/ref%d.jpg", f.puts)), nil
+	hash := sha256Hex(string(data))
+	return domain.PutResult{
+		Ref:         refFor(hash),
+		ContentHash: hash,
+		SizeBytes:   int64(len(data)),
+		ContentType: "image/jpeg",
+	}, nil
 }
 
-func (f *fakePhotoStore) Open(context.Context, domain.StorageRef) (io.ReadCloser, error) {
-	return nil, nil
+// refFor mirrors LocalPhotoStore's content-addressed layout
+// (<household>/<aa>/<hash>.<ext>), collapsed to a fixed household segment
+// since these tests don't exercise cross-household path separation.
+func refFor(hash string) domain.StorageRef {
+	return domain.StorageRef(fmt.Sprintf("hh/%s/%s.jpg", hash[:2], hash))
+}
+
+func (f *fakePhotoStore) Open(context.Context, domain.StorageRef) (domain.PhotoReader, error) {
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	return fakePhotoReader{bytes.NewReader(nil)}, nil
 }
 
 func (f *fakePhotoStore) Delete(_ context.Context, ref domain.StorageRef) error {
@@ -38,15 +67,39 @@ func (f *fakePhotoStore) Delete(_ context.Context, ref domain.StorageRef) error 
 	return nil
 }
 
+// fakePhotoReader adapts a *bytes.Reader (already Read+ReadAt+Seek) into a
+// domain.PhotoReader with a no-op Close.
+type fakePhotoReader struct{ *bytes.Reader }
+
+func (fakePhotoReader) Close() error { return nil }
+
+// sha256Hex mirrors what fakePhotoStore.Put (and the real LocalPhotoStore)
+// computes for content s, so a test can seed a photo with the exact hash a
+// later Upload of the same bytes will produce.
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
 type fakeExif struct{ taken *time.Time }
 
-func (f fakeExif) TakenAt([]byte) *time.Time { return f.taken }
+func (f fakeExif) TakenAt(domain.RandomAccessReader) *time.Time { return f.taken }
 
 type fakePhotoRepo struct {
 	store     map[domain.PhotoID]*domain.Photo
 	createErr error
 	created   []*domain.Photo
 	deleted   []domain.PhotoID
+
+	// raceHash/raceWinner/raceFindCalls simulate a concurrent upload winning
+	// the unique-hash race between PhotoService's pre-Create dedup check and
+	// its retry after Create fails with ErrDuplicatePhoto: FindByContentHash
+	// reports ErrPhotoNotFound the first time it's asked about raceHash (the
+	// winner hasn't committed yet), then returns raceWinner on every
+	// subsequent call (the winner has since committed).
+	raceHash      string
+	raceWinner    *domain.Photo
+	raceFindCalls int
 }
 
 func newFakePhotoRepo() *fakePhotoRepo {
@@ -65,6 +118,25 @@ func (f *fakePhotoRepo) Create(_ context.Context, p *domain.Photo) error {
 func (f *fakePhotoRepo) Get(_ context.Context, id domain.PhotoID) (*domain.Photo, error) {
 	if p, ok := f.store[id]; ok {
 		return p, nil
+	}
+	return nil, domain.ErrPhotoNotFound
+}
+
+func (f *fakePhotoRepo) FindByContentHash(_ context.Context, householdID household.HouseholdID, hash string) (*domain.Photo, error) {
+	if hash == "" {
+		return nil, domain.ErrPhotoNotFound
+	}
+	if f.raceHash != "" && hash == f.raceHash {
+		f.raceFindCalls++
+		if f.raceFindCalls == 1 {
+			return nil, domain.ErrPhotoNotFound
+		}
+		return f.raceWinner, nil
+	}
+	for _, p := range f.store {
+		if p.HouseholdID == householdID && p.ContentHash == hash {
+			return p, nil
+		}
 	}
 	return nil, domain.ErrPhotoNotFound
 }
@@ -160,12 +232,19 @@ func TestPhotoServiceUpload(t *testing.T) {
 	hh := household.NewHouseholdID()
 	uploader := household.NewMemberID()
 
-	photo, err := svc.Upload(context.Background(), hh, uploader, []byte("imgbytes"), "image/jpeg", "  Beach  ")
+	result, err := svc.Upload(context.Background(), hh, uploader, bytes.NewReader([]byte("imgbytes")), "  Beach  ")
 	if err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
-	if photo.StorageRef != "hh/aa/ref1.jpg" || photo.Caption != "Beach" || photo.TakenAt == nil || !photo.TakenAt.Equal(taken) {
+	if result.Duplicate {
+		t.Fatal("first upload of new content must not be a duplicate")
+	}
+	photo := result.Photo
+	if photo.StorageRef != refFor(sha256Hex("imgbytes")) || photo.Caption != "Beach" || photo.TakenAt == nil || !photo.TakenAt.Equal(taken) {
 		t.Fatalf("uploaded photo = %+v", photo)
+	}
+	if photo.ContentHash == "" {
+		t.Fatal("uploaded photo must carry the content hash PhotoStore.Put computed")
 	}
 	if photo.UploadedBy == nil || *photo.UploadedBy != uploader || photo.HouseholdID != hh {
 		t.Fatalf("attribution wrong: %+v", photo)
@@ -175,11 +254,78 @@ func TestPhotoServiceUpload(t *testing.T) {
 	}
 }
 
+// TestPhotoServiceUploadDeduplicatesByContentHash covers AC3: uploading the
+// same bytes twice for a household creates exactly one photo row, and the
+// second Upload reports Duplicate instead of erroring.
+func TestPhotoServiceUploadDeduplicatesByContentHash(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakePhotoRepo()
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	hh := household.NewHouseholdID()
+	uploader := household.NewMemberID()
+
+	first, err := svc.Upload(context.Background(), hh, uploader, bytes.NewReader([]byte("same-bytes")), "")
+	if err != nil {
+		t.Fatalf("first Upload: %v", err)
+	}
+	if first.Duplicate {
+		t.Fatal("first upload must not be reported as a duplicate")
+	}
+
+	second, err := svc.Upload(context.Background(), hh, uploader, bytes.NewReader([]byte("same-bytes")), "")
+	if err != nil {
+		t.Fatalf("second Upload: %v", err)
+	}
+	if !second.Duplicate {
+		t.Fatal("re-uploading identical bytes must be reported as a duplicate")
+	}
+	if second.Photo.ID != first.Photo.ID {
+		t.Fatalf("duplicate upload returned a different photo: got %s, want %s", second.Photo.ID, first.Photo.ID)
+	}
+	if len(repo.created) != 1 {
+		t.Fatalf("created %d photo rows, want 1 (dedup must not create a second row)", len(repo.created))
+	}
+}
+
+// TestPhotoServiceUploadResolvesConcurrentDuplicate covers the race where two
+// uploads of the same bytes both pass the pre-check and only one wins the
+// unique-index insert. The fake repo's raceHash/raceWinner make
+// FindByContentHash miss (ErrPhotoNotFound) on Upload's first, pre-Create
+// check — exactly as it would for a genuinely new upload — and only return
+// the winner on the second call Upload makes after Create reports
+// ErrDuplicatePhoto, so this exercises the actual race-resolution branch
+// rather than short-circuiting at the pre-check.
+func TestPhotoServiceUploadResolvesConcurrentDuplicate(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+	hash := sha256Hex("raced-bytes")
+	winner := &domain.Photo{
+		ID: domain.NewPhotoID(), HouseholdID: hh,
+		StorageRef: refFor(hash), ContentHash: hash,
+	}
+	repo.raceHash = hash
+	repo.raceWinner = winner
+	repo.createErr = domain.ErrDuplicatePhoto
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+
+	result, err := svc.Upload(context.Background(), hh, household.NewMemberID(), bytes.NewReader([]byte("raced-bytes")), "")
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if !result.Duplicate || result.Photo.ID != winner.ID {
+		t.Fatalf("Upload = %+v, want the pre-existing winner reported as a duplicate", result)
+	}
+	if repo.raceFindCalls != 2 {
+		t.Fatalf("FindByContentHash called %d times, want 2 (pre-check miss, then a hit after Create's ErrDuplicatePhoto)", repo.raceFindCalls)
+	}
+}
+
 func TestPhotoServiceUploadStoreErrorPropagates(t *testing.T) {
 	store := &fakePhotoStore{putErr: domain.ErrUnsupportedMediaType}
 	repo := newFakePhotoRepo()
 	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
-	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), []byte("x"), "application/pdf", ""); !errors.Is(err, domain.ErrUnsupportedMediaType) {
+	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), bytes.NewReader([]byte("x")), ""); !errors.Is(err, domain.ErrUnsupportedMediaType) {
 		t.Fatalf("Upload error = %v, want ErrUnsupportedMediaType", err)
 	}
 	if len(repo.created) != 0 {
@@ -187,16 +333,40 @@ func TestPhotoServiceUploadStoreErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestPhotoServiceUploadCleansUpOnCreateError(t *testing.T) {
+// TestPhotoServiceUploadDoesNotCleanUpOnCreateError covers the invariant a
+// failure after Put must not delete stored bytes: the object is
+// content-addressed and may be shared by another (or a soon-to-commit
+// concurrent) photo row, so the upload path leaves it in place on any
+// post-Put failure — an orphan candidate for the planned NES-132/133 reaper,
+// never a synchronous delete.
+func TestPhotoServiceUploadDoesNotCleanUpOnCreateError(t *testing.T) {
 	store := &fakePhotoStore{}
 	repo := newFakePhotoRepo()
 	repo.createErr = errors.New("db down")
 	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
-	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), []byte("x"), "image/png", ""); err == nil {
+	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), bytes.NewReader([]byte("x")), ""); err == nil {
 		t.Fatal("Upload should fail when Create fails")
 	}
-	if len(store.deleted) != 1 || store.deleted[0] != "hh/aa/ref1.jpg" {
-		t.Fatalf("stored bytes not cleaned up: deleted=%v", store.deleted)
+	if len(store.deleted) != 0 {
+		t.Fatalf("Upload must not delete stored bytes on a Create failure, deleted=%v", store.deleted)
+	}
+}
+
+// TestPhotoServiceUploadDoesNotCleanUpOnExifReopenError covers the same
+// no-synchronous-delete invariant for the failure path where PhotoStore.Open
+// (used to feed the ExifReader) errors after Put already succeeded.
+func TestPhotoServiceUploadDoesNotCleanUpOnExifReopenError(t *testing.T) {
+	store := &fakePhotoStore{openErr: errors.New("disk hiccup")}
+	repo := newFakePhotoRepo()
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), bytes.NewReader([]byte("x")), ""); err == nil {
+		t.Fatal("Upload should fail when the exif reopen fails")
+	}
+	if len(store.deleted) != 0 {
+		t.Fatalf("Upload must not delete stored bytes on an exif reopen failure, deleted=%v", store.deleted)
+	}
+	if len(repo.created) != 0 {
+		t.Fatal("exif reopen error must not persist a photo")
 	}
 }
 

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -23,26 +25,52 @@ import (
 	mediadomain "github.com/ericfisherdev/nestova/internal/media/domain"
 )
 
+// mediaTestMaxUploadBytes is the per-photo cap fed to NewWebHandlers in these
+// tests, mirroring how main.go wires cfg.Media.MaxUploadBytes.
+const mediaTestMaxUploadBytes = 10 << 20
+
 // --- media fakes ---
 
 type fakeMediaStore struct {
-	puts  int
-	bytes []byte
+	puts   int
+	bytes  []byte
+	putErr error
 }
 
-func (f *fakeMediaStore) Put(context.Context, household.HouseholdID, []byte, string) (mediadomain.StorageRef, error) {
+// Put hashes the bytes it's given (like the real content-addressed store) so
+// tests can exercise dedup by uploading identical content twice.
+func (f *fakeMediaStore) Put(_ context.Context, _ household.HouseholdID, r io.Reader) (mediadomain.PutResult, error) {
+	if f.putErr != nil {
+		return mediadomain.PutResult{}, f.putErr
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return mediadomain.PutResult{}, err
+	}
 	f.puts++
-	return mediadomain.StorageRef("hh/aa/stored.jpg"), nil
+	sum := sha256.Sum256(data)
+	return mediadomain.PutResult{
+		Ref:         mediadomain.StorageRef("hh/aa/stored.jpg"),
+		ContentHash: hex.EncodeToString(sum[:]),
+		SizeBytes:   int64(len(data)),
+		ContentType: "image/jpeg",
+	}, nil
 }
 
-func (f *fakeMediaStore) Open(context.Context, mediadomain.StorageRef) (io.ReadCloser, error) {
-	return io.NopCloser(bytes.NewReader(f.bytes)), nil
+func (f *fakeMediaStore) Open(context.Context, mediadomain.StorageRef) (mediadomain.PhotoReader, error) {
+	return fakeMediaPhotoReader{bytes.NewReader(f.bytes)}, nil
 }
 func (f *fakeMediaStore) Delete(context.Context, mediadomain.StorageRef) error { return nil }
 
+// fakeMediaPhotoReader adapts a *bytes.Reader (already Read+ReadAt+Seek) into
+// a mediadomain.PhotoReader with a no-op Close.
+type fakeMediaPhotoReader struct{ *bytes.Reader }
+
+func (fakeMediaPhotoReader) Close() error { return nil }
+
 type fakeMediaExif struct{}
 
-func (fakeMediaExif) TakenAt([]byte) *time.Time { return nil }
+func (fakeMediaExif) TakenAt(mediadomain.RandomAccessReader) *time.Time { return nil }
 
 type fakeMediaPhotoRepo struct {
 	created []*mediadomain.Photo
@@ -62,6 +90,18 @@ func (f *fakeMediaPhotoRepo) Create(_ context.Context, p *mediadomain.Photo) err
 func (f *fakeMediaPhotoRepo) Get(_ context.Context, id mediadomain.PhotoID) (*mediadomain.Photo, error) {
 	if p, ok := f.store[id]; ok {
 		return p, nil
+	}
+	return nil, mediadomain.ErrPhotoNotFound
+}
+
+func (f *fakeMediaPhotoRepo) FindByContentHash(_ context.Context, householdID household.HouseholdID, hash string) (*mediadomain.Photo, error) {
+	if hash == "" {
+		return nil, mediadomain.ErrPhotoNotFound
+	}
+	for _, p := range f.store {
+		if p.HouseholdID == householdID && p.ContentHash == hash {
+			return p, nil
+		}
 	}
 	return nil, mediadomain.ErrPhotoNotFound
 }
@@ -149,7 +189,7 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 	if err != nil {
 		t.Fatalf("NewAlbumService: %v", err)
 	}
-	handlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger)
+	handlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger, mediaTestMaxUploadBytes)
 
 	layoutFn := func(*household.Member) func(templ.Component) templ.Component {
 		return func(c templ.Component) templ.Component { return c }
@@ -198,11 +238,106 @@ func TestMediaUploadPersistsAndRedirects(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != "/photos" {
 		t.Fatalf("upload: status=%d hx-redirect=%q", rec.Code, rec.Header().Get("HX-Redirect"))
 	}
+	if rec.Header().Get("X-Upload-Result") != "created" {
+		t.Fatalf("X-Upload-Result = %q, want created", rec.Header().Get("X-Upload-Result"))
+	}
 	if store.puts != 1 || len(repo.created) != 1 {
 		t.Fatalf("upload side effects: puts=%d created=%d", store.puts, len(repo.created))
 	}
 	if repo.created[0].HouseholdID != member.HouseholdID || repo.created[0].UploadedBy == nil || *repo.created[0].UploadedBy != member.ID {
 		t.Fatalf("uploaded photo attribution wrong: %+v", repo.created[0])
+	}
+}
+
+// TestMediaUploadDedupSetsResultHeader covers AC3 end-to-end through the
+// handler: uploading the same bytes twice creates exactly one photo row (one
+// PhotoRepository.Create), and the second response reports the upload as a
+// duplicate via X-Upload-Result rather than erroring.
+func TestMediaUploadDedupSetsResultHeader(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{}
+	repo := newFakeMediaPhotoRepo()
+	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	upload := func() *httptest.ResponseRecorder {
+		ct, body := multipartUpload(t, csrf, []byte("same-bytes"))
+		req := httptest.NewRequest(http.MethodPost, "/photos", body)
+		req.Header.Set("Content-Type", ct)
+		req.Header.Set("Cookie", cookie)
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	first := upload()
+	if first.Code != http.StatusOK || first.Header().Get("X-Upload-Result") != "created" {
+		t.Fatalf("first upload: status=%d result=%q", first.Code, first.Header().Get("X-Upload-Result"))
+	}
+
+	second := upload()
+	if second.Code != http.StatusOK || second.Header().Get("X-Upload-Result") != "duplicate" {
+		t.Fatalf("second (duplicate) upload: status=%d result=%q", second.Code, second.Header().Get("X-Upload-Result"))
+	}
+	if store.puts != 2 {
+		t.Fatalf("PhotoStore.Put called %d times, want 2 (one per upload attempt)", store.puts)
+	}
+	if len(repo.created) != 1 {
+		t.Fatalf("photo rows created = %d, want 1 (the duplicate must not create a second row)", len(repo.created))
+	}
+}
+
+// TestMediaUploadRejectsUnsupportedMediaType covers AC2 at the handler level:
+// a rejection surfaced by the store (as ErrUnsupportedMediaType — real
+// content sniffing is exercised directly against LocalPhotoStore in
+// internal/media/adapter/photo_store_test.go) maps to 415 and persists
+// nothing.
+func TestMediaUploadRejectsUnsupportedMediaType(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{putErr: mediadomain.ErrUnsupportedMediaType}
+	repo := newFakeMediaPhotoRepo()
+	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	ct, body := multipartUpload(t, csrf, []byte("not really an image"))
+	req := httptest.NewRequest(http.MethodPost, "/photos", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("unsupported-type upload: status=%d, want 415", rec.Code)
+	}
+	if len(repo.created) != 0 {
+		t.Fatal("rejected upload must not persist")
+	}
+}
+
+// TestMediaUploadRejectsOversizeRequestBody covers AC1 at the handler level:
+// a request body beyond the configured per-photo limit (plus overhead) is
+// rejected before it ever reaches PhotoService/PhotoStore.
+func TestMediaUploadRejectsOversizeRequestBody(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{}
+	repo := newFakeMediaPhotoRepo()
+	handler, sm, _ := buildMediaTestHandler(t, member, store, repo)
+	cookie, csrf := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	oversized := make([]byte, mediaTestMaxUploadBytes+(1<<20)) // 1 MiB past the configured cap
+	ct, body := multipartUpload(t, csrf, oversized)
+	req := httptest.NewRequest(http.MethodPost, "/photos", body)
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize upload: status=%d, want 413", rec.Code)
+	}
+	if store.puts != 0 || len(repo.created) != 0 {
+		t.Fatal("oversize upload must not persist")
 	}
 }
 
