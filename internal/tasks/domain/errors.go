@@ -45,4 +45,50 @@ var (
 	// instance is always unassigned until claimed, so a fixed or round-robin
 	// rotation policy would never be honoured (NES-116).
 	ErrAsNeededRequiresClaimable = errors.New("tasks: as-needed cadence requires the claimable rotation policy")
+
+	// ErrTradeNotPending is returned by ChoreTradeRepository.Accept, Decline,
+	// and Cancel (NES-121) when the target trade is unknown, belongs to
+	// another household, is not addressed to/from the calling member (wrong
+	// responder for Accept/Decline, or wrong proposer for Cancel), has
+	// already resolved (accepted, declined, cancelled, or expired), OR — for
+	// Accept specifically — its expiry has already passed even though the
+	// background sweep has not yet flipped its status to expired. Accept
+	// enforces the deadline synchronously (expires_at > the accept instant)
+	// rather than waiting for the sweep, so a trade can never be accepted
+	// exactly the moment SweepExpiredTrades would otherwise claim it. These
+	// causes are deliberately not distinguished: the caller only needs to
+	// know whether the action succeeded within an open, caller-addressed,
+	// still-live proposal, which after any of these it no longer is —
+	// mirroring how ErrInstanceAlreadyClaimed does not distinguish "unknown"
+	// from "assigned to someone else" beyond what disambiguateClaim needs.
+	ErrTradeNotPending = errors.New("tasks: trade is not in the proposed state")
+
+	// ErrTradeSelf is returned by TradeService.Propose (NES-121) when the
+	// proposer and responder are the same member — a member cannot propose a
+	// trade with themselves.
+	ErrTradeSelf = errors.New("tasks: cannot propose a trade with yourself")
+
+	// ErrInstanceNotTradeable is returned by ChoreTradeRepository.Propose and
+	// Accept (NES-121). It covers every case in IsInstanceTradeable's
+	// contract (the instance is not pending, not a scheduled instance, or
+	// currently claimed) AND the case where the instance already carries a
+	// live (status = 'proposed') trade proposal — enforced by the
+	// chore_trade_offered_live_uniq / chore_trade_requested_live_uniq
+	// partial unique indexes and re-checked defensively before insert. Also
+	// returned by Accept when re-validation at accept time finds either
+	// instance no longer in the state (or held by the party) it was in at
+	// propose time.
+	ErrInstanceNotTradeable = errors.New("tasks: instance is not tradeable")
+
+	// ErrNotYourChore is returned by ChoreTradeRepository.Propose (NES-121)
+	// when the offered instance is not assigned to the proposer, or the
+	// requested instance is not assigned to the responder — a trade can only
+	// be proposed over chores the two named parties actually hold.
+	ErrNotYourChore = errors.New("tasks: instance is not assigned to the expected member")
+
+	// ErrTradeNotFound is returned by ChoreTradeRepository.Get (NES-121) when
+	// the requested ChoreTradeID does not exist or belongs to another
+	// household. Accept, Decline, and Cancel use ErrTradeNotPending instead
+	// (see its doc) — this sentinel is scoped to the read-only Get lookup.
+	ErrTradeNotFound = errors.New("tasks: trade not found")
 )

@@ -233,10 +233,14 @@ func runServer(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create task generator: %w", err)
 	}
+	// NES-121: chore trade wiring. choreTradeRepo is only needed here for the
+	// scheduler's trade-expiry sweep step; a separate TradeService for the
+	// propose/accept/decline/cancel HTTP handlers is wired by NES-122.
+	choreTradeRepo := tasksadapter.NewTradeRepository(pool)
 	// outboxRepo satisfies notifydomain.Enqueuer (it embeds Enqueue); passing it
 	// here lets the scheduler emit due-soon and overdue reminders via the same
 	// outbox the dispatcher already consumes (NES-34).
-	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, outboxRepo, logger, tickRecorder, taskSchedulerPollInterval)
+	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, choreTradeRepo, outboxRepo, logger, tickRecorder, taskSchedulerPollInterval)
 	if err != nil {
 		return fmt.Errorf("create task scheduler: %w", err)
 	}

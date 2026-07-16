@@ -145,8 +145,11 @@ func (r *blockingOverdueRepo) ClaimDueSoonReminders(_ context.Context, _ time.Ti
 // ---------------------------------------------------------------------------
 
 // newTestScheduler constructs a Scheduler over the provided fakes with the
-// given poll interval. A no-op fake enqueuer is used unless tests need to
-// inspect enqueued notifications.
+// given poll interval. A no-op fake enqueuer and a fresh, unconfigured
+// fakeChoreTradeRepo are used unless a test needs to inspect enqueued
+// notifications or trade-expiry sweep behavior specifically — those tests
+// construct the Scheduler directly instead (see e.g.
+// TestScheduler_RunOnce_CallsTradeExpirySweep).
 func newTestScheduler(
 	t *testing.T,
 	taskRepo *fakeRecurringTaskRepo,
@@ -158,7 +161,7 @@ func newTestScheduler(
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, pollInterval)
+	s, err := app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, pollInterval)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -171,7 +174,7 @@ func newTestScheduler(
 
 func TestNewScheduler_NilGenerator_ReturnsError(t *testing.T) {
 	instRepo := newCallCountingInstanceRepo()
-	_, err := app.NewScheduler(nil, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
+	_, err := app.NewScheduler(nil, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil generator) error = nil, want non-nil")
 	}
@@ -183,9 +186,22 @@ func TestNewScheduler_NilInstanceRepo_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, nil, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
+	_, err = app.NewScheduler(gen, nil, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil instanceRepo) error = nil, want non-nil")
+	}
+}
+
+func TestNewScheduler_NilTradeRepo_ReturnsError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	gen, err := app.NewGenerator(taskRepo, instRepo.fakeTaskInstanceRepo, discardLogger(), 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+	_, err = app.NewScheduler(gen, instRepo, nil, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
+	if err == nil {
+		t.Error("NewScheduler(nil tradeRepo) error = nil, want non-nil")
 	}
 }
 
@@ -196,7 +212,7 @@ func TestNewScheduler_NilEnqueuer_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, nil, discardLogger(), metrics.NopTickRecorder{}, time.Minute)
+	_, err = app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), nil, discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil enqueuer) error = nil, want non-nil")
 	}
@@ -209,7 +225,7 @@ func TestNewScheduler_NilLogger_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), nil, metrics.NopTickRecorder{}, time.Minute)
+	_, err = app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), nil, metrics.NopTickRecorder{}, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil logger) error = nil, want non-nil")
 	}
@@ -222,7 +238,7 @@ func TestNewScheduler_NonPositivePollInterval_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, 0)
+	_, err = app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, 0)
 	if err == nil {
 		t.Error("NewScheduler(pollInterval=0) error = nil, want non-nil")
 	}
@@ -331,6 +347,72 @@ func TestScheduler_RunOnce_ClaimWarningsError_ReturnsError(t *testing.T) {
 	}
 }
 
+// newSchedulerWithTradeRepo constructs a Scheduler exactly like
+// newTestScheduler, but over a caller-supplied fakeChoreTradeRepo instead of
+// an internally-constructed default one, so trade-expiry tests can configure
+// and later inspect it.
+func newSchedulerWithTradeRepo(
+	t *testing.T,
+	taskRepo *fakeRecurringTaskRepo,
+	instRepo *callCountingInstanceRepo,
+	tradeRepo *fakeChoreTradeRepo,
+	pollInterval time.Duration,
+) *app.Scheduler {
+	t.Helper()
+	gen, err := app.NewGenerator(taskRepo, instRepo.fakeTaskInstanceRepo, discardLogger(), 14*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewGenerator: %v", err)
+	}
+	s, err := app.NewScheduler(gen, instRepo, tradeRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, pollInterval)
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	return s
+}
+
+// TestScheduler_RunOnce_CallsTradeExpirySweep verifies that RunOnce's NES-121
+// step calls SweepExpiredTrades exactly once per cycle, alongside the
+// pre-existing claim-expiry sweep.
+func TestScheduler_RunOnce_CallsTradeExpirySweep(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	tradeRepo := newFakeChoreTradeRepo()
+
+	s := newSchedulerWithTradeRepo(t, taskRepo, instRepo, tradeRepo, time.Minute)
+
+	if err := s.RunOnce(context.Background(), time.Now()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := tradeRepo.sweepCalls.Load(); got != 1 {
+		t.Errorf("SweepExpiredTrades calls = %d, want 1", got)
+	}
+}
+
+// TestScheduler_RunOnce_TradeExpiryError_ReturnsError verifies that when
+// SweepExpiredTrades fails and every earlier step succeeds, RunOnce surfaces
+// the trade-expiry error while every earlier step still ran.
+func TestScheduler_RunOnce_TradeExpiryError_ReturnsError(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newCallCountingInstanceRepo()
+	tradeRepo := newFakeChoreTradeRepo()
+	tradeRepo.sweepErr = errors.New("db: trade expiry sweep failed")
+
+	s := newSchedulerWithTradeRepo(t, taskRepo, instRepo, tradeRepo, time.Minute)
+
+	err := s.RunOnce(context.Background(), time.Now())
+	if !errors.Is(err, tradeRepo.sweepErr) {
+		t.Errorf("RunOnce error = %v, want the trade-expiry error %v", err, tradeRepo.sweepErr)
+	}
+	if got := tradeRepo.sweepCalls.Load(); got != 1 {
+		t.Errorf("SweepExpiredTrades calls = %d, want 1", got)
+	}
+	// The claim-expiry sweep (an earlier step) must still have run despite
+	// this later step's failure.
+	if got := instRepo.claimExpiryCalls.Load(); got != 1 {
+		t.Errorf("SweepExpiredClaims calls = %d, want 1 even when trade expiry sweep fails", got)
+	}
+}
+
 // TestScheduler_RunOnce_OverdueSweepRunsEvenWhenGenerateFails verifies that
 // when GenerateDue fails, MarkPendingOverdueAll is still called and RunOnce
 // returns a non-nil error.
@@ -344,7 +426,7 @@ func TestScheduler_RunOnce_OverdueSweepRunsEvenWhenGenerateFails(t *testing.T) {
 	}
 
 	instRepo := newCallCountingInstanceRepo()
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
+	s, err := app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -389,7 +471,7 @@ func TestScheduler_RunOnce_GenerateFailFirst_ReturnsGenerateError(t *testing.T) 
 	instRepo := newCallCountingInstanceRepo()
 	instRepo.overdueAllErr = errors.New("db: sweep also failed")
 
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
+	s, err := app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -455,7 +537,7 @@ func TestScheduler_Run_InFlightTickCompletesBeforeStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	s, err := app.NewScheduler(gen, blockRepo, newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, 10*time.Millisecond)
+	s, err := app.NewScheduler(gen, blockRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), metrics.NopTickRecorder{}, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
@@ -507,7 +589,7 @@ func TestNewScheduler_NilTickRecorder_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator: %v", err)
 	}
-	_, err = app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), nil, time.Minute)
+	_, err = app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), nil, time.Minute)
 	if err == nil {
 		t.Error("NewScheduler(nil tick recorder) error = nil, want non-nil")
 	}
@@ -560,7 +642,7 @@ func TestScheduler_Run_FailingTickObservedWithError(t *testing.T) {
 		t.Fatalf("NewGenerator: %v", err)
 	}
 	spy := &spyTickRecorder{}
-	s, err := app.NewScheduler(gen, instRepo, newFakeEnqueuer(), discardLogger(), spy, 10*time.Millisecond)
+	s, err := app.NewScheduler(gen, instRepo, newFakeChoreTradeRepo(), newFakeEnqueuer(), discardLogger(), spy, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
