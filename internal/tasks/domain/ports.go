@@ -416,3 +416,112 @@ type TaskInstanceRepository interface {
 	// and must not be called from user-facing request handlers.
 	ClearClaimWarning(ctx context.Context, id TaskInstanceID, expiresAt time.Time) error
 }
+
+// ChoreTradeRepository is the persistence port for [ChoreTrade] aggregates —
+// the 1-for-1 chore trade propose/accept workflow (NES-121). Implementations
+// live in the adapter layer and are injected into [TradeService] (application
+// layer) and the background scheduler.
+//
+// Within this repository's own methods, the two task instances a trade
+// references are never mutated by anything OTHER than Accept (a swap):
+// Propose, Decline, Cancel, and SweepExpiredTrades read instance state but
+// only ever write the chore_trade row itself. This guarantee is scoped to
+// ChoreTradeRepository alone — [TaskInstanceRepository]'s own methods
+// (Complete, Skip, Claim) and the scheduler's other sweeps can and do mutate
+// a referenced instance independently at any time; that external mutation is
+// exactly the race Accept's re-validation and its ErrInstanceNotTradeable
+// outcome exist to catch.
+//
+// Lock-ordering convention (to avoid a Propose/Accept deadlock): Propose
+// acquires row locks on the two referenced task_instance rows only (ordered
+// by id); it never takes an explicit lock on any chore_trade row — the
+// partial unique indexes (chore_trade_offered_live_uniq /
+// chore_trade_requested_live_uniq) are the sole atomic mechanism preventing a
+// duplicate live proposal, so no additional locking is needed for
+// correctness. Accept, in the opposite order, locks its own chore_trade row
+// first (via its own UPDATE) and then the two task_instance rows (via the
+// swap). Because Propose never holds a task_instance lock while ALSO waiting
+// to acquire a chore_trade lock, and Accept never holds a chore_trade lock
+// while waiting on a task_instance lock held by a third party other than
+// another Accept, this asymmetric ordering cannot form a reverse-order lock
+// cycle between a concurrent Propose and Accept. Every method that begins a
+// transaction and acquires more than one lock must preserve this invariant —
+// see TestTrade_ProposeVsAccept_NoDeadlock in the adapter's test suite.
+//
+// All ID-based methods except SweepExpiredTrades are tenant-scoped: they take
+// the household id as a leading argument and enforce household isolation, so
+// a ChoreTradeID belonging to a different household is treated as unknown.
+//
+// Error contracts:
+//   - Propose returns [ErrInstanceNotFound] when either instance id is
+//     unknown or belongs to another household.
+//   - Propose returns [ErrInstanceNotTradeable] when either instance fails
+//     [IsInstanceTradeable], or when either instance already carries a live
+//     trade proposal.
+//   - Propose returns [ErrNotYourChore] when the offered instance is not
+//     assigned to trade.ProposerID, or the requested instance is not
+//     assigned to trade.ResponderID.
+//   - Get returns [ErrTradeNotFound] when id is unknown or belongs to
+//     another household.
+//   - Accept, Decline, and Cancel return [ErrTradeNotPending] when the trade
+//     is unknown, belongs to another household, addresses the wrong member
+//     (the caller is not the responder for Accept/Decline, or not the
+//     proposer for Cancel), has already resolved, or — Accept only — its
+//     expiry has already passed as of the accept instant even though the
+//     background sweep has not yet run. These causes are deliberately not
+//     distinguished — see [ErrTradeNotPending]'s doc.
+//   - Accept additionally returns [ErrInstanceNotTradeable] when, at accept
+//     time, either instance is no longer pending/scheduled/unclaimed, or is
+//     no longer assigned to the party that held it at propose time (e.g. the
+//     instance was completed, skipped, reassigned, or claimed after the
+//     trade was proposed). The trade's status transition and the instance
+//     swap happen in ONE transaction: if the re-validation fails, the trade
+//     row's status is rolled back to proposed too — Accept is all-or-nothing.
+type ChoreTradeRepository interface {
+	// Propose validates and persists a new trade proposal atomically. Callers
+	// (via [TradeService.Propose]) must populate trade.ID, trade.ProposerID,
+	// trade.ResponderID, trade.OfferedInstanceID, and
+	// trade.RequestedInstanceID; the store populates trade.HouseholdID,
+	// trade.Status ([TradeProposed]), trade.CreatedAt, and trade.ExpiresAt
+	// (the earlier of the two instances' due dates — both are guaranteed
+	// non-nil once tradeability is confirmed, since [IsInstanceTradeable]
+	// requires [KindScheduled]).
+	Propose(ctx context.Context, householdID household.HouseholdID, trade *ChoreTrade) error
+
+	// Get returns the trade identified by id within the household.
+	Get(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID) (*ChoreTrade, error)
+
+	// Accept atomically re-validates both instances, swaps their AssigneeID
+	// (offered → responderID, requested → proposerID), and marks the trade
+	// accepted with resolved_at = at, all in one transaction. at is also the
+	// instant Accept's deadline check is evaluated against: the UPDATE's
+	// WHERE clause requires expires_at > at, so an accept attempted at or
+	// after the trade's deadline atomically fails with [ErrTradeNotPending]
+	// — Accept never has to wait for [SweepExpiredTrades] to run first, and
+	// the two predicates (expires_at > at here, expires_at <= asOf there) are
+	// exact complements so no instant is handled by neither or both. Returns
+	// an [AcceptedTrade] describing the resolution so the caller can notify
+	// both parties without an additional query.
+	Accept(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID, responderID household.MemberID, at time.Time) (AcceptedTrade, error)
+
+	// Decline transitions the trade from proposed to declined. No instance
+	// assignment is touched.
+	Decline(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID, responderID household.MemberID) error
+
+	// Cancel transitions the trade from proposed to cancelled. No instance
+	// assignment is touched.
+	Cancel(ctx context.Context, householdID household.HouseholdID, id ChoreTradeID, proposerID household.MemberID) error
+
+	// SweepExpiredTrades atomically transitions every trade whose expires_at
+	// is at or before asOf and whose status is still proposed to expired,
+	// recording resolved_at. No instance assignment is touched. Returns the
+	// expired trades as [ExpiredTrade] values so the caller can enqueue a
+	// notification to each proposer without an additional query. Returns an
+	// empty slice (not an error) when no trades are expired as of asOf.
+	//
+	// WARNING: this method is intentionally NOT household-scoped. It is a
+	// system-process method reserved for the background scheduler and must
+	// not be called from user-facing request handlers, matching the
+	// precedent set by [TaskInstanceRepository.SweepExpiredClaims].
+	SweepExpiredTrades(ctx context.Context, asOf time.Time) ([]ExpiredTrade, error)
+}

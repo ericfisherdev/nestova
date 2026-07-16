@@ -14,9 +14,9 @@ import (
 
 // Scheduler periodically materialises pending task instances, sweeps past-due
 // pending instances to overdue, and emits due-soon, overdue, claim-warning,
-// and claim-expiry reminders through the notify outbox. It is designed to run
-// as a single background goroutine alongside the notification dispatcher; the
-// two workers are independent and share no state.
+// claim-expiry, and trade-expiry reminders through the notify outbox. It is
+// designed to run as a single background goroutine alongside the notification
+// dispatcher; the two workers are independent and share no state.
 //
 // Each poll cycle:
 //  1. Calls [Generator.GenerateDue] to materialise upcoming instances.
@@ -31,15 +31,22 @@ import (
 //     (NES-117). It runs on this same cadence rather than a separate
 //     scheduler since it shares the same "sweep task_instance for a
 //     time-based transition" shape as step 2.
+//  7. Calls [TradeService.ExpireTrades] to resolve expired chore trade
+//     proposals and enqueue trade-expiry notifications (NES-121). Like step
+//     6, it shares the tasks scheduler's cadence rather than running as its
+//     own background worker, since a trade's expiry is itself derived from
+//     the same task_instance due dates the rest of this scheduler already
+//     sweeps.
 //
-// A failure in step 1 is logged and the error is recorded, but steps 2–6 still
+// A failure in step 1 is logged and the error is recorded, but steps 2–7 still
 // run — a generation failure must not prevent the overdue sweep, reminder
-// emission, claim-warning pass, or claim-expiry sweep. The first error
-// encountered across all steps is surfaced by [Scheduler.RunOnce].
+// emission, claim-warning pass, claim-expiry sweep, or trade-expiry sweep. The
+// first error encountered across all steps is surfaced by [Scheduler.RunOnce].
 type Scheduler struct {
 	generator    *Generator
 	instanceRepo domain.TaskInstanceRepository
 	reminders    *Reminders
+	tradeService *TradeService
 	logger       *slog.Logger
 	ticks        metrics.TickRecorder
 	pollInterval time.Duration
@@ -50,8 +57,12 @@ type Scheduler struct {
 //   - instanceRepo is used for the overdue sweep
 //     ([domain.TaskInstanceRepository.MarkPendingOverdueAll]) and due-soon
 //     claim ([domain.TaskInstanceRepository.ClaimDueSoonReminders]).
-//   - enqueuer is the notify outbox producer port; Scheduler builds a
-//     [Reminders] service internally.
+//   - tradeRepo is used for the trade-expiry sweep
+//     ([domain.ChoreTradeRepository.SweepExpiredTrades], NES-121); Scheduler
+//     builds a [TradeService] internally, mirroring how it builds [Reminders]
+//     from instanceRepo.
+//   - enqueuer is the notify outbox producer port; Scheduler builds both
+//     [Reminders] and [TradeService] internally from it.
 //   - logger receives structured log lines; only task/count identifiers are
 //     logged (not PII).
 //   - ticks records each poll cycle's duration and outcome (NES-115); pass
@@ -62,6 +73,7 @@ type Scheduler struct {
 func NewScheduler(
 	generator *Generator,
 	instanceRepo domain.TaskInstanceRepository,
+	tradeRepo domain.ChoreTradeRepository,
 	enqueuer notifydomain.Enqueuer,
 	logger *slog.Logger,
 	ticks metrics.TickRecorder,
@@ -72,6 +84,9 @@ func NewScheduler(
 	}
 	if instanceRepo == nil {
 		return nil, errors.New("app: NewScheduler requires a non-nil instance repository")
+	}
+	if tradeRepo == nil {
+		return nil, errors.New("app: NewScheduler requires a non-nil trade repository")
 	}
 	if enqueuer == nil {
 		return nil, errors.New("app: NewScheduler requires a non-nil enqueuer")
@@ -89,10 +104,15 @@ func NewScheduler(
 	if err != nil {
 		return nil, fmt.Errorf("app: NewScheduler: %w", err)
 	}
+	tradeService, err := NewTradeService(tradeRepo, enqueuer, logger)
+	if err != nil {
+		return nil, fmt.Errorf("app: NewScheduler: %w", err)
+	}
 	return &Scheduler{
 		generator:    generator,
 		instanceRepo: instanceRepo,
 		reminders:    reminders,
+		tradeService: tradeService,
 		logger:       logger,
 		ticks:        ticks,
 		pollInterval: pollInterval,
@@ -113,6 +133,8 @@ func NewScheduler(
 //     notifications (NES-118).
 //  6. [Reminders.EmitClaimExpiry] — revert expired chore claims, penalize
 //     their claimants, and enqueue claim-expiry notifications (NES-117).
+//  7. [TradeService.ExpireTrades] — resolve expired chore trade proposals and
+//     enqueue trade-expiry notifications (NES-121).
 func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 	var firstErr error
 
@@ -158,6 +180,13 @@ func (s *Scheduler) RunOnce(ctx context.Context, asOf time.Time) error {
 		s.logger.Error("scheduler: claim expiry processing failed", "error", claimExpiryErr)
 		if firstErr == nil {
 			firstErr = fmt.Errorf("scheduler: claim expiry processing: %w", claimExpiryErr)
+		}
+	}
+
+	if tradeExpiryErr := s.tradeService.ExpireTrades(ctx, asOf); tradeExpiryErr != nil {
+		s.logger.Error("scheduler: trade expiry processing failed", "error", tradeExpiryErr)
+		if firstErr == nil {
+			firstErr = fmt.Errorf("scheduler: trade expiry processing: %w", tradeExpiryErr)
 		}
 	}
 
