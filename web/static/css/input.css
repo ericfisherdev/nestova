@@ -89,3 +89,42 @@
 [x-cloak] {
   display: none !important;
 }
+
+/*
+ * Pointer cursor on interactive elements (NES-125). Tailwind v4's Preflight
+ * resets <button> to `cursor: default`, so every clickable control needs the
+ * hand cursor restored explicitly rather than relying on the pre-v4 default.
+ */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  input[type="submit"]:not(:disabled),
+  input[type="button"]:not(:disabled),
+  label[for],
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  input[type="submit"]:disabled,
+  input[type="button"]:disabled {
+    cursor: not-allowed;
+  }
+
+  /* Non-button HTMX triggers (clickable rows/cards) get the pointer cursor
+   * too. `form` is excluded: htmx defaults a form's own trigger to `submit`
+   * (not `click`) — the actual click target is its `<button type="submit">`,
+   * already covered above — and `cursor` is inherited, so letting a form
+   * match here would leak `cursor: pointer` onto its text inputs in place of
+   * their native I-beam. Elements carrying an explicit `hx-trigger` are also
+   * excluded: every current use (`claim-expired`, `photos-uploaded`) fires
+   * from a background/custom event rather than a user click, so the
+   * container itself isn't a click target. */
+  [hx-get]:not(form):not([hx-trigger]):not(:disabled),
+  [hx-post]:not(form):not([hx-trigger]):not(:disabled),
+  [hx-put]:not(form):not([hx-trigger]):not(:disabled),
+  [hx-delete]:not(form):not([hx-trigger]):not(:disabled),
+  [hx-patch]:not(form):not([hx-trigger]):not(:disabled) {
+    cursor: pointer;
+  }
+}
