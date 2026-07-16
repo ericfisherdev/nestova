@@ -447,3 +447,39 @@ func TestTasksPageGroupsAndRows(t *testing.T) {
 		t.Errorf("tasks page missing Today label for today's due date: %q", out)
 	}
 }
+
+// TestTaskRowItemTradeLink verifies the Trade link renders only when the row
+// is both the viewer's own chore (Mine) and tradeable — either flag alone
+// must suppress it (NES-122).
+func TestTaskRowItemTradeLink(t *testing.T) {
+	cases := []struct {
+		name      string
+		mine      bool
+		tradeable bool
+		want      bool
+	}{
+		{"mine and tradeable", true, true, true},
+		{"mine but not tradeable", true, false, false},
+		{"tradeable but not mine", false, true, false},
+		{"neither", false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			row := components.TaskRow{
+				InstanceID: "eeee-ffff-0000-1111",
+				Title:      "Water the plants",
+				Category:   "chore",
+				Status:     "pending",
+				Mine:       tc.mine,
+				Tradeable:  tc.tradeable,
+				CSRFToken:  "tok-trade",
+			}
+			out := renderString(t, components.TaskRowItem(row))
+			gotLink := strings.Contains(out, `/tasks/eeee-ffff-0000-1111/propose-trade`)
+			if gotLink != tc.want {
+				t.Errorf("Mine=%v Tradeable=%v: trade link rendered = %v, want %v: %q",
+					tc.mine, tc.tradeable, gotLink, tc.want, out)
+			}
+		})
+	}
+}
