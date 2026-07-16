@@ -244,15 +244,24 @@ func (r *fakeTaskInstanceRepo) Claim(_ context.Context, householdID household.Ho
 			if !wasUnassigned && *inst.AssigneeID != assignee {
 				return domain.ErrInstanceAlreadyClaimed
 			}
-			now := time.Now()
+			// A re-assertion of an already-held claim (claimed_by already equals
+			// the caller) must leave claimed_at, claim_expires_at, and
+			// claim_warned_at UNCHANGED, mirroring the real adapter's Claim: a
+			// call that only re-asserts an existing claim must never reset or
+			// clear its expiry or warning status.
+			reasserting := inst.ClaimedBy != nil && *inst.ClaimedBy == assignee
 			inst.AssigneeID = &assignee
 			inst.ClaimedBy = &assignee
-			inst.ClaimedAt = &now
-			if wasUnassigned {
-				expires := now.Add(domain.ClaimWindow)
-				inst.ClaimExpiresAt = &expires
-			} else {
-				inst.ClaimExpiresAt = nil
+			if !reasserting {
+				now := time.Now()
+				inst.ClaimedAt = &now
+				inst.ClaimWarnedAt = nil
+				if wasUnassigned {
+					expires := now.Add(domain.ClaimWindow)
+					inst.ClaimExpiresAt = &expires
+				} else {
+					inst.ClaimExpiresAt = nil
+				}
 			}
 			return nil
 		}
@@ -447,8 +456,57 @@ func (r *fakeTaskInstanceRepo) SweepExpiredClaims(_ context.Context, asOf time.T
 		inst.ClaimedBy = nil
 		inst.ClaimedAt = nil
 		inst.ClaimExpiresAt = nil
+		inst.ClaimWarnedAt = nil
 	}
 	return claims, nil
+}
+
+// ClaimWarnings mirrors the real adapter: it selects every instance whose
+// ClaimExpiresAt falls within domain.ClaimWarningWindow of asOf (and has not
+// already expired), has not yet been warned, has a claimant, and is still
+// pending or overdue, then marks it warned.
+func (r *fakeTaskInstanceRepo) ClaimWarnings(_ context.Context, asOf time.Time) ([]domain.ClaimWarning, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var warnings []domain.ClaimWarning
+	for _, inst := range r.instances {
+		if inst.ClaimExpiresAt == nil || inst.ClaimWarnedAt != nil || inst.ClaimedBy == nil {
+			continue
+		}
+		if !inst.ClaimExpiresAt.After(asOf) || inst.ClaimExpiresAt.After(asOf.Add(domain.ClaimWarningWindow)) {
+			continue
+		}
+		if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
+			continue
+		}
+		warnedAt := asOf
+		inst.ClaimWarnedAt = &warnedAt
+		warnings = append(warnings, domain.ClaimWarning{
+			InstanceID:  inst.ID,
+			HouseholdID: inst.HouseholdID,
+			ClaimedBy:   *inst.ClaimedBy,
+			Title:       "fake task",
+			ExpiresAt:   *inst.ClaimExpiresAt,
+		})
+	}
+	return warnings, nil
+}
+
+// ClearClaimWarning mirrors the real adapter: it resets ClaimWarnedAt to nil
+// only when the instance's current ClaimExpiresAt still matches expiresAt —
+// the same claim-window guard the real recovery query enforces — and is a
+// no-op otherwise (unknown id, or the instance has moved on to a different
+// claim window).
+func (r *fakeTaskInstanceRepo) ClearClaimWarning(_ context.Context, id domain.TaskInstanceID, expiresAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID == id && inst.ClaimExpiresAt != nil && inst.ClaimExpiresAt.Equal(expiresAt) {
+			inst.ClaimWarnedAt = nil
+			return nil
+		}
+	}
+	return nil
 }
 
 // Compile-time assertion.

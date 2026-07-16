@@ -232,6 +232,46 @@ func (h *WebHandlers) Claim(w http.ResponseWriter, r *http.Request) {
 	h.respondAfterTaskMutation(w, r, member, id)
 }
 
+// Row handles GET /tasks/{id}/row. It re-reads the instance and renders its
+// current row for an in-place HTMX swap (NES-118): the claim countdown timer
+// (web/static/js/claim-countdown.js) triggers this endpoint client-side once
+// a claim's expiry passes, so a row whose claim was reverted by the
+// background sweep flips back to its claimable state without a full page
+// reload. Unlike Complete/Skip/Claim there is no state to change here — this
+// is a passive read, so it is a GET and always succeeds unless the instance
+// itself cannot be found.
+//
+// Error mapping:
+//   - malformed id              → 400
+//   - domain.ErrInstanceNotFound → 404
+//   - other                     → 500
+func (h *WebHandlers) Row(w http.ResponseWriter, r *http.Request) {
+	member, ok := authadapter.CurrentMember(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	id, ok := h.parseInstanceID(w, r)
+	if !ok {
+		return
+	}
+
+	row, err := h.buildInstanceRow(r, member, id)
+	if err != nil {
+		if errors.Is(err, domain.ErrInstanceNotFound) {
+			http.Error(w, "task not found", http.StatusNotFound)
+			return
+		}
+		h.logger.ErrorContext(r.Context(), "tasks: build row for refresh", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.TaskRowItem(row)); err != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: render row for refresh", "error", err)
+	}
+}
+
 // NewTaskPage handles GET /tasks/new. It loads the household member list for the
 // rotation-pool picker and renders the create-recurring-task form in the app
 // shell with a fresh CSRF token.
@@ -691,19 +731,29 @@ func (h *WebHandlers) instanceToRow(
 		dueLbl = dueLabel(dueOn, today)
 	}
 
+	// A countdown badge renders only when the claim itself carries an expiry
+	// risk (NES-118): self-claimed and rotation-assigned instances leave
+	// ClaimExpiresAt nil per Claim's contract, so they never populate this
+	// field and never render a badge.
+	var claimExpiresAtISO string
+	if inst.ClaimExpiresAt != nil {
+		claimExpiresAtISO = inst.ClaimExpiresAt.UTC().Format(time.RFC3339)
+	}
+
 	return components.TaskRow{
-		InstanceID:    inst.ID.String(),
-		Title:         title,
-		Category:      category,
-		DueOn:         dueOn,
-		DueLabel:      dueLbl,
-		Status:        inst.Status.String(),
-		AssigneeID:    assigneeID,
-		AssigneeName:  assigneeName,
-		AssigneeColor: assigneeColor,
-		Claimable:     actionable && inst.AssigneeID == nil,
-		Standing:      standing,
-		CSRFToken:     csrfToken,
+		InstanceID:        inst.ID.String(),
+		Title:             title,
+		Category:          category,
+		DueOn:             dueOn,
+		DueLabel:          dueLbl,
+		Status:            inst.Status.String(),
+		AssigneeID:        assigneeID,
+		AssigneeName:      assigneeName,
+		AssigneeColor:     assigneeColor,
+		Claimable:         actionable && inst.AssigneeID == nil,
+		Standing:          standing,
+		ClaimExpiresAtISO: claimExpiresAtISO,
+		CSRFToken:         csrfToken,
 	}
 }
 

@@ -38,6 +38,32 @@ func ClaimExpiryPenalty(points int) int {
 	return 1
 }
 
+// ClaimWarningWindow is how far ahead of a claim's expiry the one-time
+// "claim expiring soon" warning is emitted: [TaskInstanceRepository.
+// ClaimWarnings] selects claims whose ClaimExpiresAt falls within this
+// window of asOf and have not yet been warned, then marks them warned so
+// the same claim window is never warned twice (NES-118). A claim entering
+// this notice period gives the claimant a chance to complete it — or
+// deliberately let it lapse — before [ClaimExpiryPenalty] is applied.
+const ClaimWarningWindow = 2 * time.Hour
+
+// ClaimWarning carries the fields needed to build and route a claim
+// approaching-expiry warning notification (NES-118). It mirrors
+// [ExpiredClaim] but is emitted earlier, while the claim is still active, and
+// carries no penalty — the point loss has not happened yet.
+type ClaimWarning struct {
+	// InstanceID is the task_instance.id whose claim is approaching expiry.
+	InstanceID TaskInstanceID
+	// HouseholdID scopes the notification to the correct household.
+	HouseholdID household.HouseholdID
+	// ClaimedBy is the member who holds the claim and should be warned.
+	ClaimedBy household.MemberID
+	// Title is the recurring_task.title, used in the notification body.
+	Title string
+	// ExpiresAt is when the claim's window lapses, for the notification body.
+	ExpiresAt time.Time
+}
+
 // ExpiredClaim carries the fields needed to build and route a claim-expiry
 // notification. It reflects the state a task instance had immediately before
 // its claim was reverted by [TaskInstanceRepository.SweepExpiredClaims]

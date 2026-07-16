@@ -199,6 +199,27 @@ type MemberPoints struct {
 	Points   int
 }
 
+// PointHistoryEntry is a single row in a member's point ledger history,
+// enriched with enough context to build a human-readable reason without a
+// second round trip per entry (NES-118):
+//   - TaskTitle is populated for a SourceType of "task_instance" (a
+//     completion award) or [SourceTypeClaimExpiry] (a claim-expiry penalty) —
+//     both key SourceID off task_instance.id.
+//   - RewardName is populated for a SourceType of "redemption" — keyed off
+//     reward_redemption.id via SourceID.
+//
+// At most one of TaskTitle/RewardName is ever non-empty for a given entry.
+// Both are empty for a manual adjustment (no SourceID) or when the joined
+// row could not be resolved (e.g. its parent recurring task was deleted).
+type PointHistoryEntry struct {
+	ID         PointEntryID
+	SourceType string
+	Points     int
+	CreatedAt  time.Time
+	TaskTitle  string
+	RewardName string
+}
+
 // ---------------------------------------------------------------------------
 // Ports
 // ---------------------------------------------------------------------------
@@ -232,6 +253,13 @@ type PointLedgerRepository interface {
 	// only entries created at or after since, ordered by total points descending.
 	// Returns an empty slice (not an error) when no entries match.
 	Leaderboard(ctx context.Context, householdID household.HouseholdID, since time.Time) ([]MemberPoints, error)
+
+	// History returns the member's most recent point ledger entries within
+	// the household, newest first, limited to at most limit rows (NES-118).
+	// Each entry is enriched (see [PointHistoryEntry]) so the caller can build
+	// a human-readable reason without an additional query per entry.
+	// Returns an empty slice (not an error) when the member has no entries.
+	History(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, limit int) ([]PointHistoryEntry, error)
 }
 
 // RewardRepository is the persistence port for [Reward] catalogue entries and

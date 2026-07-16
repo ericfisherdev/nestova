@@ -34,6 +34,8 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			<script src="/static/js/htmx.min.js" defer></script>
 			<script src="/static/js/alpine.min.js" defer></script>
+			<!-- Claim countdown badge for claimed chores (NES-118); registers its Alpine component before Alpine starts. -->
+			<script src="/static/js/claim-countdown.js" defer></script>
 			<!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. -->
 			<script src="/static/js/gsap.min.js" defer></script>
 			<script src="/static/js/dashboard-motion.js" defer></script>

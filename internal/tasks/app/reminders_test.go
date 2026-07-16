@@ -557,6 +557,296 @@ func TestEmitClaimExpiry_EmptyClaims_EnqueuesNothing(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// fakeInstanceRepoWithClaimWarnings extends fakeTaskInstanceRepo with a
+// configurable ClaimWarnings (NES-118), mirroring
+// fakeInstanceRepoWithClaimExpiry.
+// ---------------------------------------------------------------------------
+
+type fakeInstanceRepoWithClaimWarnings struct {
+	*fakeTaskInstanceRepo
+	warnings []domain.ClaimWarning
+	err      error
+	// clearedIDs records the instance IDs passed to ClearClaimWarning so
+	// recovery tests can assert the un-stamp path ran, mirroring
+	// fakeInstanceRepoWithDueSoon's clearedIDs.
+	clearedIDs []domain.TaskInstanceID
+	// clearErr, when set, makes ClearClaimWarning fail.
+	clearErr error
+}
+
+func (r *fakeInstanceRepoWithClaimWarnings) ClaimWarnings(_ context.Context, _ time.Time) ([]domain.ClaimWarning, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.warnings, nil
+}
+
+func (r *fakeInstanceRepoWithClaimWarnings) ClearClaimWarning(_ context.Context, id domain.TaskInstanceID, _ time.Time) error {
+	r.clearedIDs = append(r.clearedIDs, id)
+	return r.clearErr
+}
+
+func (r *fakeInstanceRepoWithClaimWarnings) MarkPendingOverdueAll(_ context.Context, _ time.Time) ([]domain.ReminderTarget, error) {
+	return nil, nil
+}
+
+// newClaimWarning builds a domain.ClaimWarning with a fresh instance,
+// household, and claimant for use across EmitClaimWarnings tests.
+func newClaimWarning(expiresAt time.Time) domain.ClaimWarning {
+	return domain.ClaimWarning{
+		InstanceID:  domain.NewTaskInstanceID(),
+		HouseholdID: household.NewHouseholdID(),
+		ClaimedBy:   household.NewMemberID(),
+		Title:       "Mow the lawn",
+		ExpiresAt:   expiresAt,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EmitClaimWarnings (NES-118)
+// ---------------------------------------------------------------------------
+
+// TestEmitClaimWarnings_EnqueuesOneNotificationPerWarning verifies that
+// EmitClaimWarnings calls Enqueue once per warning returned by ClaimWarnings,
+// addressed to the claimant, with the claim window named in the body.
+func TestEmitClaimWarnings_EnqueuesOneNotificationPerWarning(t *testing.T) {
+	enqueuer := newFakeEnqueuer()
+	warning := newClaimWarning(time.Date(2025, 4, 1, 11, 30, 0, 0, time.UTC))
+
+	instRepo := &fakeInstanceRepoWithClaimWarnings{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		warnings:             []domain.ClaimWarning{warning},
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	asOf := time.Date(2025, 4, 1, 9, 30, 0, 0, time.UTC)
+	if emitErr := r.EmitClaimWarnings(context.Background(), asOf); emitErr != nil {
+		t.Fatalf("EmitClaimWarnings: %v", emitErr)
+	}
+
+	if len(enqueuer.notifications) != 1 {
+		t.Fatalf("enqueued %d notifications, want 1", len(enqueuer.notifications))
+	}
+	n := enqueuer.notifications[0]
+	if n.HouseholdID != warning.HouseholdID {
+		t.Errorf("HouseholdID = %v, want %v", n.HouseholdID, warning.HouseholdID)
+	}
+	if n.MemberID == nil || *n.MemberID != warning.ClaimedBy {
+		t.Errorf("MemberID = %v, want %v", n.MemberID, warning.ClaimedBy)
+	}
+	if n.Channel != notifydomain.ChannelInApp {
+		t.Errorf("Channel = %v, want inapp", n.Channel)
+	}
+	wantSourceID := uuid.UUID(warning.InstanceID)
+	if n.SourceID == nil || *n.SourceID != wantSourceID {
+		t.Errorf("SourceID = %v, want %v", n.SourceID, wantSourceID)
+	}
+	if n.SourceType != "task_instance" {
+		t.Errorf("SourceType = %q, want task_instance", n.SourceType)
+	}
+	if !n.ScheduledFor.Equal(asOf) {
+		t.Errorf("ScheduledFor = %v, want asOf %v", n.ScheduledFor, asOf)
+	}
+	if n.Status != notifydomain.StatusPending {
+		t.Errorf("Status = %v, want StatusPending", n.Status)
+	}
+	if want := "Your claim on Mow the lawn expires in less than 2 hours — complete it soon to avoid a point penalty."; n.Body != want {
+		t.Errorf("Body = %q, want %q", n.Body, want)
+	}
+	if want := "Claim expiring soon: Mow the lawn"; n.Title != want {
+		t.Errorf("Title = %q, want %q", n.Title, want)
+	}
+}
+
+// TestEmitClaimWarnings_ClaimWarningsError_ReturnsError verifies that an
+// error from ClaimWarnings is propagated and no notifications are enqueued.
+func TestEmitClaimWarnings_ClaimWarningsError_ReturnsError(t *testing.T) {
+	enqueuer := newFakeEnqueuer()
+	wantErr := errors.New("db: claim warnings failed")
+
+	instRepo := &fakeInstanceRepoWithClaimWarnings{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		err:                  wantErr,
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	err = r.EmitClaimWarnings(context.Background(), time.Now())
+	if !errors.Is(err, wantErr) {
+		t.Errorf("EmitClaimWarnings error = %v, want to wrap %v", err, wantErr)
+	}
+	if len(enqueuer.notifications) != 0 {
+		t.Errorf("enqueued %d notifications after claim-warnings error, want 0", len(enqueuer.notifications))
+	}
+}
+
+// TestEmitClaimWarnings_OneEnqueueErrorDoesNotAbortBatch verifies that a
+// failing enqueue for one warning does not prevent the remaining warning from
+// being enqueued, and that EmitClaimWarnings returns a non-nil aggregated
+// error so the failure is surfaced rather than masked.
+func TestEmitClaimWarnings_OneEnqueueErrorDoesNotAbortBatch(t *testing.T) {
+	enqueuer := &fakeEnqueuerWithError{errOnCall: 1}
+	instRepo := &fakeInstanceRepoWithClaimWarnings{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		warnings: []domain.ClaimWarning{
+			newClaimWarning(time.Now().Add(time.Hour)),
+			newClaimWarning(time.Now().Add(90 * time.Minute)),
+		},
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	emitErr := r.EmitClaimWarnings(context.Background(), time.Now())
+	if emitErr == nil {
+		t.Error("EmitClaimWarnings error = nil, want non-nil when an enqueue failed")
+	}
+	if len(enqueuer.notifications) != 1 {
+		t.Errorf("enqueued %d notifications, want 1 (second warning succeeded)", len(enqueuer.notifications))
+	}
+}
+
+// TestEmitClaimWarnings_EmptyWarnings_EnqueuesNothing verifies that
+// EmitClaimWarnings with no claims entering the warning window performs no
+// enqueue calls and returns nil.
+func TestEmitClaimWarnings_EmptyWarnings_EnqueuesNothing(t *testing.T) {
+	enqueuer := newFakeEnqueuer()
+	instRepo := &fakeInstanceRepoWithClaimWarnings{fakeTaskInstanceRepo: newFakeTaskInstanceRepo()}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	if emitErr := r.EmitClaimWarnings(context.Background(), time.Now()); emitErr != nil {
+		t.Errorf("EmitClaimWarnings(empty) error = %v, want nil", emitErr)
+	}
+	if len(enqueuer.notifications) != 0 {
+		t.Errorf("enqueued %d notifications for no claim warnings, want 0", len(enqueuer.notifications))
+	}
+}
+
+// TestEmitClaimWarnings_OneEnqueueErrorClearsAndSurfaces verifies that when
+// the first of two warning enqueues fails, EmitClaimWarnings (a) still
+// enqueues the remaining warning, (b) calls ClearClaimWarning for the failed
+// warning's instance so it is retried next tick, and (c) returns a non-nil
+// aggregated error so the failure is surfaced rather than masked. Mirrors
+// TestEmitDueSoon_OneEnqueueErrorClearsAndSurfaces.
+func TestEmitClaimWarnings_OneEnqueueErrorClearsAndSurfaces(t *testing.T) {
+	enqueuer := &fakeEnqueuerWithError{errOnCall: 1} // first call errors
+	failedWarning := newClaimWarning(time.Now().Add(90 * time.Minute))
+	okWarning := newClaimWarning(time.Now().Add(time.Hour))
+	warnings := []domain.ClaimWarning{failedWarning, okWarning}
+
+	instRepo := &fakeInstanceRepoWithClaimWarnings{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		warnings:             warnings,
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	emitErr := r.EmitClaimWarnings(context.Background(), time.Now())
+	if emitErr == nil {
+		t.Error("EmitClaimWarnings error = nil, want non-nil when an enqueue failed")
+	}
+
+	// Only 1 of 2 enqueues succeeded (first errored, second succeeded).
+	if len(enqueuer.notifications) != 1 {
+		t.Errorf("enqueued %d notifications, want 1 (second warning succeeded)", len(enqueuer.notifications))
+	}
+
+	// The failed warning's claim_warned_at must have been cleared for retry.
+	if len(instRepo.clearedIDs) != 1 {
+		t.Fatalf("ClearClaimWarning called %d times, want 1", len(instRepo.clearedIDs))
+	}
+	if instRepo.clearedIDs[0] != failedWarning.InstanceID {
+		t.Errorf("cleared instance = %v, want failed warning %v", instRepo.clearedIDs[0], failedWarning.InstanceID)
+	}
+}
+
+// TestEmitClaimWarnings_ClearFailureStillSurfacesEnqueueError verifies that
+// when both the enqueue and the recovery clear fail, EmitClaimWarnings still
+// returns a non-nil error (the enqueue failure is what matters; the clear
+// failure is only logged). Mirrors
+// TestEmitDueSoon_ClearFailureStillSurfacesEnqueueError.
+func TestEmitClaimWarnings_ClearFailureStillSurfacesEnqueueError(t *testing.T) {
+	enqueuer := &fakeEnqueuerWithError{errOnCall: 1}
+	warning := newClaimWarning(time.Now().Add(90 * time.Minute))
+
+	instRepo := &fakeInstanceRepoWithClaimWarnings{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		warnings:             []domain.ClaimWarning{warning},
+		clearErr:             errors.New("db: clear failed"),
+	}
+
+	r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+
+	emitErr := r.EmitClaimWarnings(context.Background(), time.Now())
+	if emitErr == nil {
+		t.Error("EmitClaimWarnings error = nil, want non-nil when enqueue failed (even though clear also failed)")
+	}
+	// The clear was still attempted.
+	if len(instRepo.clearedIDs) != 1 {
+		t.Errorf("ClearClaimWarning called %d times, want 1", len(instRepo.clearedIDs))
+	}
+}
+
+// TestEmitClaimWarnings_RetriesAfterClear verifies the end-to-end recovery
+// contract: a failed enqueue clears claim_warned_at for that claim window, so
+// a subsequent EmitClaimWarnings call (representing the next scheduler tick,
+// where ClaimWarnings would now re-select the un-stamped row) can enqueue the
+// same warning successfully.
+func TestEmitClaimWarnings_RetriesAfterClear(t *testing.T) {
+	warning := newClaimWarning(time.Now().Add(90 * time.Minute))
+
+	// First tick: the enqueuer fails once, forcing the recovery clear.
+	failingEnqueuer := &fakeEnqueuerWithError{errOnCall: 1}
+	instRepo := &fakeInstanceRepoWithClaimWarnings{
+		fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+		warnings:             []domain.ClaimWarning{warning},
+	}
+	r, err := app.NewReminders(instRepo, failingEnqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders: %v", err)
+	}
+	if emitErr := r.EmitClaimWarnings(context.Background(), time.Now()); emitErr == nil {
+		t.Fatal("EmitClaimWarnings (first tick) error = nil, want non-nil enqueue failure")
+	}
+	if len(instRepo.clearedIDs) != 1 {
+		t.Fatalf("ClearClaimWarning called %d times after first tick, want 1", len(instRepo.clearedIDs))
+	}
+
+	// Second tick: a fresh (non-failing) enqueuer over the same, now-cleared
+	// warning — simulating ClaimWarnings re-selecting the un-stamped row.
+	retryEnqueuer := newFakeEnqueuer()
+	r2, err := app.NewReminders(instRepo, retryEnqueuer, discardLogger())
+	if err != nil {
+		t.Fatalf("NewReminders (retry): %v", err)
+	}
+	if emitErr := r2.EmitClaimWarnings(context.Background(), time.Now()); emitErr != nil {
+		t.Fatalf("EmitClaimWarnings (retry tick): %v", emitErr)
+	}
+	if len(retryEnqueuer.notifications) != 1 {
+		t.Fatalf("retry tick enqueued %d notifications, want 1 (the retried warning)", len(retryEnqueuer.notifications))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // combinedFakeRepo satisfies domain.TaskInstanceRepository with configurable
 // MarkPendingOverdueAll and ClaimDueSoonReminders return values, allowing
 // end-to-end Reminders tests without a database.

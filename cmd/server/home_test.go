@@ -108,6 +108,10 @@ func (fakePointLedgerRepo) Leaderboard(_ context.Context, _ household.HouseholdI
 	return nil, nil
 }
 
+func (fakePointLedgerRepo) History(_ context.Context, _ household.HouseholdID, _ household.MemberID, _ int) ([]tasksdomain.PointHistoryEntry, error) {
+	return nil, nil
+}
+
 // Compile-time assertion.
 var _ tasksdomain.PointLedgerRepository = fakePointLedgerRepo{}
 

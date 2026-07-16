@@ -43,11 +43,29 @@ type RewardsPage struct {
 	Balance int
 	// Rewards is the active reward catalogue.
 	Rewards []RewardItem
+	// History is the current member's recent point ledger activity, newest
+	// first (NES-118).
+	History []PointHistoryRow
 	// CSRFToken is the per-session CSRF token embedded in every redeem form.
 	CSRFToken string
 	// InsufficientMessage is set when the previous redeem attempt was rejected
 	// due to insufficient points; empty means no error banner is shown.
 	InsufficientMessage string
+}
+
+// PointHistoryRow is the view model for one entry in the current member's
+// point ledger history (NES-118). Reason is a pre-computed, human-readable
+// label (e.g. "Completed: Vacuum" or "Claim expired: Dishes") so the template
+// never branches on the ledger entry's source type, matching how TaskRow's
+// DueLabel keeps date formatting out of the template.
+type PointHistoryRow struct {
+	// Reason describes what earned or cost the points.
+	Reason string
+	// Points is the signed point delta (positive for an award, negative for a
+	// penalty or debit).
+	Points int
+	// CreatedAt is the pre-formatted date the entry was recorded (e.g. "Jul 14").
+	CreatedAt string
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +91,7 @@ templ RewardsPageComponent(page RewardsPage) {
 			<div class="flex flex-col gap-4">
 				@BalanceCard(page.Balance)
 				@Leaderboard(page.Leaderboard)
+				@PointHistory(page.History)
 			</div>
 			<!-- Right: rewards catalog -->
 			@RewardsCatalog(page.Rewards, page.CSRFToken)
@@ -146,6 +165,48 @@ templ StreakBadge(days int) {
 	<span class="inline-flex items-center gap-1 rounded-control bg-member-ochre-tint px-2 py-0.5 text-xs font-medium text-member-ochre-fg">
 		{ fmt.Sprintf("%d day streak", days) }
 	</span>
+}
+
+// ---------------------------------------------------------------------------
+// Point history
+// ---------------------------------------------------------------------------
+
+// PointHistory renders the current member's recent point ledger activity,
+// newest first (NES-118).
+templ PointHistory(rows []PointHistoryRow) {
+	<div class="rounded-card bg-surface p-4 shadow-warm">
+		<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Recent Activity</h2>
+		if len(rows) == 0 {
+			<p class="text-sm text-ink-muted">No point activity yet.</p>
+		} else {
+			<ul class="flex flex-col gap-2">
+				for _, row := range rows {
+					@pointHistoryRow(row)
+				}
+			</ul>
+		}
+	</div>
+}
+
+// pointHistoryRow renders one entry in the point history list: its reason,
+// the date it was recorded, and the signed point delta tinted green for an
+// award and red for a penalty or debit.
+templ pointHistoryRow(row PointHistoryRow) {
+	<li class="flex items-center justify-between gap-3 rounded-control px-3 py-2">
+		<div class="min-w-0 flex-1">
+			<p class="truncate text-sm text-ink">{ row.Reason }</p>
+			<p class="text-xs text-ink-muted">{ row.CreatedAt }</p>
+		</div>
+		<span
+			class={
+				"shrink-0 text-sm font-semibold",
+				templ.KV("text-sage", row.Points >= 0),
+				templ.KV("text-red-600", row.Points < 0),
+			}
+		>
+			{ fmt.Sprintf("%+d", row.Points) }
+		</span>
+	</li>
 }
 
 // ---------------------------------------------------------------------------

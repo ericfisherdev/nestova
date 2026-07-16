@@ -623,7 +623,7 @@ func (r *TaskInstanceRepository) Get(
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
 		       created_at, updated_at, kind,
-		       claimed_by, claimed_at, claim_expires_at
+		       claimed_by, claimed_at, claim_expires_at, claim_warned_at
 		  FROM task_instance
 		 WHERE id = $1
 		   AND household_id = $2`
@@ -653,7 +653,7 @@ func (r *TaskInstanceRepository) ListByHousehold(
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
 		       created_at, updated_at, kind,
-		       claimed_by, claimed_at, claim_expires_at
+		       claimed_by, claimed_at, claim_expires_at, claim_warned_at
 		  FROM task_instance
 		 WHERE household_id = $1
 		   AND status = $2
@@ -697,7 +697,7 @@ func (r *TaskInstanceRepository) ListStanding(
 		SELECT id, household_id, recurring_task_id, assignee_id,
 		       due_on, status, completed_at, completed_by,
 		       created_at, updated_at, kind,
-		       claimed_by, claimed_at, claim_expires_at
+		       claimed_by, claimed_at, claim_expires_at, claim_warned_at
 		  FROM task_instance
 		 WHERE household_id = $1
 		   AND status = 'pending'
@@ -773,6 +773,13 @@ func (r *TaskInstanceRepository) LatestDueOn(
 //     fixed/round-robin instance's own assignee claiming it for the first
 //     time) — claimed_at is stamped now but claim_expires_at is left NULL:
 //     no risk, since the chore was already assignee's responsibility.
+//
+// NES-118: claim_warned_at follows the same re-assert/reset split as
+// claim_expires_at — UNCHANGED when claimed_by (pre-update) already equals
+// assignee (a re-assertion must not let a member keep resetting their own
+// warning status any more than it may reset the expiry itself), and NULL in
+// both other branches (a genuinely new claim window, or a no-risk self-claim,
+// starts with no warning sent).
 func (r *TaskInstanceRepository) Claim(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -791,6 +798,10 @@ func (r *TaskInstanceRepository) Claim(
 		                              WHEN claimed_by = $3 THEN claim_expires_at
 		                              WHEN assignee_id IS NULL
 		                              THEN now() + make_interval(hours => $4)
+		                              ELSE NULL
+		                          END,
+		       claim_warned_at  = CASE
+		                              WHEN claimed_by = $3 THEN claim_warned_at
 		                              ELSE NULL
 		                          END,
 		       updated_at       = now()
@@ -846,12 +857,12 @@ func (r *TaskInstanceRepository) disambiguateClaim(
 // task in the same transaction — the "always exactly one open standing
 // instance" invariant must hold regardless of which method completed it.
 //
-// NES-117: claimed_by/claimed_at/claim_expires_at are cleared in the same
-// UPDATE. They are "current claim" fields per entities.go's contract, and a
-// done instance has no current claim; leaving them set would also let a
-// completed instance's stale claim_expires_at linger in
-// task_instance_claim_expires_idx until some later sweep happened to notice
-// the status no longer matches.
+// NES-117/NES-118: claimed_by/claimed_at/claim_expires_at/claim_warned_at
+// are cleared in the same UPDATE. They are "current claim" fields per
+// entities.go's contract, and a done instance has no current claim; leaving
+// them set would also let a completed instance's stale claim_expires_at
+// linger in task_instance_claim_expires_idx until some later sweep happened
+// to notice the status no longer matches.
 func (r *TaskInstanceRepository) Complete(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -873,6 +884,7 @@ func (r *TaskInstanceRepository) Complete(
 		       claimed_by       = NULL,
 		       claimed_at       = NULL,
 		       claim_expires_at = NULL,
+		       claim_warned_at  = NULL,
 		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
@@ -921,9 +933,9 @@ func (r *TaskInstanceRepository) Complete(
 // same transaction, so an as-needed task always has exactly one open standing
 // instance again immediately after completion.
 //
-// NES-117: claimed_by/claimed_at/claim_expires_at are cleared in the same
-// UPDATE as the status transition — see Complete's doc for why a done
-// instance must not keep "current claim" metadata set.
+// NES-117/NES-118: claimed_by/claimed_at/claim_expires_at/claim_warned_at
+// are cleared in the same UPDATE as the status transition — see Complete's
+// doc for why a done instance must not keep "current claim" metadata set.
 func (r *TaskInstanceRepository) CompleteAndAward(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -951,6 +963,7 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		       claimed_by       = NULL,
 		       claimed_at       = NULL,
 		       claim_expires_at = NULL,
+		       claim_warned_at  = NULL,
 		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
@@ -1017,12 +1030,13 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 // standing instance" invariant holds on the skip path exactly as it does on
 // completion.
 //
-// NES-117: claimed_by/claimed_at/claim_expires_at are cleared in the same
-// UPDATE — see Complete's doc for why a terminal instance must not keep
-// "current claim" metadata set. This is distinct from (and simpler than)
-// SweepExpiredClaims' revert: Skip does not touch assignee_id, since a
-// skipped instance's assignee (whoever it was) is not being released back to
-// the pool the way an expiry reverts one — it is simply no longer actionable.
+// NES-117/NES-118: claimed_by/claimed_at/claim_expires_at/claim_warned_at
+// are cleared in the same UPDATE — see Complete's doc for why a terminal
+// instance must not keep "current claim" metadata set. This is distinct
+// from (and simpler than) SweepExpiredClaims' revert: Skip does not touch
+// assignee_id, since a skipped instance's assignee (whoever it was) is not
+// being released back to the pool the way an expiry reverts one — it is
+// simply no longer actionable.
 func (r *TaskInstanceRepository) Skip(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -1040,6 +1054,7 @@ func (r *TaskInstanceRepository) Skip(
 		       claimed_by       = NULL,
 		       claimed_at       = NULL,
 		       claim_expires_at = NULL,
+		       claim_warned_at  = NULL,
 		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
@@ -1221,6 +1236,138 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 	return scanReminderRows(ctx, rows, domain.ReminderDueSoon, "claim due-soon reminders", r)
 }
 
+// ClaimWarnings atomically selects every claim entering its warning window
+// (claim_expires_at within domain.ClaimWarningWindow of asOf, and not yet
+// expired) that has not yet been warned (claim_warned_at IS NULL), marks
+// claim_warned_at = now() on each, and joins the parent recurring task's
+// title — all in a single SQL statement (NES-118).
+//
+// The selection, the claim_warned_at UPDATE, and the title lookup are
+// chained CTEs feeding one final SELECT, rather than a separate follow-up
+// query for the title the way scanReminderRows resolves titles for
+// ClaimDueSoonReminders/MarkPendingOverdueAll. That two-step shape has a
+// latent bug this method must not repeat: if a follow-up title query failed
+// after the mark had already committed, the row would come back
+// claim_warned_at-stamped but never reach the caller — since a stamped row
+// is never selected again, the warning would be silently and permanently
+// lost. Folding everything into one statement makes the whole operation
+// atomic: either the mark and its title are both returned, or nothing is
+// marked at all.
+//
+// A CTE with SELECT ... FOR UPDATE SKIP LOCKED + UPDATE mirrors
+// ClaimDueSoonReminders' claim-and-mark shape: because claim_warned_at is
+// set in the same statement as the selection, a row can only ever be
+// returned once, and two concurrent calls never warn the same claim twice.
+//
+// The lower bound (claim_expires_at > asOf) excludes already-expired claims
+// — those belong to SweepExpiredClaims instead. claimed_by IS NOT NULL
+// excludes an orphaned claim (claimant's member row deleted before expiry):
+// there is no one to warn.
+//
+// WARNING: this method is intentionally NOT household-scoped. It is a
+// system-process method reserved for the background scheduler and must not
+// be called from user-facing request handlers, matching the precedent set by
+// SweepExpiredClaims and ClaimDueSoonReminders.
+func (r *TaskInstanceRepository) ClaimWarnings(ctx context.Context, asOf time.Time) ([]domain.ClaimWarning, error) {
+	const q = `
+		WITH candidate AS (
+			SELECT ti.id, ti.household_id, ti.recurring_task_id,
+			       ti.claimed_by, ti.claim_expires_at
+			  FROM task_instance ti
+			 WHERE ti.claim_expires_at IS NOT NULL
+			   AND ti.claim_warned_at  IS NULL
+			   AND ti.claim_expires_at >  $1
+			   AND ti.claim_expires_at <= $1 + make_interval(hours => $2)
+			   AND ti.status IN ('pending', 'overdue')
+			   AND ti.claimed_by IS NOT NULL
+			   FOR UPDATE OF ti SKIP LOCKED
+		),
+		marked AS (
+			UPDATE task_instance ti
+			   SET claim_warned_at = now()
+			  FROM candidate
+			 WHERE ti.id = candidate.id
+			RETURNING ti.id, candidate.household_id, candidate.recurring_task_id,
+			          candidate.claimed_by, candidate.claim_expires_at
+		)
+		SELECT marked.id, marked.household_id, marked.claimed_by,
+		       marked.claim_expires_at, COALESCE(rt.title, '')
+		  FROM marked
+		  LEFT JOIN recurring_task rt ON rt.id = marked.recurring_task_id`
+
+	rows, err := r.dbtx.Query(ctx, q, asOf, int(domain.ClaimWarningWindow.Hours()))
+	if err != nil {
+		return nil, fmt.Errorf("claim warnings: %w", err)
+	}
+	defer rows.Close()
+
+	warnings := make([]domain.ClaimWarning, 0)
+	for rows.Next() {
+		var instStr, hhStr, claimedByStr, title string
+		var expiresAt time.Time
+		if err := rows.Scan(&instStr, &hhStr, &claimedByStr, &expiresAt, &title); err != nil {
+			return nil, fmt.Errorf("claim warnings: scan: %w", err)
+		}
+		instID, err := domain.ParseTaskInstanceID(instStr)
+		if err != nil {
+			return nil, fmt.Errorf("claim warnings: parse instance id: %w", err)
+		}
+		hhID, err := household.ParseHouseholdID(hhStr)
+		if err != nil {
+			return nil, fmt.Errorf("claim warnings: parse household id: %w", err)
+		}
+		claimedBy, err := household.ParseMemberID(claimedByStr)
+		if err != nil {
+			return nil, fmt.Errorf("claim warnings: parse claimed_by id: %w", err)
+		}
+		warnings = append(warnings, domain.ClaimWarning{
+			InstanceID:  instID,
+			HouseholdID: hhID,
+			ClaimedBy:   claimedBy,
+			Title:       title,
+			ExpiresAt:   expiresAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("claim warnings: %w", err)
+	}
+	return warnings, nil
+}
+
+// ClearClaimWarning resets claim_warned_at to NULL for id's claim, scoped to
+// the specific claim window identified by expiresAt (NES-118). It is the
+// recovery counterpart to ClaimWarnings, mirroring ClearDueSoonReminder: the
+// caller invokes it when a warning notification fails to enqueue after the
+// row was marked warned, so the warning is retried on a later tick instead
+// of being lost.
+//
+// The claim_expires_at = expiresAt guard scopes the reset to the SAME claim
+// window the warning was generated for. Between the mark and this recovery
+// call, the instance may have moved on to a different claim window entirely
+// (completed, skipped, or swept-and-reclaimed) — all legitimate, unblocked
+// transitions. Without the guard, a blind reset by id alone could clear
+// claim_warned_at for that new, unrelated window, causing a spurious
+// duplicate warning the next time ClaimWarnings runs.
+//
+// It is a no-op (nil error) when id is unknown or its claim_expires_at no
+// longer matches expiresAt — recovery must be idempotent and tolerant of the
+// row having moved on before the clear runs.
+//
+// WARNING: this method is intentionally NOT household-scoped. It is a
+// system-process recovery method reserved for the background scheduler and
+// must not be called from user-facing request handlers.
+func (r *TaskInstanceRepository) ClearClaimWarning(ctx context.Context, id domain.TaskInstanceID, expiresAt time.Time) error {
+	const q = `
+		UPDATE task_instance
+		   SET claim_warned_at = NULL
+		 WHERE id               = $1
+		   AND claim_expires_at = $2`
+	if _, err := r.dbtx.Exec(ctx, q, id.String(), expiresAt); err != nil {
+		return fmt.Errorf("clear claim warning: %w", err)
+	}
+	return nil
+}
+
 // CompletionDays returns the distinct calendar days (midnight UTC) on which
 // member completed at least one task within the household, restricted to rows
 // with completed_at >= since. Results are ordered ascending.
@@ -1389,9 +1536,13 @@ func (r *TaskInstanceRepository) SweepExpiredClaims(ctx context.Context, asOf ti
 
 // revertExpiredClaims selects every claim expired as of asOf with FOR UPDATE
 // SKIP LOCKED and reverts its claim fields (assignee_id, claimed_by,
-// claimed_at, claim_expires_at all cleared) in one statement, returning the
-// pre-revert claimant and parent task for each row so the caller can compute
-// and insert the penalty.
+// claimed_at, claim_expires_at, claim_warned_at all cleared) in one
+// statement, returning the pre-revert claimant and parent task for each row
+// so the caller can compute and insert the penalty. Clearing claim_warned_at
+// here (NES-118) is not strictly required for correctness — Claim already
+// resets it to NULL the next time the now-unclaimed instance is claimed —
+// but keeps every "current claim" field consistent with the reverted state
+// rather than leaving a stale warned_at to linger until the next claim.
 func revertExpiredClaims(ctx context.Context, tx pgx.Tx, asOf time.Time) ([]expiredClaimRow, error) {
 	const revertQ = `
 		WITH expired AS (
@@ -1408,6 +1559,7 @@ func revertExpiredClaims(ctx context.Context, tx pgx.Tx, asOf time.Time) ([]expi
 		       claimed_by       = NULL,
 		       claimed_at       = NULL,
 		       claim_expires_at = NULL,
+		       claim_warned_at  = NULL,
 		       updated_at       = now()
 		  FROM expired
 		 WHERE ti.id = expired.id
@@ -1706,15 +1858,16 @@ func (r *TaskInstanceRepository) fetchTaskMeta(
 
 // scanTaskInstance scans a task_instance row from r. Nullable columns
 // (assignee_id, completed_at, completed_by, due_on, claimed_by, claimed_at,
-// claim_expires_at) are read into pointer types and converted to domain
-// pointer fields. DueOn is nil for a standing instance (NES-116); when
-// present it is normalized with domain.DateOf.
+// claim_expires_at, claim_warned_at) are read into pointer types and
+// converted to domain pointer fields. DueOn is nil for a standing instance
+// (NES-116); when present it is normalized with domain.DateOf.
 func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 	var (
 		inst                                                     domain.TaskInstance
 		idStr, householdIDStr, recurringTaskIDStr, status, kindS string
 		assigneeIDStr, completedByStr, claimedByStr              *string
 		completedAt, dueOn, claimedAt, claimExpiresAt            *time.Time
+		claimWarnedAt                                            *time.Time
 	)
 	err := r.Scan(
 		&idStr,
@@ -1731,6 +1884,7 @@ func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 		&claimedByStr,
 		&claimedAt,
 		&claimExpiresAt,
+		&claimWarnedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1790,5 +1944,6 @@ func scanTaskInstance(r row) (*domain.TaskInstance, error) {
 	}
 	inst.ClaimedAt = claimedAt
 	inst.ClaimExpiresAt = claimExpiresAt
+	inst.ClaimWarnedAt = claimWarnedAt
 	return &inst, nil
 }

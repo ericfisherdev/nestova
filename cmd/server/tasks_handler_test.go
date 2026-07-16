@@ -135,6 +135,14 @@ func (f *fakeTaskInstanceRepo) SweepExpiredClaims(_ context.Context, _ time.Time
 	return nil, nil
 }
 
+func (f *fakeTaskInstanceRepo) ClaimWarnings(_ context.Context, _ time.Time) ([]tasksdomain.ClaimWarning, error) {
+	return nil, nil
+}
+
+func (f *fakeTaskInstanceRepo) ClearClaimWarning(_ context.Context, _ tasksdomain.TaskInstanceID, _ time.Time) error {
+	return nil
+}
+
 // Compile-time assertion.
 var _ tasksdomain.TaskInstanceRepository = (*fakeTaskInstanceRepo)(nil)
 

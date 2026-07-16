@@ -172,6 +172,89 @@ func TestTaskRowItemStanding(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Claim countdown badge (NES-118)
+// ---------------------------------------------------------------------------
+
+// TestTaskRowItemClaimedWithExpiryShowsBadge verifies that a claimed row
+// carrying an at-risk claim expiry renders the countdown badge's Alpine
+// scaffolding and the passive-refresh HTMX trigger, scoped to that row.
+func TestTaskRowItemClaimedWithExpiryShowsBadge(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:        "risky-0001",
+		Title:             "Take out recycling",
+		Category:          "chore",
+		DueLabel:          "Today",
+		Status:            "pending",
+		AssigneeID:        "id-alice",
+		AssigneeName:      "Alice",
+		Claimable:         false,
+		ClaimExpiresAtISO: "2026-07-16T14:00:00Z",
+		CSRFToken:         "tok-risky",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	// templ HTML-escapes the attribute value, turning the JS call's single
+	// quotes into &#39; entities; browsers decode these back to ' before
+	// Alpine ever reads the attribute, so this is the correct rendered form.
+	if !strings.Contains(out, `x-data="claimCountdown(&#39;2026-07-16T14:00:00Z&#39;)"`) {
+		t.Errorf("row missing claimCountdown x-data with the claim expiry instant: %q", out)
+	}
+	if !strings.Contains(out, `x-text="label"`) {
+		t.Errorf("row missing the countdown badge's x-text binding: %q", out)
+	}
+	if !strings.Contains(out, `hx-trigger="claim-expired"`) {
+		t.Errorf("row missing the passive-refresh hx-trigger: %q", out)
+	}
+	if !strings.Contains(out, `hx-get="/tasks/risky-0001/row"`) {
+		t.Errorf("row missing the passive-refresh hx-get endpoint: %q", out)
+	}
+}
+
+// TestTaskRowItemUnclaimedShowsNoBadge verifies that a claimable (unassigned)
+// row never renders the countdown badge or its passive-refresh wiring.
+func TestTaskRowItemUnclaimedShowsNoBadge(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID: "safe-0001",
+		Title:      "Wash dishes",
+		Category:   "chore",
+		DueLabel:   "Today",
+		Status:     "pending",
+		Claimable:  true,
+		CSRFToken:  "tok-safe",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if strings.Contains(out, "claimCountdown") {
+		t.Errorf("unclaimed row should not render the countdown badge: %q", out)
+	}
+	if strings.Contains(out, "claim-expired") {
+		t.Errorf("unclaimed row should not carry the passive-refresh trigger: %q", out)
+	}
+}
+
+// TestTaskRowItemSelfClaimedShowsNoBadge verifies that a claimed row with no
+// claim risk (self-claim or rotation assignment — ClaimExpiresAtISO empty)
+// never renders the countdown badge, even though the row is assigned.
+func TestTaskRowItemSelfClaimedShowsNoBadge(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:   "noexpiry-0001",
+		Title:        "Feed the cat",
+		Category:     "chore",
+		DueLabel:     "Today",
+		Status:       "pending",
+		AssigneeID:   "id-bob",
+		AssigneeName: "Bob",
+		Claimable:    false,
+		CSRFToken:    "tok-noexpiry",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if strings.Contains(out, "claimCountdown") {
+		t.Errorf("a claim with no expiry risk should not render the countdown badge: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TasksPage
 // ---------------------------------------------------------------------------
 

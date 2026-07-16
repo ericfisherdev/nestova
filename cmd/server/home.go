@@ -122,6 +122,8 @@ func registerWebRoutes(
 	// GET /tasks/new       renders the create-recurring-task form.
 	// POST /tasks          creates a new recurring task.
 	// POST /tasks/{id}/complete|skip|claim are the three HTMX action endpoints.
+	// GET /tasks/{id}/row  re-renders a single row for the claim countdown's
+	//                      passive-expiry refresh (NES-118).
 	//
 	// The layout callback is constructed per-request so the request context
 	// (for CSRF token generation and member list loading) is always available.
@@ -157,6 +159,11 @@ func registerWebRoutes(
 	mux.Handle("POST /tasks/{id}/complete", requireMember(http.HandlerFunc(taskHandlers.Complete)))
 	mux.Handle("POST /tasks/{id}/skip", requireMember(http.HandlerFunc(taskHandlers.Skip)))
 	mux.Handle("POST /tasks/{id}/claim", requireMember(http.HandlerFunc(taskHandlers.Claim)))
+	// GET /tasks/{id}/row re-renders a single row (NES-118): the claim
+	// countdown badge's client-side timer calls this once a claim's expiry
+	// passes, so the row reflects the background sweep's revert without a
+	// full page reload.
+	mux.Handle("GET /tasks/{id}/row", requireMember(http.HandlerFunc(taskHandlers.Row)))
 
 	// Rewards / scoreboard routes — RequireMember-gated.
 	// GET /rewards            renders the scoreboard + rewards catalog.

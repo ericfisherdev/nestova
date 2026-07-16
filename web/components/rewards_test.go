@@ -84,6 +84,51 @@ func TestLeaderboard_EmptyMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// PointHistory (NES-118)
+// ---------------------------------------------------------------------------
+
+func TestPointHistory_RendersEntries(t *testing.T) {
+	rows := []components.PointHistoryRow{
+		{Reason: "Completed: Vacuum living room", Points: 10, CreatedAt: "Jul 14"},
+		{Reason: "Claim expired: Take out trash", Points: -3, CreatedAt: "Jul 12"},
+		{Reason: "Redeemed: Movie night pick", Points: -20, CreatedAt: "Jul 10"},
+	}
+	out := renderString(t, components.PointHistory(rows))
+
+	for _, want := range []string{
+		"Recent Activity",
+		"Completed: Vacuum living room",
+		"+10",
+		"Claim expired: Take out trash",
+		"-3",
+		"Redeemed: Movie night pick",
+		"-20",
+		"Jul 14",
+		"Jul 12",
+		"Jul 10",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("PointHistory missing %q: %q", want, out)
+		}
+	}
+
+	// A positive delta is tinted differently from a negative one.
+	if !strings.Contains(out, "text-sage") {
+		t.Errorf("PointHistory missing the positive-delta tint class: %q", out)
+	}
+	if !strings.Contains(out, "text-red-600") {
+		t.Errorf("PointHistory missing the negative-delta tint class: %q", out)
+	}
+}
+
+func TestPointHistory_EmptyMessage(t *testing.T) {
+	out := renderString(t, components.PointHistory(nil))
+	if !strings.Contains(out, "No point activity yet") {
+		t.Errorf("Empty point history missing empty-state message: %q", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RewardCard — affordability gating
 // ---------------------------------------------------------------------------
 
@@ -141,6 +186,9 @@ func TestRewardsPageComponent_RendersKeyElements(t *testing.T) {
 		Rewards: []components.RewardItem{
 			{ID: "rwd-3", Name: "Pizza night", CostPoints: 25, Affordable: true},
 		},
+		History: []components.PointHistoryRow{
+			{Reason: "Completed: Sweep porch", Points: 5, CreatedAt: "Jul 15"},
+		},
 		CSRFToken: "csrfXYZ",
 	}
 	out := renderString(t, components.RewardsPageComponent(page))
@@ -153,6 +201,8 @@ func TestRewardsPageComponent_RendersKeyElements(t *testing.T) {
 		"Carol",
 		"Rewards",
 		"Pizza night",
+		"Recent Activity",
+		"Completed: Sweep porch",
 		"csrfXYZ",
 	} {
 		if !strings.Contains(out, want) {

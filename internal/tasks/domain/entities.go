@@ -94,7 +94,13 @@ type TaskInstance struct {
 	// previously-unassigned instance; nil for an unclaimed instance and for a
 	// self-claim on an already-assigned instance (no risk).
 	ClaimExpiresAt *time.Time
-	CreatedAt      time.Time
+	// ClaimWarnedAt is when the "claim expiring soon" notification was sent
+	// for the CURRENT claim window, or nil when no warning has been sent yet
+	// (NES-118). Cleared alongside ClaimedBy/ClaimedAt/ClaimExpiresAt on every
+	// terminal transition and on a claim revert, and reset to nil when a new
+	// claim window starts, mirroring ClaimExpiresAt's lifecycle.
+	ClaimWarnedAt *time.Time
+	CreatedAt     time.Time
 	// UpdatedAt is refreshed on every status transition (claim, complete, skip,
 	// overdue sweep, claim expiry); the NES-29 adapter maintains it.
 	UpdatedAt time.Time
