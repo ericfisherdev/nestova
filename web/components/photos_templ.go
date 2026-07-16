@@ -177,7 +177,11 @@ func PhotosPage(view PhotosView) templ.Component {
 // semantics, not an ARIA role hack — so :focus-within on the label gives a
 // sighted keyboard user a visible ring around "choose files" the moment Tab
 // reaches the input, which a bare sr-only input's own (invisible) focus
-// outline would never show.
+// outline would never show. The form itself carries @submit.prevent: with no
+// submit button, the only way it could ever submit is a browser's implicit
+// submit-on-Enter in the lone text input (the caption field) — left
+// unguarded, that would navigate the page away mid-batch, aborting every
+// in-flight upload the JS queue was still tracking.
 func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -206,7 +210,7 @@ func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(photosPath)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 132, Col: 30}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 136, Col: 30}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -219,7 +223,7 @@ func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", maxUploadBytes))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 133, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 137, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -232,20 +236,20 @@ func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 		var templ_7745c5c3_Var5 templ.SafeURL
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(photosPath))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 142, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 149, Col: 33}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" enctype=\"multipart/form-data\" class=\"flex flex-col gap-2\" data-testid=\"upload-form\"><input type=\"hidden\" name=\"csrf_token\" id=\"upload-csrf-token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" enctype=\"multipart/form-data\" class=\"flex flex-col gap-2\" data-testid=\"upload-form\" @submit.prevent><input type=\"hidden\" name=\"csrf_token\" id=\"upload-csrf-token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 143, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 155, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -258,7 +262,7 @@ func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("JPEG, PNG, or WEBP — up to %d MB each.", maxUploadBytes/(1<<20)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 164, Col: 117}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 176, Col: 117}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -361,7 +365,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(album.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 210, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 222, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -374,7 +378,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", album.RotationSeconds))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 211, Col: 80}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 223, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -387,7 +391,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", len(album.Photos)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 211, Col: 135}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 223, Col: 135}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -400,7 +404,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var13 templ.SafeURL
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(album.ViewURL))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 213, Col: 37}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 225, Col: 37}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -423,7 +427,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 				var templ_7745c5c3_Var14 string
 				templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(p.RawURL)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 219, Col: 25}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 231, Col: 25}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 				if templ_7745c5c3_Err != nil {
@@ -436,7 +440,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 				var templ_7745c5c3_Var15 string
 				templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(p.Caption)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 219, Col: 43}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 231, Col: 43}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 				if templ_7745c5c3_Err != nil {
@@ -449,7 +453,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 				var templ_7745c5c3_Var16 string
 				templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(orPlaceholder(p.Caption, "(no caption)"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 220, Col: 93}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 232, Col: 93}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 				if templ_7745c5c3_Err != nil {
@@ -474,7 +478,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 				var templ_7745c5c3_Var17 templ.SafeURL
 				templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("/albums/" + album.ID + "/photos/" + p.PhotoID + "/remove"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 223, Col: 104}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 235, Col: 104}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 				if templ_7745c5c3_Err != nil {
@@ -487,7 +491,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 				var templ_7745c5c3_Var18 string
 				templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs("/albums/" + album.ID + "/photos/" + p.PhotoID + "/remove")
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 223, Col: 175}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 235, Col: 175}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 				if templ_7745c5c3_Err != nil {
@@ -500,7 +504,7 @@ func albumRow(album AlbumView, csrfToken string) templ.Component {
 				var templ_7745c5c3_Var19 string
 				templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 224, Col: 63}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 236, Col: 63}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 				if templ_7745c5c3_Err != nil {
@@ -560,7 +564,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 		var templ_7745c5c3_Var21 templ.SafeURL
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("/albums/" + albumID + "/photos/" + photoID + "/move"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 241, Col: 94}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 253, Col: 94}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {
@@ -573,7 +577,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs("/albums/" + albumID + "/photos/" + photoID + "/move")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 241, Col: 160}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 253, Col: 160}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -586,7 +590,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 		var templ_7745c5c3_Var23 string
 		templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 242, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 254, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 		if templ_7745c5c3_Err != nil {
@@ -599,7 +603,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(direction)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 243, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 255, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 		if templ_7745c5c3_Err != nil {
@@ -617,7 +621,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs("Move " + direction)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 245, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 257, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 			if templ_7745c5c3_Err != nil {
@@ -630,7 +634,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 			var templ_7745c5c3_Var26 string
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(arrow(direction))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 245, Col: 142}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 257, Col: 142}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -648,7 +652,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 			var templ_7745c5c3_Var27 string
 			templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs("Move " + direction)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 247, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 259, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 			if templ_7745c5c3_Err != nil {
@@ -661,7 +665,7 @@ func moveButton(albumID, photoID, direction string, disabled bool, csrfToken str
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(arrow(direction))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 247, Col: 109}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 259, Col: 109}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -708,7 +712,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(photo.RawURL)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 254, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 266, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
@@ -721,7 +725,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(photo.Caption)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 254, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 266, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 		if templ_7745c5c3_Err != nil {
@@ -739,7 +743,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(photo.Caption)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 257, Col: 59}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 269, Col: 59}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {
@@ -762,7 +766,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(photo.TakenOn)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 261, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 273, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 			if templ_7745c5c3_Err != nil {
@@ -809,7 +813,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 			var templ_7745c5c3_Var36 templ.SafeURL
 			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(photosPath + "/" + photo.ID + "/add-to-album"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 268, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 280, Col: 89}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
@@ -822,7 +826,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(photosPath + "/" + photo.ID + "/add-to-album")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 268, Col: 147}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 280, Col: 147}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -835,7 +839,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 269, Col: 61}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 281, Col: 61}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -853,7 +857,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 				var templ_7745c5c3_Var39 string
 				templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(a.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 272, Col: 27}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 284, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 				if templ_7745c5c3_Err != nil {
@@ -866,7 +870,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 				var templ_7745c5c3_Var40 string
 				templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(a.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 272, Col: 38}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 284, Col: 38}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 				if templ_7745c5c3_Err != nil {
@@ -889,7 +893,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 		var templ_7745c5c3_Var41 templ.SafeURL
 		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(photosPath + "/" + photo.ID + "/delete"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 278, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 290, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 		if templ_7745c5c3_Err != nil {
@@ -902,7 +906,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 		var templ_7745c5c3_Var42 string
 		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(photosPath + "/" + photo.ID + "/delete")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 278, Col: 134}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 290, Col: 134}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 		if templ_7745c5c3_Err != nil {
@@ -915,7 +919,7 @@ func photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) templ.Co
 		var templ_7745c5c3_Var43 string
 		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 279, Col: 60}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 291, Col: 60}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 		if templ_7745c5c3_Err != nil {
@@ -960,7 +964,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var45 templ.SafeURL
 		templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(action))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 290, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 302, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 		if templ_7745c5c3_Err != nil {
@@ -973,7 +977,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(action)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 290, Col: 66}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 302, Col: 66}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 		if templ_7745c5c3_Err != nil {
@@ -986,7 +990,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var47 string
 		templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 291, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 303, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 		if templ_7745c5c3_Err != nil {
@@ -999,7 +1003,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var48 string
 		templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(mode + "-album-name")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 292, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 304, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 		if templ_7745c5c3_Err != nil {
@@ -1012,7 +1016,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var49 string
 		templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(mode + "-album-name")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 293, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 305, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 		if templ_7745c5c3_Err != nil {
@@ -1025,7 +1029,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var50 string
 		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(nameValue)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 293, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 305, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 		if templ_7745c5c3_Err != nil {
@@ -1038,7 +1042,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var51 string
 		templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(mode + "-rotation")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 294, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 306, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 		if templ_7745c5c3_Err != nil {
@@ -1051,7 +1055,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var52 string
 		templ_7745c5c3_Var52, templ_7745c5c3_Err = templ.JoinStringErrs(mode + "-rotation")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 295, Col: 32}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 307, Col: 32}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var52))
 		if templ_7745c5c3_Err != nil {
@@ -1064,7 +1068,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 		var templ_7745c5c3_Var53 string
 		templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", rotationValue))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 295, Col: 121}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 307, Col: 121}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 		if templ_7745c5c3_Err != nil {
@@ -1087,7 +1091,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 				var templ_7745c5c3_Var54 string
 				templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(m.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 300, Col: 58}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 312, Col: 58}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 				if templ_7745c5c3_Err != nil {
@@ -1100,7 +1104,7 @@ func albumForm(mode, action, csrfToken, nameValue string, rotationValue int, mem
 				var templ_7745c5c3_Var55 string
 				templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 301, Col: 13}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/photos.templ`, Line: 313, Col: 13}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 				if templ_7745c5c3_Err != nil {

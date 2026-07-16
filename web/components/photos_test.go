@@ -114,6 +114,29 @@ func TestUploadDropzoneMarkup(t *testing.T) {
 	}
 }
 
+// TestUploadFormPreventsNativeSubmit covers the reviewed risk: the upload
+// form has no submit button, so the only way it could ever submit natively
+// is a browser's implicit submit-on-Enter in the lone text input (the
+// caption field). Without @submit.prevent, that would navigate the page
+// away mid-batch, aborting every in-flight upload the JS queue was still
+// tracking.
+func TestUploadFormPreventsNativeSubmit(t *testing.T) {
+	out := renderString(t, components.PhotosPage(photosView()))
+
+	formStart := strings.Index(out, `id="upload-form"`)
+	if formStart == -1 {
+		t.Fatalf("missing #upload-form: %q", out)
+	}
+	formTagEnd := strings.Index(out[formStart:], ">")
+	if formTagEnd == -1 {
+		t.Fatalf("upload-form tag never closes: %q", out)
+	}
+	formTag := out[formStart : formStart+formTagEnd]
+	if !strings.Contains(formTag, "@submit.prevent") {
+		t.Errorf("upload form missing @submit.prevent: %q", formTag)
+	}
+}
+
 // TestUploadDropzoneFileInputHasVisibleFocusIndicator covers the reviewed
 // a11y gap: the file input is sr-only (visually hidden but still in the tab
 // order), so a sighted keyboard user tabbing to it would see no focus
