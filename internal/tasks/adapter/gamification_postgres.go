@@ -344,7 +344,8 @@ func (r *RewardPostgresRepository) ListStorefrontRewards(
 		  LEFT JOIN (
 		           SELECT reward_id, COUNT(*) AS count
 		             FROM reward_redemption
-		            WHERE status != 'cancelled'
+		            WHERE household_id = $1
+		              AND status != 'cancelled'
 		            GROUP BY reward_id
 		       ) redeemed ON redeemed.reward_id = r.id
 		 WHERE r.household_id = $1
