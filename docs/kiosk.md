@@ -56,6 +56,46 @@ dismisses the overlay; because the screensaver is an overlay on top of the
 current tab rather than a page navigation, dismissing it always returns to
 whichever tab was showing — there is no separate "last tab" state to restore.
 
+## Live updates (NES-130)
+
+Every kiosk tab's content is a self-polling htmx fragment: `GET /kiosk/{tab}`
+returns the full page wrapped in the kiosk shell, and `GET
+/kiosk/{tab}/content` re-renders just that tab's inner content, which is what
+the tab polls (`hx-trigger="every 15s"`) to refresh itself in place. This
+means a chore claimed or completed from a phone (the QR deep-link flow), or
+any other change to household data, shows up on an untouched display within
+15 seconds — no touch required. NES-129 originally added this only for the
+chores tab (to keep its QR codes re-signed ahead of the deep link's 10-minute
+expiry); NES-130 generalized it to every tab and tightened the shared
+interval to 15 seconds, which is comfortably under half that expiry window,
+so QR freshness is still covered by the same mechanism.
+
+A real-time push mechanism (SSE) was considered and intentionally not built.
+Tab navigation is a normal full-page link (`<a href="/kiosk/{tab}">`), not a
+client-side tab switch, so only the ACTIVE tab's content div — and its own
+poll — ever exists in the DOM; the other four tabs are not polling in the
+background. The recurring load per kiosk device is therefore one request
+every 15 seconds, and each of those requests is the same read path (and the
+same Prometheus HTTP metrics instrumentation) as rendering that tab's page
+once. A household is expected to run one, occasionally two, kiosk devices —
+a single Raspberry Pi already serves that same page render on every
+navigation, so sustaining it once every 15 seconds per active device adds no
+new class of load.
+
+Two long-session properties fall out of this design without any special
+handling:
+
+- **Network blips / an overnight idle display don't wedge the UI.** Each
+  poll is an independent request; htmx does not swap the DOM on a non-2xx
+  response (a device that lost its bearer token, e.g. after a revoke, gets a
+  bare 401 from `RequireKioskOrMember`), so a failed poll simply leaves the
+  last-good content in place and the next 15-second interval tries again —
+  never a stuck half-rendered fragment or a browser error dialog.
+- **Polling never resets the idle screensaver's timer.** `kiosk-idle.js`
+  (NES-128) only listens for `touchstart`/`mousedown`/`keydown` — it has no
+  htmx or DOM-mutation listener — so a content swap triggered by the 15s poll
+  has no effect on when the screensaver appears.
+
 ## Running Chromium in kiosk mode
 
 Point Chromium at the activated device's session and launch it fullscreen,

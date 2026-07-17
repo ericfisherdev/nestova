@@ -42,6 +42,31 @@ func extractTagByTestID(html, testID, tag string) string {
 	return extractTag(html, `data-testid="`+testID+`"`, tag)
 }
 
+// assertKioskContentPollWiring asserts that html's #wrapperID div carries the
+// complete NES-130 self-poll wiring: the wrapper id plus all four htmx
+// attributes (hx-get, hx-trigger, hx-target, hx-swap). Scoped via extractTag
+// to the wrapper element itself (rather than a bare strings.Contains(html,
+// ...) over the whole page) so an attribute that drifted onto some other
+// element could not accidentally satisfy the check.
+func assertKioskContentPollWiring(t *testing.T, html, wrapperID, contentRoute string) {
+	t.Helper()
+	wrapper := extractTag(html, `id="`+wrapperID+`"`, "div")
+	if wrapper == "" {
+		t.Fatalf("could not locate the %s wrapper element in: %q", wrapperID, html)
+	}
+	for _, want := range []string{
+		`id="` + wrapperID + `"`,
+		`hx-get="` + contentRoute + `"`,
+		`hx-trigger="every 15s"`,
+		`hx-target="this"`,
+		`hx-swap="outerHTML"`,
+	} {
+		if !strings.Contains(wrapper, want) {
+			t.Errorf("%s wrapper missing content-poll wiring %q: %q", wrapperID, want, wrapper)
+		}
+	}
+}
+
 func TestKioskLayout_RendersTouchSizedTabBarForEveryTab(t *testing.T) {
 	props := components.KioskShellProps{Active: components.KioskTabShopping}
 	out := renderString(t, components.KioskLayout(props, templ.Raw("")))
@@ -202,6 +227,14 @@ func TestKioskChoresPage_EmptyState(t *testing.T) {
 	}
 }
 
+// TestKioskChoresPage_ContentPollWiring asserts the chores tab's content
+// wrapper carries the shared NES-130 self-poll attributes, driven by the
+// view model's ContentPollTrigger field rather than a hardcoded interval.
+func TestKioskChoresPage_ContentPollWiring(t *testing.T) {
+	out := renderString(t, components.KioskChoresPage(components.KioskChoresView{ContentPollTrigger: "every 15s"}))
+	assertKioskContentPollWiring(t, out, "kiosk-chores-content", "/kiosk/chores/content")
+}
+
 // ---------------------------------------------------------------------------
 // Calendar tab
 // ---------------------------------------------------------------------------
@@ -222,6 +255,14 @@ func TestKioskCalendarPage_RendersItems(t *testing.T) {
 	if strings.Contains(out, "<form") {
 		t.Errorf("calendar tab must be read-only: %q", out)
 	}
+}
+
+// TestKioskCalendarPage_ContentPollWiring mirrors
+// TestKioskChoresPage_ContentPollWiring for the calendar tab (NES-130).
+func TestKioskCalendarPage_ContentPollWiring(t *testing.T) {
+	view := components.KioskCalendarView{ContentPollTrigger: "every 15s"}
+	out := renderString(t, components.KioskCalendarPage(view))
+	assertKioskContentPollWiring(t, out, "kiosk-calendar-content", "/kiosk/calendar/content")
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +287,14 @@ func TestKioskMealsPage_RendersDaysAndSlots(t *testing.T) {
 	if strings.Contains(out, "<form") {
 		t.Errorf("meals tab must be read-only: %q", out)
 	}
+}
+
+// TestKioskMealsPage_ContentPollWiring mirrors
+// TestKioskChoresPage_ContentPollWiring for the meals tab (NES-130).
+func TestKioskMealsPage_ContentPollWiring(t *testing.T) {
+	view := components.KioskMealsView{ContentPollTrigger: "every 15s"}
+	out := renderString(t, components.KioskMealsPage(view))
+	assertKioskContentPollWiring(t, out, "kiosk-meals-content", "/kiosk/meals/content")
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +354,16 @@ func TestKioskShoppingPage_InCartItemIsReadOnly(t *testing.T) {
 	}
 }
 
+// TestKioskShoppingPage_ContentPollWiring mirrors
+// TestKioskChoresPage_ContentPollWiring for the shopping tab (NES-130). The
+// wrapper's own poll wiring is independent of the needed row's plain
+// (non-htmx) in-cart form — see KioskShoppingPage's doc comment.
+func TestKioskShoppingPage_ContentPollWiring(t *testing.T) {
+	view := components.KioskShoppingView{ContentPollTrigger: "every 15s"}
+	out := renderString(t, components.KioskShoppingPage(view))
+	assertKioskContentPollWiring(t, out, "kiosk-shopping-content", "/kiosk/shopping/content")
+}
+
 // ---------------------------------------------------------------------------
 // Photos tab
 // ---------------------------------------------------------------------------
@@ -327,4 +386,12 @@ func TestKioskPhotosPage_EmptyState(t *testing.T) {
 	if !strings.Contains(out, "No photos yet") {
 		t.Errorf("empty photos page missing empty-state copy: %q", out)
 	}
+}
+
+// TestKioskPhotosPage_ContentPollWiring mirrors
+// TestKioskChoresPage_ContentPollWiring for the photos tab (NES-130).
+func TestKioskPhotosPage_ContentPollWiring(t *testing.T) {
+	view := components.KioskPhotosView{ContentPollTrigger: "every 15s"}
+	out := renderString(t, components.KioskPhotosPage(view))
+	assertKioskContentPollWiring(t, out, "kiosk-photos-content", "/kiosk/photos/content")
 }

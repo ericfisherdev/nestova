@@ -468,6 +468,16 @@ func registerSettingsPage(
 // every other route is gated by RequireKioskOrMember so a browser with
 // neither a kiosk cookie nor a member session gets a bare 401 (AC1), never a
 // peek at household data.
+//
+// Every tab route (chores/calendar/meals/shopping/photos) has a matching
+// GET /kiosk/{tab}/content route (NES-130): the tab's own content fragment
+// self-polls that endpoint every 15s (kioskadapter.kioskContentPollInterval)
+// so a change made elsewhere — a chore claimed from the QR deep-link flow,
+// or any other household data change — shows up on an untouched display
+// without manual interaction. Since RequireKioskOrMember still gates these
+// like every other kiosk route, a revoked device's poll gets a bare 401;
+// htmx does not swap a non-2xx response by default, so a failed poll simply
+// leaves the fragment as it was and the next interval retries.
 func registerKioskPages(mux *http.ServeMux, kioskHandlers *kioskadapter.KioskWebHandlers) {
 	mux.HandleFunc("GET /kiosk/activate", kioskHandlers.Activate)
 	mux.HandleFunc("POST /kiosk/activate", kioskHandlers.Activate)
@@ -477,17 +487,18 @@ func registerKioskPages(mux *http.ServeMux, kioskHandlers *kioskadapter.KioskWeb
 		http.Redirect(w, r, "/kiosk/chores", http.StatusSeeOther)
 	})))
 	mux.Handle("GET /kiosk/chores", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Chores)))
-	// GET /kiosk/chores/content re-renders the #kiosk-chores-content fragment
-	// (NES-129): the chores tab's own self-poll (hx-trigger="every ...s")
-	// targets this so its QR codes are re-signed well before they expire.
 	mux.Handle("GET /kiosk/chores/content", requireKioskOrMember(http.HandlerFunc(kioskHandlers.ChoresContent)))
 	mux.Handle("GET /kiosk/calendar", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Calendar)))
+	mux.Handle("GET /kiosk/calendar/content", requireKioskOrMember(http.HandlerFunc(kioskHandlers.CalendarContent)))
 	mux.Handle("GET /kiosk/meals", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Meals)))
+	mux.Handle("GET /kiosk/meals/content", requireKioskOrMember(http.HandlerFunc(kioskHandlers.MealsContent)))
 	mux.Handle("GET /kiosk/shopping", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Shopping)))
+	mux.Handle("GET /kiosk/shopping/content", requireKioskOrMember(http.HandlerFunc(kioskHandlers.ShoppingContent)))
 	// POST /kiosk/shopping/{id}/in-cart is the one member-free mutation the
 	// kiosk exposes (AC5): marking a needed item in-cart.
 	mux.Handle("POST /kiosk/shopping/{id}/in-cart", requireKioskOrMember(http.HandlerFunc(kioskHandlers.MarkInCart)))
 	mux.Handle("GET /kiosk/photos", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Photos)))
+	mux.Handle("GET /kiosk/photos/content", requireKioskOrMember(http.HandlerFunc(kioskHandlers.PhotosContent)))
 	mux.Handle("GET /kiosk/photos/{id}/raw", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Raw)))
 }
 
