@@ -24,6 +24,7 @@ import (
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
 	subscriptionsdomain "github.com/ericfisherdev/nestova/internal/subscriptions/domain"
+	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 	trackingapp "github.com/ericfisherdev/nestova/internal/tracking/app"
 	trackingdomain "github.com/ericfisherdev/nestova/internal/tracking/domain"
 )
@@ -163,12 +164,21 @@ type kioskFakes struct {
 // buildKioskTestHandler wires the full /kiosk/* and /settings route surface
 // with in-memory fakes, mirroring runServer's composition in main.go closely
 // enough to exercise the real middleware chain (session + member auth + kiosk
-// device auth) and the real route gating — no database required.
-func buildKioskTestHandler(t *testing.T, member *household.Member) (http.Handler, *scs.SessionManager, *kioskapp.KioskService, *kioskFakes) {
+// device auth) and the real route gating — no database required. rewards is
+// an optional (variadic, so every existing call site is unaffected) override
+// for the reward repository; when omitted it defaults to an empty
+// &configurableRewardRepo{}, matching every test that does not care about
+// the kiosk's rewards section.
+func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...tasksdomain.RewardRepository) (http.Handler, *scs.SessionManager, *kioskapp.KioskService, *kioskFakes) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
+
+	var rewardRepo tasksdomain.RewardRepository = &configurableRewardRepo{}
+	if len(rewards) > 0 {
+		rewardRepo = rewards[0]
+	}
 
 	recurringRepo := fakeRecurringTaskRepo{}
 	instanceRepo := &fakeTaskInstanceRepo{}
@@ -219,7 +229,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member) (http.Handler
 	}
 	kioskHandlers := kioskadapter.NewKioskWebHandlers(
 		kioskSvc, instanceRepo, recurringRepo, unifiedCalendar, plannerSvc, recipeRepo,
-		shoppingSvc, ingredientCatalog, albumSvc, photoSvc, householdRepo, &configurableRewardRepo{},
+		shoppingSvc, ingredientCatalog, albumSvc, photoSvc, householdRepo, rewardRepo,
 		// A real (non-empty) publicBaseURL exercises the absolute-URL contract
 		// deep-link QR generation actually promises (NES-129): every generated
 		// link must be reachable from a phone off the kiosk's own network
@@ -685,6 +695,64 @@ func TestKioskChores_SelfPollsForFreshQRCodes(t *testing.T) {
 	}
 	if !strings.Contains(contentBody, `id="kiosk-chores-content"`) {
 		t.Errorf("poll fragment missing its own self-poll wrapper (must re-arm on every swap): %s", contentBody)
+	}
+}
+
+// activeVsStorefrontRewardRepo is a RewardRepository fake whose
+// ListActiveRewards and ListStorefrontRewards deliberately disagree — active
+// returns a reward that is NOT in ListStorefrontRewards's result — so a test
+// can prove which of the two the kiosk actually calls. Real
+// ListStorefrontRewards implementations exclude an archived OR
+// stock-exhausted reward entirely (see RewardRepository's doc comment); this
+// fake models exactly that divergence without needing real stock-counting
+// logic.
+type activeVsStorefrontRewardRepo struct {
+	configurableRewardRepo
+	active     []*tasksdomain.Reward
+	storefront []tasksdomain.StorefrontReward
+}
+
+func (r *activeVsStorefrontRewardRepo) ListActiveRewards(context.Context, household.HouseholdID) ([]*tasksdomain.Reward, error) {
+	return r.active, nil
+}
+
+func (r *activeVsStorefrontRewardRepo) ListStorefrontRewards(context.Context, household.HouseholdID) ([]tasksdomain.StorefrontReward, error) {
+	return r.storefront, nil
+}
+
+// Compile-time assertion.
+var _ tasksdomain.RewardRepository = (*activeVsStorefrontRewardRepo)(nil)
+
+// TestKioskChores_ExhaustedRewardGetsNoQRCard is the regression test for the
+// ListActiveRewards → ListStorefrontRewards fix: an exhausted (or archived)
+// reward must never get a card on the kiosk, since scanning its QR would be
+// a dead end — nothing on the phone side could ever redeem it. The fake
+// reward repo's ListActiveRewards would still return the exhausted reward
+// (proving the OLD code path would have shown it), while
+// ListStorefrontRewards — what the kiosk must actually call — returns none.
+func TestKioskChores_ExhaustedRewardGetsNoQRCard(t *testing.T) {
+	adult := adminTestAdult()
+	exhausted := &tasksdomain.Reward{
+		ID: tasksdomain.NewRewardID(), HouseholdID: adult.HouseholdID,
+		Name: "Sold Out Prize", CostPoints: 10, Active: true,
+	}
+	rewards := &activeVsStorefrontRewardRepo{
+		active:     []*tasksdomain.Reward{exhausted},
+		storefront: nil, // ListStorefrontRewards excludes it (exhausted/archived)
+	}
+	handler, _, kioskSvc, _ := buildKioskTestHandler(t, adult, rewards)
+	_, rawToken := provisionDevice(t, kioskSvc, adult.HouseholdID, "Kitchen")
+
+	req := httptest.NewRequest(http.MethodGet, "/kiosk/chores", nil)
+	req.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /kiosk/chores: status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "Sold Out Prize") {
+		t.Errorf("kiosk rendered a card for an exhausted/archived reward: %s", rec.Body.String())
 	}
 }
 

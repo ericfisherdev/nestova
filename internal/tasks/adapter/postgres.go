@@ -40,6 +40,13 @@ const (
 	// to that sentinel — a missing member is a distinct failure with no
 	// gamification sentinel, so it falls through to a wrapped generic error.
 	constraintRewardRedemptionRewardFK = "reward_redemption_reward_fk"
+
+	// constraintRewardRedemptionDeepLinkSignatureUniq is the partial unique
+	// index on reward_redemption (household_id, deep_link_signature_hash)
+	// WHERE deep_link_signature_hash IS NOT NULL (00027, NES-129) whose
+	// violation maps to ErrDeepLinkAlreadyRedeemed: a signed kiosk QR deep
+	// link that has already redeemed a reward once cannot redeem again.
+	constraintRewardRedemptionDeepLinkSignatureUniq = "reward_redemption_deep_link_signature_uniq"
 )
 
 // row abstracts pgx.Row and pgx.Rows so scan helpers can accept either.

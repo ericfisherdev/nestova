@@ -402,9 +402,12 @@ func Load() (Config, error) {
 	}
 
 	// PUBLIC_BASE_URL (NES-129): the externally-reachable origin QR deep links
-	// are built against. Trimmed of any trailing slash so callers can
-	// unconditionally concatenate a leading-slash path onto it.
-	publicBaseURL := strings.TrimSuffix(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/")
+	// are built against. TrimRight (not TrimSuffix, which removes only ONE
+	// occurrence) strips EVERY trailing slash, so an operator's accidental
+	// "https://host//" does not survive as a single leftover slash and
+	// double up with the leading slash on every concatenated deep-link path
+	// (".../go/..." would otherwise become ".../.../go/...").
+	publicBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/")
 
 	// The dev DSN convenience default applies only in dev. test and prod
 	// require an explicit DATABASE_URL: an empty value is left empty so

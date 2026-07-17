@@ -46,7 +46,11 @@ type RewardRedeemer interface {
 	// Returns [domain.ErrInsufficientPoints] when the member's balance is below
 	// the reward's current (locked) cost. Returns [domain.ErrRewardOutOfStock]
 	// when the reward has a finite quantity_available and it has already been
-	// reached (NES-127).
+	// reached (NES-127). Returns [domain.ErrDeepLinkAlreadyRedeemed] (NES-129)
+	// when redemption.DeepLinkSignatureHash is non-nil and a redemption with
+	// the same (household, hash) pair has already committed — enforced by a
+	// database constraint, not an in-process guard, so it holds durably
+	// across process restarts and multiple server instances.
 	RedeemWithDebit(ctx context.Context, redemption *domain.RewardRedemption) (int, error)
 }
 
@@ -141,6 +145,48 @@ func (s *RewardService) Redeem(
 	memberID household.MemberID,
 	rewardID domain.RewardID,
 ) (*domain.RewardRedemption, error) {
+	return s.redeem(ctx, householdID, memberID, rewardID, nil)
+}
+
+// RedeemViaDeepLink is Redeem's NES-129 kiosk QR deep-link counterpart: it
+// additionally records signatureHash — the SHA-256 hash (hex-encoded) of the
+// signed link's canonical decoded signature bytes, e.g.
+// deeplinkapp.HashSignature's return value — as the redemption's
+// DeepLinkSignatureHash, so [RewardRedeemer.RedeemWithDebit]'s DATABASE-level
+// unique constraint rejects a second redemption attempt for the SAME signed
+// link. This durably prevents a resubmitted POST (double-tap, browser
+// refresh-and-resend, or a request landing within the deep-link rate
+// limiter's own burst) from redeeming the reward twice — durably meaning
+// across process restarts and multiple server instances, unlike an
+// in-process guard.
+//
+// Error contracts: identical to Redeem, PLUS returns
+// [domain.ErrDeepLinkAlreadyRedeemed] when signatureHash was already used
+// for a successful redemption in this household.
+func (s *RewardService) RedeemViaDeepLink(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+	rewardID domain.RewardID,
+	signatureHash string,
+) (*domain.RewardRedemption, error) {
+	if signatureHash == "" {
+		return nil, errors.New("redeem via deep link: signatureHash must not be empty")
+	}
+	return s.redeem(ctx, householdID, memberID, rewardID, &signatureHash)
+}
+
+// redeem is Redeem and RedeemViaDeepLink's shared implementation.
+// deepLinkSignatureHash is nil for the ordinary storefront path (Redeem) and
+// non-nil for the deep-link path (RedeemViaDeepLink) — see
+// domain.RewardRedemption.DeepLinkSignatureHash's doc for what it protects.
+func (s *RewardService) redeem(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+	rewardID domain.RewardID,
+	deepLinkSignatureHash *string,
+) (*domain.RewardRedemption, error) {
 	// Step 1: fetch the reward for an optimistic fast-fail and its Name (for
 	// the notification below) — see this method's doc for why its Active/
 	// CostPoints fields are never treated as authoritative.
@@ -162,13 +208,14 @@ func (s *RewardService) Redeem(
 	// Step 3: build the redemption entity.
 	now := time.Now().UTC()
 	redemption := &domain.RewardRedemption{
-		ID:          domain.NewRewardRedemptionID(),
-		HouseholdID: householdID,
-		RewardID:    rewardID,
-		MemberID:    memberID,
-		Status:      domain.RedemptionPending,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                    domain.NewRewardRedemptionID(),
+		HouseholdID:           householdID,
+		RewardID:              rewardID,
+		MemberID:              memberID,
+		Status:                domain.RedemptionPending,
+		DeepLinkSignatureHash: deepLinkSignatureHash,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 
 	// Step 4: atomic debit + insert. costPoints is the amount actually

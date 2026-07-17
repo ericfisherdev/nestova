@@ -30,6 +30,32 @@ func TestSanitizeNext(t *testing.T) {
 		{"ordinary traversal is cleaned, not rejected", "/foo/../bar", "/bar"},
 		{"traversal past root collapses to a same-origin path, not rejected", "/foo/..//evil.com", "/evil.com"},
 		{"malformed percent-encoding falls back to root", "/%zz", "/"},
+		{
+			// Regression: browsers normalize a backslash to a forward slash
+			// when resolving a URL, so this exact string — which path.Clean
+			// leaves completely untouched, since it only treats '/' as a
+			// separator — would otherwise reach http.Redirect verbatim and
+			// then be followed by the browser as the protocol-relative
+			// "//evil.example/steal", an off-origin redirect.
+			name: `literal backslash is rejected (browser \ -> / normalization)`,
+			next: `/\evil.example/steal`,
+			want: "/",
+		},
+		{
+			name: "percent-encoded backslash is rejected",
+			next: "/%5Cevil.example/steal",
+			want: "/",
+		},
+		{
+			name: `leading backslash-slash is rejected`,
+			next: `/\/evil`,
+			want: "/",
+		},
+		{
+			name: `backslash embedded mid-path is rejected`,
+			next: `/foo/\..\evil`,
+			want: "/",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
