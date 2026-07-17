@@ -24,6 +24,11 @@ type fakePhotoStore struct {
 	puts         int
 	deleted      []domain.StorageRef
 	lastPutClass domain.PhotoClass
+	// lastPutBytes records the exact bytes the most recent Put call read, so
+	// a test can assert what a caller actually sent to storage (e.g.
+	// ChoreProofPhotoService.Upload must send EXIF-scrubbed bytes, never the
+	// raw upload — see chore_photo_service_test.go).
+	lastPutBytes []byte
 }
 
 // Put hashes the bytes it's given and derives Ref from the hash — like the
@@ -45,6 +50,7 @@ func (f *fakePhotoStore) Put(_ context.Context, _ household.HouseholdID, class d
 		return domain.PutResult{}, err
 	}
 	f.puts++
+	f.lastPutBytes = data
 	hash := sha256Hex(string(data))
 	return domain.PutResult{
 		Ref:         refFor(hash),

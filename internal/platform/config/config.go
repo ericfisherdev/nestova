@@ -311,6 +311,11 @@ type MediaConfig struct {
 	Root string
 	// MaxUploadBytes caps a single photo upload (bytes).
 	MaxUploadBytes int64
+	// ChoreProofFreshnessWindow bounds how far a chore-proof photo's EXIF
+	// capture time may fall from the upload instant, in either direction,
+	// before ChoreProofPhotoService.Upload rejects it with
+	// domain.ErrPhotoStale (NES-119).
+	ChoreProofFreshnessWindow time.Duration
 }
 
 // devMediaRoot is the default photo-storage directory when MEDIA_ROOT is unset.
@@ -319,6 +324,12 @@ const devMediaRoot = "./.localdata/media"
 // defaultMaxUploadBytes is the default per-upload size cap (25 MiB) —
 // sized for bulk album uploads of modern phone camera originals (NES-123).
 const defaultMaxUploadBytes int64 = 25 << 20
+
+// defaultChoreProofFreshnessWindow is MEDIA_CHORE_PROOF_FRESHNESS_WINDOW's
+// default (NES-119): generous enough to cover the walk from finishing a
+// chore to opening the upload form on a shared household device, tight
+// enough to reject a photo pulled from an earlier day's camera roll.
+const defaultChoreProofFreshnessWindow = 60 * time.Minute
 
 // Load reads configuration from the environment and validates it. In
 // development it first loads an optional .env file (real environment variables
@@ -369,6 +380,8 @@ func Load() (Config, error) {
 	recipesExternalEnabled, err := getbool("RECIPES_EXTERNAL_ENABLED", false)
 	collect(err)
 	maxUploadBytes, err := getint64("MEDIA_MAX_UPLOAD_BYTES", defaultMaxUploadBytes)
+	collect(err)
+	choreProofFreshnessWindow, err := getduration("MEDIA_CHORE_PROOF_FRESHNESS_WINDOW", defaultChoreProofFreshnessWindow)
 	collect(err)
 	hstsEnabled, err := getbool("HSTS_ENABLED", false)
 	collect(err)
@@ -475,8 +488,9 @@ func Load() (Config, error) {
 			BaseURL: strings.TrimSpace(os.Getenv("RECIPES_API_BASE_URL")),
 		},
 		Media: MediaConfig{
-			Root:           strings.TrimSpace(getenv("MEDIA_ROOT", devMediaRoot)),
-			MaxUploadBytes: maxUploadBytes,
+			Root:                      strings.TrimSpace(getenv("MEDIA_ROOT", devMediaRoot)),
+			MaxUploadBytes:            maxUploadBytes,
+			ChoreProofFreshnessWindow: choreProofFreshnessWindow,
 		},
 		TLS: TLSConfig{
 			CertFile: strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
@@ -581,6 +595,9 @@ func (c Config) validate() []error {
 	}
 	if c.Media.MaxUploadBytes <= 0 {
 		errs = append(errs, fmt.Errorf("MEDIA_MAX_UPLOAD_BYTES must be positive, got %d", c.Media.MaxUploadBytes))
+	}
+	if c.Media.ChoreProofFreshnessWindow <= 0 {
+		errs = append(errs, fmt.Errorf("MEDIA_CHORE_PROOF_FRESHNESS_WINDOW must be positive, got %v", c.Media.ChoreProofFreshnessWindow))
 	}
 
 	// PUBLIC_BASE_URL is optional (empty means "derive from the request"), but

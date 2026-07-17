@@ -24,6 +24,7 @@ var allKeys = []string{
 	"RECIPES_EXTERNAL_ENABLED", "RECIPES_API_KEY", "RECIPES_API_BASE_URL",
 	"TLS_CERT_FILE", "TLS_KEY_FILE",
 	"HSTS_ENABLED", "HSTS_MAX_AGE", "HSTS_INCLUDE_SUBDOMAINS", "HSTS_PRELOAD",
+	"MEDIA_CHORE_PROOF_FRESHNESS_WINDOW",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -73,7 +74,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -88,7 +89,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -100,7 +101,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -112,7 +113,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -126,7 +127,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 48 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -145,7 +146,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: validSecret, Secure: true, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -161,7 +162,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
 			},
 		},
@@ -174,7 +175,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -193,7 +194,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -208,7 +209,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:5432/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -228,7 +229,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full", MaxConns: 5, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, SSLRootCert: "/etc/ssl/supabase-ca.crt"},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -247,7 +248,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, MigrateDSN: "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require"},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -261,7 +262,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -273,7 +274,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -289,7 +290,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -302,7 +303,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: true, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -325,7 +326,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: validSecret, Secure: false, Lifetime: 12 * time.Hour},
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 			},
 		},
 		{
@@ -341,7 +342,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 				TLS:     config.TLSConfig{CertFile: "/etc/nestova/tls/cert.pem", KeyFile: "/etc/nestova/tls/key.pem"},
 			},
 		},
@@ -362,7 +363,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 				HSTS:    config.HSTSConfig{Enabled: true, MaxAge: 8760 * time.Hour, MaxAgeSet: true, IncludeSubdomains: true, Preload: true},
 			},
 		},
@@ -377,7 +378,7 @@ func TestLoadValid(t *testing.T) {
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute},
 				HSTS:    config.HSTSConfig{Enabled: true, MaxAge: 0, MaxAgeSet: true},
 			},
 		},
