@@ -440,9 +440,11 @@ func runServer(logger *slog.Logger) error {
 	// above (one ENCRYPTION_KEY-derived cipher, multiple consumers) rather
 	// than a second cipher. credRepo (constructed earlier for password
 	// login) also satisfies the owner-reauth password lookup MFAService
-	// needs — no separate credential store.
+	// needs — no separate credential store. householdRepo also satisfies
+	// the member-lookup port ResetMemberMFA uses to resolve the acting
+	// owner's role/household independently of any caller claim.
 	mfaRepo := authadapter.NewMFARepository(pool)
-	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, logger)
+	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, householdRepo, logger)
 	if err != nil {
 		return fmt.Errorf("create mfa service: %w", err)
 	}

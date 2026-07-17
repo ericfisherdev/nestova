@@ -47,6 +47,17 @@ type passwordVerifier interface {
 	FindByMemberID(ctx context.Context, memberID household.MemberID) (*authdomain.Credential, error)
 }
 
+// memberLookup is the minimal seam over the household repository MFAService
+// depends on to resolve the ACTING member's own role and household from the
+// source of truth (ISP + defense-in-depth): ResetMemberMFA takes only member
+// ids from its caller and looks up their role/household itself, rather than
+// trusting a caller-supplied role/household claim for an
+// authorization-critical decision. Satisfied by household.HouseholdRepository
+// (a superset).
+type memberLookup interface {
+	GetMember(ctx context.Context, id household.MemberID) (*household.Member, error)
+}
+
 // MFAService orchestrates TOTP enrollment, confirmation, recovery codes, and
 // the household-owner admin reset. It is the auth context's use-case
 // boundary for NES-134; login enforcement is NES-135 and is not implemented
@@ -56,12 +67,13 @@ type MFAService struct {
 	cipher    secretCipher
 	totp      totpProvider
 	passwords passwordVerifier
+	members   memberLookup
 	logger    *slog.Logger
 }
 
-// NewMFAService constructs the service with injected dependencies. All five
+// NewMFAService constructs the service with injected dependencies. All six
 // are required.
-func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totpProvider, passwords passwordVerifier, logger *slog.Logger) (*MFAService, error) {
+func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totpProvider, passwords passwordVerifier, members memberLookup, logger *slog.Logger) (*MFAService, error) {
 	if repo == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil MFARepository")
 	}
@@ -74,10 +86,13 @@ func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totp
 	if passwords == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil password verifier")
 	}
+	if members == nil {
+		return nil, errors.New("auth: NewMFAService requires a non-nil member lookup")
+	}
 	if logger == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil logger")
 	}
-	return &MFAService{repo: repo, cipher: cipher, totp: totp, passwords: passwords, logger: logger}, nil
+	return &MFAService{repo: repo, cipher: cipher, totp: totp, passwords: passwords, members: members, logger: logger}, nil
 }
 
 // Status returns the member's current enrollment, or nil if none exists
@@ -125,12 +140,19 @@ func (s *MFAService) BeginEnrollment(ctx context.Context, memberID household.Mem
 // ConfirmEnrollment validates code against the member's pending secret and,
 // on success, marks the enrollment confirmed and generates a fresh batch of
 // recoveryCodeCount recovery codes (only ever generated AFTER confirmation,
-// never before). It returns the raw codes — shown to the member exactly
-// once; only their hashes are persisted.
+// never before), confirming and storing them in one atomic repository call
+// (authdomain.MFARepository.ConfirmEnrollmentWithCodes — see its doc for why
+// this must not be two separate writes: two concurrent ConfirmEnrollment
+// calls racing on the SAME still-unconfirmed enrollment must never both
+// "win" with two different code sets, one of which would be shown to its
+// caller as valid when it was actually silently overwritten by the other's
+// write). It returns the raw codes — shown to the member exactly once; only
+// their hashes are persisted.
 //
 // Returns authdomain.ErrMFANotEnrolled when no enrollment exists,
-// authdomain.ErrMFAAlreadyEnrolled when it is already confirmed, and
-// authdomain.ErrInvalidTOTPCode when code does not validate.
+// authdomain.ErrMFAAlreadyEnrolled when it is already confirmed (including
+// by a racing concurrent confirm that won), and authdomain.ErrInvalidTOTPCode
+// when code does not validate.
 func (s *MFAService) ConfirmEnrollment(ctx context.Context, memberID household.MemberID, code string) ([]string, error) {
 	enrollment, err := s.repo.GetEnrollment(ctx, memberID)
 	if err != nil {
@@ -146,15 +168,18 @@ func (s *MFAService) ConfirmEnrollment(ctx context.Context, memberID household.M
 	if !s.totp.Validate(strings.TrimSpace(code), string(secret)) {
 		return nil, authdomain.ErrInvalidTOTPCode
 	}
-	if err := s.repo.ConfirmEnrollment(ctx, memberID); err != nil {
-		return nil, fmt.Errorf("mfa: confirm enrollment: %w", err)
-	}
-	s.logger.InfoContext(ctx, "mfa enrollment confirmed", "member_id", memberID.String())
 
-	codes, err := s.regenerateRecoveryCodes(ctx, memberID)
+	// Generate and hash the recovery codes BEFORE touching the repository
+	// (pure computation, no DB), so the confirm+store-codes write below is
+	// a single atomic transaction.
+	codes, hashes, err := s.generateRecoveryCodes()
 	if err != nil {
 		return nil, err
 	}
+	if err := s.repo.ConfirmEnrollmentWithCodes(ctx, memberID, hashes); err != nil {
+		return nil, fmt.Errorf("mfa: confirm enrollment: %w", err)
+	}
+	s.logger.InfoContext(ctx, "mfa enrollment confirmed", "member_id", memberID.String())
 	return codes, nil
 }
 
@@ -208,23 +233,45 @@ func (s *MFAService) Disenroll(ctx context.Context, memberID household.MemberID,
 // ResetMemberMFA is the household-owner admin action (e.g. a lost-device
 // recovery path): it removes targetMemberID's MFA enrollment entirely,
 // requiring the ACTING owner to re-enter their own password first (fresh
-// re-auth). Only the household owner may call this — an adult member with
+// re-auth). The caller supplies only member ids — actingOwnerID's role and
+// household, and whether targetMemberID belongs to that SAME household, are
+// resolved here from s.members (the source of truth), never trusted from a
+// caller's claim: an authorization decision this security-sensitive must
+// not depend on the caller having correctly asserted its own role/household
+// (defense-in-depth against a handler bug or a future caller that gets it
+// wrong). Only the household owner may call this — an adult member with
 // parent privileges is not sufficient (see authdomain.ErrNotHouseholdOwner's
-// doc). Both members must belong to householdID; the caller (the HTTP
-// handler) is responsible for having already verified that targetMemberID
-// resolves within the acting owner's own household before calling this, so
-// DeleteEnrollment's householdID-scoped delete is a defense-in-depth check,
-// not the only one.
+// doc).
 //
-// Returns authdomain.ErrNotHouseholdOwner when actingRole is not
-// household.RoleOwner, authdomain.ErrOwnerReauthRequired when ownerPassword
-// does not match the acting owner's stored credential, and
-// authdomain.ErrMFANotEnrolled when the target member has no enrollment to
-// reset.
-func (s *MFAService) ResetMemberMFA(ctx context.Context, actingOwnerID household.MemberID, actingRole household.Role, ownerPassword string, householdID household.HouseholdID, targetMemberID household.MemberID) error {
-	if actingRole != household.RoleOwner {
+// Returns authdomain.ErrNotHouseholdOwner when the acting member is not
+// household.RoleOwner, authdomain.ErrMFANotEnrolled both when
+// targetMemberID does not exist and when it belongs to a DIFFERENT
+// household than the acting owner's own (identical response either way —
+// no signal about which occurred, mirroring BeginEnrollment's household
+// guard), authdomain.ErrOwnerReauthRequired when ownerPassword does not
+// match the acting owner's stored credential, and (from DeleteEnrollment,
+// as a final defense-in-depth check) authdomain.ErrMFANotEnrolled again
+// when the target has no enrollment to reset.
+func (s *MFAService) ResetMemberMFA(ctx context.Context, actingOwnerID household.MemberID, ownerPassword string, targetMemberID household.MemberID) error {
+	owner, err := s.members.GetMember(ctx, actingOwnerID)
+	if err != nil {
+		return fmt.Errorf("mfa: look up acting member: %w", err)
+	}
+	if owner.Role != household.RoleOwner {
 		return authdomain.ErrNotHouseholdOwner
 	}
+
+	target, err := s.members.GetMember(ctx, targetMemberID)
+	if err != nil {
+		if errors.Is(err, household.ErrMemberNotFound) {
+			return authdomain.ErrMFANotEnrolled
+		}
+		return fmt.Errorf("mfa: look up target member: %w", err)
+	}
+	if target.HouseholdID != owner.HouseholdID {
+		return authdomain.ErrMFANotEnrolled
+	}
+
 	cred, err := s.passwords.FindByMemberID(ctx, actingOwnerID)
 	if err != nil {
 		if errors.Is(err, authdomain.ErrInvalidCredentials) {
@@ -237,7 +284,7 @@ func (s *MFAService) ResetMemberMFA(ctx context.Context, actingOwnerID household
 		return authdomain.ErrOwnerReauthRequired
 	}
 
-	if err := s.repo.DeleteEnrollment(ctx, householdID, targetMemberID); err != nil {
+	if err := s.repo.DeleteEnrollment(ctx, owner.HouseholdID, targetMemberID); err != nil {
 		return fmt.Errorf("mfa: reset member mfa: %w", err)
 	}
 	s.logger.InfoContext(ctx, "mfa reset by household owner", "member_id", targetMemberID.String(), "owner_id", actingOwnerID.String())
@@ -330,23 +377,40 @@ func (s *MFAService) matchRecoveryCode(ctx context.Context, memberID household.M
 	return authdomain.RecoveryCodeID{}, false, nil
 }
 
-// regenerateRecoveryCodes generates recoveryCodeCount fresh raw codes,
-// hashes each with crypto.Hash, and atomically replaces the member's stored
-// set. It returns the raw codes for one-time display.
-func (s *MFAService) regenerateRecoveryCodes(ctx context.Context, memberID household.MemberID) ([]string, error) {
-	codes := make([]string, 0, recoveryCodeCount)
-	hashes := make([]string, 0, recoveryCodeCount)
+// generateRecoveryCodes generates recoveryCodeCount fresh raw codes and
+// their argon2id hashes (crypto.Hash), performing no repository writes —
+// the caller decides how to persist hashes (see ConfirmEnrollment, which
+// needs this as a separate step from the atomic confirm+store write, and
+// regenerateRecoveryCodes below, which stores via a plain replace). codes
+// are for one-time display; only hashes are ever persisted.
+func (s *MFAService) generateRecoveryCodes() (codes, hashes []string, err error) {
+	codes = make([]string, 0, recoveryCodeCount)
+	hashes = make([]string, 0, recoveryCodeCount)
 	for range recoveryCodeCount {
 		raw, err := authdomain.GenerateRecoveryCode()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		hash, err := crypto.Hash(authdomain.NormalizeRecoveryCode(raw))
 		if err != nil {
-			return nil, fmt.Errorf("mfa: hash recovery code: %w", err)
+			return nil, nil, fmt.Errorf("mfa: hash recovery code: %w", err)
 		}
 		codes = append(codes, raw)
 		hashes = append(hashes, hash)
+	}
+	return codes, hashes, nil
+}
+
+// regenerateRecoveryCodes generates a fresh batch and atomically replaces
+// the member's stored set (used by RegenerateRecoveryCodes, which always
+// operates on an ALREADY-confirmed enrollment — unlike ConfirmEnrollment's
+// first-ever confirm, there is no "who wins the first confirm" race to
+// close here, so a plain replace via ReplaceRecoveryCodes is sufficient).
+// It returns the raw codes for one-time display.
+func (s *MFAService) regenerateRecoveryCodes(ctx context.Context, memberID household.MemberID) ([]string, error) {
+	codes, hashes, err := s.generateRecoveryCodes()
+	if err != nil {
+		return nil, err
 	}
 	if err := s.repo.ReplaceRecoveryCodes(ctx, memberID, hashes); err != nil {
 		return nil, fmt.Errorf("mfa: store recovery codes: %w", err)

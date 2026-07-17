@@ -483,6 +483,30 @@ func registerSettingsPage(
 		}
 	}
 
+	// renderReveal is the guaranteed-render fallback for a one-time reveal
+	// (a kiosk activation code, an MFA enrollment secret, or MFA recovery
+	// codes): it makes NO repository or session calls of its own — see
+	// components.MFARevealFallbackPage's doc — so it cannot fail the same
+	// way composePage's own section-building or rendering can. composePage
+	// falls back to this whenever a failure happens AFTER a reveal already
+	// exists, so a transient DB hiccup building the REST of the page (or a
+	// buffered-render failure) can never silently discard a secret that was
+	// already persisted (or, for the kiosk code, already minted) and can
+	// never be shown again.
+	renderReveal := func(
+		w http.ResponseWriter, r *http.Request,
+		kioskReveal *components.KioskActivationReveal,
+		mfaEnrollReveal *components.MFAEnrollReveal,
+		mfaRecoveryReveal *components.MFARecoveryCodesReveal,
+	) {
+		w.Header().Set("Cache-Control", "no-store")
+		view := components.MFARevealFallbackView{Kiosk: kioskReveal, Enroll: mfaEnrollReveal, Recovery: mfaRecoveryReveal}
+		if err := render.Render(r.Context(), w, http.StatusOK, components.MFARevealFallbackPage(view)); err != nil {
+			logger.ErrorContext(r.Context(), "settings: render reveal fallback", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+	}
+
 	// composePage builds the combined SettingsView from both contexts'
 	// independently built section views and renders the full page at
 	// status. It is used by every mutating action across both sections
@@ -491,6 +515,16 @@ func registerSettingsPage(
 	// a redirect would lose that reveal. kioskReveal/mfaEnrollReveal/
 	// mfaRecoveryReveal/mfaErr are non-nil/non-empty only in the one
 	// response produced by the mutation that generated them.
+	//
+	// hasReveal gates every failure branch below to renderReveal instead of
+	// a plain 500: once a reveal exists, its corresponding server-side
+	// state is already committed (or, for the kiosk code, the raw value
+	// already exists only in this request's memory) — a failure building
+	// the OTHER section, or even the final buffered render, must never be
+	// the reason a member never sees a secret they can never retrieve
+	// again. A failure with NO reveal at stake (e.g. a plain GET, or a
+	// soft validation error with only an inline message) has nothing
+	// precious to protect, so it still returns a plain 500.
 	composePage := func(
 		w http.ResponseWriter, r *http.Request, member *household.Member, status int,
 		kioskReveal *components.KioskActivationReveal,
@@ -498,15 +532,25 @@ func registerSettingsPage(
 		mfaRecoveryReveal *components.MFARecoveryCodesReveal,
 		mfaErr string,
 	) {
+		hasReveal := kioskReveal != nil || mfaEnrollReveal != nil || mfaRecoveryReveal != nil
+
 		kioskView, showKiosk, err := settingsHandlers.SectionView(r.Context(), member, kioskReveal)
 		if err != nil {
 			logger.ErrorContext(r.Context(), "settings: build kiosk section", "error", err)
+			if hasReveal {
+				renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+				return
+			}
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		mfaView, err := mfaHandlers.SectionView(r.Context(), member, mfaEnrollReveal, mfaRecoveryReveal, mfaErr)
 		if err != nil {
 			logger.ErrorContext(r.Context(), "settings: build mfa section", "error", err)
+			if hasReveal {
+				renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+				return
+			}
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -518,6 +562,15 @@ func registerSettingsPage(
 		}
 		if err := render.Render(r.Context(), w, status, layoutFor(r)(member)(components.SettingsPage(view))); err != nil {
 			logger.ErrorContext(r.Context(), "settings: render page", "error", err)
+			// render.Render buffers the component into memory first and
+			// only writes to w on success (see its doc), so nothing has
+			// been committed to w yet here — it is still safe to write the
+			// fallback response instead of the half-rendered page.
+			if hasReveal {
+				renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 	}
 
@@ -558,10 +611,15 @@ func registerSettingsPage(
 	// MFA section mutations (any member acts on their own enrollment; the
 	// admin reset is owner-only, enforced inside mfaHandlers).
 	mux.Handle("POST /settings/mfa/enroll", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		member, reveal, ok := mfaHandlers.Enroll(w, r)
+		member, reveal, ok := mfaHandlers.Enroll(w, r, settingsPath)
 		if !ok {
 			return
 		}
+		// This response reveals the enrollment secret (QR + manual-entry
+		// key): it must never be cached by a shared proxy or stored in the
+		// browser's disk cache, mirroring the kiosk activation code and MFA
+		// recovery code reveals below.
+		w.Header().Set("Cache-Control", "no-store")
 		composePage(w, r, member, http.StatusOK, nil, reveal, nil, "")
 	})))
 	mux.Handle("POST /settings/mfa/confirm", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
