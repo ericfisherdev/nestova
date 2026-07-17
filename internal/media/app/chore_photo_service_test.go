@@ -612,6 +612,14 @@ func TestChoreProofPhotoService_OpenBytes_CrossHouseholdRejected(t *testing.T) {
 	if !errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
 		t.Errorf("OpenBytes(cross-household) = %v, want ErrTaskInstancePhotoNotFound", err)
 	}
+	// OpenBytes' only PhotoStore call is Open (never Put — this is a read
+	// path); ownedPhoto must reject the mismatch BEFORE store.Open is ever
+	// reached, so store.puts alone (always 0 on a read path regardless of
+	// whether ownership was checked) would not actually prove the
+	// short-circuit — openCalls is the call that matters here.
+	if store.openCalls != 0 {
+		t.Errorf("openCalls = %d, want 0 (cross-household rejection must never reach PhotoStore.Open)", store.openCalls)
+	}
 	if store.puts != 0 {
 		t.Error("cross-household rejection must never reach PhotoStore")
 	}

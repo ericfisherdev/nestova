@@ -828,6 +828,11 @@ func proofPhotoSection(row TaskRow) templ.Component {
 // input's own (invisible) focus outline would never show. Mirrors the
 // identical focus-within:ring pattern NES-124's uploadDropzone label
 // already established for the same sr-only-input-inside-a-label shape.
+//
+// The captured-photo <img> carries loading="lazy": a chore row renders its
+// proof-photo section unconditionally once the parent task's policy
+// requires it, so a long /tasks list with many photo-policy rows would
+// otherwise fetch every before/after image up front, off-screen or not.
 func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -856,7 +861,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs("proof-photo-slot-" + kind)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 366, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 371, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -874,7 +879,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(rawURL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 369, Col: 16}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 374, Col: 16}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 			if templ_7745c5c3_Err != nil {
@@ -887,20 +892,20 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(label + " photo")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 370, Col: 26}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 375, Col: 26}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "\" class=\"h-20 w-20 rounded-control object-cover shadow-warm\" data-testid=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 58, "\" loading=\"lazy\" class=\"h-20 w-20 rounded-control object-cover shadow-warm\" data-testid=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs("proof-photo-image-" + kind)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 372, Col: 45}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 378, Col: 45}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {
@@ -913,7 +918,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 374, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 380, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 			if templ_7745c5c3_Err != nil {
@@ -931,7 +936,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var34 templ.SafeURL
 			templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(fmt.Sprintf("/tasks/%s/photos", instanceID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 378, Col: 71}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 384, Col: 71}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 			if templ_7745c5c3_Err != nil {
@@ -944,7 +949,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 382, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 388, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
@@ -957,7 +962,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var36 string
 			templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(kind)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 383, Col: 49}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 389, Col: 49}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 			if templ_7745c5c3_Err != nil {
@@ -970,7 +975,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 386, Col: 18}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 392, Col: 18}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -983,7 +988,7 @@ func proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) templ.Com
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs("proof-photo-input-" + kind)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 394, Col: 47}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/tasks.templ`, Line: 400, Col: 47}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {

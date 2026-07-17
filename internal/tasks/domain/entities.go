@@ -48,6 +48,15 @@ type RecurringTask struct {
 	// cached on the instance — so an edit to a task's policy takes effect
 	// immediately for every open instance; see the 00030 migration's doc
 	// for the full join-vs-copy rationale.
+	//
+	// Inactive exemption: PhotoPolicy is only ENFORCED while Active is true
+	// — see TaskService.CompleteInstance's doc. Archiving a task (Active =
+	// false) waives its photo requirement for whatever open instances
+	// remain: a family that archives a chore no longer cares about proof
+	// of it, and the /tasks row builder stops rendering ANY metadata
+	// (including capture controls) for an inactive parent's rows, so
+	// continuing to gate completion on a photo the member has no on-screen
+	// way to capture would be a dead end, not a safeguard.
 	PhotoPolicy PhotoPolicy
 	// Points awarded to the member who completes an instance of this task.
 	Points int

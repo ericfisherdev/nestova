@@ -362,12 +362,18 @@ templ proofPhotoSection(row TaskRow) {
 // input's own (invisible) focus outline would never show. Mirrors the
 // identical focus-within:ring pattern NES-124's uploadDropzone label
 // already established for the same sr-only-input-inside-a-label shape.
+//
+// The captured-photo <img> carries loading="lazy": a chore row renders its
+// proof-photo section unconditionally once the parent task's policy
+// requires it, so a long /tasks list with many photo-policy rows would
+// otherwise fetch every before/after image up front, off-screen or not.
 templ proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) {
 	<div class="flex flex-col items-center gap-1" data-testid={ "proof-photo-slot-" + kind }>
 		if rawURL != "" {
 			<img
 				src={ rawURL }
 				alt={ label + " photo" }
+				loading="lazy"
 				class="h-20 w-20 rounded-control object-cover shadow-warm"
 				data-testid={ "proof-photo-image-" + kind }
 			/>

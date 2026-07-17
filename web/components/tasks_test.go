@@ -178,6 +178,30 @@ func TestTaskRowItemProofPhotos_BothCapturedRenderSideBySide(t *testing.T) {
 	}
 }
 
+// TestTaskRowItemProofPhotos_PreviewImagesAreLazyLoaded verifies that both
+// captured before/after preview images carry loading="lazy" — a chore row
+// renders its proof-photo section unconditionally whenever the parent
+// task's policy requires it, so a long /tasks list with many such rows
+// must not eagerly fetch every image off-screen.
+func TestTaskRowItemProofPhotos_PreviewImagesAreLazyLoaded(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:        "photo-0000-0000-0007",
+		Title:             "Clean garage",
+		Category:          "chore",
+		DueLabel:          "Jun 20",
+		Status:            "pending",
+		CSRFToken:         "tok-photos",
+		PhotoPolicy:       "before_after",
+		BeforePhotoRawURL: "/tasks/photos/before-id/raw",
+		AfterPhotoRawURL:  "/tasks/photos/after-id/raw",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if got := strings.Count(out, `loading="lazy"`); got != 2 {
+		t.Errorf(`loading="lazy" appears %d times, want 2 (one per preview image): %q`, got, out)
+	}
+}
+
 // TestTaskRowItemProofPhotos_BeforeAfterMissingBoth_ShowsOnlyBeforeCapture
 // verifies that a before_after-policy row with no photos yet shows a
 // capture affordance for "before" only — the "after" slot stays hidden
