@@ -796,21 +796,45 @@ func (r *RewardPostgresRepository) ListPendingRedemptions(
 }
 
 // ListMemberRedemptions returns memberID's most recent redemptions —
-// regardless of status — newest first, capped at limit rows: the
-// member-facing "My redemptions" list (NES-127). rr.id breaks ties in the
-// same (descending) direction as created_at, mirroring ListPendingRedemptions'
-// tie-break. Returns an empty slice (not an error) when the member has none.
+// regardless of status — newest first: the member-facing "My redemptions"
+// list (NES-127). Every PENDING redemption is always included, uncapped;
+// only resolved (fulfilled/denied/cancelled) redemptions are capped at limit
+// rows. This split matters because a pending redemption represents points
+// already debited but not yet resolved — the ONLY UI surface where the
+// member can act on it (Cancel) is this list, so a naive single LIMIT across
+// all statuses could let a long-forgotten pending redemption scroll out of
+// view behind newer resolved history, stranding its debited points with no
+// way to cancel it (CodeRabbit finding). Pending count is inherently small
+// at family-appliance scale, so fetching it uncapped is safe. rr.id breaks
+// ties in the same (descending) direction as created_at within each half,
+// mirroring ListPendingRedemptions' tie-break; the outer ORDER BY re-merges
+// both halves by recency, so the combined result still reads as one
+// newest-first feed rather than "pending, then resolved" two blocks.
+// Returns an empty slice (not an error) when the member has none.
 func (r *RewardPostgresRepository) ListMemberRedemptions(
 	ctx context.Context,
 	householdID household.HouseholdID,
 	memberID household.MemberID,
 	limit int,
 ) ([]domain.RedemptionDetail, error) {
-	q := redemptionDetailSelectSQL + `
-		 WHERE rr.household_id = $1
-		   AND rr.member_id    = $2
-		 ORDER BY rr.created_at DESC, rr.id DESC
-		 LIMIT $3`
+	q := `
+		WITH pending AS (
+			` + redemptionDetailSelectSQL + `
+			 WHERE rr.household_id = $1
+			   AND rr.member_id    = $2
+			   AND rr.status       = 'pending'
+		), resolved AS (
+			` + redemptionDetailSelectSQL + `
+			 WHERE rr.household_id = $1
+			   AND rr.member_id    = $2
+			   AND rr.status      != 'pending'
+			 ORDER BY rr.created_at DESC, rr.id DESC
+			 LIMIT $3
+		)
+		SELECT * FROM pending
+		 UNION ALL
+		SELECT * FROM resolved
+		 ORDER BY created_at DESC, id DESC`
 	rows, err := r.dbtx.Query(ctx, q, householdID.String(), memberID.String(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list member redemptions: %w", err)

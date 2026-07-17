@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io/fs"
 	"math"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
 )
 
@@ -220,14 +222,43 @@ func TestUpTo_BackfillsPreExistingRequestedRows(t *testing.T) {
 	}
 
 	// The NEW CHECK constraint must be the one actually enforced now: the
-	// old, pre-rename spelling 'requested' must be rejected.
-	if _, err := db.Exec(`UPDATE reward_redemption SET status = 'requested' WHERE id = $1`, redemptionID); err == nil {
-		t.Error("UPDATE to 'requested' succeeded after migration, want a CHECK constraint violation")
+	// old, pre-rename spelling 'requested' must be rejected — and specifically
+	// by reward_redemption_status_check (SQLSTATE 23514), not by some other,
+	// unrelated failure that would make this assertion pass for the wrong
+	// reason, mirroring nes116_postgres_test.go's *pgconn.PgError precedent.
+	_, err = db.Exec(`UPDATE reward_redemption SET status = 'requested' WHERE id = $1`, redemptionID)
+	if err == nil {
+		t.Fatal("UPDATE to 'requested' succeeded after migration, want a CHECK constraint violation")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("UPDATE to 'requested' = %v, want a *pgconn.PgError CHECK violation", err)
+	}
+	if pgErr.Code != "23514" || pgErr.ConstraintName != "reward_redemption_status_check" {
+		t.Errorf("UPDATE to 'requested' = code %s constraint %q, want 23514 on reward_redemption_status_check",
+			pgErr.Code, pgErr.ConstraintName)
 	}
 
 	// The new 'denied' value must be accepted by the new CHECK constraint.
 	if _, err := db.Exec(`UPDATE reward_redemption SET status = 'denied' WHERE id = $1`, redemptionID); err != nil {
 		t.Errorf("UPDATE to 'denied' after migration failed: %v, want success", err)
+	}
+
+	// Denial refunds the redemption's points via a compensating point_ledger
+	// entry (RewardRepository.Deny) — a downgrade must NOT make a denied
+	// redemption look 'requested' (actionable, points still owed) again, or
+	// the pre-NES-127 app could fulfill or re-refund it. Roll back 00025 and
+	// confirm it folds to 'cancelled' instead (CodeRabbit finding, NES-127).
+	if err := Down(ctx, dsn); err != nil {
+		t.Fatalf("Down (roll back 00025): %v", err)
+	}
+	var postDownStatus string
+	if err := db.QueryRow(`SELECT status FROM reward_redemption WHERE id = $1`, redemptionID).Scan(&postDownStatus); err != nil {
+		t.Fatalf("read post-down redemption status: %v", err)
+	}
+	if postDownStatus != "cancelled" {
+		t.Errorf("status after Down = %q, want %q (a denied/refunded redemption must not look actionable again)",
+			postDownStatus, "cancelled")
 	}
 }
 

@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -14,6 +15,28 @@ import (
 // fakeRedemptionFulfiller — in-memory implementation of app.RedemptionFulfiller
 // ---------------------------------------------------------------------------
 
+// fulfillCall, denyCall, and cancelCall record one invocation's full argument
+// set — not just a count — so a test can assert the service passed through
+// the exact household, redemption, and (for Cancel) member id it was given,
+// not merely that the method was called some number of times (CodeRabbit
+// finding, NES-127 round 4).
+type fulfillCall struct {
+	householdID household.HouseholdID
+	id          domain.RewardRedemptionID
+}
+
+type denyCall struct {
+	householdID household.HouseholdID
+	id          domain.RewardRedemptionID
+	reason      string
+}
+
+type cancelCall struct {
+	householdID household.HouseholdID
+	id          domain.RewardRedemptionID
+	memberID    household.MemberID
+}
+
 // fakeRedemptionFulfiller is a configurable fake that covers every branch of
 // RedemptionService without a database.
 type fakeRedemptionFulfiller struct {
@@ -22,18 +45,18 @@ type fakeRedemptionFulfiller struct {
 	// fulfillErr/denyErr/cancelErr override the respective method's error
 	// return when non-nil.
 	fulfillErr, denyErr, cancelErr error
-	// fulfillCalls/denyReasons/cancelCalls record arguments for assertion.
-	fulfillCalls int
-	denyReasons  []string
-	cancelCalls  int
+	// fulfillCalls/denyCalls/cancelCalls record every invocation's arguments.
+	fulfillCalls []fulfillCall
+	denyCalls    []denyCall
+	cancelCalls  []cancelCall
 }
 
 func (f *fakeRedemptionFulfiller) Fulfill(
 	_ context.Context,
-	_ household.HouseholdID,
-	_ domain.RewardRedemptionID,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
 ) (domain.ResolvedRedemption, error) {
-	f.fulfillCalls++
+	f.fulfillCalls = append(f.fulfillCalls, fulfillCall{householdID: householdID, id: id})
 	if f.fulfillErr != nil {
 		return domain.ResolvedRedemption{}, f.fulfillErr
 	}
@@ -42,11 +65,11 @@ func (f *fakeRedemptionFulfiller) Fulfill(
 
 func (f *fakeRedemptionFulfiller) Deny(
 	_ context.Context,
-	_ household.HouseholdID,
-	_ domain.RewardRedemptionID,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
 	reason string,
 ) (domain.ResolvedRedemption, error) {
-	f.denyReasons = append(f.denyReasons, reason)
+	f.denyCalls = append(f.denyCalls, denyCall{householdID: householdID, id: id, reason: reason})
 	if f.denyErr != nil {
 		return domain.ResolvedRedemption{}, f.denyErr
 	}
@@ -55,11 +78,11 @@ func (f *fakeRedemptionFulfiller) Deny(
 
 func (f *fakeRedemptionFulfiller) Cancel(
 	_ context.Context,
-	_ household.HouseholdID,
-	_ domain.RewardRedemptionID,
-	_ household.MemberID,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
+	memberID household.MemberID,
 ) (domain.ResolvedRedemption, error) {
-	f.cancelCalls++
+	f.cancelCalls = append(f.cancelCalls, cancelCall{householdID: householdID, id: id, memberID: memberID})
 	if f.cancelErr != nil {
 		return domain.ResolvedRedemption{}, f.cancelErr
 	}
@@ -99,13 +122,16 @@ func TestNewRedemptionService_NilLogger_ReturnsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRedemptionService_Fulfill_Success verifies that a successful fulfil
+// passes the exact household/redemption ids through to the repository, and
 // enqueues exactly one "reward fulfilled" notification addressed to the
-// redeeming member.
+// redeeming member whose body names the reward.
 func TestRedemptionService_Fulfill_Success(t *testing.T) {
 	hhID := household.NewHouseholdID()
 	memberID := household.NewMemberID()
+	callHouseholdID := household.NewHouseholdID() // distinct from hhID: scope mix-ups must not pass
+	callRedemptionID := domain.NewRewardRedemptionID()
 	repo := &fakeRedemptionFulfiller{resolved: domain.ResolvedRedemption{
-		RedemptionID: domain.NewRewardRedemptionID(),
+		RedemptionID: domain.NewRewardRedemptionID(), // distinct from callRedemptionID
 		HouseholdID:  hhID,
 		MemberID:     memberID,
 		RewardName:   "Movie night",
@@ -117,12 +143,20 @@ func TestRedemptionService_Fulfill_Success(t *testing.T) {
 		t.Fatalf("NewRedemptionService: %v", err)
 	}
 
-	if err := svc.Fulfill(t.Context(), hhID, domain.NewRewardRedemptionID()); err != nil {
+	if err := svc.Fulfill(t.Context(), callHouseholdID, callRedemptionID); err != nil {
 		t.Fatalf("Fulfill: unexpected error: %v", err)
 	}
-	if repo.fulfillCalls != 1 {
-		t.Errorf("fulfillCalls = %d, want 1", repo.fulfillCalls)
+	if len(repo.fulfillCalls) != 1 {
+		t.Fatalf("fulfillCalls = %d, want 1", len(repo.fulfillCalls))
 	}
+	got := repo.fulfillCalls[0]
+	if got.householdID != callHouseholdID {
+		t.Errorf("Fulfill householdID = %v, want %v", got.householdID, callHouseholdID)
+	}
+	if got.id != callRedemptionID {
+		t.Errorf("Fulfill id = %v, want %v", got.id, callRedemptionID)
+	}
+
 	if len(enqueuer.notifications) != 1 {
 		t.Fatalf("notifications enqueued = %d, want 1", len(enqueuer.notifications))
 	}
@@ -132,6 +166,9 @@ func TestRedemptionService_Fulfill_Success(t *testing.T) {
 	}
 	if n.HouseholdID != hhID {
 		t.Errorf("notification HouseholdID = %v, want %v", n.HouseholdID, hhID)
+	}
+	if !strings.Contains(n.Body, "Movie night") {
+		t.Errorf("notification Body = %q, want it to mention the reward name %q", n.Body, "Movie night")
 	}
 }
 
@@ -159,14 +196,17 @@ func TestRedemptionService_Fulfill_ErrorPropagated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRedemptionService_Deny_Success verifies that a successful denial
-// enqueues a notification that mentions the reason, and passes the reason
-// through to the repository unchanged.
+// passes the exact household/redemption ids and reason through to the
+// repository unchanged, and enqueues a notification whose body names both
+// the reward and the denial reason.
 func TestRedemptionService_Deny_Success(t *testing.T) {
 	hhID := household.NewHouseholdID()
 	memberID := household.NewMemberID()
 	reason := "out of stock"
+	callHouseholdID := household.NewHouseholdID() // distinct from hhID: scope mix-ups must not pass
+	callRedemptionID := domain.NewRewardRedemptionID()
 	repo := &fakeRedemptionFulfiller{resolved: domain.ResolvedRedemption{
-		RedemptionID: domain.NewRewardRedemptionID(),
+		RedemptionID: domain.NewRewardRedemptionID(), // distinct from callRedemptionID
 		HouseholdID:  hhID,
 		MemberID:     memberID,
 		RewardName:   "Comic book",
@@ -179,18 +219,35 @@ func TestRedemptionService_Deny_Success(t *testing.T) {
 		t.Fatalf("NewRedemptionService: %v", err)
 	}
 
-	if err := svc.Deny(t.Context(), hhID, domain.NewRewardRedemptionID(), reason); err != nil {
+	if err := svc.Deny(t.Context(), callHouseholdID, callRedemptionID, reason); err != nil {
 		t.Fatalf("Deny: unexpected error: %v", err)
 	}
-	if len(repo.denyReasons) != 1 || repo.denyReasons[0] != reason {
-		t.Errorf("denyReasons = %v, want [%q]", repo.denyReasons, reason)
+	if len(repo.denyCalls) != 1 {
+		t.Fatalf("denyCalls = %d, want 1", len(repo.denyCalls))
 	}
+	got := repo.denyCalls[0]
+	if got.householdID != callHouseholdID {
+		t.Errorf("Deny householdID = %v, want %v", got.householdID, callHouseholdID)
+	}
+	if got.id != callRedemptionID {
+		t.Errorf("Deny id = %v, want %v", got.id, callRedemptionID)
+	}
+	if got.reason != reason {
+		t.Errorf("Deny reason = %q, want %q", got.reason, reason)
+	}
+
 	if len(enqueuer.notifications) != 1 {
 		t.Fatalf("notifications enqueued = %d, want 1", len(enqueuer.notifications))
 	}
 	n := enqueuer.notifications[0]
 	if n.MemberID == nil || *n.MemberID != memberID {
 		t.Errorf("notification MemberID = %v, want %v", n.MemberID, memberID)
+	}
+	if !strings.Contains(n.Body, "Comic book") {
+		t.Errorf("notification Body = %q, want it to mention the reward name %q", n.Body, "Comic book")
+	}
+	if !strings.Contains(n.Body, reason) {
+		t.Errorf("notification Body = %q, want it to mention the denial reason %q", n.Body, reason)
 	}
 }
 
@@ -218,13 +275,17 @@ func TestRedemptionService_Deny_ErrorPropagated(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRedemptionService_Cancel_Success_NoNotification verifies that a
-// successful cancel enqueues NO notification — the member already knows,
-// since they just performed the action themselves.
+// successful cancel passes the exact household/redemption/member ids through
+// to the repository, and enqueues NO notification — the member already
+// knows, since they just performed the action themselves.
 func TestRedemptionService_Cancel_Success_NoNotification(t *testing.T) {
 	hhID := household.NewHouseholdID()
 	memberID := household.NewMemberID()
+	callHouseholdID := household.NewHouseholdID() // distinct from hhID: scope mix-ups must not pass
+	callRedemptionID := domain.NewRewardRedemptionID()
+	callMemberID := household.NewMemberID() // distinct from memberID: scope mix-ups must not pass
 	repo := &fakeRedemptionFulfiller{resolved: domain.ResolvedRedemption{
-		RedemptionID: domain.NewRewardRedemptionID(),
+		RedemptionID: domain.NewRewardRedemptionID(), // distinct from callRedemptionID
 		HouseholdID:  hhID,
 		MemberID:     memberID,
 		Status:       domain.RedemptionCancelled,
@@ -235,11 +296,21 @@ func TestRedemptionService_Cancel_Success_NoNotification(t *testing.T) {
 		t.Fatalf("NewRedemptionService: %v", err)
 	}
 
-	if err := svc.Cancel(t.Context(), hhID, domain.NewRewardRedemptionID(), memberID); err != nil {
+	if err := svc.Cancel(t.Context(), callHouseholdID, callRedemptionID, callMemberID); err != nil {
 		t.Fatalf("Cancel: unexpected error: %v", err)
 	}
-	if repo.cancelCalls != 1 {
-		t.Errorf("cancelCalls = %d, want 1", repo.cancelCalls)
+	if len(repo.cancelCalls) != 1 {
+		t.Fatalf("cancelCalls = %d, want 1", len(repo.cancelCalls))
+	}
+	got := repo.cancelCalls[0]
+	if got.householdID != callHouseholdID {
+		t.Errorf("Cancel householdID = %v, want %v", got.householdID, callHouseholdID)
+	}
+	if got.id != callRedemptionID {
+		t.Errorf("Cancel id = %v, want %v", got.id, callRedemptionID)
+	}
+	if got.memberID != callMemberID {
+		t.Errorf("Cancel memberID = %v, want %v", got.memberID, callMemberID)
 	}
 	if len(enqueuer.notifications) != 0 {
 		t.Errorf("notifications enqueued = %d, want 0 (cancel never notifies)", len(enqueuer.notifications))

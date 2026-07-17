@@ -156,6 +156,7 @@ func TestDenyRedemptionSuccessPassesReasonAndRedirects(t *testing.T) {
 	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
 
 	redemptionID := tasksdomain.NewRewardRedemptionID()
+	const wantReason = "out of stock"
 	form := "csrf_token=" + csrfToken + "&reason=" + "out+of+stock"
 	req := httptest.NewRequest(http.MethodPost, "/admin/rewards/redemptions/"+redemptionID.String()+"/deny", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -169,8 +170,15 @@ func TestDenyRedemptionSuccessPassesReasonAndRedirects(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "/admin/rewards" {
 		t.Errorf("Location = %q, want /admin/rewards", loc)
 	}
-	if len(repo.denyCalls) != 1 || repo.denyCalls[0] != redemptionID {
-		t.Fatalf("Deny calls = %v, want [%v]", repo.denyCalls, redemptionID)
+	if len(repo.denyCalls) != 1 {
+		t.Fatalf("Deny calls = %d, want 1", len(repo.denyCalls))
+	}
+	got := repo.denyCalls[0]
+	if got.id != redemptionID {
+		t.Errorf("Deny id = %v, want %v", got.id, redemptionID)
+	}
+	if got.reason != wantReason {
+		t.Errorf("Deny reason = %q, want %q (the submitted form value must reach the service unchanged)", got.reason, wantReason)
 	}
 }
 
@@ -220,8 +228,18 @@ func TestCancelRedemptionAnyMemberSucceeds(t *testing.T) {
 	if loc := rec.Header().Get("Location"); loc != "/rewards" {
 		t.Errorf("Location = %q, want /rewards", loc)
 	}
-	if len(repo.cancelCalls) != 1 || repo.cancelCalls[0] != redemptionID {
-		t.Fatalf("Cancel calls = %v, want [%v]", repo.cancelCalls, redemptionID)
+	if len(repo.cancelCalls) != 1 {
+		t.Fatalf("Cancel calls = %d, want 1", len(repo.cancelCalls))
+	}
+	got := repo.cancelCalls[0]
+	if got.id != redemptionID {
+		t.Errorf("Cancel id = %v, want %v", got.id, redemptionID)
+	}
+	// The cancelling member id must come from the AUTHENTICATED session
+	// (child.ID), never from anything the client could submit in the
+	// request body — Cancel has no member_id form field at all.
+	if got.memberID != child.ID {
+		t.Errorf("Cancel memberID = %v, want %v (the authenticated member)", got.memberID, child.ID)
 	}
 }
 
