@@ -527,33 +527,47 @@ func TestRewardsPageShowsNeedMoreBadgeWhenUnaffordable(t *testing.T) {
 }
 
 func TestRewardsPageShowsRedeemButtonWhenAffordable(t *testing.T) {
-	member := testMember()
-	reward := &tasksdomain.Reward{
-		ID:          tasksdomain.NewRewardID(),
-		HouseholdID: member.HouseholdID,
-		Name:        "Cheap prize",
-		CostPoints:  10,
-		Active:      true,
+	// The affordability contract is balance >= CostPoints: an exact balance
+	// must redeem, so both the above-cost and exactly-at-cost boundaries are
+	// covered (a regression to a strict > would only fail the second case).
+	cases := []struct {
+		name    string
+		balance int
+	}{
+		{"balance above cost", 25},
+		{"balance exactly at cost", 10},
 	}
-	handler, sm := buildGamificationTestHandlerWithLedger(
-		&configurableRewardRepo{reward: reward}, configurableLedgerRepo{balance: 25}, member,
-	)
-	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			member := testMember()
+			reward := &tasksdomain.Reward{
+				ID:          tasksdomain.NewRewardID(),
+				HouseholdID: member.HouseholdID,
+				Name:        "Cheap prize",
+				CostPoints:  10,
+				Active:      true,
+			}
+			handler, sm := buildGamificationTestHandlerWithLedger(
+				&configurableRewardRepo{reward: reward}, configurableLedgerRepo{balance: tc.balance}, member,
+			)
+			cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
-	req := httptest.NewRequest(http.MethodGet, "/rewards", nil)
-	req.Header.Set("Cookie", cookie)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+			req := httptest.NewRequest(http.MethodGet, "/rewards", nil)
+			req.Header.Set("Cookie", cookie)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if strings.Contains(body, "You need") {
-		t.Errorf("rewards page shows a need-more badge for an affordable reward: %q", body)
-	}
-	if !strings.Contains(body, `action="/rewards/`+reward.ID.String()+`/redeem"`) {
-		t.Errorf("rewards page missing an active redeem form for an affordable reward: %q", body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "You need") {
+				t.Errorf("rewards page shows a need-more badge for an affordable reward (balance %d): %q", tc.balance, body)
+			}
+			if !strings.Contains(body, `action="/rewards/`+reward.ID.String()+`/redeem"`) {
+				t.Errorf("rewards page missing an active redeem form for an affordable reward (balance %d): %q", tc.balance, body)
+			}
+		})
 	}
 }
 
@@ -562,20 +576,36 @@ func TestRewardsPageShowsRedeemButtonWhenAffordable(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRewardsPageShowsManageLinkForParent(t *testing.T) {
-	adult := &household.Member{
-		ID: household.NewMemberID(), HouseholdID: household.NewHouseholdID(),
-		DisplayName: "Alice", Role: household.RoleAdult, Color: household.ColorSage,
+	// "Parent" means owner OR adult — both roles must see the link so an
+	// accidental single-role gate cannot pass unnoticed.
+	cases := []struct {
+		name string
+		role household.Role
+	}{
+		{"adult", household.RoleAdult},
+		{"owner", household.RoleOwner},
 	}
-	handler, sm := buildGamificationTestHandler(&configurableRewardRepo{}, adult)
-	cookie, _ := seedAuthedSession(t, handler, sm, adult.ID.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := &household.Member{
+				ID: household.NewMemberID(), HouseholdID: household.NewHouseholdID(),
+				DisplayName: "Alice", Role: tc.role, Color: household.ColorSage,
+			}
+			handler, sm := buildGamificationTestHandler(&configurableRewardRepo{}, parent)
+			cookie, _ := seedAuthedSession(t, handler, sm, parent.ID.String())
 
-	req := httptest.NewRequest(http.MethodGet, "/rewards", nil)
-	req.Header.Set("Cookie", cookie)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+			req := httptest.NewRequest(http.MethodGet, "/rewards", nil)
+			req.Header.Set("Cookie", cookie)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-	if !strings.Contains(rec.Body.String(), `href="/admin/rewards"`) {
-		t.Errorf("rewards page missing Manage rewards link for a parent: %q", rec.Body.String())
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `href="/admin/rewards"`) {
+				t.Errorf("rewards page missing Manage rewards link for %s: %q", tc.role, rec.Body.String())
+			}
+		})
 	}
 }
 
