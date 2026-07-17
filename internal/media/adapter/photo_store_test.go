@@ -10,8 +10,11 @@ import (
 	"image/png"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/media/adapter"
@@ -96,7 +99,7 @@ func TestPutStoresAndOpensAndDeletes(t *testing.T) {
 	hh := household.NewHouseholdID()
 	want := pngBytes(t)
 
-	result, err := s.Put(context.Background(), hh, bytes.NewReader(want))
+	result, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(want))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -139,11 +142,11 @@ func TestPutContentAddressedDeduplicates(t *testing.T) {
 	s := newStore(t, 10<<20)
 	hh := household.NewHouseholdID()
 	data := jpegBytes(t)
-	r1, err := s.Put(context.Background(), hh, bytes.NewReader(data))
+	r1, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("first Put: %v", err)
 	}
-	r2, err := s.Put(context.Background(), hh, bytes.NewReader(data))
+	r2, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("second Put: %v", err)
 	}
@@ -176,7 +179,7 @@ func TestPutRejections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := tc.store.Put(context.Background(), hh, bytes.NewReader(tc.data)); !errors.Is(err, tc.wantErr) {
+			if _, err := tc.store.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(tc.data)); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Put error = %v, want %v", err, tc.wantErr)
 			}
 		})
@@ -192,7 +195,7 @@ func TestPutRejectionLeavesNoPartialFile(t *testing.T) {
 		t.Fatalf("NewLocalPhotoStore: %v", err)
 	}
 	hh := household.NewHouseholdID()
-	if _, err := s.Put(context.Background(), hh, bytes.NewReader(pngBytes(t))); !errors.Is(err, domain.ErrPhotoTooLarge) {
+	if _, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(pngBytes(t))); !errors.Is(err, domain.ErrPhotoTooLarge) {
 		t.Fatalf("Put error = %v, want ErrPhotoTooLarge", err)
 	}
 
@@ -235,7 +238,7 @@ func TestPutStreamsWithoutBufferingWholeFile(t *testing.T) {
 	big := largeJPEGBytes(t, 900, 900)
 	tracker := &maxChunkReader{r: bytes.NewReader(big)}
 
-	if _, err := s.Put(context.Background(), hh, tracker); err != nil {
+	if _, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, tracker); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	if tracker.maxRequested == 0 {
@@ -260,5 +263,157 @@ func TestResolveRejectsTraversal(t *testing.T) {
 	s := newStore(t, 10<<20)
 	if _, err := s.Open(context.Background(), domain.StorageRef("../../etc/passwd")); !errors.Is(err, domain.ErrInvalidPhoto) {
 		t.Fatalf("traversal ref error = %v, want ErrInvalidPhoto", err)
+	}
+}
+
+// TestPutNamespacesKeyByClass covers AC2: identical bytes uploaded under
+// different domain.PhotoClass values must land under different storage
+// prefixes, so a chore-proof photo (or a reward image) can never collide
+// with, or be reinterpreted as, an album photo even when the content is
+// byte-identical.
+func TestPutNamespacesKeyByClass(t *testing.T) {
+	s := newStore(t, 10<<20)
+	hh := household.NewHouseholdID()
+	data := jpegBytes(t)
+
+	album, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Put(album): %v", err)
+	}
+	choreProof, err := s.Put(context.Background(), hh, domain.PhotoClassChoreProof, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Put(choreProof): %v", err)
+	}
+	rewardImage, err := s.Put(context.Background(), hh, domain.PhotoClassRewardImage, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Put(rewardImage): %v", err)
+	}
+
+	if album.Ref == choreProof.Ref || album.Ref == rewardImage.Ref || choreProof.Ref == rewardImage.Ref {
+		t.Fatalf("identical bytes under different classes must not share a ref: album=%s choreProof=%s rewardImage=%s", album.Ref, choreProof.Ref, rewardImage.Ref)
+	}
+	// The content hash itself is class-independent (it is a property of the
+	// bytes, not of where they are namespaced) — only the ref's prefix differs.
+	if album.ContentHash != choreProof.ContentHash || album.ContentHash != rewardImage.ContentHash {
+		t.Fatalf("identical bytes produced different content hashes across classes: album=%s choreProof=%s rewardImage=%s", album.ContentHash, choreProof.ContentHash, rewardImage.ContentHash)
+	}
+
+	cases := []struct {
+		name   string
+		ref    string
+		prefix string
+	}{
+		{"album", album.Ref.String(), "photos"},
+		{"chore proof", choreProof.Ref.String(), "chore-photos"},
+		{"reward image", rewardImage.Ref.String(), "reward-images"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := "households/" + hh.String() + "/" + tc.prefix + "/"
+			if !strings.HasPrefix(tc.ref, want) {
+				t.Fatalf("ref %q does not start with %q", tc.ref, want)
+			}
+		})
+	}
+}
+
+// TestPutRejectsUnknownClass covers Put's fail-fast contract for an
+// unrecognized domain.PhotoClass: it must reject before writing anything,
+// leaving no partial file behind (mirroring
+// TestPutRejectionLeavesNoPartialFile's shape for the oversize case).
+func TestPutRejectsUnknownClass(t *testing.T) {
+	root := t.TempDir()
+	s, err := adapter.NewLocalPhotoStore(root, 10<<20)
+	if err != nil {
+		t.Fatalf("NewLocalPhotoStore: %v", err)
+	}
+	hh := household.NewHouseholdID()
+	unknownClass := domain.PhotoClass(99)
+
+	if _, err := s.Put(context.Background(), hh, unknownClass, bytes.NewReader(jpegBytes(t))); err == nil {
+		t.Fatal("Put with an unknown PhotoClass must fail")
+	}
+
+	var files []string
+	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walk store root: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("rejected upload left files behind in the store root: %v", files)
+	}
+}
+
+// TestOpenAndDeleteServeLegacyRef covers AC4: a photo stored before the
+// class-namespaced key scheme landed (a bare <household>/<aa>/<hash>.<ext>
+// ref, with no "households/" or class prefix) must remain servable —
+// LocalPhotoStore treats ref as an opaque relative path in Open/Delete and
+// never assumes its shape, so a pre-existing file at the legacy layout is
+// found exactly as it always was.
+func TestOpenAndDeleteServeLegacyRef(t *testing.T) {
+	root := t.TempDir()
+	s, err := adapter.NewLocalPhotoStore(root, 10<<20)
+	if err != nil {
+		t.Fatalf("NewLocalPhotoStore: %v", err)
+	}
+	hh := household.NewHouseholdID()
+	want := jpegBytes(t)
+	legacyRef := domain.StorageRef(filepath.ToSlash(filepath.Join(hh.String(), "de", "deadbeef.jpg")))
+
+	legacyPath := filepath.Join(root, filepath.FromSlash(legacyRef.String()))
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("create legacy dir: %v", err)
+	}
+	if err := os.WriteFile(legacyPath, want, 0o644); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+
+	rc, err := s.Open(context.Background(), legacyRef)
+	if err != nil {
+		t.Fatalf("Open(legacy ref): %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Open(legacy ref) returned %d bytes, want %d", len(got), len(want))
+	}
+
+	if err := s.Delete(context.Background(), legacyRef); err != nil {
+		t.Fatalf("Delete(legacy ref): %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Delete(legacy ref) did not remove the file, stat err = %v", err)
+	}
+}
+
+// TestURL covers the PhotoStore.URL contract: a stored ref resolves to a
+// non-empty locator, and an unknown ref reports ErrPhotoNotFound — the same
+// not-found contract as Open, since URL confirms existence the same way.
+func TestURL(t *testing.T) {
+	s := newStore(t, 10<<20)
+	hh := household.NewHouseholdID()
+
+	stored, err := s.Put(context.Background(), hh, domain.PhotoClassAlbum, bytes.NewReader(jpegBytes(t)))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, err := s.URL(context.Background(), stored.Ref, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("URL: %v", err)
+	}
+	if got == "" {
+		t.Fatal("URL returned an empty locator for a stored ref")
+	}
+
+	if _, err := s.URL(context.Background(), domain.StorageRef("nope/aa/deadbeef.jpg"), 5*time.Minute); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("URL(unknown) error = %v, want ErrPhotoNotFound", err)
 	}
 }
