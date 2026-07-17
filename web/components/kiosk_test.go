@@ -42,18 +42,26 @@ func extractTagByTestID(html, testID, tag string) string {
 	return extractTag(html, `data-testid="`+testID+`"`, tag)
 }
 
-// assertKioskContentPollWiring asserts that html's #wrapperID div carries the
-// complete NES-130 self-poll wiring: the wrapper id plus all four htmx
-// attributes (hx-get, hx-trigger, hx-target, hx-swap). Scoped via extractTag
-// to the wrapper element itself (rather than a bare strings.Contains(html,
-// ...) over the whole page) so an attribute that drifted onto some other
-// element could not accidentally satisfy the check.
+// assertKioskContentPollWiring asserts that html's #wrapperID div's OWN
+// opening tag carries the complete NES-130 self-poll wiring: the wrapper id
+// plus all four htmx attributes (hx-get, hx-trigger, hx-target, hx-swap).
+// extractTag alone is not narrow enough here: every kiosk tab's wrapper
+// contains nested divs, so extractTag's "first matching closing tag" is a
+// DESCENDANT's "</div>", not the wrapper's own — scanning that whole range
+// would let an attribute that drifted onto a descendant element satisfy a
+// check meant for the wrapper itself. Slicing at the wrapper's own first '>'
+// rules that out.
 func assertKioskContentPollWiring(t *testing.T, html, wrapperID, contentRoute string) {
 	t.Helper()
 	wrapper := extractTag(html, `id="`+wrapperID+`"`, "div")
 	if wrapper == "" {
 		t.Fatalf("could not locate the %s wrapper element in: %q", wrapperID, html)
 	}
+	openTagEnd := strings.Index(wrapper, ">")
+	if openTagEnd < 0 {
+		t.Fatalf("could not locate the end of the %s wrapper's opening tag in: %q", wrapperID, wrapper)
+	}
+	openTag := wrapper[:openTagEnd]
 	for _, want := range []string{
 		`id="` + wrapperID + `"`,
 		`hx-get="` + contentRoute + `"`,
@@ -61,8 +69,8 @@ func assertKioskContentPollWiring(t *testing.T, html, wrapperID, contentRoute st
 		`hx-target="this"`,
 		`hx-swap="outerHTML"`,
 	} {
-		if !strings.Contains(wrapper, want) {
-			t.Errorf("%s wrapper missing content-poll wiring %q: %q", wrapperID, want, wrapper)
+		if !strings.Contains(openTag, want) {
+			t.Errorf("%s wrapper opening tag missing content-poll wiring %q: %q", wrapperID, want, openTag)
 		}
 	}
 }
