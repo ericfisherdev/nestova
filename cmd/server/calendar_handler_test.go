@@ -137,11 +137,11 @@ func buildCalendarTestHandler(t *testing.T, member *household.Member, repo calen
 
 	recurringRepo := fakeRecurringTaskRepo{}
 	instanceRepo := &fakeTaskInstanceRepo{}
-	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo)
+	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := buildGroceryHandlers(newGroceryFakes(), householdRepo, sm, logger)
 

@@ -79,6 +79,12 @@ type fakeTaskInstanceRepo struct {
 	getErr        error
 	getCalls      int
 	getErrOnCall  int
+	// listByHousehold (NES-120), when non-nil, is filtered by status and
+	// returned by ListByHousehold — used by tests that render a full
+	// /tasks list of multiple instances (e.g. asserting a single batched
+	// photo-policy query). The zero value preserves every other test's
+	// existing "always empty" behavior.
+	listByHousehold []*tasksdomain.TaskInstance
 }
 
 func (f *fakeTaskInstanceRepo) Insert(_ context.Context, _ *tasksdomain.TaskInstance) error {
@@ -99,8 +105,17 @@ func (f *fakeTaskInstanceRepo) Get(_ context.Context, _ household.HouseholdID, _
 	return nil, tasksdomain.ErrInstanceNotFound
 }
 
-func (f *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, _ household.HouseholdID, _ tasksdomain.InstanceStatus, _, _ time.Time) ([]*tasksdomain.TaskInstance, error) {
-	return nil, nil
+func (f *fakeTaskInstanceRepo) ListByHousehold(_ context.Context, _ household.HouseholdID, status tasksdomain.InstanceStatus, _, _ time.Time) ([]*tasksdomain.TaskInstance, error) {
+	if f.listByHousehold == nil {
+		return nil, nil
+	}
+	var out []*tasksdomain.TaskInstance
+	for _, inst := range f.listByHousehold {
+		if inst.Status == status {
+			out = append(out, inst)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeTaskInstanceRepo) ListStanding(_ context.Context, _ household.HouseholdID) ([]*tasksdomain.TaskInstance, error) {
@@ -185,11 +200,11 @@ func buildTaskTestHandler(instanceRepo *fakeTaskInstanceRepo) http.Handler {
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	recurringRepo := fakeRecurringTaskRepo{}
-	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo)
+	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo, nil)
 	if err != nil {
 		panic("buildTaskTestHandler: " + err.Error())
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 

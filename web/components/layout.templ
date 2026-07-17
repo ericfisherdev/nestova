@@ -32,6 +32,21 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<title>Nestova</title>
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
+			<!-- htmx by default never swaps a 4xx/5xx response into the DOM (see
+			     htmx's own QUIRKS.md, "By Default 4xx & 5xx Responses Do Not
+			     Swap"). NES-120 needs 422 to swap: TaskRowItem's Complete action
+			     re-renders the chore row itself with an inline error message
+			     (WebHandlers.handleCompleteError) when a recurring task's photo
+			     policy blocks completion, at HTTP 422 — the status this app
+			     already uses elsewhere for a validation-style rejection (see
+			     ChoreProofWebHandlers.handleUploadError). This is the exact
+			     configuration htmx's own docs recommend for that case; every
+			     other status keeps its default (no-swap-on-error) behavior, so
+			     this has no effect on any other action's error handling. -->
+			<meta
+				name="htmx-config"
+				content={ `{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}` }
+			/>
 			<script src="/static/js/htmx.min.js" defer></script>
 			<!-- Claim countdown badge for claimed chores (NES-118), and the photo
 			     album's drag-and-drop upload queue (NES-124). Extension scripts that

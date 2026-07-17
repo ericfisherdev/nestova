@@ -45,11 +45,21 @@ type WebHandlers struct {
 	households   household.HouseholdRepository
 	sm           *scs.SessionManager
 	logger       *slog.Logger
+	photoChecker domain.ProofPhotoChecker
 }
 
 // NewWebHandlers constructs a WebHandlers with all required dependencies. It
 // panics when any dependency is nil so misconfigured composition roots are
-// caught at startup rather than at the first HTTP request.
+// caught at startup rather than at the first HTTP request — EXCEPT
+// photoChecker (NES-120), which may be nil: it is used only to populate the
+// chore-proof capture/review section on a row whose parent task's
+// PhotoPolicy is not domain.PhotoPolicyNone (see instanceToRow), so a
+// household with no such task is unaffected by a nil value. A nil checker
+// degrades a row that DOES need it to "no photos captured yet" rather than
+// panicking or erroring the whole page — safe for a read path, unlike
+// TaskService.CompleteInstance's fail-closed behavior on the same
+// misconfiguration (see that method's doc for why the write path cannot
+// degrade the same way).
 func NewWebHandlers(
 	svc *app.TaskService,
 	taskRepo domain.RecurringTaskRepository,
@@ -57,6 +67,7 @@ func NewWebHandlers(
 	households household.HouseholdRepository,
 	sm *scs.SessionManager,
 	logger *slog.Logger,
+	photoChecker domain.ProofPhotoChecker,
 ) *WebHandlers {
 	if svc == nil {
 		panic("tasks/adapter: NewWebHandlers requires a non-nil TaskService")
@@ -83,6 +94,7 @@ func NewWebHandlers(
 		households:   households,
 		sm:           sm,
 		logger:       logger,
+		photoChecker: photoChecker,
 	}
 }
 
@@ -123,14 +135,20 @@ func (h *WebHandlers) List(layoutFn LayoutFunc) http.HandlerFunc {
 // Complete handles POST /tasks/{id}/complete. It verifies the CSRF token,
 // parses the instance id from the path, calls CompleteInstance, and on success
 // returns the updated row for an in-place HTMX swap (or redirects to /tasks for
-// a full navigation) via respondAfterTaskMutation.
+// a full navigation) via respondAfterTaskMutation. A photo-policy rejection
+// (NES-120) is handled separately (handleCompleteError) so it can surface
+// inline on the row instead of as a bare error response — see that method's
+// doc.
 //
 // Error mapping:
-//   - bad CSRF                   → 403
-//   - malformed id               → 400
-//   - ErrInstanceNotFound        → 404
-//   - ErrInstanceInTerminalState → 409
-//   - other                      → 500
+//   - bad CSRF                     → 403
+//   - malformed id                 → 400
+//   - ErrInstanceNotFound          → 404
+//   - ErrInstanceInTerminalState   → 409
+//   - ErrBeforePhotoRequired/
+//     ErrAfterPhotoRequired        → 422, inline on the row for an HTMX
+//     request (see handleCompleteError); plain text otherwise
+//   - other                        → 500
 func (h *WebHandlers) Complete(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -152,11 +170,61 @@ func (h *WebHandlers) Complete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.CompleteInstance(r.Context(), member.HouseholdID, id, member.ID, time.Now()); err != nil {
-		h.handleMutationError(w, r, err)
+		h.handleCompleteError(w, r, member, id, err)
 		return
 	}
 
 	h.respondAfterTaskMutation(w, r, member, id)
+}
+
+// photoPolicyErrorMessage maps a photo-policy completion error (NES-120) to
+// a friendly, user-facing message, or "" for any other error — the signal
+// handleCompleteError uses to decide whether an inline row re-render
+// applies at all.
+func photoPolicyErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrBeforePhotoRequired):
+		return "Take a before photo before marking this chore complete."
+	case errors.Is(err, domain.ErrAfterPhotoRequired):
+		return "Take an after photo before marking this chore complete."
+	default:
+		return ""
+	}
+}
+
+// handleCompleteError handles a CompleteInstance failure. For
+// ErrBeforePhotoRequired/ErrAfterPhotoRequired on an HTMX request, it
+// re-renders the SAME chore row (TaskRowItem, the form's own hx-target) at
+// HTTP 422 with a friendly PhotoError message set — Layout's htmx-config
+// meta tag opts 422 in to htmx's swap behavior (off by default for 4xx/5xx;
+// see that meta tag's doc), so the row updates in place with the message
+// and no page reload, matching every other complete/skip/claim mutation's
+// existing "swap this row" contract instead of introducing a new one. Any
+// other error, or the same error on a non-HTMX request (a plain form POST,
+// which never reads response bodies as anything but a rendered document),
+// falls through to the existing plain-text handleMutationError path.
+func (h *WebHandlers) handleCompleteError(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	id domain.TaskInstanceID,
+	err error,
+) {
+	msg := photoPolicyErrorMessage(err)
+	if msg == "" || !render.IsHTMX(r) {
+		h.handleMutationError(w, r, err)
+		return
+	}
+	row, buildErr := h.buildInstanceRow(r, member, id)
+	if buildErr != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: build row after photo policy error", "error", buildErr)
+		h.handleMutationError(w, r, err)
+		return
+	}
+	row.PhotoError = msg
+	if renderErr := render.Render(r.Context(), w, http.StatusUnprocessableEntity, components.TaskRowItem(row)); renderErr != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: render photo policy error", "error", renderErr)
+	}
 }
 
 // Skip handles POST /tasks/{id}/skip. It verifies the CSRF token, parses the
@@ -419,6 +487,7 @@ func (h *WebHandlers) parseCreateForm(
 	rawWeekdays := r.Form["byweekday"]
 	rawAnchor := r.FormValue("anchor")
 	rawPolicy := r.FormValue("rotation_policy")
+	rawPhotoPolicy := r.FormValue("photo_policy")
 	rawPoints := r.FormValue("points")
 	rawLead := r.FormValue("lead_time_days")
 	rawPool := r.Form["pool"]
@@ -432,6 +501,7 @@ func (h *WebHandlers) parseCreateForm(
 		Weekdays:          rawWeekdays,
 		Anchor:            rawAnchor,
 		RotationPolicy:    rawPolicy,
+		PhotoPolicy:       rawPhotoPolicy,
 		Points:            rawPoints,
 		LeadTimeDays:      rawLead,
 		SelectedMemberIDs: rawPool,
@@ -493,6 +563,20 @@ func (h *WebHandlers) parseCreateForm(
 		return nil, nil, form, form.Error
 	}
 
+	// An empty submission defaults to PhotoPolicyNone rather than failing
+	// validation — the rendered <select> always carries "none" as its
+	// pre-selected default option (see newtask.templ), so an empty value
+	// here only ever comes from a non-browser client that omitted the
+	// field entirely, not a user who left a choice unmade.
+	photoPolicy := domain.PhotoPolicyNone
+	if rawPhotoPolicy != "" {
+		photoPolicy, err = domain.ParsePhotoPolicy(rawPhotoPolicy)
+		if err != nil {
+			form.Error = "Please select a valid proof-photo requirement."
+			return nil, nil, form, form.Error
+		}
+	}
+
 	points := 0
 	if rawPoints != "" {
 		points, err = strconv.Atoi(rawPoints)
@@ -534,6 +618,7 @@ func (h *WebHandlers) parseCreateForm(
 			Anchor:    anchor,
 		},
 		RotationPolicy: policy,
+		PhotoPolicy:    photoPolicy,
 		Points:         points,
 		LeadTimeDays:   leadDays,
 		Active:         true,
@@ -664,11 +749,16 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 	combined = append(combined, overdue...)
 	combined = append(combined, standing...)
 
+	// NES-120: one batched ProofPhotoChecker call for every actionable,
+	// photo-policy-requiring instance in the page, instead of one call per
+	// row — see batchProofPhotoIDs' own doc.
+	photoIDs := h.batchProofPhotoIDs(r.Context(), member.HouseholdID, combined, taskMeta)
+
 	rows := make([]components.TaskRow, 0, len(combined))
 	for _, inst := range combined {
 		// taskMeta is keyed only by ACTIVE recurring tasks, so a missing entry
 		// (nil) is rendered as "(archived)" by instanceToRow.
-		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today, member.ID))
+		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today, member.ID, photoIDs))
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -683,7 +773,11 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 // instanceToRow maps a single task instance to its TaskRow view model. meta is
 // the parent recurring task (nil renders as "(archived)"); memberByID resolves
 // the assignee's name and color; viewerID is the member currently viewing the
-// list, used to compute Mine (NES-122). It is shared by buildTaskRows and the
+// list, used to compute Mine (NES-122). photoIDs is the NES-120 batch lookup
+// buildTaskRows/buildInstanceRow already resolved via ONE ProofPhotoChecker
+// call (see batchProofPhotoIDs) — this method performs no I/O of its own,
+// only a map read, so calling it per row never reintroduces the N+1 the
+// batch call exists to avoid. It is shared by buildTaskRows and the
 // single-row partial returned after a complete/skip/claim mutation.
 func (h *WebHandlers) instanceToRow(
 	ctx context.Context,
@@ -693,6 +787,7 @@ func (h *WebHandlers) instanceToRow(
 	csrfToken string,
 	today time.Time,
 	viewerID household.MemberID,
+	photoIDs map[domain.TaskInstanceID]domain.ProofPhotoIDs,
 ) components.TaskRow {
 	title, category := "(archived)", "chore"
 	if meta != nil {
@@ -748,6 +843,8 @@ func (h *WebHandlers) instanceToRow(
 		claimExpiresAtISO = inst.ClaimExpiresAt.UTC().Format(time.RFC3339)
 	}
 
+	photoPolicy, beforeURL, afterURL := proofPhotoFields(meta, actionable, photoIDs[inst.ID])
+
 	return components.TaskRow{
 		InstanceID:        inst.ID.String(),
 		Title:             title,
@@ -764,7 +861,91 @@ func (h *WebHandlers) instanceToRow(
 		CSRFToken:         csrfToken,
 		Mine:              inst.AssigneeID != nil && *inst.AssigneeID == viewerID,
 		Tradeable:         domain.IsInstanceTradeable(inst),
+		PhotoPolicy:       photoPolicy,
+		BeforePhotoRawURL: beforeURL,
+		AfterPhotoRawURL:  afterURL,
 	}
+}
+
+// choreProofPhotoRawPath is the URL prefix the NES-120 chore-proof raw-bytes
+// serving route (registered at the composition root; see
+// registerChoreProofPhotoRoutes) is mounted under.
+const choreProofPhotoRawPath = "/tasks/photos/"
+
+// choreProofPhotoRawURL builds the raw-bytes URL for a chore-proof photo id.
+func choreProofPhotoRawURL(photoID string) string {
+	return choreProofPhotoRawPath + photoID + "/raw"
+}
+
+// proofPhotoFields resolves a row's photo-policy display fields (NES-120)
+// from an already-fetched batch lookup — the parent task's PhotoPolicy as a
+// plain string, and — only when the instance is actionable and the policy
+// actually requires a photo — the raw-bytes URLs of any already-captured
+// before/after photos. Skipped entirely for an inactive/archived parent
+// (meta == nil, mirroring how title/category already degrade to
+// "(archived)") or a non-actionable (done/skipped) instance. Performs no
+// I/O: ids is a single map read (photoIDs[instance.ID] at the call site),
+// which is empty/zero-valued for an instance that was never eligible for
+// the batch lookup in the first place (see batchProofPhotoIDs) — the same
+// "no photos yet" outcome either way.
+func proofPhotoFields(meta *domain.RecurringTask, actionable bool, ids domain.ProofPhotoIDs) (policy, beforeURL, afterURL string) {
+	if meta == nil || !meta.PhotoPolicy.RequiresPhotos() {
+		return "", "", ""
+	}
+	policy = meta.PhotoPolicy.String()
+	if !actionable {
+		return policy, "", ""
+	}
+	if ids.BeforeID != "" {
+		beforeURL = choreProofPhotoRawURL(ids.BeforeID)
+	}
+	if ids.AfterID != "" {
+		afterURL = choreProofPhotoRawURL(ids.AfterID)
+	}
+	return policy, beforeURL, afterURL
+}
+
+// batchProofPhotoIDs resolves the NES-120 chore-proof photo ids for every
+// ACTIONABLE instance in instances whose parent task's PhotoPolicy requires
+// them, via ONE ProofPhotoChecker.ProofPhotosByInstances call — the N+1
+// avoidance behind proofPhotoFields: without this, instanceToRow would issue
+// its own ProofPhotoChecker query per row, and a page with an unbounded
+// overdue list (see ListByHousehold's own doc) would cost one round trip per
+// photo-policy row instead of one for the whole page.
+//
+// A nil h.photoChecker (see NewWebHandlers' doc) or a lookup error degrades
+// to a nil map — instanceToRow's map read on a nil map is a safe zero-value
+// read, so every row simply shows "no photos captured yet" rather than
+// failing the whole page — safe here because this is a read-only display
+// concern, unlike TaskService.CompleteInstance's fail-closed behavior on the
+// same missing dependency.
+func (h *WebHandlers) batchProofPhotoIDs(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	instances []*domain.TaskInstance,
+	taskMeta map[domain.RecurringTaskID]*domain.RecurringTask,
+) map[domain.TaskInstanceID]domain.ProofPhotoIDs {
+	if h.photoChecker == nil {
+		return nil
+	}
+	var eligible []domain.TaskInstanceID
+	for _, inst := range instances {
+		actionable := inst.Status == domain.StatusPending || inst.Status == domain.StatusOverdue
+		meta := taskMeta[inst.RecurringTaskID]
+		if !actionable || meta == nil || !meta.PhotoPolicy.RequiresPhotos() {
+			continue
+		}
+		eligible = append(eligible, inst.ID)
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+	photoIDs, err := h.photoChecker.ProofPhotosByInstances(ctx, householdID, eligible)
+	if err != nil {
+		h.logger.WarnContext(ctx, "tasks: batch check proof photos", "error", err)
+		return nil
+	}
+	return photoIDs
 }
 
 // buildInstanceRow re-reads one instance (after a mutation has committed) and
@@ -799,7 +980,13 @@ func (h *WebHandlers) buildInstanceRow(r *http.Request, member *household.Member
 	}
 	csrfToken := authadapter.GetCSRFToken(r.Context(), h.sm)
 	today := domain.DateOf(time.Now())
-	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today, member.ID), nil
+	// A single-instance batch call — still goes through batchProofPhotoIDs
+	// (not the single-instance ProofPhotos) so instanceToRow has exactly one
+	// code path for both callers; one instance is the cheapest possible
+	// batch, not a special case.
+	photoIDs := h.batchProofPhotoIDs(r.Context(), member.HouseholdID, []*domain.TaskInstance{inst},
+		map[domain.RecurringTaskID]*domain.RecurringTask{inst.RecurringTaskID: meta})
+	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today, member.ID, photoIDs), nil
 }
 
 // dueLabel renders a due date relative to the supplied reference date today
@@ -930,6 +1117,12 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, domain.ErrInstanceInTerminalState),
 		errors.Is(err, domain.ErrInstanceAlreadyClaimed):
 		http.Error(w, "task already acted on", http.StatusConflict)
+	case errors.Is(err, domain.ErrBeforePhotoRequired), errors.Is(err, domain.ErrAfterPhotoRequired):
+		// NES-120: reached for a photo-gated completion failure on a
+		// non-HTMX request (handleCompleteError's inline-row path only
+		// applies to an HTMX request) — the same friendly message, as a
+		// plain-text 422 body instead of a swapped row fragment.
+		http.Error(w, photoPolicyErrorMessage(err), http.StatusUnprocessableEntity)
 	default:
 		h.logger.ErrorContext(r.Context(), "tasks: mutation error", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

@@ -35,6 +35,12 @@ type NewTaskForm struct {
 	// RotationPolicy is the last-submitted policy value ("fixed", "round_robin",
 	// "claimable").
 	RotationPolicy string
+	// PhotoPolicy is the last-submitted proof-photo requirement value
+	// ("none", "after_only", "before_after") (NES-120). Empty on the initial
+	// GET render, in which case the template defaults the "None" option to
+	// selected — matching Freq/Category's identical "" → first-option
+	// default.
+	PhotoPolicy string
 	// Points is the last-submitted points string (stringified int >= 0).
 	Points string
 	// LeadTimeDays is the last-submitted lead-time string (stringified int >= 0).
@@ -263,6 +269,19 @@ templ NewTaskPage(form NewTaskForm) {
 							<option value="fixed" selected?={ form.RotationPolicy == "fixed" || form.RotationPolicy == "" }>Fixed — always the same person(s)</option>
 							<option value="round_robin" selected?={ form.RotationPolicy == "round_robin" }>Round robin — rotate through pool</option>
 							<option value="claimable" selected?={ form.RotationPolicy == "claimable" }>Claimable — anyone can pick it up</option>
+						</select>
+					</div>
+					<!-- Photo policy (NES-120) -->
+					<div class="flex flex-col gap-1">
+						<label for="nt_photo_policy" class="text-sm font-medium text-ink-secondary">Proof photos</label>
+						<select
+							id="nt_photo_policy"
+							name="photo_policy"
+							class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none"
+						>
+							<option value="none" selected?={ form.PhotoPolicy == "none" || form.PhotoPolicy == "" }>None</option>
+							<option value="after_only" selected?={ form.PhotoPolicy == "after_only" }>After photo only</option>
+							<option value="before_after" selected?={ form.PhotoPolicy == "before_after" }>Before and after photos</option>
 						</select>
 					</div>
 					<!-- Points + Lead time -->

@@ -115,6 +115,63 @@ func ParseInstanceStatus(s string) (InstanceStatus, error) {
 	return st, nil
 }
 
+// PhotoPolicy governs whether completing an instance of a recurring task
+// requires proof photos (NES-119/NES-120), and which ones. Stored as text on
+// recurring_task (not task_instance — see the 00030 migration's doc for why
+// this is a join, not a per-instance copy), validated here. The values match
+// the recurring_task.photo_policy CHECK constraint.
+type PhotoPolicy string
+
+// Photo policies for recurring tasks.
+const (
+	// PhotoPolicyNone requires no proof photos to complete an instance — the
+	// default, and the effective policy for every recurring task created
+	// before NES-120.
+	PhotoPolicyNone PhotoPolicy = "none"
+	// PhotoPolicyAfterOnly requires a single "after" chore-proof photo
+	// (domain.PhotoKindAfter in the media bounded context) before an
+	// instance can be completed.
+	PhotoPolicyAfterOnly PhotoPolicy = "after_only"
+	// PhotoPolicyBeforeAfter requires both a "before" and an "after"
+	// chore-proof photo before an instance can be completed.
+	PhotoPolicyBeforeAfter PhotoPolicy = "before_after"
+)
+
+// Valid reports whether p is a known photo policy.
+func (p PhotoPolicy) Valid() bool {
+	switch p {
+	case PhotoPolicyNone, PhotoPolicyAfterOnly, PhotoPolicyBeforeAfter:
+		return true
+	default:
+		return false
+	}
+}
+
+// String returns the photo policy's stored value.
+func (p PhotoPolicy) String() string { return string(p) }
+
+// RequiresPhotos reports whether p requires at least one chore-proof photo
+// before an instance may be completed. The zero Go value ("") is treated
+// the same as PhotoPolicyNone: only the persistence adapter's INSERT path
+// defaults "" to PhotoPolicyNone on write (see insertRecurringTask's doc in
+// tasks/adapter), so a RecurringTask constructed directly in Go — as every
+// test that predates NES-120 already does, without ever setting this field
+// — must behave identically to one round-tripped through the database with
+// PhotoPolicyNone, not be mistaken for a policy requiring photos.
+func (p PhotoPolicy) RequiresPhotos() bool {
+	return p != "" && p != PhotoPolicyNone
+}
+
+// ParsePhotoPolicy validates and returns a PhotoPolicy, or an error for an
+// unknown value.
+func ParsePhotoPolicy(s string) (PhotoPolicy, error) {
+	p := PhotoPolicy(s)
+	if !p.Valid() {
+		return "", fmt.Errorf("invalid photo policy %q", s)
+	}
+	return p, nil
+}
+
 // InstanceKind classifies how a task instance was materialised. Stored as
 // text, validated here. The values match the task_instance.kind CHECK
 // constraint (NES-116).

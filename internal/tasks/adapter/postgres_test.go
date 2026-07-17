@@ -274,6 +274,87 @@ func TestRecurringTask_CreateAndGet(t *testing.T) {
 	}
 }
 
+// TestRecurringTask_PhotoPolicy_DefaultsToNone verifies NES-120's zero-value
+// defaulting contract against the real database: a RecurringTask created
+// without ever setting PhotoPolicy (every pre-NES-120 caller, including
+// seedRecurringTask itself) persists and reads back as PhotoPolicyNone —
+// proving the adapter's insertRecurringTask default and the 00030
+// migration's column DEFAULT agree, not just the in-memory fakes.
+func TestRecurringTask_PhotoPolicy_DefaultsToNone(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := seedRecurringTask(t, repo, h.ID)
+	if rt.PhotoPolicy != domain.PhotoPolicyNone {
+		t.Errorf("PhotoPolicy on the inserted struct = %v, want PhotoPolicyNone (Insert must reflect the defaulted value back)", rt.PhotoPolicy)
+	}
+
+	got, err := repo.Get(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PhotoPolicy != domain.PhotoPolicyNone {
+		t.Errorf("PhotoPolicy = %v, want PhotoPolicyNone", got.PhotoPolicy)
+	}
+}
+
+// TestRecurringTask_PhotoPolicy_RoundTrips verifies that an explicitly set
+// PhotoPolicy (NES-120) persists through Create and is read back unchanged
+// by Get, ListActive, and ListAllActive alike.
+func TestRecurringTask_PhotoPolicy_RoundTrips(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+	h, _, _ := seedHousehold(t, pool)
+
+	rt := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    h.ID,
+		Title:          "Clean garage",
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationClaimable,
+		Active:         true,
+		PhotoPolicy:    domain.PhotoPolicyBeforeAfter,
+	}
+	if err := repo.Create(testCtx(t), rt); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.Get(testCtx(t), h.ID, rt.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PhotoPolicy != domain.PhotoPolicyBeforeAfter {
+		t.Errorf("Get: PhotoPolicy = %v, want PhotoPolicyBeforeAfter", got.PhotoPolicy)
+	}
+
+	active, err := repo.ListActive(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListActive: %v", err)
+	}
+	if len(active) != 1 || active[0].PhotoPolicy != domain.PhotoPolicyBeforeAfter {
+		t.Errorf("ListActive PhotoPolicy did not round-trip: %+v", active)
+	}
+
+	all, err := repo.ListAllActive(testCtx(t))
+	if err != nil {
+		t.Fatalf("ListAllActive: %v", err)
+	}
+	found := false
+	for _, task := range all {
+		if task.ID == rt.ID {
+			found = true
+			if task.PhotoPolicy != domain.PhotoPolicyBeforeAfter {
+				t.Errorf("ListAllActive: PhotoPolicy = %v, want PhotoPolicyBeforeAfter", task.PhotoPolicy)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ListAllActive did not return the seeded task")
+	}
+}
+
 // TestRecurringTask_GetCrossHousehold verifies that a task belonging to one
 // household is invisible to a query scoped to a different household.
 func TestRecurringTask_GetCrossHousehold(t *testing.T) {
@@ -1146,7 +1227,7 @@ func TestGenerator_EndToEnd(t *testing.T) {
 	h, m1, m2 := seedHousehold(t, pool)
 
 	// Build and create a round-robin weekly task via TaskService.
-	svc, err := tasksapp.NewTaskService(taskRepo, instanceRepo)
+	svc, err := tasksapp.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}

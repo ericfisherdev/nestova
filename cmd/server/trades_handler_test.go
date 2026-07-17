@@ -140,11 +140,11 @@ func buildTradeTestHandler(
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	recurringRepo := fakeRecurringTaskRepo{}
-	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo)
+	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo, nil)
 	if err != nil {
 		panic("buildTradeTestHandler: " + err.Error())
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 

@@ -129,6 +129,185 @@ func TestTaskRowItemOverdue(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Proof photo capture/review section (NES-120)
+// ---------------------------------------------------------------------------
+
+// TestTaskRowItemProofPhotos_BothCapturedRenderSideBySide verifies AC3: once
+// both before/after chore-proof photos exist for a before_after-policy row,
+// both images render together (side by side) rather than one being hidden
+// or only one shown.
+func TestTaskRowItemProofPhotos_BothCapturedRenderSideBySide(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:        "photo-0000-0000-0001",
+		Title:             "Clean garage",
+		Category:          "chore",
+		DueLabel:          "Jun 20",
+		Status:            "pending",
+		CSRFToken:         "tok-photos",
+		PhotoPolicy:       "before_after",
+		BeforePhotoRawURL: "/tasks/photos/before-id/raw",
+		AfterPhotoRawURL:  "/tasks/photos/after-id/raw",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if !strings.Contains(out, `src="/tasks/photos/before-id/raw"`) {
+		t.Errorf("row missing before photo image: %q", out)
+	}
+	if !strings.Contains(out, `src="/tasks/photos/after-id/raw"`) {
+		t.Errorf("row missing after photo image: %q", out)
+	}
+	// Both images render inside the SAME section, not two disjoint
+	// fragments — the "side by side" requirement.
+	sectionStart := strings.Index(out, `data-testid="proof-photo-section"`)
+	if sectionStart == -1 {
+		t.Fatalf("row missing proof-photo-section: %q", out)
+	}
+	section := out[sectionStart:]
+	beforeIdx := strings.Index(section, "before-id/raw")
+	afterIdx := strings.Index(section, "after-id/raw")
+	if beforeIdx == -1 || afterIdx == -1 {
+		t.Fatalf("both photos must render within the same proof-photo-section: %q", section)
+	}
+	// Neither photo shows a capture button once already captured.
+	if strings.Contains(out, `data-testid="proof-photo-input-before"`) {
+		t.Errorf("row should not show a before capture input once captured: %q", out)
+	}
+	if strings.Contains(out, `data-testid="proof-photo-input-after"`) {
+		t.Errorf("row should not show an after capture input once captured: %q", out)
+	}
+}
+
+// TestTaskRowItemProofPhotos_BeforeAfterMissingBoth_ShowsOnlyBeforeCapture
+// verifies that a before_after-policy row with no photos yet shows a
+// capture affordance for "before" only — the "after" slot stays hidden
+// until "before" exists, since media rejects an out-of-order after upload
+// (NES-119's ErrAfterPrecedesBefore).
+func TestTaskRowItemProofPhotos_BeforeAfterMissingBoth_ShowsOnlyBeforeCapture(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:  "photo-0000-0000-0002",
+		Title:       "Clean garage",
+		Category:    "chore",
+		DueLabel:    "Jun 20",
+		Status:      "pending",
+		CSRFToken:   "tok-photos",
+		PhotoPolicy: "before_after",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if !strings.Contains(out, `data-testid="proof-photo-input-before"`) {
+		t.Errorf("row missing before capture input: %q", out)
+	}
+	if strings.Contains(out, `data-testid="proof-photo-input-after"`) {
+		t.Errorf("row should not show after capture input before a before photo exists: %q", out)
+	}
+	if !strings.Contains(out, `action="/tasks/photo-0000-0000-0002/photos"`) {
+		t.Errorf("capture form should post to the NES-119 upload endpoint: %q", out)
+	}
+}
+
+// TestTaskRowItemProofPhotos_CaptureLabelHasFocusWithinRing verifies that
+// the capture label carries a visible focus ring (focus-within, since the
+// file input itself is sr-only) — mirroring NES-124's uploadDropzone label,
+// the established pattern for a sr-only-input-inside-a-label affordance, so
+// a sighted keyboard user tabbing to the hidden file input still sees where
+// focus landed.
+func TestTaskRowItemProofPhotos_CaptureLabelHasFocusWithinRing(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:  "photo-0000-0000-0006",
+		Title:       "Clean garage",
+		Category:    "chore",
+		DueLabel:    "Jun 20",
+		Status:      "pending",
+		CSRFToken:   "tok-photos",
+		PhotoPolicy: "after_only",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	for _, class := range []string{
+		"focus-within:outline-none",
+		"focus-within:ring-2",
+		"focus-within:ring-sage",
+		"focus-within:ring-offset-2",
+	} {
+		if !strings.Contains(out, class) {
+			t.Errorf("capture label missing %q: %q", class, out)
+		}
+	}
+}
+
+// TestTaskRowItemProofPhotos_AfterOnlyRequiresNoBeforeSlot verifies that an
+// after_only-policy row never shows a "before" slot at all — before photos
+// are never required or shown for this policy.
+func TestTaskRowItemProofPhotos_AfterOnlyRequiresNoBeforeSlot(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:  "photo-0000-0000-0003",
+		Title:       "Take out trash",
+		Category:    "chore",
+		DueLabel:    "Jun 20",
+		Status:      "pending",
+		CSRFToken:   "tok-photos",
+		PhotoPolicy: "after_only",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if strings.Contains(out, `data-testid="proof-photo-slot-before"`) {
+		t.Errorf("after_only row should never show a before slot: %q", out)
+	}
+	if !strings.Contains(out, `data-testid="proof-photo-input-after"`) {
+		t.Errorf("after_only row missing after capture input: %q", out)
+	}
+}
+
+// TestTaskRowItemProofPhotos_NonePolicyShowsNoSection verifies that a
+// none-policy row (or one with PhotoPolicy left empty, the "(archived)"
+// fallback) never renders the proof-photo section at all.
+func TestTaskRowItemProofPhotos_NonePolicyShowsNoSection(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID: "photo-0000-0000-0004",
+		Title:      "Vacuum",
+		Category:   "chore",
+		DueLabel:   "Jun 20",
+		Status:     "pending",
+		CSRFToken:  "tok-photos",
+		// PhotoPolicy left empty/"none".
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if strings.Contains(out, `data-testid="proof-photo-section"`) {
+		t.Errorf("none-policy row should not render a proof-photo section: %q", out)
+	}
+}
+
+// TestTaskRowItemProofPhotos_ErrorMessageRendersInline verifies AC2's
+// component-level half: a row carrying a PhotoError message renders it
+// inline, inside the same row fragment the Complete action swaps.
+func TestTaskRowItemProofPhotos_ErrorMessageRendersInline(t *testing.T) {
+	row := components.TaskRow{
+		InstanceID:  "photo-0000-0000-0005",
+		Title:       "Clean garage",
+		Category:    "chore",
+		DueLabel:    "Jun 20",
+		Status:      "pending",
+		CSRFToken:   "tok-photos",
+		PhotoPolicy: "before_after",
+		PhotoError:  "Take a before photo before marking this chore complete.",
+	}
+	out := renderString(t, components.TaskRowItem(row))
+
+	if !strings.Contains(out, "Take a before photo before marking this chore complete.") {
+		t.Errorf("row missing inline photo error message: %q", out)
+	}
+	if !strings.Contains(out, `role="alert"`) {
+		t.Errorf("photo error should be announced via role=alert: %q", out)
+	}
+	// Still the same stable row id — a genuine in-place swap target, not a
+	// different fragment shape.
+	if !strings.Contains(out, `id="task-photo-0000-0000-0005"`) {
+		t.Errorf("row with photo error missing its stable anchor id: %q", out)
+	}
+}
+
 func TestTaskRowItemDone(t *testing.T) {
 	row := components.TaskRow{
 		InstanceID: "done-0000-0000-0001",

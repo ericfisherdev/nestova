@@ -74,6 +74,20 @@ func (f *fakeTaskInstancePhotoRepoHandler) ListByInstance(context.Context, house
 	return nil, nil
 }
 
+// ListByInstances is unused by this file's upload-focused tests; implemented
+// only to satisfy the interface (NES-120 added it for the /tasks list
+// builder's batched photo lookup).
+func (f *fakeTaskInstancePhotoRepoHandler) ListByInstances(context.Context, household.HouseholdID, []mediadomain.TaskInstanceID) ([]*mediadomain.TaskInstancePhoto, error) {
+	return nil, nil
+}
+
+// Get is deliberately ID-only (NES-120), mirroring PhotoRepository.Get; unused
+// by NES-119's own upload tests (nothing in this file exercises the NES-120
+// raw-serving route), implemented only to satisfy the interface.
+func (f *fakeTaskInstancePhotoRepoHandler) Get(context.Context, mediadomain.TaskInstancePhotoID) (*mediadomain.TaskInstancePhoto, error) {
+	return nil, mediadomain.ErrTaskInstancePhotoNotFound
+}
+
 // buildChoreProofTestHandler wires just enough of the composition root
 // (login + the chore-proof upload route) to exercise
 // ChoreProofWebHandlers.Upload end to end with fakes, mirroring
