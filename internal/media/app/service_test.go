@@ -19,18 +19,24 @@ import (
 // --- fakes ---
 
 type fakePhotoStore struct {
-	putErr  error
-	openErr error
-	puts    int
-	deleted []domain.StorageRef
+	putErr       error
+	openErr      error
+	puts         int
+	deleted      []domain.StorageRef
+	lastPutClass domain.PhotoClass
 }
 
 // Put hashes the bytes it's given and derives Ref from the hash — like the
 // real content-addressed LocalPhotoStore — so identical content always
 // produces the identical ref, letting a test detect an unsafe delete of a ref
 // a still-valid photo row shares (rather than an incrementing counter, which
-// would give every Put a distinct ref and hide that class of bug).
-func (f *fakePhotoStore) Put(_ context.Context, _ household.HouseholdID, r io.Reader) (domain.PutResult, error) {
+// would give every Put a distinct ref and hide that class of bug). class is
+// recorded (lastPutClass) so a test can assert PhotoService always uploads
+// under domain.PhotoClassAlbum, but otherwise does not affect the fake's
+// bytes-in/ref-out behavior — the fake is not itself testing class
+// namespacing, which is LocalPhotoStore's concern (see photo_store_test.go).
+func (f *fakePhotoStore) Put(_ context.Context, _ household.HouseholdID, class domain.PhotoClass, r io.Reader) (domain.PutResult, error) {
+	f.lastPutClass = class
 	if f.putErr != nil {
 		return domain.PutResult{}, f.putErr
 	}
@@ -65,6 +71,13 @@ func (f *fakePhotoStore) Open(context.Context, domain.StorageRef) (domain.PhotoR
 func (f *fakePhotoStore) Delete(_ context.Context, ref domain.StorageRef) error {
 	f.deleted = append(f.deleted, ref)
 	return nil
+}
+
+// URL mirrors LocalPhotoStore's contract closely enough for a unit test: ref
+// itself, back as a stable locator, since nothing under test exercises a
+// real URL/ttl semantic.
+func (f *fakePhotoStore) URL(_ context.Context, ref domain.StorageRef, _ time.Duration) (string, error) {
+	return ref.String(), nil
 }
 
 // fakePhotoReader adapts a *bytes.Reader (already Read+ReadAt+Seek) into a
@@ -251,6 +264,9 @@ func TestPhotoServiceUpload(t *testing.T) {
 	}
 	if len(repo.created) != 1 {
 		t.Fatalf("created %d photos, want 1", len(repo.created))
+	}
+	if store.lastPutClass != domain.PhotoClassAlbum {
+		t.Fatalf("Upload called Put with class %v, want PhotoClassAlbum", store.lastPutClass)
 	}
 }
 

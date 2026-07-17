@@ -13,9 +13,13 @@ import (
 	"github.com/ericfisherdev/nestova/internal/media/domain"
 )
 
-// PhotoService handles uploading and deleting photos: it streams the bytes
-// behind the PhotoStore, dedups by content hash, captures the EXIF date, and
-// persists the photo metadata.
+// PhotoService handles uploading and deleting household album photos: it
+// streams the bytes behind the PhotoStore under domain.PhotoClassAlbum,
+// dedups by content hash, captures the EXIF date, and persists the photo
+// metadata. It is the album/gallery use case specifically — a future
+// chore-proof upload path (NES-119) introduces its own service and table
+// (task_instance_photo) rather than reusing this one, so PhotoClassAlbum is
+// hardcoded here rather than accepted as a parameter.
 type PhotoService struct {
 	store  domain.PhotoStore
 	exif   domain.ExifReader
@@ -61,7 +65,7 @@ type UploadResult struct {
 // It returns the storage layer's validation errors (ErrUnsupportedMediaType,
 // ErrPhotoTooLarge, ErrInvalidPhoto) unchanged.
 func (s *PhotoService) Upload(ctx context.Context, householdID household.HouseholdID, uploaderID household.MemberID, r io.Reader, caption string) (UploadResult, error) {
-	stored, err := s.store.Put(ctx, householdID, r)
+	stored, err := s.store.Put(ctx, householdID, domain.PhotoClassAlbum, r)
 	if err != nil {
 		return UploadResult{}, err
 	}

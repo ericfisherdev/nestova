@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	// Image format decoders registered for image.DecodeConfig: jpeg/png from the
 	// standard library, webp from x/image (its init registers the format).
@@ -63,9 +64,40 @@ const tempFilePattern = "upload-*.tmp"
 // end of current consumer hardware) while bounding worst-case decode memory.
 const maxDecodePixels = 50_000_000
 
-// LocalPhotoStore is a domain.PhotoStore backed by the local filesystem. Photos
-// are content-addressed (sha256) under MEDIA_ROOT/<household>/<aa>/<hash>.<ext>,
-// so identical uploads de-duplicate and a ref never collides across households.
+// classKeyPrefix maps a domain.PhotoClass to the literal path segment
+// LocalPhotoStore namespaces its keys under (see LocalPhotoStore's doc for
+// the full key layout), so one class's bytes can never land under, or be
+// confused with, another class's prefix. An exhaustive switch — never a bare
+// map or a free-form string passed through — means an unrecognized
+// PhotoClass fails Put loudly instead of silently defaulting into some
+// namespace.
+func classKeyPrefix(class domain.PhotoClass) (string, error) {
+	switch class {
+	case domain.PhotoClassAlbum:
+		return "photos", nil
+	case domain.PhotoClassChoreProof:
+		return "chore-photos", nil
+	case domain.PhotoClassRewardImage:
+		return "reward-images", nil
+	default:
+		return "", fmt.Errorf("media/adapter: unknown photo class %d", class)
+	}
+}
+
+// LocalPhotoStore is a domain.PhotoStore backed by the local filesystem.
+// Photos are content-addressed (sha256) under
+// MEDIA_ROOT/households/<household>/<class-prefix>/<aa>/<hash>.<ext> (see
+// classKeyPrefix for the class-prefix values), so identical bytes uploaded
+// for the same domain.PhotoClass de-duplicate on disk, a ref never collides
+// across households, and — the reason the class segment exists — bytes
+// uploaded under one class can never collide with, or be resolved as, another
+// class's bytes even if the content happens to be byte-identical (e.g. a
+// chore-proof photo can never land under an album's key space). Refs
+// predating this class segment (a bare <household>/<aa>/<hash>.<ext>, no
+// "households/" or class prefix) remain servable: Open and Delete treat ref
+// as an opaque relative path and never assume its shape, so a legacy ref
+// resolves exactly as it always did.
+//
 // It is constructor-injected and swappable for an object-store adapter later.
 type LocalPhotoStore struct {
 	root           string
@@ -91,10 +123,16 @@ func NewLocalPhotoStore(root string, maxUploadBytes int64) (*LocalPhotoStore, er
 // upload in memory — while hashing it and enforcing the size cap, sniffs the
 // true content type from the first sniffLen bytes (the caller never supplies
 // one; it is not trusted), cross-validates that the bytes actually decode as
-// that type, and atomically renames the staging file into its content-addressed
-// home. Any rejection removes the staging file, leaving no partial upload
-// behind.
-func (s *LocalPhotoStore) Put(_ context.Context, householdID household.HouseholdID, r io.Reader) (domain.PutResult, error) {
+// that type, and atomically renames the staging file into its
+// content-addressed, class-namespaced home (see classKeyPrefix). Any
+// rejection — including an unrecognized class — removes the staging file,
+// leaving no partial upload behind.
+func (s *LocalPhotoStore) Put(_ context.Context, householdID household.HouseholdID, class domain.PhotoClass, r io.Reader) (domain.PutResult, error) {
+	classPrefix, err := classKeyPrefix(class)
+	if err != nil {
+		return domain.PutResult{}, err
+	}
+
 	// Caps total bytes read (sniff + copy) at maxUploadBytes+1: enough to detect
 	// an oversize upload without ever buffering more than that in flight.
 	limited := io.LimitReader(r, s.maxUploadBytes+1)
@@ -163,7 +201,7 @@ func (s *LocalPhotoStore) Put(_ context.Context, householdID household.Household
 	}
 
 	sum := hex.EncodeToString(hasher.Sum(nil))
-	ref := filepath.ToSlash(filepath.Join(householdID.String(), sum[:2], sum+"."+ext))
+	ref := filepath.ToSlash(filepath.Join("households", householdID.String(), classPrefix, sum[:2], sum+"."+ext))
 	full, err := s.resolve(ref)
 	if err != nil {
 		return domain.PutResult{}, err
@@ -213,6 +251,30 @@ func (s *LocalPhotoStore) Delete(_ context.Context, ref domain.StorageRef) error
 		return fmt.Errorf("media/adapter: delete photo: %w", err)
 	}
 	return nil
+}
+
+// URL confirms ref resolves to a stored object and returns ref's own string
+// as a stable, non-navigable locator, or ErrPhotoNotFound when ref is
+// unknown; ttl is ignored (see the domain.PhotoStore.URL doc for why a local
+// backend cannot honestly return a browser-navigable URL from ref alone, and
+// why that is fine — no caller uses this today).
+func (s *LocalPhotoStore) URL(_ context.Context, ref domain.StorageRef, _ time.Duration) (string, error) {
+	full, err := s.resolve(ref.String())
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s", domain.ErrPhotoNotFound, ref)
+		}
+		return "", fmt.Errorf("media/adapter: stat photo: %w", err)
+	}
+	// A directory (e.g. ref "households") is not a stored photo.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%w: %s", domain.ErrPhotoNotFound, ref)
+	}
+	return ref.String(), nil
 }
 
 // resolve joins ref onto root and guards against path traversal: the cleaned

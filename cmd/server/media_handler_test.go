@@ -32,14 +32,18 @@ const mediaTestMaxUploadBytes = 10 << 20
 // --- media fakes ---
 
 type fakeMediaStore struct {
-	puts   int
-	bytes  []byte
-	putErr error
+	puts         int
+	bytes        []byte
+	putErr       error
+	lastPutClass mediadomain.PhotoClass
 }
 
 // Put hashes the bytes it's given (like the real content-addressed store) so
-// tests can exercise dedup by uploading identical content twice.
-func (f *fakeMediaStore) Put(_ context.Context, _ household.HouseholdID, r io.Reader) (mediadomain.PutResult, error) {
+// tests can exercise dedup by uploading identical content twice. class is
+// recorded (lastPutClass) so a test can assert the caller uploads under the
+// expected domain.PhotoClass.
+func (f *fakeMediaStore) Put(_ context.Context, _ household.HouseholdID, class mediadomain.PhotoClass, r io.Reader) (mediadomain.PutResult, error) {
+	f.lastPutClass = class
 	if f.putErr != nil {
 		return mediadomain.PutResult{}, f.putErr
 	}
@@ -61,6 +65,10 @@ func (f *fakeMediaStore) Open(context.Context, mediadomain.StorageRef) (mediadom
 	return fakeMediaPhotoReader{bytes.NewReader(f.bytes)}, nil
 }
 func (f *fakeMediaStore) Delete(context.Context, mediadomain.StorageRef) error { return nil }
+
+func (f *fakeMediaStore) URL(_ context.Context, ref mediadomain.StorageRef, _ time.Duration) (string, error) {
+	return ref.String(), nil
+}
 
 // fakeMediaPhotoReader adapts a *bytes.Reader (already Read+ReadAt+Seek) into
 // a mediadomain.PhotoReader with a no-op Close.

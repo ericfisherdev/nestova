@@ -42,21 +42,47 @@ type PutResult struct {
 }
 
 // PhotoStore persists and serves photo bytes behind a swappable port (a local
-// filesystem adapter first; an object store later). Put streams r to storage —
-// it never buffers the whole upload in memory — sniffing the true content type
-// from the bytes themselves (a caller-declared type is never trusted), hashing
-// and size-capping as it copies. Open streams the bytes back (for serving, and
-// for EXIF extraction, which needs the RandomAccessReader half of PhotoReader);
-// Delete removes them.
+// filesystem adapter first; an object store later, NES-132). Put streams r to
+// storage — it never buffers the whole upload in memory — sniffing the true
+// content type from the bytes themselves (a caller-declared type is never
+// trusted), hashing and size-capping as it copies. class namespaces the
+// resulting StorageRef (see PhotoClass) so bytes uploaded for one purpose can
+// never collide with, or be served as, another's — the calling context
+// chooses class, never the store. Open streams the bytes back (for serving,
+// and for EXIF extraction, which needs the RandomAccessReader half of
+// PhotoReader); Delete removes them; URL returns a locator for already-stored
+// bytes.
 //
 // Put error contract: ErrUnsupportedMediaType when the sniffed type is not an
 // accepted image format, ErrPhotoTooLarge when r exceeds the configured limit,
 // and ErrInvalidPhoto when the bytes do not actually decode as the sniffed
-// type. Open returns ErrPhotoNotFound when ref is unknown.
+// type. Open and URL return ErrPhotoNotFound when ref is unknown.
 type PhotoStore interface {
-	Put(ctx context.Context, householdID household.HouseholdID, r io.Reader) (PutResult, error)
+	Put(ctx context.Context, householdID household.HouseholdID, class PhotoClass, r io.Reader) (PutResult, error)
 	Open(ctx context.Context, ref StorageRef) (PhotoReader, error)
 	Delete(ctx context.Context, ref StorageRef) error
+
+	// URL returns a locator for ref's stored bytes, or ErrPhotoNotFound when
+	// ref is unknown. ttl bounds how long the locator stays valid; a backend
+	// that cannot expire what it returns (LocalPhotoStore today) treats ttl as
+	// advisory and ignores it.
+	//
+	// The two backends this port is designed for answer very differently: an
+	// object-store adapter (NES-132) returns a presigned URL a client can
+	// fetch directly, scoped by ref alone. LocalPhotoStore has no such direct
+	// link — every existing serving route (e.g. GET /photos/{id}/raw) is
+	// keyed by the caller's own domain id, not by StorageRef, specifically so
+	// it can check household ownership before ever touching the store; ref
+	// alone never carries enough context to reconstruct that route, and
+	// fabricating a plausible-looking-but-unserved path here would be a
+	// broken link masquerading as a working one. LocalPhotoStore.URL
+	// therefore confirms ref resolves to a stored object and returns ref's
+	// own string as a stable (non-navigable) locator — existing view code is
+	// untouched and keeps building its own tenant-checked routes without
+	// calling URL at all. URL exists on the port now purely so NES-132's
+	// object-store adapter can implement it with a real presigned URL without
+	// any interface change.
+	URL(ctx context.Context, ref StorageRef, ttl time.Duration) (string, error)
 }
 
 // ExifReader extracts the EXIF capture time from a photo's bytes. TakenAt
