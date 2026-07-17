@@ -16,10 +16,10 @@ import (
 // --- fakes ---
 
 // jpegLikeBytes starts with the real JPEG SOI marker so
-// ChoreProofPhotoService.captureAndScrub treats it as a JPEG candidate and
-// calls the ChoreProofExif fake — the fake doesn't need genuinely decodable
-// image data since fakePhotoStore.Put (reused from service_test.go) only
-// hashes bytes, it never decodes them.
+// ChoreProofPhotoService.captureMetadata/scrubIfJPEG treat it as a JPEG
+// candidate and call the ChoreProofExif fake — the fake doesn't need
+// genuinely decodable image data since fakePhotoStore.Put (reused from
+// service_test.go) only hashes bytes, it never decodes them.
 func jpegLikeBytes(payload string) []byte {
 	return append([]byte{0xFF, 0xD8}, []byte(payload)...)
 }
@@ -74,6 +74,18 @@ type fakeTaskInstancePhotoRepo struct {
 	// review); a fake that didn't simulate it at all would make that
 	// propagation path untestable at this layer.
 	simulateOrderingCheck bool
+	// createRejects, when true, makes Create unconditionally return
+	// domain.ErrAfterPrecedesBefore for an "after" photo, INDEPENDENT of
+	// latestTakenAt/latestOK/simulateOrderingCheck — used to simulate
+	// Create's atomic check catching a violation that
+	// Upload.preflightOrderingCheck's necessarily non-atomic read did NOT
+	// see (e.g. a concurrent "before" that committed in the gap between the
+	// preflight and Create's own transaction). The real version of that gap
+	// being closed is proven by the gated concurrent Postgres test
+	// (chore_photo_postgres_test.go); this flag exists only to prove Upload
+	// correctly PROPAGATES whatever Create decides rather than trusting its
+	// own preflight as authoritative.
+	createRejects bool
 }
 
 func newFakeTaskInstancePhotoRepo() *fakeTaskInstancePhotoRepo {
@@ -81,6 +93,9 @@ func newFakeTaskInstancePhotoRepo() *fakeTaskInstancePhotoRepo {
 }
 
 func (f *fakeTaskInstancePhotoRepo) Create(_ context.Context, p *domain.TaskInstancePhoto) error {
+	if f.createRejects && p.Kind == domain.PhotoKindAfter {
+		return domain.ErrAfterPrecedesBefore
+	}
 	if f.simulateOrderingCheck && p.Kind == domain.PhotoKindAfter && f.latestOK && domain.AfterPrecedesBefore(p.TakenAt, f.latestTakenAt) {
 		return domain.ErrAfterPrecedesBefore
 	}
@@ -217,10 +232,18 @@ func TestChoreProofUploadPreflightErrorPropagates(t *testing.T) {
 
 // TestChoreProofUploadRejectsMissingTimestamp covers AC2: an upload with no
 // usable EXIF timestamp (e.g. a screenshot, or any EXIF-stripped image) is
-// rejected with ErrPhotoMissingTimestamp, and nothing is stored or persisted.
+// rejected with ErrPhotoMissingTimestamp, and nothing is stored or
+// persisted. It also covers the NES-119 review's reordering fix: Scrub must
+// never be called for an upload that was always going to be rejected on
+// timestamp grounds alone — captureMetadata's cheap tag read is enough to
+// decide that, so scrubIfJPEG's potentially expensive decode/re-encode must
+// never run.
 func TestChoreProofUploadRejectsMissingTimestamp(t *testing.T) {
 	store := &fakePhotoStore{}
-	exif := &fakeChoreProofExif{taken: nil}
+	// orientation != 1/0 would trigger the expensive re-encode path in
+	// Scrub if it were ever (wrongly) called — makes the zero-scrub-calls
+	// assertion below meaningful rather than vacuous.
+	exif := &fakeChoreProofExif{taken: nil, orientation: 6}
 	repo := newFakeTaskInstancePhotoRepo()
 	svc := newChoreProofService(t, store, exif, repo)
 
@@ -230,6 +253,9 @@ func TestChoreProofUploadRejectsMissingTimestamp(t *testing.T) {
 	}
 	if store.puts != 0 || len(repo.created) != 0 {
 		t.Fatal("a missing-timestamp upload must not store or persist anything")
+	}
+	if exif.scrubCalls != 0 {
+		t.Fatal("a missing-timestamp upload must never reach Scrub — cheap metadata alone is enough to reject it")
 	}
 }
 
@@ -261,7 +287,9 @@ func TestChoreProofUploadNonJPEGNeverExtractsTimestamp(t *testing.T) {
 // TestChoreProofUploadRejectsStalePhoto covers AC3: a photo whose EXIF
 // capture time falls outside the freshness window, in EITHER direction
 // (too old, or a badly-clocked camera dating it into the future), is
-// rejected.
+// rejected. Also covers the NES-119 review's reordering fix (see
+// TestChoreProofUploadRejectsMissingTimestamp's doc): a rejected upload
+// must never reach Scrub.
 func TestChoreProofUploadRejectsStalePhoto(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -278,7 +306,9 @@ func TestChoreProofUploadRejectsStalePhoto(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakePhotoStore{}
 			taken := tt.taken
-			exif := &fakeChoreProofExif{taken: &taken, orientation: 1}
+			// orientation != 1/0 makes a would-be Scrub call expensive in
+			// spirit, same reasoning as the missing-timestamp test.
+			exif := &fakeChoreProofExif{taken: &taken, orientation: 6}
 			repo := newFakeTaskInstancePhotoRepo()
 			svc := newChoreProofService(t, store, exif, repo)
 
@@ -295,20 +325,24 @@ func TestChoreProofUploadRejectsStalePhoto(t *testing.T) {
 			if store.puts != 0 {
 				t.Fatal("a stale upload must not reach PhotoStore.Put")
 			}
+			if exif.scrubCalls != 0 {
+				t.Fatal("a stale upload must never reach Scrub — the freshness check alone is enough to reject it")
+			}
 		})
 	}
 }
 
 // TestChoreProofUploadPropagatesOrderingCheckFromCreate covers AC3's second
 // half after the NES-119 atomicity review: the before/after ordering rule
-// (domain.ErrAfterPrecedesBefore) is now enforced by
-// TaskInstancePhotoRepository.Create itself, atomically, NOT by
-// ChoreProofPhotoService — this test proves the service (a) never performs
-// its own read-then-decide check (LatestTakenAt is never called from
-// Upload) and (b) correctly propagates whatever Create decides, using the
-// fake's simulateOrderingCheck to stand in for Create's real atomic
-// behavior (covered end-to-end, including the concurrency argument, by
-// chore_photo_postgres_test.go's gated tests).
+// (domain.ErrAfterPrecedesBefore) is AUTHORITATIVELY enforced by
+// TaskInstancePhotoRepository.Create itself, atomically — this test proves
+// Upload correctly propagates whatever Create decides, using the fake's
+// simulateOrderingCheck to stand in for Create's real atomic behavior
+// (covered end-to-end, including the concurrency argument, by
+// chore_photo_postgres_test.go's gated tests). See
+// TestChoreProofUploadOrderingPreflight for the separate, best-effort
+// preflight Upload itself now also runs (a later review round added it to
+// avoid paying for Scrub on an obviously-doomed "after" upload).
 func TestChoreProofUploadPropagatesOrderingCheckFromCreate(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	beforeTaken := now.Add(-30 * time.Minute)
@@ -340,20 +374,98 @@ func TestChoreProofUploadPropagatesOrderingCheckFromCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("Upload never calls LatestTakenAt itself, for either kind", func(t *testing.T) {
-		for _, kind := range []domain.PhotoKind{domain.PhotoKindBefore, domain.PhotoKindAfter} {
-			store := &fakePhotoStore{}
-			taken := now.Add(-5 * time.Minute)
-			exif := &fakeChoreProofExif{taken: &taken, orientation: 1}
-			repo := newFakeTaskInstancePhotoRepo()
-			svc := newChoreProofService(t, store, exif, repo)
+	t.Run("Create still enforces the rule even when the preflight found nothing to object to", func(t *testing.T) {
+		// repo.latestOK stays false, so preflightOrderingCheck's own read
+		// sees "no before yet" and passes — but createRejects makes Create
+		// itself still reject, simulating a concurrent write the preflight's
+		// necessarily non-atomic read could not have seen. Upload must
+		// propagate Create's decision regardless of what its own preflight
+		// concluded, and — since the preflight passed — Put IS reached
+		// (proving this really is Create's rejection, not the preflight's).
+		store := &fakePhotoStore{}
+		afterTaken := now.Add(-5 * time.Minute)
+		exif := &fakeChoreProofExif{taken: &afterTaken, orientation: 1}
+		repo := newFakeTaskInstancePhotoRepo()
+		repo.createRejects = true
+		svc := newChoreProofService(t, store, exif, repo)
 
-			if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), freshInstanceID(t), kind, bytes.NewReader(jpegLikeBytes("x")), now); err != nil {
-				t.Fatalf("Upload(%v): %v", kind, err)
-			}
-			if repo.latestCalls != 0 {
-				t.Fatalf("Upload(%v) called LatestTakenAt %d times, want 0 — that check now lives entirely in Create", kind, repo.latestCalls)
-			}
+		_, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), freshInstanceID(t), domain.PhotoKindAfter, bytes.NewReader(jpegLikeBytes("x")), now)
+		if !errors.Is(err, domain.ErrAfterPrecedesBefore) {
+			t.Fatalf("Upload error = %v, want ErrAfterPrecedesBefore (from Create, not the preflight)", err)
+		}
+		if store.puts != 1 {
+			t.Fatalf("PhotoStore.Put called %d times, want 1 — the preflight passed, so Put must have been reached before Create's own rejection", store.puts)
+		}
+	})
+
+	t.Run("before uploads never consult LatestTakenAt", func(t *testing.T) {
+		store := &fakePhotoStore{}
+		taken := now.Add(-5 * time.Minute)
+		exif := &fakeChoreProofExif{taken: &taken, orientation: 1}
+		repo := newFakeTaskInstancePhotoRepo()
+		svc := newChoreProofService(t, store, exif, repo)
+
+		if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), freshInstanceID(t), domain.PhotoKindBefore, bytes.NewReader(jpegLikeBytes("x")), now); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		if repo.latestCalls != 0 {
+			t.Fatal("a \"before\" upload must never check LatestTakenAt — only \"after\" uploads run the ordering preflight")
+		}
+	})
+}
+
+// TestChoreProofUploadOrderingPreflight covers the NES-119 review's
+// reordering fix: an "after" upload that is ALREADY provably invalid based
+// on a plain (unlocked) LatestTakenAt read is rejected by Upload's own
+// preflight BEFORE Scrub or PhotoStore.Put ever run — a real performance
+// win when the upload needs the expensive re-encode path (orientation != 1)
+// — while a valid "after" upload still calls LatestTakenAt exactly once
+// (the preflight) and proceeds normally.
+func TestChoreProofUploadOrderingPreflight(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	beforeTaken := now.Add(-30 * time.Minute)
+
+	t.Run("preflight rejects before Scrub or Put run", func(t *testing.T) {
+		store := &fakePhotoStore{}
+		afterTaken := beforeTaken.Add(-1 * time.Minute) // earlier than "before"
+		// orientation != 1/0: if the preflight did NOT short-circuit, this
+		// would trigger the (simulated) expensive re-encode path.
+		exif := &fakeChoreProofExif{taken: &afterTaken, orientation: 6}
+		repo := newFakeTaskInstancePhotoRepo()
+		repo.latestTakenAt, repo.latestOK = beforeTaken, true
+		svc := newChoreProofService(t, store, exif, repo)
+
+		_, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), freshInstanceID(t), domain.PhotoKindAfter, bytes.NewReader(jpegLikeBytes("x")), now)
+		if !errors.Is(err, domain.ErrAfterPrecedesBefore) {
+			t.Fatalf("Upload error = %v, want ErrAfterPrecedesBefore", err)
+		}
+		if repo.latestCalls != 1 {
+			t.Fatalf("LatestTakenAt called %d times, want 1 (the preflight)", repo.latestCalls)
+		}
+		if exif.scrubCalls != 0 {
+			t.Fatal("a preflight-rejected after must never reach Scrub")
+		}
+		if store.puts != 0 {
+			t.Fatal("a preflight-rejected after must never reach PhotoStore.Put")
+		}
+		if len(repo.created) != 0 {
+			t.Fatal("a preflight-rejected after must never be persisted")
+		}
+	})
+
+	t.Run("a valid after still calls the preflight once and succeeds", func(t *testing.T) {
+		store := &fakePhotoStore{}
+		afterTaken := beforeTaken.Add(1 * time.Minute)
+		exif := &fakeChoreProofExif{taken: &afterTaken, orientation: 1}
+		repo := newFakeTaskInstancePhotoRepo()
+		repo.latestTakenAt, repo.latestOK = beforeTaken, true
+		svc := newChoreProofService(t, store, exif, repo)
+
+		if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), freshInstanceID(t), domain.PhotoKindAfter, bytes.NewReader(jpegLikeBytes("x")), now); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		if repo.latestCalls != 1 {
+			t.Fatalf("LatestTakenAt called %d times, want 1", repo.latestCalls)
 		}
 	})
 }

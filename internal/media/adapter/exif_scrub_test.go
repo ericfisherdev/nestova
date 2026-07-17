@@ -549,21 +549,93 @@ func TestScrubReencodeBoundsPixelsBeforeFullDecode(t *testing.T) {
 	}
 }
 
-func TestScrubTruncatedOrMalformedNeverPanics(t *testing.T) {
+// TestScrubEmptyJPEGBodySucceeds covers the one "looks malformed but isn't"
+// case: a bare SOI with nothing after it is not a broken segment structure
+// (the segment walk never even starts), so it is returned unchanged rather
+// than rejected.
+func TestScrubEmptyJPEGBodySucceeds(t *testing.T) {
+	got, err := adapter.NewExifReader().Scrub([]byte{0xFF, 0xD8}, 0)
+	if err != nil {
+		t.Fatalf("Scrub(SOI-only): %v", err)
+	}
+	if !bytes.Equal(got, []byte{0xFF, 0xD8}) {
+		t.Fatalf("Scrub(SOI-only) = %x, want unchanged", got)
+	}
+}
+
+// TestScrubRejectsMalformedJPEGStructure covers the NES-119 review's privacy
+// fix: a JPEG whose internal segment structure is truncated or malformed is
+// REJECTED with domain.ErrInvalidPhoto — never panics, and never falls back
+// to passing the unexamined remainder of the bytes through unscrubbed (the
+// pre-review behavior, which could leave a still-intact EXIF segment past
+// the point of malformation in the "scrubbed" output — see
+// TestScrubRejectsJunkByteEvenWhenValidExifFollows for the exact regression
+// scenario).
+func TestScrubRejectsMalformedJPEGStructure(t *testing.T) {
 	r := adapter.NewExifReader()
 	inputs := [][]byte{
-		{0xFF, 0xD8},                         // just SOI
-		{0xFF, 0xD8, 0xFF},                   // truncated marker
-		{0xFF, 0xD8, 0xFF, 0xE1, 0xFF},       // truncated length
+		{0xFF, 0xD8, 0xFF},                   // truncated marker (dangling fill byte, no code)
+		{0xFF, 0xD8, 0xFF, 0xE1, 0xFF},       // truncated length field
 		{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0xFF}, // length claims more than present
 	}
 	for _, in := range inputs {
 		got, err := r.Scrub(in, 0)
-		if err != nil {
-			t.Fatalf("Scrub(%x): unexpected error %v", in, err)
+		if !errors.Is(err, domain.ErrInvalidPhoto) {
+			t.Errorf("Scrub(%x) error = %v, want ErrInvalidPhoto", in, err)
 		}
-		if got == nil {
-			t.Fatalf("Scrub(%x) returned nil", in)
+		if got != nil {
+			t.Errorf("Scrub(%x) = %x, want nil bytes on rejection", in, got)
 		}
+	}
+}
+
+// TestScrubRejectsJunkByteEvenWhenValidExifFollows is the NES-119 review's
+// exact regression fixture: SOI + one stray junk byte (not a marker) + a
+// VALID EXIF APP1 segment + the rest of a valid JPEG. The pre-review
+// implementation bailed out at the junk byte and copied everything after it
+// — including the still-intact EXIF segment — straight into the output,
+// silently defeating the whole scrub. It must now be rejected outright.
+func TestScrubRejectsJunkByteEvenWhenValidExifFollows(t *testing.T) {
+	base := jpegBytes(t)
+	tiff := buildTIFF(t, []tiffField{dateTimeField(tagDateTime, "2026:01:01 00:00:00")}, nil)
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segLen := len(payload) + 2
+
+	var data bytes.Buffer
+	data.Write([]byte{0xFF, 0xD8}) // SOI
+	data.WriteByte(0x00)           // stray junk byte where a marker was expected
+	data.Write([]byte{0xFF, 0xE1})
+	data.Write([]byte{byte(segLen >> 8), byte(segLen)})
+	data.Write(payload)
+	data.Write(base[2:])
+
+	got, err := adapter.NewExifReader().Scrub(data.Bytes(), 0)
+	if !errors.Is(err, domain.ErrInvalidPhoto) {
+		t.Fatalf("Scrub(junk byte before valid EXIF) error = %v, want ErrInvalidPhoto — must reject, not pass the EXIF through unscrubbed", err)
+	}
+	if got != nil {
+		t.Fatalf("Scrub(junk byte before valid EXIF) = %x, want nil bytes on rejection", got)
+	}
+}
+
+// TestScrubReencodeInvalidImageMapsToErrInvalidPhoto covers the NES-119
+// review's second error-mapping fix: a DecodeConfig or Decode failure in
+// the orientation-bake path must wrap domain.ErrInvalidPhoto (so the web
+// handler's 400 path matches), not a bare error that would fall through to
+// a misleading 500.
+func TestScrubReencodeInvalidImageMapsToErrInvalidPhoto(t *testing.T) {
+	// A JFIF+SOF0 header (so DecodeConfig succeeds) with sane, small
+	// dimensions but NO scan data at all — the full image.Decode fails.
+	notReallyAnImage := hugeDimensionJPEG(4, 4)
+
+	_, err := adapter.NewExifReader().Scrub(notReallyAnImage, 6) // orientation != 1/0 triggers reencodeUpright
+	if !errors.Is(err, domain.ErrInvalidPhoto) {
+		t.Fatalf("Scrub(undecodable image) error = %v, want ErrInvalidPhoto", err)
+	}
+
+	// Garbage that fails even DecodeConfig.
+	_, err = adapter.NewExifReader().Scrub([]byte{0xFF, 0xD8, 0xFF, 0xD9}, 6)
+	if !errors.Is(err, domain.ErrInvalidPhoto) {
+		t.Fatalf("Scrub(undecodable config) error = %v, want ErrInvalidPhoto", err)
 	}
 }

@@ -71,25 +71,45 @@ type queryRower interface {
 // The insert runs inside its own transaction, which first acquires a
 // per-task-instance pg_advisory_xact_lock — taken by EVERY Create for a
 // given instance, regardless of Kind, not just an "after" upload. This
-// matters: without a "before" insert also taking the lock, a "before"
-// insert racing an "after" upload's check-then-insert could land in the gap
-// between the after's read of the latest "before" and its own insert,
-// letting a decision that was accurate when read become stale by the time
-// it commits. With every Create for the instance serialized through the
-// same lock, an "after" upload's read of the latest "before" (below) is
-// always consistent with whatever is genuinely committed at that instant —
-// a concurrent Create for the same instance either already committed
-// before this lock was acquired (and so is visible to the read) or is
-// still blocked waiting for this transaction to release the lock (and so
-// cannot yet have committed). The lock auto-releases at commit or
-// rollback; different instances never contend with each other (see
+// matters for two reasons:
+//
+//  1. Without a "before" insert also taking the lock, a "before" insert
+//     racing an "after" upload's check-then-insert could land in the gap
+//     between the after's read of the latest "before" and its own insert,
+//     letting a decision that was accurate when read become stale by the
+//     time it commits.
+//  2. The ordering check itself is SYMMETRIC (see below), so a "before"
+//     insert has its own read-then-decide step that needs the exact same
+//     protection an "after" insert's does.
+//
+// With every Create for the instance serialized through the same lock, a
+// Create's read of the OTHER kind's relevant extreme (below) is always
+// consistent with whatever is genuinely committed at that instant — a
+// concurrent Create for the same instance either already committed before
+// this lock was acquired (and so is visible to the read) or is still
+// blocked waiting for this transaction to release the lock (and so cannot
+// yet have committed). The lock auto-releases at commit or rollback;
+// different instances never contend with each other (see
 // choreProofInstanceLockNamespace's doc).
+//
+// The ordering check is symmetric in what it protects (one invariant: no
+// "after" may precede any "before" for the same instance) but asymmetric in
+// which extreme each direction reads, since either kind can be the one
+// being newly inserted:
+//   - photo.Kind == PhotoKindAfter: rejected (ErrAfterPrecedesBefore) when
+//     photo.TakenAt is earlier than the instance's LATEST existing "before"
+//     — a later "before" would make an otherwise-fine "after" retroactively
+//     invalid, so the newest one is what must be checked against.
+//   - photo.Kind == PhotoKindBefore: rejected (ErrAfterPrecedesBefore) when
+//     photo.TakenAt is LATER than the instance's EARLIEST existing "after"
+//     — inserting a "before" chronologically after work was already
+//     photographed as finished is the same invariant violation, just
+//     approached from the other direction; the earliest "after" is the
+//     tightest existing bound to check a new "before" against.
 //
 // Maps an unknown/foreign task instance to domain.ErrTaskInstanceNotFound
 // and an unknown uploader to household.ErrMemberNotFound (both via the
-// composite tenant FK violations), and — for photo.Kind ==
-// domain.PhotoKindAfter — domain.ErrAfterPrecedesBefore when photo.TakenAt
-// is earlier than the instance's most recent domain.PhotoKindBefore photo.
+// composite tenant FK violations).
 func (r *TaskInstancePhotoRepository) Create(ctx context.Context, photo *domain.TaskInstancePhoto) error {
 	if photo == nil {
 		return errors.New("media/adapter: create task instance photo: nil photo")
@@ -109,12 +129,21 @@ func (r *TaskInstancePhotoRepository) Create(ctx context.Context, photo *domain.
 		return fmt.Errorf("create task instance photo: acquire instance lock: %w", err)
 	}
 
-	if photo.Kind == domain.PhotoKindAfter {
+	switch photo.Kind {
+	case domain.PhotoKindAfter:
 		beforeTakenAt, ok, err := latestTakenAt(ctx, tx, photo.HouseholdID, photo.TaskInstanceID, domain.PhotoKindBefore)
 		if err != nil {
-			return fmt.Errorf("create task instance photo: check before photo: %w", err)
+			return fmt.Errorf("create task instance photo: check latest before photo: %w", err)
 		}
 		if ok && domain.AfterPrecedesBefore(photo.TakenAt, beforeTakenAt) {
+			return domain.ErrAfterPrecedesBefore
+		}
+	case domain.PhotoKindBefore:
+		afterTakenAt, ok, err := earliestTakenAt(ctx, tx, photo.HouseholdID, photo.TaskInstanceID, domain.PhotoKindAfter)
+		if err != nil {
+			return fmt.Errorf("create task instance photo: check earliest after photo: %w", err)
+		}
+		if ok && domain.AfterPrecedesBefore(afterTakenAt, photo.TakenAt) {
 			return domain.ErrAfterPrecedesBefore
 		}
 	}
@@ -166,21 +195,42 @@ func (r *TaskInstancePhotoRepository) LatestTakenAt(ctx context.Context, househo
 }
 
 // latestTakenAt runs the shared query behind both the public LatestTakenAt
-// (against the plain pool) and Create's transactional before/after check
-// (against its own tx) — q is whichever queryRower the caller holds.
+// (against the plain pool) and Create's transactional check of an "after"
+// insert against the LATEST existing "before" (against its own tx) — q is
+// whichever queryRower the caller holds.
 func latestTakenAt(ctx context.Context, q queryRower, householdID household.HouseholdID, taskInstanceID domain.TaskInstanceID, kind domain.PhotoKind) (time.Time, bool, error) {
 	const query = `
 		SELECT taken_at FROM task_instance_photo
 		 WHERE household_id = $1 AND task_instance_id = $2 AND kind = $3
 		 ORDER BY taken_at DESC
 		 LIMIT 1`
+	return scanTakenAt(ctx, q, query, householdID, taskInstanceID, kind)
+}
+
+// earliestTakenAt is latestTakenAt's mirror (ORDER BY ASC instead of DESC),
+// used only by Create's transactional check of a "before" insert against
+// the EARLIEST existing "after" — see Create's doc for why the before
+// direction checks the earliest, not the latest.
+func earliestTakenAt(ctx context.Context, q queryRower, householdID household.HouseholdID, taskInstanceID domain.TaskInstanceID, kind domain.PhotoKind) (time.Time, bool, error) {
+	const query = `
+		SELECT taken_at FROM task_instance_photo
+		 WHERE household_id = $1 AND task_instance_id = $2 AND kind = $3
+		 ORDER BY taken_at ASC
+		 LIMIT 1`
+	return scanTakenAt(ctx, q, query, householdID, taskInstanceID, kind)
+}
+
+// scanTakenAt runs query (either latestTakenAt's or earliestTakenAt's,
+// differing only in ORDER BY direction) and scans the single taken_at
+// result, or reports ok=false (not an error) when no row matches.
+func scanTakenAt(ctx context.Context, q queryRower, query string, householdID household.HouseholdID, taskInstanceID domain.TaskInstanceID, kind domain.PhotoKind) (time.Time, bool, error) {
 	var takenAt time.Time
 	err := q.QueryRow(ctx, query, householdID.String(), taskInstanceID.String(), kind.String()).Scan(&takenAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return time.Time{}, false, nil
 		}
-		return time.Time{}, false, fmt.Errorf("latest taken_at: %w", err)
+		return time.Time{}, false, fmt.Errorf("taken_at: %w", err)
 	}
 	return takenAt, true, nil
 }
