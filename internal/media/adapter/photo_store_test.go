@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -328,10 +329,14 @@ func TestPutRejectsUnknownClass(t *testing.T) {
 		t.Fatalf("NewLocalPhotoStore: %v", err)
 	}
 	hh := household.NewHouseholdID()
-	unknownClass := domain.PhotoClass(99)
 
-	if _, err := s.Put(context.Background(), hh, unknownClass, bytes.NewReader(jpegBytes(t))); err == nil {
-		t.Fatal("Put with an unknown PhotoClass must fail")
+	// Both an out-of-range value and the deliberately-invalid zero value
+	// must be rejected — the zero value especially, so a caller that forgot
+	// to choose a class can never default into the album namespace.
+	for _, class := range []domain.PhotoClass{domain.PhotoClass(99), domain.PhotoClassUnspecified} {
+		if _, err := s.Put(context.Background(), hh, class, bytes.NewReader(jpegBytes(t))); err == nil {
+			t.Fatalf("Put with invalid PhotoClass %v must fail", class)
+		}
 	}
 
 	var files []string
@@ -415,5 +420,12 @@ func TestURL(t *testing.T) {
 
 	if _, err := s.URL(context.Background(), domain.StorageRef("nope/aa/deadbeef.jpg"), 5*time.Minute); !errors.Is(err, domain.ErrPhotoNotFound) {
 		t.Fatalf("URL(unknown) error = %v, want ErrPhotoNotFound", err)
+	}
+
+	// A directory ref (e.g. the households prefix itself) is not a stored
+	// photo and must be rejected the same way.
+	dirRef := domain.StorageRef(path.Dir(stored.Ref.String()))
+	if _, err := s.URL(context.Background(), dirRef, 5*time.Minute); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("URL(directory) error = %v, want ErrPhotoNotFound", err)
 	}
 }
