@@ -85,7 +85,7 @@ source below — each row links to its setup details.
 | **Remote Postgres** | ✅ Supported | Any reachable Postgres — point `DATABASE_URL` at it (same configuration as local). |
 | **Supabase (cloud)** | ✅ Supported | `DB_PROVIDER=supabase`, a pooler/direct DSN, and enforced TLS. See [Using Supabase](#using-supabase). |
 | **Supabase (local CLI)** | ✅ Supported | The Supabase CLI stack (Postgres + Supavisor pooler). See [Local Supabase via the CLI](#local-supabase-via-the-cli-optional). |
-| **PocketBase** | 🚧 Planned | Tracked under epic [NES-81](https://ericfisherdev.atlassian.net/browse/NES-81); the [feasibility spike](docs/pocketbase-backend-spike.md) recommends an embedded **SQLite** backend. Not yet available. |
+| **PocketBase** | 🚧 Planned | Tracked under epic [NES-81](https://ericfisherdev.atlassian.net/browse/NES-81); the feasibility spike recommends an embedded **SQLite** backend. Not yet available. |
 
 Configure any supported source through the environment variables below, or
 interactively through the [first-run setup wizard](#first-run-setup-wizard).
@@ -399,8 +399,7 @@ never diverge ([`lefthook.yml`](lefthook.yml)):
 
 ### Testing
 
-See [docs/testing.md](docs/testing.md) for the project's test conventions
-(table-driven, black-box, environment isolation) and coverage workflow.
+Test conventions: table-driven, black-box, environment isolation.
 `make test` writes a coverage profile to `coverage.out`; `make cover` renders a
 per-function summary.
 
