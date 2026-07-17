@@ -716,15 +716,70 @@ var kioskContentPollCases = []kioskContentPollCase{
 	{"photos", "/kiosk/photos", "/kiosk/photos/content", "kiosk-photos-content"},
 }
 
-// assertKioskPollWiring asserts html carries the complete self-poll wiring
-// for tc's tab: the wrapper id plus all four htmx attributes. Applied to
-// BOTH the full-page response and the poll fragment response — a fragment
-// that silently dropped hx-trigger (or any of the other three) would still
-// render fine on this swap but never re-arm the next one, wedging the tab at
-// whatever it happened to show, so the fragment needs the exact same
-// assertion the full page gets, not just a wrapper-id check.
+// extractTag returns the single HTML element of the given tag (e.g. "li",
+// "div") — from its opening "<tag" to its closing "</tag>" — that contains
+// needle, so a test can assert on attributes/text scoped to exactly that
+// element rather than the whole page (where a substring match could
+// accidentally be satisfied by an unrelated element). Mirrors
+// web/components/kiosk_test.go's identical helper (not exported across
+// packages, so duplicated here for the same reason its own doc comment
+// gives).
+func extractTag(html, needle, tag string) string {
+	idx := strings.Index(html, needle)
+	if idx < 0 {
+		return ""
+	}
+	start := strings.LastIndex(html[:idx], "<"+tag)
+	if start < 0 {
+		return ""
+	}
+	closeTag := "</" + tag + ">"
+	end := strings.Index(html[idx:], closeTag)
+	if end < 0 {
+		return ""
+	}
+	return html[start : idx+end+len(closeTag)]
+}
+
+// extractOpeningTag returns just the opening tag (from its "<div" start
+// through its own closing '>') of the element whose attributes contain
+// idAttr — e.g. `id="kiosk-chores-content"`. Deliberately narrower than
+// extractTag: a wrapper div always contains nested divs, so extractTag's
+// "first matching closing tag" would be a DESCENDANT's, not the wrapper's
+// own, and scanning that whole (wrapper + partial descendant) range for an
+// hx-* attribute could let one that drifted onto a descendant element
+// satisfy a check meant for the wrapper itself. Slicing at the wrapper's own
+// first '>' rules that out.
+func extractOpeningTag(html, idAttr string) string {
+	idx := strings.Index(html, idAttr)
+	if idx < 0 {
+		return ""
+	}
+	start := strings.LastIndex(html[:idx], "<div")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(html[start:], ">")
+	if end < 0 {
+		return ""
+	}
+	return html[start : start+end+1]
+}
+
+// assertKioskPollWiring asserts html's #tc.wrapperID wrapper's OWN opening
+// tag carries the complete self-poll wiring: the wrapper id plus all four
+// htmx attributes. Applied to BOTH the full-page response and the poll
+// fragment response — a fragment that silently dropped hx-trigger (or any of
+// the other three) would still render fine on this swap but never re-arm the
+// next one, wedging the tab at whatever it happened to show, so the fragment
+// needs the exact same assertion the full page gets, not just a
+// wrapper-id-appears-somewhere check.
 func assertKioskPollWiring(t *testing.T, html string, tc kioskContentPollCase) {
 	t.Helper()
+	openTag := extractOpeningTag(html, `id="`+tc.wrapperID+`"`)
+	if openTag == "" {
+		t.Fatalf("could not locate the %s wrapper's opening tag in: %s", tc.wrapperID, html)
+	}
 	for _, want := range []string{
 		`id="` + tc.wrapperID + `"`,
 		`hx-get="` + tc.contentRoute + `"`,
@@ -735,8 +790,8 @@ func assertKioskPollWiring(t *testing.T, html string, tc kioskContentPollCase) {
 		`hx-target="this"`,
 		`hx-swap="outerHTML"`,
 	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("response missing self-poll wiring %q: %s", want, html)
+		if !strings.Contains(openTag, want) {
+			t.Errorf("wrapper opening tag missing self-poll wiring %q: %s", want, openTag)
 		}
 	}
 }
@@ -803,18 +858,18 @@ func TestKioskTabsContent_NoIdentityUnauthorized(t *testing.T) {
 }
 
 // TestKioskChoresContent_ReflectsClaimMadeElsewhere is the AC1 regression
-// test: a chore claimed from a phone (the QR deep-link flow, simulated here
-// by mutating the instance directly, as the real Claim call would) must
-// appear as claimed the next time the chores content fragment is polled —
-// without the kiosk itself performing any action.
+// test: a chore claimed from a phone (the QR deep-link flow) must appear as
+// claimed the next time the chores content fragment is polled — without the
+// kiosk itself performing any action.
 func TestKioskChoresContent_ReflectsClaimMadeElsewhere(t *testing.T) {
 	adult := adminTestAdult()
 	handler, _, kioskSvc, fakes := buildKioskTestHandler(t, adult)
 	_, rawToken := provisionDevice(t, kioskSvc, adult.HouseholdID, "Kitchen")
 
+	const choreTitle = "Wash dishes"
 	recurringID := tasksdomain.NewRecurringTaskID()
 	fakes.recurring.active = []*tasksdomain.RecurringTask{
-		{ID: recurringID, HouseholdID: adult.HouseholdID, Title: "Wash dishes", Category: "chore", Active: true},
+		{ID: recurringID, HouseholdID: adult.HouseholdID, Title: choreTitle, Category: "chore", Active: true},
 	}
 	today := tasksdomain.DateOf(time.Now())
 	instance := &tasksdomain.TaskInstance{
@@ -830,17 +885,29 @@ func TestKioskChoresContent_ReflectsClaimMadeElsewhere(t *testing.T) {
 	if firstRec.Code != http.StatusOK {
 		t.Fatalf("GET /kiosk/chores/content before claim: status = %d, want 200; body: %s", firstRec.Code, firstRec.Body.String())
 	}
-	if strings.Contains(firstRec.Body.String(), adult.DisplayName) {
-		t.Fatalf("unassigned chore must not already show an assignee: %s", firstRec.Body.String())
+	beforeRow := extractTag(firstRec.Body.String(), choreTitle, "li")
+	if beforeRow == "" {
+		t.Fatalf("could not locate the chore row before claim in: %s", firstRec.Body.String())
 	}
-	if !strings.Contains(firstRec.Body.String(), "Anyone") {
-		t.Errorf("unassigned chore should render the Anyone placeholder: %s", firstRec.Body.String())
+	if strings.Contains(beforeRow, adult.DisplayName) {
+		t.Fatalf("unassigned chore must not already show an assignee: %s", beforeRow)
+	}
+	if !strings.Contains(beforeRow, "Anyone") {
+		t.Errorf("unassigned chore should render the Anyone placeholder: %s", beforeRow)
 	}
 
-	// Simulate the phone-side claim (NES-129's QR deep link ultimately calls
-	// TaskInstanceRepository.Claim; mutating AssigneeID directly here is
-	// equivalent from ChoresContent's read-only point of view).
+	// Simulate the phone-side claim via the actual TaskInstanceRepository.Claim
+	// contract (ports.go's doc: a fresh claim on a chore not previously
+	// assigned to anyone sets AssigneeID, ClaimedBy, ClaimedAt, and
+	// ClaimExpiresAt — claimed_at + ClaimWindow — all together). Seeding
+	// AssigneeID alone would leave the fixture in a state the real Claim call
+	// could never actually produce.
+	claimedAt := time.Now()
+	claimExpiresAt := claimedAt.Add(tasksdomain.ClaimWindow)
 	instance.AssigneeID = &adult.ID
+	instance.ClaimedBy = &adult.ID
+	instance.ClaimedAt = &claimedAt
+	instance.ClaimExpiresAt = &claimExpiresAt
 
 	secondReq := httptest.NewRequest(http.MethodGet, "/kiosk/chores/content", nil)
 	secondReq.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
@@ -849,8 +916,29 @@ func TestKioskChoresContent_ReflectsClaimMadeElsewhere(t *testing.T) {
 	if secondRec.Code != http.StatusOK {
 		t.Fatalf("GET /kiosk/chores/content after claim: status = %d, want 200; body: %s", secondRec.Code, secondRec.Body.String())
 	}
-	if !strings.Contains(secondRec.Body.String(), adult.DisplayName) {
-		t.Errorf("chore claimed elsewhere did not show up on the next poll: %s", secondRec.Body.String())
+	afterRow := extractTag(secondRec.Body.String(), choreTitle, "li")
+	if afterRow == "" {
+		t.Fatalf("could not locate the chore row after claim in: %s", secondRec.Body.String())
+	}
+	// The kiosk chores tab has no separate "claimed" badge — NES-118's claim
+	// countdown badge is a member-facing /tasks-only feature, absent from this
+	// read-only view (see KioskChoreView's doc comment). What it actually
+	// renders in place of the "Anyone" placeholder is a MemberAvatar: the
+	// assignee's name in the span's title/aria-label and initials as its text
+	// content (web/components/member.templ's MemberAvatar) — that is exactly
+	// what "reflects the claimed state" means on this tab, so assert that
+	// precise markup rather than a loose substring match.
+	if strings.Contains(afterRow, "Anyone") {
+		t.Errorf("chore row still shows the Anyone placeholder after being claimed: %s", afterRow)
+	}
+	if !strings.Contains(afterRow, `title="`+adult.DisplayName+`"`) {
+		t.Errorf("chore row missing the claimed member's avatar title=%q: %s", adult.DisplayName, afterRow)
+	}
+	if !strings.Contains(afterRow, `aria-label="`+adult.DisplayName+`"`) {
+		t.Errorf("chore row missing the claimed member's avatar aria-label=%q: %s", adult.DisplayName, afterRow)
+	}
+	if !strings.Contains(afterRow, ">"+adult.Initials()+"<") {
+		t.Errorf("chore row avatar missing the claimed member's initials %q: %s", adult.Initials(), afterRow)
 	}
 }
 
