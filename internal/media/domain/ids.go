@@ -44,3 +44,50 @@ func ParsePhotoID(s string) (PhotoID, error) {
 	}
 	return PhotoID(u), nil
 }
+
+// TaskInstancePhotoID uniquely identifies a chore-proof photo (NES-119).
+type TaskInstancePhotoID uuid.UUID
+
+// NewTaskInstancePhotoID returns a new time-ordered (UUIDv7) id.
+func NewTaskInstancePhotoID() TaskInstancePhotoID {
+	return TaskInstancePhotoID(uuid.Must(uuid.NewV7()))
+}
+
+// String returns the canonical UUID string.
+func (id TaskInstancePhotoID) String() string { return uuid.UUID(id).String() }
+
+// ParseTaskInstancePhotoID parses a canonical UUID string into a TaskInstancePhotoID.
+func ParseTaskInstancePhotoID(s string) (TaskInstancePhotoID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return TaskInstancePhotoID{}, fmt.Errorf("parse task instance photo id: %w", err)
+	}
+	return TaskInstancePhotoID(u), nil
+}
+
+// TaskInstanceID identifies the task instance a chore-proof photo documents
+// (NES-119). It is media's OWN reference type — a raw UUID, structurally
+// identical to (and always constructed from the same string as) the tasks
+// bounded context's own tasks/domain.TaskInstanceID — not an import of it:
+// media does not depend on the tasks context (see the import-graph note on
+// ChoreProofExif in chore_photo.go), so a chore-proof photo references "the
+// task instance with this id" as a plain value, the same way photo.go
+// already references "the household with this id" would if media did not
+// already share household as the one, deliberately foundational, shared
+// kernel every bounded context depends on. Parsing an invalid/foreign id is
+// impossible to distinguish here from a valid-but-nonexistent one; both are
+// caught downstream by the task_instance_photo_instance_fk composite FK,
+// mapped by the adapter to ErrTaskInstanceNotFound.
+type TaskInstanceID uuid.UUID
+
+// String returns the canonical UUID string.
+func (id TaskInstanceID) String() string { return uuid.UUID(id).String() }
+
+// ParseTaskInstanceID parses a canonical UUID string into a TaskInstanceID.
+func ParseTaskInstanceID(s string) (TaskInstanceID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return TaskInstanceID{}, fmt.Errorf("parse task instance id: %w", err)
+	}
+	return TaskInstanceID(u), nil
+}

@@ -430,6 +430,23 @@ func registerMediaPages(
 	mux.Handle("GET /album/{id}", requireMember(http.HandlerFunc(mediaHandlers.AlbumViewer)))
 }
 
+// registerChoreProofPhotoRoutes wires the NES-119 chore-proof photo upload
+// endpoint. It is deliberately its own registration function rather than a
+// case added to registerMediaPages: the route lives under the tasks-owned
+// /tasks/{id}/... prefix even though its handler is implemented in the media
+// bounded context — the composition root (this file, mirroring the pattern
+// NES-26's onboarding provisioner established) is the one place allowed to
+// know about both, so neither tasks/adapter nor media/adapter imports the
+// other.
+func registerChoreProofPhotoRoutes(
+	mux *http.ServeMux,
+	sm *scs.SessionManager,
+	choreProofHandlers *mediaadapter.ChoreProofWebHandlers,
+) {
+	requireMember := authadapter.RequireMember(sm)
+	mux.Handle("POST /tasks/{id}/photos", requireMember(http.HandlerFunc(choreProofHandlers.Upload)))
+}
+
 // registerSettingsPage wires the parent-only /settings page (NES-128 adds its
 // first section: kiosk device provisioning). RequireMember-gated at the
 // router, same as every other member page; the parent-only role check happens

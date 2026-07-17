@@ -32,16 +32,19 @@ func isUniqueViolation(err error, constraint string) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation && pgErr.ConstraintName == constraint
 }
 
-// FK constraint names on the media tables (00017). The household FKs are inline
-// column references, so Postgres auto-names them <table>_<column>_fkey; the
-// uploader and album_photo FKs are the explicitly named composite tenant
-// constraints.
+// FK constraint names on the media tables (00017, 00029). The household FKs
+// are inline column references, so Postgres auto-names them
+// <table>_<column>_fkey; the uploader, album_photo, and task_instance_photo
+// FKs are the explicitly named composite tenant constraints.
 const (
-	albumHouseholdFK  = "album_household_id_fkey"
-	photoHouseholdFK  = "photo_household_id_fkey"
-	photoUploaderFK   = "photo_uploader_fk"
-	albumPhotoAlbumFK = "album_photo_album_fk"
-	albumPhotoPhotoFK = "album_photo_photo_fk"
+	albumHouseholdFK             = "album_household_id_fkey"
+	photoHouseholdFK             = "photo_household_id_fkey"
+	photoUploaderFK              = "photo_uploader_fk"
+	albumPhotoAlbumFK            = "album_photo_album_fk"
+	albumPhotoPhotoFK            = "album_photo_photo_fk"
+	taskInstancePhotoHouseholdFK = "task_instance_photo_household_id_fkey"
+	taskInstancePhotoInstanceFK  = "task_instance_photo_instance_fk"
+	taskInstancePhotoUploaderFK  = "task_instance_photo_uploader_fk"
 )
 
 // mapFKViolation maps a media FK violation to its domain sentinel, or nil when
@@ -52,14 +55,16 @@ func mapFKViolation(err error) error {
 		return nil
 	}
 	switch pgErr.ConstraintName {
-	case albumHouseholdFK, photoHouseholdFK:
+	case albumHouseholdFK, photoHouseholdFK, taskInstancePhotoHouseholdFK:
 		return household.ErrHouseholdNotFound
-	case photoUploaderFK:
+	case photoUploaderFK, taskInstancePhotoUploaderFK:
 		return household.ErrMemberNotFound
 	case albumPhotoAlbumFK:
 		return domain.ErrAlbumNotFound
 	case albumPhotoPhotoFK:
 		return domain.ErrPhotoNotFound
+	case taskInstancePhotoInstanceFK:
+		return domain.ErrTaskInstanceNotFound
 	default:
 		return nil
 	}

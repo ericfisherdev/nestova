@@ -480,6 +480,19 @@ func runServer(logger *slog.Logger) error {
 	}
 	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger, cfg.Media.MaxUploadBytes)
 
+	// NES-119: chore-proof (before/after) photo upload — a structurally
+	// separate table and storage class (domain.PhotoClassChoreProof) from
+	// the album path above, reusing the same PhotoStore/ExifReader.
+	choreProofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	choreProofPhotoService, err := mediaapp.NewChoreProofPhotoService(
+		photoStore, mediaadapter.NewExifReader(), choreProofPhotoRepo,
+		cfg.Media.MaxUploadBytes, cfg.Media.ChoreProofFreshnessWindow,
+	)
+	if err != nil {
+		return fmt.Errorf("create chore proof photo service: %w", err)
+	}
+	choreProofWebHandlers := mediaadapter.NewChoreProofWebHandlers(choreProofPhotoService, sm, logger, cfg.Media.MaxUploadBytes)
+
 	// NES-129: QR deep-link signing. The signing key is derived from
 	// cfg.Session.Secret (its own doc comment already reserves it for "future
 	// signing needs") via a purpose-scoped HMAC derivation rather than reused
@@ -538,6 +551,7 @@ func runServer(logger *slog.Logger) error {
 			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
+			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
 			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
