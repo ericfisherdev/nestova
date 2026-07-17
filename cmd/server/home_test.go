@@ -31,6 +31,10 @@ func (testCredRepo) FindByEmail(_ context.Context, _ string) (*authdomain.Creden
 	return nil, authdomain.ErrInvalidCredentials
 }
 
+func (testCredRepo) FindByMemberID(_ context.Context, _ household.MemberID) (*authdomain.Credential, error) {
+	return nil, authdomain.ErrInvalidCredentials
+}
+
 func (testCredRepo) SetPassword(_ context.Context, _ household.MemberID, _, _ string) error {
 	return nil
 }

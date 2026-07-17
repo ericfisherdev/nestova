@@ -25,6 +25,15 @@ func (f *fakeRepo) FindByEmail(_ context.Context, email string) (*authdomain.Cre
 	return c, nil
 }
 
+func (f *fakeRepo) FindByMemberID(_ context.Context, memberID household.MemberID) (*authdomain.Credential, error) {
+	for _, c := range f.credentials {
+		if c.MemberID == memberID {
+			return c, nil
+		}
+	}
+	return nil, authdomain.ErrInvalidCredentials
+}
+
 func (f *fakeRepo) SetPassword(_ context.Context, _ household.MemberID, _, _ string) error {
 	return nil
 }

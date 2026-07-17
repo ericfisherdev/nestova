@@ -14,6 +14,7 @@ import (
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
+	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	calendardomain "github.com/ericfisherdev/nestova/internal/calendar/domain"
 	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
@@ -23,11 +24,76 @@ import (
 	kioskdomain "github.com/ericfisherdev/nestova/internal/kiosk/domain"
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
+	"github.com/ericfisherdev/nestova/internal/platform/crypto"
+	"github.com/ericfisherdev/nestova/internal/platform/totp"
 	subscriptionsdomain "github.com/ericfisherdev/nestova/internal/subscriptions/domain"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 	trackingapp "github.com/ericfisherdev/nestova/internal/tracking/app"
 	trackingdomain "github.com/ericfisherdev/nestova/internal/tracking/domain"
 )
+
+// fakeMFARepo is an in-memory authdomain.MFARepository used by the kiosk test
+// harness, which only needs registerSettingsPage's MFA section to build
+// without error (no kiosk test exercises MFA enrollment itself — that has
+// its own dedicated coverage in internal/auth/app and internal/auth/adapter).
+type fakeMFARepo struct {
+	enrollments map[household.MemberID]*authdomain.MFAEnrollment
+}
+
+func newFakeMFARepo() *fakeMFARepo {
+	return &fakeMFARepo{enrollments: make(map[household.MemberID]*authdomain.MFAEnrollment)}
+}
+
+func (f *fakeMFARepo) GetEnrollment(_ context.Context, memberID household.MemberID) (*authdomain.MFAEnrollment, error) {
+	e, ok := f.enrollments[memberID]
+	if !ok {
+		return nil, authdomain.ErrMFANotEnrolled
+	}
+	cp := *e
+	return &cp, nil
+}
+
+func (f *fakeMFARepo) BeginEnrollment(_ context.Context, memberID household.MemberID, householdID household.HouseholdID, secretEnc []byte) error {
+	if existing, ok := f.enrollments[memberID]; ok && existing.Confirmed() {
+		return authdomain.ErrMFAAlreadyEnrolled
+	}
+	f.enrollments[memberID] = &authdomain.MFAEnrollment{MemberID: memberID, HouseholdID: householdID, TOTPSecretEnc: secretEnc}
+	return nil
+}
+
+func (f *fakeMFARepo) ConfirmEnrollment(_ context.Context, memberID household.MemberID) error {
+	e, ok := f.enrollments[memberID]
+	if !ok {
+		return authdomain.ErrMFANotEnrolled
+	}
+	now := time.Now()
+	e.ConfirmedAt = &now
+	return nil
+}
+
+func (f *fakeMFARepo) DeleteEnrollment(_ context.Context, householdID household.HouseholdID, memberID household.MemberID) error {
+	e, ok := f.enrollments[memberID]
+	if !ok || e.HouseholdID != householdID {
+		return authdomain.ErrMFANotEnrolled
+	}
+	delete(f.enrollments, memberID)
+	return nil
+}
+
+func (f *fakeMFARepo) ReplaceRecoveryCodes(_ context.Context, _ household.MemberID, _ []string) error {
+	return nil
+}
+
+func (f *fakeMFARepo) ListUnusedRecoveryCodes(_ context.Context, _ household.MemberID) ([]authdomain.RecoveryCode, error) {
+	return nil, nil
+}
+
+func (f *fakeMFARepo) MarkRecoveryCodeUsed(_ context.Context, _ authdomain.RecoveryCodeID) error {
+	return nil
+}
+
+// Compile-time assertion.
+var _ authdomain.MFARepository = (*fakeMFARepo)(nil)
 
 // ---------------------------------------------------------------------------
 // Fakes local to the kiosk test harness (the calendar unified view's narrow
@@ -262,6 +328,16 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 		t.Fatalf("NewKioskService: %v", err)
 	}
 	settingsHandlers := kioskadapter.NewSettingsWebHandlers(kioskSvc, sm, logger)
+
+	mfaTestCipher, err := crypto.NewCipher([]byte("kiosk-test-harness-mfa-cipher-32"))
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), mfaTestCipher, totp.NewProvider(), testCredRepo{}, logger)
+	if err != nil {
+		t.Fatalf("NewMFAService: %v", err)
+	}
+	mfaHandlers := authadapter.NewMFAWebHandlers(mfaService, householdRepo, sm, logger)
 	deepLinkSigner, err := deeplinkapp.NewSigner([]byte("kiosk-test-harness-deep-link-key"))
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
@@ -285,7 +361,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers)
+	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers)
 	registerKioskPages(mux, kioskHandlers)
 
 	handler := sm.LoadAndSave(

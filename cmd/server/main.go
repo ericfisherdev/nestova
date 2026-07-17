@@ -37,6 +37,7 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	"github.com/ericfisherdev/nestova/internal/platform/metrics"
+	"github.com/ericfisherdev/nestova/internal/platform/totp"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
@@ -433,6 +434,20 @@ func runServer(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create token cipher: %w", err)
 	}
+
+	// NES-134: TOTP MFA enrollment. The TOTP secret is protected at rest by
+	// the SAME tokenCipher instance that protects calendar OAuth tokens
+	// above (one ENCRYPTION_KEY-derived cipher, multiple consumers) rather
+	// than a second cipher. credRepo (constructed earlier for password
+	// login) also satisfies the owner-reauth password lookup MFAService
+	// needs — no separate credential store.
+	mfaRepo := authadapter.NewMFARepository(pool)
+	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, logger)
+	if err != nil {
+		return fmt.Errorf("create mfa service: %w", err)
+	}
+	mfaWebHandlers := authadapter.NewMFAWebHandlers(mfaService, householdRepo, sm, logger)
+
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {
 		return fmt.Errorf("create oauth state signer: %w", err)
@@ -566,7 +581,7 @@ func runServer(logger *slog.Logger) error {
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},

@@ -450,18 +450,29 @@ func registerChoreProofPhotoRoutes(
 	mux.Handle("GET /tasks/photos/{id}/raw", requireMember(http.HandlerFunc(choreProofHandlers.Raw)))
 }
 
-// registerSettingsPage wires the parent-only /settings page (NES-128 adds its
-// first section: kiosk device provisioning). RequireMember-gated at the
-// router, same as every other member page; the parent-only role check happens
-// inside each handler (mirroring /admin/rewards and /trades/history), so a
-// child member reaches a real 403 rather than a router-level dead end.
+// registerSettingsPage wires the shared /settings page: the auth context's
+// per-member MFA section (NES-134), rendered for EVERY member, and the kiosk
+// context's device section (NES-128), rendered only for a parent
+// (owner/adult) member. RequireMember-gated at the router — the page itself
+// is no longer parent-only (NES-134 moved that gate to the kiosk section
+// specifically; the parent-only role check for kiosk mutations still happens
+// inside kioskadapter.SettingsWebHandlers, mirroring /admin/rewards and
+// /trades/history's per-handler role checks).
+//
+// Neither adapter package imports the other (kioskadapter knows nothing of
+// MFA; authadapter knows nothing of kiosk devices) — this function is the
+// one place allowed to know about both, composing their independently built
+// section views into one components.SettingsPage, mirroring
+// registerChoreProofPhotoRoutes' established composition-root pattern.
 func registerSettingsPage(
 	mux *http.ServeMux,
 	logger *slog.Logger,
 	sm *scs.SessionManager,
 	households household.HouseholdRepository,
 	settingsHandlers *kioskadapter.SettingsWebHandlers,
+	mfaHandlers *authadapter.MFAWebHandlers,
 ) {
+	const settingsPath = "/settings"
 	requireMember := authadapter.RequireMember(sm)
 	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
@@ -472,13 +483,123 @@ func registerSettingsPage(
 		}
 	}
 
+	// composePage builds the combined SettingsView from both contexts'
+	// independently built section views and renders the full page at
+	// status. It is used by every mutating action across both sections
+	// (not just GET), since a one-time reveal produced by one section's
+	// mutation must render alongside the OTHER section's current state, and
+	// a redirect would lose that reveal. kioskReveal/mfaEnrollReveal/
+	// mfaRecoveryReveal/mfaErr are non-nil/non-empty only in the one
+	// response produced by the mutation that generated them.
+	composePage := func(
+		w http.ResponseWriter, r *http.Request, member *household.Member, status int,
+		kioskReveal *components.KioskActivationReveal,
+		mfaEnrollReveal *components.MFAEnrollReveal,
+		mfaRecoveryReveal *components.MFARecoveryCodesReveal,
+		mfaErr string,
+	) {
+		kioskView, showKiosk, err := settingsHandlers.SectionView(r.Context(), member, kioskReveal)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "settings: build kiosk section", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		mfaView, err := mfaHandlers.SectionView(r.Context(), member, mfaEnrollReveal, mfaRecoveryReveal, mfaErr)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "settings: build mfa section", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view := components.SettingsView{
+			ShowKioskSection: showKiosk,
+			Kiosk:            kioskView,
+			MFA:              mfaView,
+			CSRFToken:        authadapter.GetCSRFToken(r.Context(), sm),
+		}
+		if err := render.Render(r.Context(), w, status, layoutFor(r)(member)(components.SettingsPage(view))); err != nil {
+			logger.ErrorContext(r.Context(), "settings: render page", "error", err)
+		}
+	}
+
 	mux.Handle("GET /settings", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		settingsHandlers.Page(layoutFor(r))(w, r)
+		member, ok := authadapter.CurrentMember(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		composePage(w, r, member, http.StatusOK, nil, nil, nil, "")
 	})))
+
+	// Kiosk section mutations (parent-only, enforced inside settingsHandlers).
 	mux.Handle("POST /settings/kiosk/generate", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		settingsHandlers.GenerateActivationCode(layoutFor(r))(w, r)
+		member, reveal, ok := settingsHandlers.CreateActivationCode(w, r)
+		if !ok {
+			return
+		}
+		// This response reveals a live credential (even though it is
+		// short-lived and single-use): it must never be cached by a shared
+		// proxy or stored in the browser's disk cache.
+		w.Header().Set("Cache-Control", "no-store")
+		composePage(w, r, member, http.StatusOK, reveal, nil, nil, "")
 	})))
-	mux.Handle("POST /settings/kiosk/{id}/revoke", requireMember(http.HandlerFunc(settingsHandlers.RevokeKioskToken)))
+	mux.Handle("POST /settings/kiosk/{id}/revoke", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, ok := settingsHandlers.RevokeKioskToken(w, r)
+		if !ok {
+			return
+		}
+		if render.IsHTMX(r) {
+			w.Header().Set("HX-Redirect", settingsPath)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, settingsPath, http.StatusSeeOther)
+	})))
+
+	// MFA section mutations (any member acts on their own enrollment; the
+	// admin reset is owner-only, enforced inside mfaHandlers).
+	mux.Handle("POST /settings/mfa/enroll", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, reveal, ok := mfaHandlers.Enroll(w, r)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, http.StatusOK, nil, reveal, nil, "")
+	})))
+	mux.Handle("POST /settings/mfa/confirm", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, reveal, errMsg, status, ok := mfaHandlers.Confirm(w, r)
+		if !ok {
+			return
+		}
+		// A successful confirm reveals the member's recovery codes exactly
+		// once: this response must never be cached.
+		if reveal != nil {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		composePage(w, r, member, status, nil, nil, reveal, errMsg)
+	})))
+	mux.Handle("POST /settings/mfa/recovery-codes/regenerate", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, reveal, errMsg, status, ok := mfaHandlers.RegenerateRecoveryCodes(w, r)
+		if !ok {
+			return
+		}
+		if reveal != nil {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		composePage(w, r, member, status, nil, nil, reveal, errMsg)
+	})))
+	mux.Handle("POST /settings/mfa/disenroll", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := mfaHandlers.Disenroll(w, r, settingsPath)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, status, nil, nil, nil, errMsg)
+	})))
+	mux.Handle("POST /settings/mfa/reset", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := mfaHandlers.AdminReset(w, r, settingsPath)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, status, nil, nil, nil, errMsg)
+	})))
 }
 
 // registerKioskPages wires the /kiosk/* touch-first kiosk shell (NES-128).
