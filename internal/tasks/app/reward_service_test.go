@@ -29,6 +29,10 @@ type fakeRewardRedeemer struct {
 	// redeemCalls counts how many times RedeemWithDebit was called so tests
 	// can assert that a failed balance/notfound guard skips the debit.
 	redeemCalls int
+	// lastRedemption captures the most recent redemption RedeemWithDebit was
+	// called with, so a test can assert on fields Redeem/RedeemViaDeepLink
+	// set (e.g. DeepLinkSignatureHash) without a database.
+	lastRedemption *domain.RewardRedemption
 }
 
 func (f *fakeRewardRedeemer) GetReward(
@@ -44,9 +48,10 @@ func (f *fakeRewardRedeemer) GetReward(
 
 func (f *fakeRewardRedeemer) RedeemWithDebit(
 	_ context.Context,
-	_ *domain.RewardRedemption,
+	redemption *domain.RewardRedemption,
 ) (int, error) {
 	f.redeemCalls++
+	f.lastRedemption = redemption
 	if f.redeemErr != nil {
 		return 0, f.redeemErr
 	}
@@ -376,5 +381,100 @@ func TestRewardService_Redeem_NotificationFailureDoesNotFailRedeem(t *testing.T)
 	}
 	if redemption == nil {
 		t.Fatal("Redeem: returned nil redemption despite notification failure")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RewardService.RedeemViaDeepLink (NES-129)
+// ---------------------------------------------------------------------------
+
+// TestRewardService_RedeemViaDeepLink_SetsDeepLinkSignatureHash verifies the
+// one behavioral difference from Redeem: the redemption passed to
+// RedeemWithDebit carries the caller-supplied signature hash, so the
+// repository's database-level uniqueness guard has something to enforce
+// against.
+func TestRewardService_RedeemViaDeepLink_SetsDeepLinkSignatureHash(t *testing.T) {
+	hhID := household.NewHouseholdID()
+	reward := newActiveReward(hhID, 50)
+	repo := &fakeRewardRedeemer{reward: reward}
+	svc := newRewardService(repo)
+
+	const signatureHash = "abc123deadbeef"
+	memberID := household.NewMemberID()
+	redemption, err := svc.RedeemViaDeepLink(t.Context(), hhID, memberID, reward.ID, signatureHash)
+	if err != nil {
+		t.Fatalf("RedeemViaDeepLink: unexpected error: %v", err)
+	}
+	if redemption.DeepLinkSignatureHash == nil || *redemption.DeepLinkSignatureHash != signatureHash {
+		t.Errorf("redemption.DeepLinkSignatureHash = %v, want %q", redemption.DeepLinkSignatureHash, signatureHash)
+	}
+	if repo.lastRedemption == nil {
+		t.Fatal("RedeemWithDebit was never called")
+	}
+	if repo.lastRedemption.DeepLinkSignatureHash == nil || *repo.lastRedemption.DeepLinkSignatureHash != signatureHash {
+		t.Errorf("redemption passed to RedeemWithDebit: DeepLinkSignatureHash = %v, want %q",
+			repo.lastRedemption.DeepLinkSignatureHash, signatureHash)
+	}
+}
+
+// TestRewardService_Redeem_LeavesDeepLinkSignatureHashNil verifies the
+// storefront path (Redeem) never sets DeepLinkSignatureHash, so the
+// database's partial unique index (WHERE deep_link_signature_hash IS NOT
+// NULL) never applies to an ordinary redemption.
+func TestRewardService_Redeem_LeavesDeepLinkSignatureHashNil(t *testing.T) {
+	hhID := household.NewHouseholdID()
+	reward := newActiveReward(hhID, 50)
+	repo := &fakeRewardRedeemer{reward: reward}
+	svc := newRewardService(repo)
+
+	redemption, err := svc.Redeem(t.Context(), hhID, household.NewMemberID(), reward.ID)
+	if err != nil {
+		t.Fatalf("Redeem: unexpected error: %v", err)
+	}
+	if redemption.DeepLinkSignatureHash != nil {
+		t.Errorf("redemption.DeepLinkSignatureHash = %v, want nil", redemption.DeepLinkSignatureHash)
+	}
+	if repo.lastRedemption == nil {
+		t.Fatal("RedeemWithDebit was never called")
+	}
+	if repo.lastRedemption.DeepLinkSignatureHash != nil {
+		t.Errorf("redemption passed to RedeemWithDebit: DeepLinkSignatureHash = %v, want nil",
+			repo.lastRedemption.DeepLinkSignatureHash)
+	}
+}
+
+// TestRewardService_RedeemViaDeepLink_RejectsEmptySignatureHash guards
+// against a caller-side bug: an empty signatureHash would defeat the whole
+// point of the guard (an empty string is not a meaningful idempotency key),
+// so it is rejected before ever reaching the repository.
+func TestRewardService_RedeemViaDeepLink_RejectsEmptySignatureHash(t *testing.T) {
+	hhID := household.NewHouseholdID()
+	reward := newActiveReward(hhID, 50)
+	repo := &fakeRewardRedeemer{reward: reward}
+	svc := newRewardService(repo)
+
+	_, err := svc.RedeemViaDeepLink(t.Context(), hhID, household.NewMemberID(), reward.ID, "")
+	if err == nil {
+		t.Fatal("RedeemViaDeepLink(signatureHash=\"\") error = nil, want non-nil")
+	}
+	if repo.redeemCalls != 0 {
+		t.Errorf("RedeemWithDebit called %d times, want 0 (empty hash must be rejected before the repository call)", repo.redeemCalls)
+	}
+}
+
+// TestRewardService_RedeemViaDeepLink_PropagatesAlreadyRedeemed verifies
+// RedeemWithDebit's ErrDeepLinkAlreadyRedeemed (the database constraint
+// violation, from a resubmitted POST for an already-redeemed signed link) is
+// propagated unchanged through the errors.Is chain, matching every other
+// RedeemWithDebit sentinel's propagation.
+func TestRewardService_RedeemViaDeepLink_PropagatesAlreadyRedeemed(t *testing.T) {
+	hhID := household.NewHouseholdID()
+	reward := newActiveReward(hhID, 50)
+	repo := &fakeRewardRedeemer{reward: reward, redeemErr: domain.ErrDeepLinkAlreadyRedeemed}
+	svc := newRewardService(repo)
+
+	_, err := svc.RedeemViaDeepLink(t.Context(), hhID, household.NewMemberID(), reward.ID, "abc123")
+	if !errors.Is(err, domain.ErrDeepLinkAlreadyRedeemed) {
+		t.Fatalf("RedeemViaDeepLink error = %v, want %v", err, domain.ErrDeepLinkAlreadyRedeemed)
 	}
 }

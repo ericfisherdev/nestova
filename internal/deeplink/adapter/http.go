@@ -62,10 +62,6 @@ type WebHandlers struct {
 	logger         *slog.Logger
 	now            func() time.Time
 	limiter        *perKeyLimiter
-	// redeemedSignatures guards against a repeated reward redemption from a
-	// resubmitted POST — see confirmRedeem's doc comment. Claim and complete
-	// need no equivalent guard (both are safe to re-run by construction).
-	redeemedSignatures *consumedSignatureStore
 }
 
 // NewWebHandlers constructs WebHandlers with all required dependencies. It
@@ -106,8 +102,7 @@ func NewWebHandlers(
 	return &WebHandlers{
 		signer: signer, taskSvc: taskSvc, recurringTasks: recurringTasks, taskInstances: taskInstances,
 		rewardSvc: rewardSvc, rewards: rewards, sm: sm, logger: logger, now: now,
-		limiter:            newPerKeyLimiter(confirmRateEvery, confirmRateBurst),
-		redeemedSignatures: newConsumedSignatureStore(),
+		limiter: newPerKeyLimiter(confirmRateEvery, confirmRateBurst),
 	}
 }
 
@@ -370,7 +365,11 @@ func (h *WebHandlers) confirm(w http.ResponseWriter, r *http.Request, action dee
 		http.NotFound(w, r)
 		return
 	}
-	exp, sig, ok := h.verifySignature(w, r, path)
+	// The verified expiry is not needed beyond this signature check itself:
+	// the redemption-replay guard (confirmRedeem) is now a durable DATABASE
+	// constraint keyed by a hash of sigBytes, with no expiry-based sweeping
+	// of its own to worry about — see confirmRedeem's doc comment.
+	_, sigBytes, ok := h.verifySignature(w, r, path)
 	if !ok {
 		return
 	}
@@ -392,7 +391,7 @@ func (h *WebHandlers) confirm(w http.ResponseWriter, r *http.Request, action dee
 	case deeplinkdomain.ActionCompleteTask:
 		h.confirmComplete(w, r, member, id)
 	case deeplinkdomain.ActionRedeemReward:
-		h.confirmRedeem(w, r, member, id, sig, exp)
+		h.confirmRedeem(w, r, member, id, sigBytes)
 	case deeplinkdomain.ActionAddChore:
 		http.Redirect(w, r, "/tasks/new", http.StatusSeeOther)
 	default:
@@ -461,35 +460,35 @@ func (h *WebHandlers) respondTaskMutationError(w http.ResponseWriter, r *http.Re
 // else in this request stops a double-tap, a resubmitted-on-refresh POST, or
 // a second request landing within the rate limiter's own burst from
 // redeeming twice, since the signed link's signature and the member's CSRF
-// token both stay valid for reuse until the link's own expiry. sig/exp (the
-// link's own verified signature, from confirm's call to verifySignature) key
-// h.redeemedSignatures: consume() is checked-and-marked atomically, so
-// exactly one concurrent caller for a given signature ever proceeds to call
-// Redeem. If Redeem itself then fails (a real domain rejection, e.g.
-// insufficient points, or a transient error), the signature is released so
-// a legitimate retry with the SAME still-valid link remains possible — the
-// guard exists to prevent a second SUCCESSFUL redeem, not to burn the link
-// on a failed attempt that had no real-world effect.
-func (h *WebHandlers) confirmRedeem(w http.ResponseWriter, r *http.Request, member *household.Member, id, sig string, exp int64) {
+// token both stay valid for reuse until the link's own expiry.
+//
+// The guard against that is a DATABASE constraint, not an in-process one: it
+// hashes sigBytes (the link's own canonical decoded signature, from
+// confirm's call to verifySignature) via deeplinkapp.HashSignature and
+// passes it to RewardService.RedeemViaDeepLink, which persists it as the
+// redemption's DeepLinkSignatureHash — enforced by the database's
+// reward_redemption_deep_link_signature_uniq partial unique index inside
+// the SAME transaction as the debit. This holds durably across process
+// restarts and multiple server instances, unlike the in-process map this
+// replaced: a resubmitted POST for the same signed link always reaches the
+// SAME database constraint and is rejected with
+// [tasksdomain.ErrDeepLinkAlreadyRedeemed], regardless of which server
+// process handles it or how much time has passed.
+func (h *WebHandlers) confirmRedeem(w http.ResponseWriter, r *http.Request, member *household.Member, id string, sigBytes []byte) {
 	rewardID, err := tasksdomain.ParseRewardID(id)
 	if err != nil {
 		http.Error(w, "invalid reward id", http.StatusBadRequest)
 		return
 	}
-	if !h.redeemedSignatures.consume(sig, exp, h.now()) {
-		h.renderMessage(w, r, http.StatusConflict, "This code has already been used",
-			"This QR code was already used to redeem a reward. Please rescan from the kiosk for a new one.")
-		return
-	}
-	if _, err := h.rewardSvc.Redeem(r.Context(), member.HouseholdID, member.ID, rewardID); err != nil {
-		h.redeemedSignatures.release(sig)
+	signatureHash := deeplinkapp.HashSignature(sigBytes)
+	if _, err := h.rewardSvc.RedeemViaDeepLink(r.Context(), member.HouseholdID, member.ID, rewardID, signatureHash); err != nil {
 		h.respondRedeemError(w, r, err)
 		return
 	}
-	// PRG: unlike claim/complete, this redirect IS the correctness fix for
-	// the double-redeem risk described above — a refreshed GET after this
-	// redirect never resubmits the POST, and the signature is already
-	// consumed regardless.
+	// PRG: unlike claim/complete, this redirect IS part of the correctness
+	// fix for the double-redeem risk described above (alongside the database
+	// constraint itself) — a refreshed GET after this redirect never
+	// resubmits the POST.
 	http.Redirect(w, r, doneURL(deeplinkdomain.ActionRedeemReward), http.StatusSeeOther)
 }
 
@@ -498,6 +497,9 @@ func (h *WebHandlers) respondRedeemError(w http.ResponseWriter, r *http.Request,
 	switch {
 	case errors.Is(err, tasksdomain.ErrRewardNotFound):
 		http.NotFound(w, r)
+	case errors.Is(err, tasksdomain.ErrDeepLinkAlreadyRedeemed):
+		h.renderMessage(w, r, http.StatusConflict, "This code has already been used",
+			"This QR code was already used to redeem a reward. Please rescan from the kiosk for a new one.")
 	case errors.Is(err, tasksdomain.ErrInsufficientPoints):
 		h.renderMessage(w, r, http.StatusConflict, "Not enough points yet", "You don't have enough points to redeem this reward yet.")
 	case errors.Is(err, tasksdomain.ErrRewardOutOfStock):
@@ -516,22 +518,26 @@ func (h *WebHandlers) respondRedeemError(w http.ResponseWriter, r *http.Request,
 // against path, and renders the friendly rescan page (returning ok=false) on
 // any failure — a missing/malformed parameter, an invalid signature, or an
 // expired link are all indistinguishable to the caller (AC3). On success it
-// also returns the verified exp/sig themselves, so a caller that needs to
-// key off the link's own signature (confirmRedeem's replay guard) does not
-// have to re-parse the query string a second time.
-func (h *WebHandlers) verifySignature(w http.ResponseWriter, r *http.Request, path string) (exp int64, sig string, ok bool) {
+// also returns the verified expiry and the signature's CANONICAL DECODED
+// bytes (from Signer.Verify — never the presented query-string value), so a
+// caller that needs to key off the link's own signature (confirmRedeem's
+// replay guard) always keys off the unambiguous form — see
+// deeplinkapp.Signer's decode doc for why the raw string is not safe to use
+// as a key directly.
+func (h *WebHandlers) verifySignature(w http.ResponseWriter, r *http.Request, path string) (exp int64, sigBytes []byte, ok bool) {
 	expStr := r.URL.Query().Get("exp")
-	sig = r.URL.Query().Get("sig")
+	sig := r.URL.Query().Get("sig")
 	exp, err := strconv.ParseInt(expStr, 10, 64)
 	if err != nil || sig == "" {
 		h.renderMessage(w, r, http.StatusBadRequest, rescanHeading, rescanMessage)
-		return 0, "", false
+		return 0, nil, false
 	}
-	if err := h.signer.Verify(path, exp, sig, h.now()); err != nil {
+	sigBytes, err = h.signer.Verify(path, exp, sig, h.now())
+	if err != nil {
 		h.renderMessage(w, r, http.StatusBadRequest, rescanHeading, rescanMessage)
-		return 0, "", false
+		return 0, nil, false
 	}
-	return exp, sig, true
+	return exp, sigBytes, true
 }
 
 // renderMessage renders the shared standalone message page at status.

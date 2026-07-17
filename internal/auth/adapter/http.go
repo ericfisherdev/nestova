@@ -183,16 +183,28 @@ func (h *Handlers) checkCSRF(r *http.Request) bool {
 
 // sanitizeNext ensures the post-login redirect target is a safe same-origin path
 // to prevent open-redirect attacks. It parses next, rejects anything absolute or
-// host-bearing (including protocol-relative // and percent-encoded variants), and
+// host-bearing (including protocol-relative // and percent-encoded variants),
+// rejects any backslash (literal or percent-encoded — see below), and
 // path-normalizes to collapse traversal sequences (e.g. "/foo/..//evil.com" that
 // a browser would normalize to the protocol-relative "//evil.com"). Anything
 // suspicious falls back to the dashboard root "/".
+//
+// The backslash check runs BEFORE path.Clean and rejects outright rather than
+// stripping: path.Clean only treats '/' as a path separator, so a backslash
+// (e.g. "/\evil.example/steal") survives it completely unchanged — but
+// browsers normalize '\' to '/' when resolving a URL, so that exact string
+// would still be handed to http.Redirect verbatim and then be followed by the
+// browser as the protocol-relative "//evil.example/steal", an off-origin
+// redirect this function's other checks exist specifically to prevent.
+// url.Parse already percent-decodes the path into u.Path, so checking u.Path
+// (rather than the raw next string) catches both a literal backslash and its
+// percent-encoded form ("%5C") with the same check.
 func sanitizeNext(next string) string {
 	if next == "" {
 		return "/"
 	}
 	u, err := url.Parse(next)
-	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") {
+	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") || strings.ContainsRune(u.Path, '\\') {
 		return "/"
 	}
 	cleaned := path.Clean(u.Path)

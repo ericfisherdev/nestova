@@ -178,6 +178,25 @@ func TestLoadValid(t *testing.T) {
 			},
 		},
 		{
+			// Regression case: TrimSuffix removes only ONE trailing slash
+			// occurrence, so "https://host//" would leave one slash behind —
+			// TrimRight strips them all, so this must normalize down to a
+			// clean origin exactly like the single-trailing-slash case above,
+			// not double up with the leading slash on every concatenated
+			// deep-link path (".../go/..." would otherwise become
+			// ".../..../go/...").
+			name: "PUBLIC_BASE_URL with multiple trailing slashes is fully trimmed",
+			env:  map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net//"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second, PublicBaseURL: "https://nestova.tailnet.ts.net"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
+			},
+		},
+		{
 			name: "supabase provider applies a default pool cap and session mode",
 			env: map[string]string{
 				"DB_PROVIDER":  "supabase",

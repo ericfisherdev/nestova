@@ -499,24 +499,30 @@ func (h *KioskWebHandlers) buildChoresView(r *http.Request, householdID househol
 	return view, nil
 }
 
-// buildKioskRewardViews lists the household's active rewards and pairs each
-// with its own redeem deep-link QR (NES-129). It carries no member-specific
-// data (balance, affordability) — the kiosk is shared, not member-attributed
-// — those checks happen on the phone, inside the real
-// tasksapp.RewardService.Redeem call the QR deep-links to; see [KioskWebHandlers]'s
-// own doc comment for why kiosk view models are rebuilt directly from
-// application services rather than reusing the member-facing rewards page.
+// buildKioskRewardViews lists the household's storefront rewards — active
+// AND currently in stock, via ListStorefrontRewards rather than
+// ListActiveRewards, so a reward that is archived or has reached a finite
+// QuantityAvailable cap gets no card (and so no redeem QR) at all; scanning
+// a QR for a reward that could never actually be redeemed would be a dead
+// end the kiosk should not offer in the first place — and pairs each
+// remaining one with its own redeem deep-link QR (NES-129). It carries no
+// member-specific data (balance) — the kiosk is shared, not
+// member-attributed — that check happens on the phone, inside the real
+// tasksapp.RewardService.Redeem call the QR deep-links to; see
+// [KioskWebHandlers]'s own doc comment for why kiosk view models are
+// rebuilt directly from application services rather than reusing the
+// member-facing rewards page.
 func (h *KioskWebHandlers) buildKioskRewardViews(r *http.Request, householdID household.HouseholdID) ([]components.KioskRewardView, error) {
 	ctx := r.Context()
-	rewards, err := h.rewards.ListActiveRewards(ctx, householdID)
+	rewards, err := h.rewards.ListStorefrontRewards(ctx, householdID)
 	if err != nil {
 		return nil, err
 	}
 	rows := make([]components.KioskRewardView, 0, len(rewards))
-	for _, reward := range rewards {
-		row := components.KioskRewardView{Name: reward.Name, CostPoints: reward.CostPoints}
-		if qr, err := h.deepLinkQR(r, deeplinkdomain.ActionRedeemReward, reward.ID.String()); err != nil {
-			h.logger.ErrorContext(ctx, "kiosk: build reward deep link qr", "reward_id", reward.ID.String(), "error", err)
+	for _, sr := range rewards {
+		row := components.KioskRewardView{Name: sr.Reward.Name, CostPoints: sr.Reward.CostPoints}
+		if qr, err := h.deepLinkQR(r, deeplinkdomain.ActionRedeemReward, sr.Reward.ID.String()); err != nil {
+			h.logger.ErrorContext(ctx, "kiosk: build reward deep link qr", "reward_id", sr.Reward.ID.String(), "error", err)
 		} else {
 			row.DeepLinkQR = qr
 		}

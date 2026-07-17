@@ -191,6 +191,16 @@ type RewardRedemption struct {
 	// this redemption (NES-127). Nil for every status other than
 	// [RedemptionDenied], and nil for a denial where the parent left no reason.
 	DeniedReason *string
+	// DeepLinkSignatureHash is set only when this redemption was created via
+	// the NES-129 kiosk QR deep-link path (RewardService.RedeemViaDeepLink):
+	// the SHA-256 hash (hex-encoded) of the signed deep link's canonical
+	// decoded signature bytes. Nil for every ordinary storefront redemption.
+	// RedeemWithDebit enforces reward_redemption_deep_link_signature_uniq
+	// (household_id, deep_link_signature_hash) so the SAME signed link can
+	// never successfully redeem twice — durably, at the database level, not
+	// via any in-process state — returning [ErrDeepLinkAlreadyRedeemed] on a
+	// repeat attempt.
+	DeepLinkSignatureHash *string
 	// CreatedAt is when the redemption was requested; UpdatedAt records the most
 	// recent status transition (fulfilled/denied/cancelled) for the audit trail.
 	CreatedAt time.Time
@@ -294,6 +304,19 @@ var (
 	// should not learn whether a redemption exists at all from a failed
 	// cancel of someone else's redemption.
 	ErrRedemptionNotPending = errors.New("tasks: redemption is not pending")
+
+	// ErrDeepLinkAlreadyRedeemed is returned by RewardRepository.RedeemWithDebit
+	// (NES-129) when redemption.DeepLinkSignatureHash is non-nil and the
+	// INSERT violates reward_redemption_deep_link_signature_uniq — i.e. a
+	// signed kiosk QR deep link has already been used to successfully redeem
+	// a reward once. The check is a DATABASE constraint (not an in-process
+	// guard), so it holds durably across process restarts and multiple
+	// server instances: a resubmitted POST (double-tap, browser
+	// refresh-and-resend, or a request landing within the deep-link rate
+	// limiter's own burst) for the SAME signed link can never redeem twice,
+	// regardless of which server process or how much time has passed within
+	// the link's own signature validity window.
+	ErrDeepLinkAlreadyRedeemed = errors.New("tasks: reward already redeemed via this deep link")
 )
 
 // SourceTypeRedemptionRefund is the point_ledger source_type recorded for the

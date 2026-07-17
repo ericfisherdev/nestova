@@ -132,18 +132,29 @@ var _ tasksdomain.RecurringTaskRepository = (*seededRecurringTaskRepo)(nil)
 
 // householdScopedRewardRepo is a household-scoped RewardRedeemer/RewardRepository
 // fake with a real per-member balance, so redeem tests can exercise
-// insufficient-points and tenant-isolation without a database.
+// insufficient-points and tenant-isolation without a database. It also
+// simulates the NES-129 reward_redemption_deep_link_signature_uniq partial
+// unique index (a real Postgres constraint — see migration 00027 and
+// RewardPostgresRepository.RedeemWithDebit) via redeemedSignatureHashes, so
+// the same tests that exercise the replay guard at the HTTP layer work
+// identically against this in-memory fake and the real database.
 type householdScopedRewardRepo struct {
 	configurableRewardRepo
 	mu       sync.Mutex
 	rewards  map[tasksdomain.RewardID]*tasksdomain.Reward
 	balances map[household.MemberID]int
+	// redeemedSignatureHashes tracks (household, hash) pairs already used for
+	// a SUCCESSFUL deep-link redemption, mirroring the real partial unique
+	// index's scope (household_id, deep_link_signature_hash) — the key
+	// combines both so hashes cannot collide across households.
+	redeemedSignatureHashes map[string]struct{}
 }
 
 func newHouseholdScopedRewardRepo() *householdScopedRewardRepo {
 	return &householdScopedRewardRepo{
-		rewards:  make(map[tasksdomain.RewardID]*tasksdomain.Reward),
-		balances: make(map[household.MemberID]int),
+		rewards:                 make(map[tasksdomain.RewardID]*tasksdomain.Reward),
+		balances:                make(map[household.MemberID]int),
+		redeemedSignatureHashes: make(map[string]struct{}),
 	}
 }
 
@@ -183,10 +194,23 @@ func (r *householdScopedRewardRepo) RedeemWithDebit(_ context.Context, redemptio
 	if !ok || reward.HouseholdID != redemption.HouseholdID || !reward.Active {
 		return 0, tasksdomain.ErrRewardNotFound
 	}
+	// Mirrors reward_redemption_deep_link_signature_uniq: only checked (and
+	// only ever set) for the deep-link path — an ordinary storefront
+	// redemption's DeepLinkSignatureHash is nil and never participates.
+	var signatureKey string
+	if redemption.DeepLinkSignatureHash != nil {
+		signatureKey = redemption.HouseholdID.String() + ":" + *redemption.DeepLinkSignatureHash
+		if _, already := r.redeemedSignatureHashes[signatureKey]; already {
+			return 0, tasksdomain.ErrDeepLinkAlreadyRedeemed
+		}
+	}
 	if r.balances[redemption.MemberID] < reward.CostPoints {
 		return 0, tasksdomain.ErrInsufficientPoints
 	}
 	r.balances[redemption.MemberID] -= reward.CostPoints
+	if signatureKey != "" {
+		r.redeemedSignatureHashes[signatureKey] = struct{}{}
+	}
 	return reward.CostPoints, nil
 }
 
@@ -540,10 +564,12 @@ func TestDeepLinkRedeem_ConfirmRendersThenPostRedeems(t *testing.T) {
 // test for the redeem idempotency finding: the signed link's signature and
 // the member's CSRF token both remain individually valid for reuse within
 // the link's own TTL, so nothing else stops a double-tap or a
-// refresh-and-resend from reaching RewardService.Redeem a second time. A
-// second POST of the EXACT SAME (still-unexpired, still-correctly-signed)
-// request must be rejected with the friendly "already used" page, and the
-// reward must be debited exactly once.
+// refresh-and-resend from reaching RewardService.RedeemViaDeepLink a second
+// time. The guard is now a DATABASE constraint (reward_redemption_deep_link_signature_uniq,
+// simulated here by householdScopedRewardRepo — see its doc comment), not an
+// in-process one: BOTH POSTs reach RedeemWithDebit (there is no separate
+// pre-check anymore), but only the FIRST actually debits; the SECOND is
+// rejected by the constraint itself, with the reward debited exactly once.
 func TestDeepLinkRedeem_ResubmittedPostDoesNotRedeemTwice(t *testing.T) {
 	member := testMember()
 	f := buildDeepLinkFixture(t, member)
@@ -576,13 +602,16 @@ func TestDeepLinkRedeem_ResubmittedPostDoesNotRedeemTwice(t *testing.T) {
 
 	f.rewards.mu.Lock()
 	balance := f.rewards.balances[member.ID]
-	redemptionCount := f.rewards.redeemCalls
+	redeemWithDebitCalls := f.rewards.redeemCalls
 	f.rewards.mu.Unlock()
 	if balance != 50 {
 		t.Errorf("balance after two POSTs of the same link = %d, want 50 (debited exactly once)", balance)
 	}
-	if redemptionCount != 1 {
-		t.Errorf("RedeemWithDebit call count = %d, want exactly 1", redemptionCount)
+	// Both POSTs reach RedeemWithDebit under the new (database-constraint)
+	// design — the rejection happens INSIDE it, not before it — so 2 calls
+	// with only ONE actual debit (asserted above) is the correct outcome.
+	if redeemWithDebitCalls != 2 {
+		t.Errorf("RedeemWithDebit call count = %d, want exactly 2 (both POSTs reach it; only the first debits)", redeemWithDebitCalls)
 	}
 }
 
@@ -634,12 +663,15 @@ func TestDeepLinkRedeem_RefreshAfterSuccessDoesNotResubmit(t *testing.T) {
 	}
 }
 
-// TestDeepLinkRedeem_FailedRedeemReleasesSignatureForRetry verifies the
-// release() half of the guard: when RedeemWithDebit itself rejects the
-// attempt (here, insufficient points), the link was never actually consumed
-// by a successful redemption, so a legitimate retry with the SAME link
-// (e.g. after the member earns more points) must not be blocked by a
-// phantom "already used" state.
+// TestDeepLinkRedeem_FailedRedeemReleasesSignatureForRetry verifies a
+// failed attempt never burns the signed link: the database constraint
+// (reward_redemption_deep_link_signature_uniq) only ever gains a row on a
+// COMMITTED redemption, so when RedeemWithDebit itself rejects the attempt
+// (here, insufficient points) before any row is inserted, a legitimate
+// retry with the SAME link (e.g. after the member earns more points) must
+// not be blocked by a phantom "already used" state — unlike the earlier
+// in-process design this replaced, no explicit release step is needed: a
+// failed attempt simply never occupied the constraint in the first place.
 func TestDeepLinkRedeem_FailedRedeemReleasesSignatureForRetry(t *testing.T) {
 	member := testMember()
 	f := buildDeepLinkFixture(t, member)

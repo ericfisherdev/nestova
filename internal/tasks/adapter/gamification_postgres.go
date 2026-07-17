@@ -587,7 +587,10 @@ func (r *RewardPostgresRepository) Redeem(ctx context.Context, redemption *domai
 //     quantity_available → rollback, return [domain.ErrRewardOutOfStock].
 //  7. INSERT the reward_redemption row (status = 'pending').
 //     A 23503 FK violation on the reward column → rollback,
-//     return [domain.ErrRewardNotFound].
+//     return [domain.ErrRewardNotFound]. A 23505 unique violation on
+//     reward_redemption_deep_link_signature_uniq (NES-129, only possible
+//     when redemption.DeepLinkSignatureHash is non-nil) → rollback, return
+//     [domain.ErrDeepLinkAlreadyRedeemed].
 //  8. INSERT a negative point_ledger row (source_type = 'redemption', points
 //     = -<locked cost_points>).
 //  9. Commit.
@@ -600,6 +603,11 @@ func (r *RewardPostgresRepository) Redeem(ctx context.Context, redemption *domai
 //     current (locked) cost_points.
 //   - Returns [domain.ErrRewardOutOfStock] when the reward has a finite
 //     quantity_available and it has already been reached.
+//   - Returns [domain.ErrDeepLinkAlreadyRedeemed] (NES-129) when
+//     redemption.DeepLinkSignatureHash is non-nil and a redemption with the
+//     same (household_id, deep_link_signature_hash) pair already committed
+//     — this is a DATABASE constraint, not an in-process guard, so it holds
+//     durably across process restarts and multiple server instances.
 func (r *RewardPostgresRepository) RedeemWithDebit(
 	ctx context.Context,
 	redemption *domain.RewardRedemption,
@@ -695,26 +703,36 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 		}
 	}
 
-	// Step 7: insert the redemption row.
+	// Step 7: insert the redemption row. deep_link_signature_hash is NULL for
+	// every ordinary storefront redemption (redemption.DeepLinkSignatureHash
+	// is nil) — only RewardService.RedeemViaDeepLink (NES-129) ever sets it.
+	// The partial unique index on (household_id, deep_link_signature_hash)
+	// is what durably (across process restarts, at the database level, not
+	// via any in-process guard) prevents the SAME signed deep link from
+	// redeeming a reward twice.
 	const redemptionQ = `
 		INSERT INTO reward_redemption
-			(id, household_id, reward_id, member_id, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+			(id, household_id, reward_id, member_id, status, deep_link_signature_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 	_, err = tx.Exec(ctx, redemptionQ,
 		redemption.ID.String(),
 		redemption.HouseholdID.String(),
 		redemption.RewardID.String(),
 		redemption.MemberID.String(),
 		redemption.Status.String(),
+		redemption.DeepLinkSignatureHash,
 		redemption.CreatedAt,
 		redemption.UpdatedAt,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) &&
-			pgErr.Code == sqlstateForeignKeyViolation &&
+		if errors.As(err, &pgErr) && pgErr.Code == sqlstateForeignKeyViolation &&
 			pgErr.ConstraintName == constraintRewardRedemptionRewardFK {
 			return 0, domain.ErrRewardNotFound
+		}
+		if errors.As(err, &pgErr) && pgErr.Code == sqlstateUniqueViolation &&
+			pgErr.ConstraintName == constraintRewardRedemptionDeepLinkSignatureUniq {
+			return 0, domain.ErrDeepLinkAlreadyRedeemed
 		}
 		return 0, fmt.Errorf("redeem with debit: insert redemption: %w", err)
 	}
