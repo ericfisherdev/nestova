@@ -25,6 +25,32 @@ func TestSettingsPage_MFANotEnrolled_ShowsEnrollForm(t *testing.T) {
 	}
 }
 
+// TestSettingsPage_MFAIntroCopy_DoesNotClaimSignInProtectionYet is the
+// regression test for NES-134 CodeRabbit round 3 (finding 7): before
+// NES-135 ships login enforcement, the page must never claim MFA already
+// protects sign-in — every status must instead frame it as prepared/ready,
+// not active protection.
+func TestSettingsPage_MFAIntroCopy_DoesNotClaimSignInProtectionYet(t *testing.T) {
+	for _, status := range []components.MFAEnrollmentStatus{
+		components.MFAStatusNotEnrolled,
+		components.MFAStatusPending,
+		components.MFAStatusActive,
+	} {
+		view := components.SettingsView{
+			MFA:       components.MFASettingsView{Status: status, CSRFToken: "csrf-test"},
+			CSRFToken: "csrf-test",
+		}
+		out := renderString(t, components.SettingsPage(view))
+
+		if strings.Contains(out, "Add a second step to sign-in") || strings.Contains(out, "Two-factor authentication is active.") {
+			t.Errorf("status %q: MFA section copy must not claim sign-in is already protected: %q", status, out)
+		}
+		if !strings.Contains(out, "does not protect sign-in yet") {
+			t.Errorf("status %q: MFA section intro must disclose it does not protect sign-in yet: %q", status, out)
+		}
+	}
+}
+
 func TestSettingsPage_MFAPending_ShowsQROnceAndConfirmForm(t *testing.T) {
 	view := components.SettingsView{
 		MFA: components.MFASettingsView{
@@ -94,6 +120,12 @@ func TestSettingsPage_MFAActive_ShowsRecoveryCodesOnceAndDisenrollForm(t *testin
 	}
 	if strings.Contains(out, `action="/settings/mfa/enroll"`) {
 		t.Errorf("active MFA section must not offer the enroll form: %q", out)
+	}
+	if strings.Contains(out, "Two-factor authentication is active.") {
+		t.Errorf("active MFA section must not claim sign-in is already protected (NES-135 has not shipped): %q", out)
+	}
+	if !strings.Contains(out, "It will protect sign-in once we") {
+		t.Errorf("active MFA section must frame itself as prepared, not already protecting sign-in: %q", out)
 	}
 }
 

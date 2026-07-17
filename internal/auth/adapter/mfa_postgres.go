@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -66,55 +67,137 @@ func (r *MFARepository) GetEnrollment(ctx context.Context, memberID household.Me
 	return enrollment, nil
 }
 
-// BeginEnrollment upserts an unconfirmed enrollment for memberID. The
-// ON CONFLICT ... WHERE clause is the atomic guard against clobbering an
-// already-CONFIRMED enrollment: when a conflicting row exists and its
-// confirmed_at is NOT NULL, the WHERE condition is false, so Postgres
-// resolves the conflict as a no-op and RETURNING yields zero rows — which
-// this method maps to ErrMFAAlreadyEnrolled. This closes the race a plain
-// SELECT-then-INSERT/UPDATE would leave open between two concurrent
-// BeginEnrollment calls.
-func (r *MFARepository) BeginEnrollment(ctx context.Context, memberID household.MemberID, householdID household.HouseholdID, secretEnc []byte) error {
-	const q = `
-		INSERT INTO member_mfa (member_id, household_id, totp_secret_enc, confirmed_at)
-		VALUES ($1, $2, $3, NULL)
-		ON CONFLICT (member_id) DO UPDATE
-			SET totp_secret_enc = EXCLUDED.totp_secret_enc,
-			    confirmed_at    = NULL,
-			    updated_at      = now()
-			WHERE member_mfa.confirmed_at IS NULL
-		RETURNING member_id`
+// mfaTxBeginner is the slice of a pgx executor BeginEnrollment and
+// ConfirmEnrollmentWithCodes need to open their own transaction, satisfied
+// by both *pgxpool.Pool and pgx.Tx (mirroring
+// ActivationCodeRepository.Redeem's and ReplaceRecoveryCodes' own use of
+// the same type-assertion pattern).
+type mfaTxBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
 
-	var returnedID string
-	err := r.dbtx.QueryRow(ctx, q, memberID.String(), householdID.String(), secretEnc).Scan(&returnedID)
+// BeginEnrollment upserts an unconfirmed enrollment for memberID, inside a
+// transaction that locks any existing row (SELECT ... FOR UPDATE) before
+// deciding how to proceed — closing the race a plain
+// INSERT ... ON CONFLICT DO UPDATE would leave open between two concurrent
+// BeginEnrollment calls, while still distinguishing WHY a conflicting row
+// blocks the write (see the two error returns below), which a single
+// ON CONFLICT ... WHERE clause cannot do from its zero-rows-returned result
+// alone.
+//
+// Returns authdomain.ErrMFAAlreadyEnrolled when the existing row is already
+// CONFIRMED, and household.ErrMemberNotFound both for a genuinely unknown
+// member/household (FK violation on insert) and when an existing row
+// belongs to a DIFFERENT household than householdID — a defense-in-depth
+// tenant guard: this method must never overwrite another household's
+// pending secret, and reports both cases identically so neither leaks
+// which one occurred.
+func (r *MFARepository) BeginEnrollment(ctx context.Context, memberID household.MemberID, householdID household.HouseholdID, secretEnc []byte) error {
+	beginner, ok := r.dbtx.(mfaTxBeginner)
+	if !ok {
+		return errors.New("begin mfa enrollment: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return authdomain.ErrMFAAlreadyEnrolled
+		return fmt.Errorf("begin mfa enrollment: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var (
+		existingHouseholdID string
+		confirmedAt         *time.Time
+	)
+	lookupErr := tx.QueryRow(ctx, `SELECT household_id, confirmed_at FROM member_mfa WHERE member_id = $1 FOR UPDATE`, memberID.String()).
+		Scan(&existingHouseholdID, &confirmedAt)
+	switch {
+	case errors.Is(lookupErr, pgx.ErrNoRows):
+		const insert = `
+			INSERT INTO member_mfa (member_id, household_id, totp_secret_enc, confirmed_at)
+			VALUES ($1, $2, $3, NULL)`
+		if _, err := tx.Exec(ctx, insert, memberID.String(), householdID.String(), secretEnc); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation && pgErr.ConstraintName == mfaMemberFK {
+				return household.ErrMemberNotFound
+			}
+			return fmt.Errorf("begin mfa enrollment: insert: %w", err)
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation && pgErr.ConstraintName == mfaMemberFK {
-			return household.ErrMemberNotFound
+	case lookupErr != nil:
+		return fmt.Errorf("begin mfa enrollment: lookup: %w", lookupErr)
+	case existingHouseholdID != householdID.String():
+		// The row exists but under a DIFFERENT household than the caller
+		// supplied — never touch it. Reported the same as an unknown
+		// member so no household-boundary information leaks.
+		return household.ErrMemberNotFound
+	case confirmedAt != nil:
+		return authdomain.ErrMFAAlreadyEnrolled
+	default:
+		const update = `
+			UPDATE member_mfa
+			   SET totp_secret_enc = $2,
+			       confirmed_at    = NULL,
+			       updated_at      = now()
+			 WHERE member_id = $1`
+		if _, err := tx.Exec(ctx, update, memberID.String(), secretEnc); err != nil {
+			return fmt.Errorf("begin mfa enrollment: update: %w", err)
 		}
-		return fmt.Errorf("begin mfa enrollment: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("begin mfa enrollment: commit: %w", err)
 	}
 	return nil
 }
 
-// ConfirmEnrollment marks memberID's enrollment confirmed. Returns
-// authdomain.ErrMFANotEnrolled when no row exists.
-func (r *MFARepository) ConfirmEnrollment(ctx context.Context, memberID household.MemberID) error {
-	const q = `
-		UPDATE member_mfa
-		   SET confirmed_at = now(),
-		       updated_at   = now()
-		 WHERE member_id = $1`
-
-	tag, err := r.dbtx.Exec(ctx, q, memberID.String())
-	if err != nil {
-		return fmt.Errorf("confirm mfa enrollment: %w", err)
+// ConfirmEnrollmentWithCodes atomically confirms memberID's enrollment and
+// replaces their recovery codes with one fresh row per hash, in a single
+// transaction that locks the row (SELECT ... FOR UPDATE) before confirming
+// — see the port doc for why this must be one atomic operation rather than
+// a separate ConfirmEnrollment + ReplaceRecoveryCodes: it is what makes two
+// concurrent callers racing to confirm the SAME still-unconfirmed
+// enrollment resolve to exactly one winner, with the loser's hashes never
+// persisted at all.
+func (r *MFARepository) ConfirmEnrollmentWithCodes(ctx context.Context, memberID household.MemberID, recoveryCodeHashes []string) error {
+	beginner, ok := r.dbtx.(mfaTxBeginner)
+	if !ok {
+		return errors.New("confirm mfa enrollment: executor does not support transactions")
 	}
-	if tag.RowsAffected() == 0 {
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("confirm mfa enrollment: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var confirmedAt *time.Time
+	lookupErr := tx.QueryRow(ctx, `SELECT confirmed_at FROM member_mfa WHERE member_id = $1 FOR UPDATE`, memberID.String()).Scan(&confirmedAt)
+	switch {
+	case errors.Is(lookupErr, pgx.ErrNoRows):
 		return authdomain.ErrMFANotEnrolled
+	case lookupErr != nil:
+		return fmt.Errorf("confirm mfa enrollment: lookup: %w", lookupErr)
+	case confirmedAt != nil:
+		// Already confirmed — including by a concurrent racing confirm
+		// that committed first while this call waited on the row lock.
+		return authdomain.ErrMFAAlreadyEnrolled
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE member_mfa SET confirmed_at = now(), updated_at = now() WHERE member_id = $1`, memberID.String()); err != nil {
+		return fmt.Errorf("confirm mfa enrollment: confirm: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM member_recovery_code WHERE member_id = $1`, memberID.String()); err != nil {
+		return fmt.Errorf("confirm mfa enrollment: delete existing recovery codes: %w", err)
+	}
+	const insert = `
+		INSERT INTO member_recovery_code (id, member_id, code_hash)
+		VALUES ($1, $2, $3)`
+	for _, hash := range recoveryCodeHashes {
+		id := authdomain.NewRecoveryCodeID()
+		if _, err := tx.Exec(ctx, insert, id.String(), memberID.String(), hash); err != nil {
+			return fmt.Errorf("confirm mfa enrollment: insert recovery code: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("confirm mfa enrollment: commit: %w", err)
 	}
 	return nil
 }
@@ -142,9 +225,7 @@ func (r *MFARepository) DeleteEnrollment(ctx context.Context, householdID househ
 // mirroring ActivationCodeRepository.Redeem's self-contained transaction
 // pattern), so a failure partway through leaves the previous set intact.
 func (r *MFARepository) ReplaceRecoveryCodes(ctx context.Context, memberID household.MemberID, hashes []string) error {
-	beginner, ok := r.dbtx.(interface {
-		Begin(context.Context) (pgx.Tx, error)
-	})
+	beginner, ok := r.dbtx.(mfaTxBeginner)
 	if !ok {
 		return errors.New("replace recovery codes: executor does not support transactions")
 	}

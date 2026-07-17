@@ -123,7 +123,7 @@ func buildSettingsTestHandler(t *testing.T, hhRepo household.HouseholdRepository
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, logger)
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestMFAEnrollConfirmDisenroll_FullFlow(t *testing.T) {
 	if !strings.Contains(confirmRec.Body.String(), "Save these recovery codes") {
 		t.Error("confirm response missing the recovery codes reveal panel")
 	}
-	if !strings.Contains(confirmRec.Body.String(), "Two-factor authentication is active") {
+	if !strings.Contains(confirmRec.Body.String(), "Your authenticator app is set up") {
 		t.Error("confirm response must show the active status")
 	}
 
@@ -407,7 +407,7 @@ func TestMFAAdminReset_WrongPasswordRejected(t *testing.T) {
 
 	// The target's enrollment must survive a failed reset attempt.
 	afterFailedReset := doForm(t, handler, http.MethodGet, "/settings", adultCookie, "")
-	if !strings.Contains(afterFailedReset.Body.String(), "Two-factor authentication is active") {
+	if !strings.Contains(afterFailedReset.Body.String(), "Your authenticator app is set up") {
 		t.Error("a failed reset (wrong owner password) must not remove the target's enrollment")
 	}
 }

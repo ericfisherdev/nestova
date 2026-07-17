@@ -108,10 +108,23 @@ func (c RecoveryCode) Used() bool {
 //   - BeginEnrollment upserts an UNCONFIRMED enrollment for memberID,
 //     replacing any existing unconfirmed row in place. It returns
 //     ErrMFAAlreadyEnrolled when the existing row is already CONFIRMED (the
-//     caller must disable/disenroll first) and household.ErrMemberNotFound
-//     when memberID does not belong to householdID.
-//   - ConfirmEnrollment sets confirmed_at = now on the member's existing
-//     unconfirmed row. Returns ErrMFANotEnrolled when no row exists.
+//     caller must disable/disenroll first), and household.ErrMemberNotFound
+//     both when memberID does not belong to householdID (no such row exists
+//     yet) AND when an existing row belongs to a DIFFERENT household than
+//     householdID (a tenant-consistency guard: implementations must never
+//     touch another household's row, and must report both cases identically
+//     so neither leaks which one occurred).
+//   - ConfirmEnrollmentWithCodes atomically, in a single transaction, sets
+//     confirmed_at = now on the member's existing unconfirmed row AND
+//     replaces their recovery codes with one fresh row per hash — the two
+//     writes MUST be atomic (not two separate calls) so that two concurrent
+//     callers racing to confirm the SAME still-unconfirmed enrollment can
+//     never both "win": the loser's hashes are never persisted, and it
+//     receives ErrMFAAlreadyEnrolled rather than silently returning raw
+//     codes to its caller that were never actually stored. Returns
+//     ErrMFANotEnrolled when no row exists, and ErrMFAAlreadyEnrolled when
+//     the row is already confirmed (including by a racing, now-committed,
+//     concurrent call to this same method).
 //   - DeleteEnrollment removes the member's enrollment (confirmed or not),
 //     cascading its recovery codes, scoped to householdID as a
 //     defense-in-depth tenant check (used by both self-service disenroll,
@@ -121,7 +134,10 @@ func (c RecoveryCode) Used() bool {
 //   - ReplaceRecoveryCodes atomically deletes every existing recovery code
 //     for memberID and inserts one fresh row per hash, in a single
 //     transaction (delete-then-insert), so a failure leaves the previous
-//     set intact rather than a partially-regenerated one.
+//     set intact rather than a partially-regenerated one. Used only for
+//     regenerating an ALREADY-confirmed enrollment's codes (see
+//     ConfirmEnrollmentWithCodes for the first-confirmation case, which has
+//     a race ReplaceRecoveryCodes alone does not close).
 //   - ListUnusedRecoveryCodes returns every not-yet-used recovery code for
 //     memberID (never used ones), for verifying a submitted code against.
 //   - MarkRecoveryCodeUsed sets used_at = now on the given code id. It is the
@@ -129,7 +145,7 @@ func (c RecoveryCode) Used() bool {
 type MFARepository interface {
 	GetEnrollment(ctx context.Context, memberID household.MemberID) (*MFAEnrollment, error)
 	BeginEnrollment(ctx context.Context, memberID household.MemberID, householdID household.HouseholdID, secretEnc []byte) error
-	ConfirmEnrollment(ctx context.Context, memberID household.MemberID) error
+	ConfirmEnrollmentWithCodes(ctx context.Context, memberID household.MemberID, recoveryCodeHashes []string) error
 	DeleteEnrollment(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID) error
 	ReplaceRecoveryCodes(ctx context.Context, memberID household.MemberID, hashes []string) error
 	ListUnusedRecoveryCodes(ctx context.Context, memberID household.MemberID) ([]RecoveryCode, error)

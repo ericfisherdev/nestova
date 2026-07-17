@@ -61,10 +61,13 @@ func (f *fakeMFARepo) BeginEnrollment(_ context.Context, memberID household.Memb
 	return nil
 }
 
-func (f *fakeMFARepo) ConfirmEnrollment(_ context.Context, memberID household.MemberID) error {
+func (f *fakeMFARepo) ConfirmEnrollmentWithCodes(_ context.Context, memberID household.MemberID, _ []string) error {
 	e, ok := f.enrollments[memberID]
 	if !ok {
 		return authdomain.ErrMFANotEnrolled
+	}
+	if e.Confirmed() {
+		return authdomain.ErrMFAAlreadyEnrolled
 	}
 	now := time.Now()
 	e.ConfirmedAt = &now
@@ -333,7 +336,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), mfaTestCipher, totp.NewProvider(), testCredRepo{}, logger)
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), mfaTestCipher, totp.NewProvider(), testCredRepo{}, householdRepo, logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}

@@ -64,8 +64,9 @@ type MFASettingsView struct {
 templ mfaSection(view MFASettingsView) {
 	@Card("Two-factor authentication") {
 		<p class="mb-4 text-sm text-ink-secondary">
-			Add a second step to sign-in using an authenticator app (like Google
-			Authenticator or Authy) on your own phone.
+			Set up an authenticator app (like Google Authenticator or Authy) on your
+			own phone so it's ready to go. This does not protect sign-in yet — we'll
+			let you know here once sign-in verification is turned on.
 		</p>
 		if view.Error != "" {
 			<p class="mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
@@ -85,7 +86,10 @@ templ mfaSection(view MFASettingsView) {
 				if view.RecoveryCodesReveal != nil {
 					@mfaRecoveryCodesReveal(*view.RecoveryCodesReveal)
 				}
-				<p class="mb-4 font-medium text-sage-darker">Two-factor authentication is active.</p>
+				<p class="mb-4 font-medium text-sage-darker">
+					Your authenticator app is set up. It will protect sign-in once we
+					turn on sign-in verification.
+				</p>
 				@mfaRegenerateForm(view.CSRFToken)
 				@mfaDisenrollForm(view.CSRFToken)
 		}
@@ -276,4 +280,54 @@ templ mfaAdminResetSection(view MFASettingsView) {
 			</button>
 		</form>
 	}
+}
+
+// MFARevealFallbackView carries a one-time reveal (a kiosk activation code,
+// an MFA enrollment secret, or MFA recovery codes) for the guaranteed-render
+// fallback page below — used only when composing the REST of the settings
+// page failed AFTER the corresponding server-side state was already
+// persisted (or, for the kiosk code, already minted), so the plaintext
+// reveal — which can never be reconstructed once this response is lost —
+// is shown here instead of silently discarded by a 500.
+type MFARevealFallbackView struct {
+	Kiosk    *KioskActivationReveal
+	Enroll   *MFAEnrollReveal
+	Recovery *MFARecoveryCodesReveal
+}
+
+// MFARevealFallbackPage is a self-contained page (like LoginPage, not
+// wrapped in the app shell Layout) that renders ONLY the reveal(s) already
+// held in memory, with no repository reads or session lookups of its own —
+// unlike SettingsPage, nothing here can fail the same way building the rest
+// of the settings page can.
+templ MFARevealFallbackPage(view MFARevealFallbackView) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Save this before continuing – Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4">
+			<div class="w-full max-w-sm rounded-card bg-surface p-6 shadow-warm">
+				<h1 class="mb-4 text-xl font-semibold">Save this before continuing</h1>
+				<p class="mb-4 text-sm text-ink-secondary">
+					The rest of the settings page could not load, but this was already
+					saved — write it down now, since it cannot be shown again.
+				</p>
+				if view.Kiosk != nil {
+					@kioskActivationReveal(*view.Kiosk)
+				}
+				if view.Enroll != nil {
+					@mfaEnrollReveal(*view.Enroll)
+				}
+				if view.Recovery != nil {
+					@mfaRecoveryCodesReveal(*view.Recovery)
+				}
+				<a href="/settings" class="mt-2 inline-block font-medium text-sage hover:text-sage-dark">Continue to Settings</a>
+			</div>
+		</body>
+	</html>
 }

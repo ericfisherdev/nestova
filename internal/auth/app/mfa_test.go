@@ -42,21 +42,46 @@ func (f *fakeMFARepo) GetEnrollment(_ context.Context, memberID household.Member
 	return &cp, nil
 }
 
+// BeginEnrollment mirrors the real repository's household guard (NES-134
+// CodeRabbit round 3, finding 3): an existing row belonging to a DIFFERENT
+// household than householdID must never be touched.
 func (f *fakeMFARepo) BeginEnrollment(_ context.Context, memberID household.MemberID, householdID household.HouseholdID, secretEnc []byte) error {
-	if existing, ok := f.enrollments[memberID]; ok && existing.Confirmed() {
-		return authdomain.ErrMFAAlreadyEnrolled
+	if existing, ok := f.enrollments[memberID]; ok {
+		if existing.HouseholdID != householdID {
+			return household.ErrMemberNotFound
+		}
+		if existing.Confirmed() {
+			return authdomain.ErrMFAAlreadyEnrolled
+		}
 	}
 	f.enrollments[memberID] = &authdomain.MFAEnrollment{MemberID: memberID, HouseholdID: householdID, TOTPSecretEnc: secretEnc}
 	return nil
 }
 
-func (f *fakeMFARepo) ConfirmEnrollment(_ context.Context, memberID household.MemberID) error {
+// ConfirmEnrollmentWithCodes mirrors the real repository's atomic
+// confirm+store-codes contract (NES-134 CodeRabbit round 3, finding 4): both
+// happen together, or neither does.
+func (f *fakeMFARepo) ConfirmEnrollmentWithCodes(_ context.Context, memberID household.MemberID, hashes []string) error {
 	e, ok := f.enrollments[memberID]
 	if !ok {
 		return authdomain.ErrMFANotEnrolled
 	}
+	if e.Confirmed() {
+		return authdomain.ErrMFAAlreadyEnrolled
+	}
 	now := time.Now()
 	e.ConfirmedAt = &now
+
+	codes := make([]authdomain.RecoveryCode, 0, len(hashes))
+	for _, h := range hashes {
+		f.nextCodeID++
+		codes = append(codes, authdomain.RecoveryCode{
+			ID:       recoveryCodeIDFromInt(f.nextCodeID),
+			MemberID: memberID,
+			CodeHash: h,
+		})
+	}
+	f.codes[memberID] = codes
 	return nil
 }
 
@@ -159,8 +184,30 @@ func (f *fakePasswordVerifier) FindByMemberID(_ context.Context, memberID househ
 	return c, nil
 }
 
+// fakeMemberLookup is a controllable memberLookup fake: ResetMemberMFA
+// resolves the acting owner's (and target's) role/household through this,
+// never trusting a caller-supplied claim (NES-134 CodeRabbit round 3,
+// finding 5).
+type fakeMemberLookup struct {
+	members map[household.MemberID]*household.Member
+}
+
+func newFakeMemberLookup() *fakeMemberLookup {
+	return &fakeMemberLookup{members: make(map[household.MemberID]*household.Member)}
+}
+
+func (f *fakeMemberLookup) seed(m *household.Member) { f.members[m.ID] = m }
+
+func (f *fakeMemberLookup) GetMember(_ context.Context, id household.MemberID) (*household.Member, error) {
+	m, ok := f.members[id]
+	if !ok {
+		return nil, household.ErrMemberNotFound
+	}
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
-// Fixtures
+// Fixture
 // ---------------------------------------------------------------------------
 
 func discardLogger() (*slog.Logger, *bytes.Buffer) {
@@ -181,19 +228,31 @@ func testCipher(t *testing.T) *crypto.Cipher {
 	return c
 }
 
-// newMFAFixture wires an MFAService with fully controllable fakes and
-// returns them for direct assertions.
-func newMFAFixture(t *testing.T) (*app.MFAService, *fakeMFARepo, *fakeTOTPProvider, *fakePasswordVerifier, *bytes.Buffer) {
+// mfaFixture bundles an MFAService with its fully controllable fakes, so
+// tests can both exercise the service and assert directly against its
+// dependencies' state.
+type mfaFixture struct {
+	svc       *app.MFAService
+	repo      *fakeMFARepo
+	totp      *fakeTOTPProvider
+	passwords *fakePasswordVerifier
+	members   *fakeMemberLookup
+	logs      *bytes.Buffer
+}
+
+// newMFAFixture wires an MFAService with fully controllable fakes.
+func newMFAFixture(t *testing.T) *mfaFixture {
 	t.Helper()
 	repo := newFakeMFARepo()
 	totpFake := &fakeTOTPProvider{secret: "JBSWY3DPEHPK3PXP", otpauthURL: "otpauth://totp/Nestova:alice?secret=JBSWY3DPEHPK3PXP&issuer=Nestova", validCode: "123456"}
 	passwords := &fakePasswordVerifier{credentials: make(map[household.MemberID]*authdomain.Credential)}
+	members := newFakeMemberLookup()
 	logger, buf := discardLogger()
-	svc, err := app.NewMFAService(repo, testCipher(t), totpFake, passwords, logger)
+	svc, err := app.NewMFAService(repo, testCipher(t), totpFake, passwords, members, logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
-	return svc, repo, totpFake, passwords, buf
+	return &mfaFixture{svc: svc, repo: repo, totp: totpFake, passwords: passwords, members: members, logs: buf}
 }
 
 // ---------------------------------------------------------------------------
@@ -202,22 +261,22 @@ func newMFAFixture(t *testing.T) (*app.MFAService, *fakeMFARepo, *fakeTOTPProvid
 
 func TestBeginEnrollment_GeneratesAndPersistsUnconfirmedSecret(t *testing.T) {
 	t.Parallel()
-	svc, repo, totpFake, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
 
-	secret, otpauthURL, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice")
+	secret, otpauthURL, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice")
 	if err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
-	if secret != totpFake.secret || otpauthURL != totpFake.otpauthURL {
-		t.Errorf("BeginEnrollment returned (%q, %q), want the generated (%q, %q)", secret, otpauthURL, totpFake.secret, totpFake.otpauthURL)
+	if secret != f.totp.secret || otpauthURL != f.totp.otpauthURL {
+		t.Errorf("BeginEnrollment returned (%q, %q), want the generated (%q, %q)", secret, otpauthURL, f.totp.secret, f.totp.otpauthURL)
 	}
-	if totpFake.lastAccount != "Alice" || totpFake.lastIssuer != "Nestova" {
-		t.Errorf("GenerateSecret called with issuer=%q accountName=%q, want issuer=Nestova accountName=Alice", totpFake.lastIssuer, totpFake.lastAccount)
+	if f.totp.lastAccount != "Alice" || f.totp.lastIssuer != "Nestova" {
+		t.Errorf("GenerateSecret called with issuer=%q accountName=%q, want issuer=Nestova accountName=Alice", f.totp.lastIssuer, f.totp.lastAccount)
 	}
 
-	enrollment, err := repo.GetEnrollment(context.Background(), memberID)
+	enrollment, err := f.repo.GetEnrollment(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("GetEnrollment after BeginEnrollment: %v", err)
 	}
@@ -228,7 +287,7 @@ func TestBeginEnrollment_GeneratesAndPersistsUnconfirmedSecret(t *testing.T) {
 		t.Error("the stored secret must be encrypted, not the raw secret")
 	}
 
-	status, err := svc.Status(context.Background(), memberID)
+	status, err := f.svc.Status(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -241,19 +300,19 @@ func TestBeginEnrollment_ReplacesUnconfirmedEnrollment(t *testing.T) {
 	// AC5: unconfirmed enrollments never lock anyone out — re-enrolling
 	// before confirming simply replaces the still-unconfirmed row.
 	t.Parallel()
-	svc, repo, totpFake, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
 
-	if _, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
 		t.Fatalf("first BeginEnrollment: %v", err)
 	}
-	totpFake.secret = "ANOTHERSECRETVALUE"
-	if _, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
+	f.totp.secret = "ANOTHERSECRETVALUE"
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
 		t.Fatalf("second BeginEnrollment (re-enroll over unconfirmed): %v", err)
 	}
 
-	enrollment, err := repo.GetEnrollment(context.Background(), memberID)
+	enrollment, err := f.repo.GetEnrollment(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("GetEnrollment: %v", err)
 	}
@@ -264,31 +323,58 @@ func TestBeginEnrollment_ReplacesUnconfirmedEnrollment(t *testing.T) {
 
 func TestBeginEnrollment_AlreadyConfirmed_ReturnsErrMFAAlreadyEnrolled(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	confirmEnrollment(t, svc, memberID, householdID)
+	confirmEnrollment(t, f.svc, memberID, householdID)
 
-	if _, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); !errors.Is(err, authdomain.ErrMFAAlreadyEnrolled) {
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); !errors.Is(err, authdomain.ErrMFAAlreadyEnrolled) {
 		t.Errorf("BeginEnrollment over a confirmed enrollment: err = %v, want ErrMFAAlreadyEnrolled", err)
+	}
+}
+
+func TestBeginEnrollment_CrossHouseholdRejected(t *testing.T) {
+	// Defense-in-depth tenant guard (NES-134 CodeRabbit round 3, finding
+	// 3): BeginEnrollment must never overwrite a row belonging to a
+	// DIFFERENT household than the caller supplied.
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	victimHousehold := household.NewHouseholdID()
+	attackerHousehold := household.NewHouseholdID()
+
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, victimHousehold, "Alice"); err != nil {
+		t.Fatalf("seed BeginEnrollment: %v", err)
+	}
+	_, _, err := f.svc.BeginEnrollment(context.Background(), memberID, attackerHousehold, "Attacker")
+	if !errors.Is(err, household.ErrMemberNotFound) {
+		t.Errorf("cross-household BeginEnrollment: err = %v, want ErrMemberNotFound", err)
+	}
+
+	enrollment, err := f.repo.GetEnrollment(context.Background(), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.HouseholdID != victimHousehold {
+		t.Error("a cross-household BeginEnrollment attempt must not change the victim's household_id")
 	}
 }
 
 func TestConfirmEnrollment_WrongCodeRejected_EnrollmentStaysUnconfirmed(t *testing.T) {
 	t.Parallel()
-	svc, repo, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	if _, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
 
-	_, err := svc.ConfirmEnrollment(context.Background(), memberID, "000000")
+	_, err := f.svc.ConfirmEnrollment(context.Background(), memberID, "000000")
 	if !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
 		t.Fatalf("ConfirmEnrollment(wrong code): err = %v, want ErrInvalidTOTPCode", err)
 	}
 
-	enrollment, err := repo.GetEnrollment(context.Background(), memberID)
+	enrollment, err := f.repo.GetEnrollment(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("GetEnrollment: %v", err)
 	}
@@ -299,8 +385,8 @@ func TestConfirmEnrollment_WrongCodeRejected_EnrollmentStaysUnconfirmed(t *testi
 
 func TestConfirmEnrollment_NotEnrolled(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
-	_, err := svc.ConfirmEnrollment(context.Background(), household.NewMemberID(), "123456")
+	f := newMFAFixture(t)
+	_, err := f.svc.ConfirmEnrollment(context.Background(), household.NewMemberID(), "123456")
 	if !errors.Is(err, authdomain.ErrMFANotEnrolled) {
 		t.Errorf("ConfirmEnrollment with no enrollment: err = %v, want ErrMFANotEnrolled", err)
 	}
@@ -308,14 +394,14 @@ func TestConfirmEnrollment_NotEnrolled(t *testing.T) {
 
 func TestConfirmEnrollment_ValidCode_ActivatesAndReturnsTenRecoveryCodes(t *testing.T) {
 	t.Parallel()
-	svc, repo, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	if _, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
 
-	codes, err := svc.ConfirmEnrollment(context.Background(), memberID, "123456")
+	codes, err := f.svc.ConfirmEnrollment(context.Background(), memberID, "123456")
 	if err != nil {
 		t.Fatalf("ConfirmEnrollment: %v", err)
 	}
@@ -330,7 +416,7 @@ func TestConfirmEnrollment_ValidCode_ActivatesAndReturnsTenRecoveryCodes(t *test
 		seen[c] = true
 	}
 
-	enrollment, err := repo.GetEnrollment(context.Background(), memberID)
+	enrollment, err := f.repo.GetEnrollment(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("GetEnrollment: %v", err)
 	}
@@ -338,7 +424,7 @@ func TestConfirmEnrollment_ValidCode_ActivatesAndReturnsTenRecoveryCodes(t *test
 		t.Error("a valid code must confirm the enrollment")
 	}
 
-	unused, err := repo.ListUnusedRecoveryCodes(context.Background(), memberID)
+	unused, err := f.repo.ListUnusedRecoveryCodes(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("ListUnusedRecoveryCodes: %v", err)
 	}
@@ -354,12 +440,12 @@ func TestConfirmEnrollment_ValidCode_ActivatesAndReturnsTenRecoveryCodes(t *test
 
 func TestConfirmEnrollment_AlreadyConfirmed(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	confirmEnrollment(t, svc, memberID, householdID)
+	confirmEnrollment(t, f.svc, memberID, householdID)
 
-	if _, err := svc.ConfirmEnrollment(context.Background(), memberID, "123456"); !errors.Is(err, authdomain.ErrMFAAlreadyEnrolled) {
+	if _, err := f.svc.ConfirmEnrollment(context.Background(), memberID, "123456"); !errors.Is(err, authdomain.ErrMFAAlreadyEnrolled) {
 		t.Errorf("re-confirming an already-confirmed enrollment: err = %v, want ErrMFAAlreadyEnrolled", err)
 	}
 }
@@ -370,12 +456,12 @@ func TestConfirmEnrollment_AlreadyConfirmed(t *testing.T) {
 
 func TestRegenerateRecoveryCodes_ValidCode_InvalidatesOldCodes(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	oldCodes := confirmEnrollment(t, svc, memberID, householdID)
+	oldCodes := confirmEnrollment(t, f.svc, memberID, householdID)
 
-	newCodes, err := svc.RegenerateRecoveryCodes(context.Background(), memberID, "123456")
+	newCodes, err := f.svc.RegenerateRecoveryCodes(context.Background(), memberID, "123456")
 	if err != nil {
 		t.Fatalf("RegenerateRecoveryCodes: %v", err)
 	}
@@ -392,7 +478,7 @@ func TestRegenerateRecoveryCodes_ValidCode_InvalidatesOldCodes(t *testing.T) {
 
 	// The old codes must no longer verify via Disenroll (they were replaced,
 	// not merely appended to).
-	err = svc.Disenroll(context.Background(), memberID, householdID, "", oldCodes[0])
+	err = f.svc.Disenroll(context.Background(), memberID, householdID, "", oldCodes[0])
 	if !errors.Is(err, authdomain.ErrRecoveryCodeInvalid) {
 		t.Errorf("disenroll with a pre-regeneration recovery code: err = %v, want ErrRecoveryCodeInvalid", err)
 	}
@@ -400,12 +486,12 @@ func TestRegenerateRecoveryCodes_ValidCode_InvalidatesOldCodes(t *testing.T) {
 
 func TestRegenerateRecoveryCodes_WrongCodeRejected(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	confirmEnrollment(t, svc, memberID, householdID)
+	confirmEnrollment(t, f.svc, memberID, householdID)
 
-	if _, err := svc.RegenerateRecoveryCodes(context.Background(), memberID, "000000"); !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+	if _, err := f.svc.RegenerateRecoveryCodes(context.Background(), memberID, "000000"); !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
 		t.Errorf("RegenerateRecoveryCodes(wrong code): err = %v, want ErrInvalidTOTPCode", err)
 	}
 }
@@ -414,32 +500,32 @@ func TestRegenerateRecoveryCodes_RecoveryCodeNotAcceptedInstead(t *testing.T) {
 	// Regenerating requires possessing the authenticator itself; a recovery
 	// code must not substitute for the TOTP code here (unlike Disenroll).
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	codes := confirmEnrollment(t, svc, memberID, householdID)
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
 
-	if _, err := svc.RegenerateRecoveryCodes(context.Background(), memberID, codes[0]); !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+	if _, err := f.svc.RegenerateRecoveryCodes(context.Background(), memberID, codes[0]); !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
 		t.Errorf("RegenerateRecoveryCodes(recovery code instead of totp): err = %v, want ErrInvalidTOTPCode", err)
 	}
 }
 
 func TestDisenroll_RecoveryCode_WorksOnceThenRejected(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	codes := confirmEnrollment(t, svc, memberID, householdID)
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
 
-	if err := svc.Disenroll(context.Background(), memberID, householdID, "", codes[3]); err != nil {
+	if err := f.svc.Disenroll(context.Background(), memberID, householdID, "", codes[3]); err != nil {
 		t.Fatalf("Disenroll with a fresh recovery code: %v", err)
 	}
 
 	// The successful Disenroll removed the whole enrollment; re-enroll so
 	// there is an active enrollment again, then confirm the OLD code (from
 	// the now-deleted enrollment) cannot be reused against it.
-	confirmEnrollment(t, svc, memberID, householdID)
-	err := svc.Disenroll(context.Background(), memberID, householdID, "", codes[3])
+	confirmEnrollment(t, f.svc, memberID, householdID)
+	err := f.svc.Disenroll(context.Background(), memberID, householdID, "", codes[3])
 	if !errors.Is(err, authdomain.ErrRecoveryCodeInvalid) {
 		t.Errorf("reusing a code from a deleted enrollment: err = %v, want ErrRecoveryCodeInvalid", err)
 	}
@@ -452,22 +538,22 @@ func TestDisenroll_RecoveryCode_WorksOnceThenRejected(t *testing.T) {
 // never verify again even though the enrollment itself is untouched.
 func TestMarkRecoveryCodeUsed_ExcludesCodeFromFutureVerification(t *testing.T) {
 	t.Parallel()
-	svc, repo, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	codes := confirmEnrollment(t, svc, memberID, householdID)
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
 
-	unused, err := repo.ListUnusedRecoveryCodes(context.Background(), memberID)
+	unused, err := f.repo.ListUnusedRecoveryCodes(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("ListUnusedRecoveryCodes: %v", err)
 	}
 	target := findRecoveryCodeID(t, unused, codes[7])
 
-	if err := repo.MarkRecoveryCodeUsed(context.Background(), target); err != nil {
+	if err := f.repo.MarkRecoveryCodeUsed(context.Background(), target); err != nil {
 		t.Fatalf("MarkRecoveryCodeUsed: %v", err)
 	}
 
-	stillUnused, err := repo.ListUnusedRecoveryCodes(context.Background(), memberID)
+	stillUnused, err := f.repo.ListUnusedRecoveryCodes(context.Background(), memberID)
 	if err != nil {
 		t.Fatalf("ListUnusedRecoveryCodes after mark-used: %v", err)
 	}
@@ -481,7 +567,7 @@ func TestMarkRecoveryCodeUsed_ExcludesCodeFromFutureVerification(t *testing.T) {
 	}
 
 	// Consuming it via Disenroll must now fail as invalid, not succeed.
-	err = svc.Disenroll(context.Background(), memberID, householdID, "", codes[7])
+	err = f.svc.Disenroll(context.Background(), memberID, householdID, "", codes[7])
 	if !errors.Is(err, authdomain.ErrRecoveryCodeInvalid) {
 		t.Errorf("Disenroll with an already-used recovery code: err = %v, want ErrRecoveryCodeInvalid", err)
 	}
@@ -504,12 +590,12 @@ func findRecoveryCodeID(t *testing.T, candidates []authdomain.RecoveryCode, rawC
 
 func TestDisenroll_InvalidRecoveryCodeRejected(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	confirmEnrollment(t, svc, memberID, householdID)
+	confirmEnrollment(t, f.svc, memberID, householdID)
 
-	err := svc.Disenroll(context.Background(), memberID, householdID, "", "NOT-A-REAL-CODE")
+	err := f.svc.Disenroll(context.Background(), memberID, householdID, "", "NOT-A-REAL-CODE")
 	if !errors.Is(err, authdomain.ErrRecoveryCodeInvalid) {
 		t.Errorf("Disenroll(bogus recovery code): err = %v, want ErrRecoveryCodeInvalid", err)
 	}
@@ -521,12 +607,14 @@ func TestDisenroll_InvalidRecoveryCodeRejected(t *testing.T) {
 
 func TestResetMemberMFA_NonOwnerRejected(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	householdID := household.NewHouseholdID()
-	target := household.NewMemberID()
 	actingAdult := household.NewMemberID()
+	target := household.NewMemberID()
+	f.members.seed(&household.Member{ID: actingAdult, HouseholdID: householdID, Role: household.RoleAdult})
+	f.members.seed(&household.Member{ID: target, HouseholdID: householdID, Role: household.RoleChild})
 
-	err := svc.ResetMemberMFA(context.Background(), actingAdult, household.RoleAdult, "irrelevant", householdID, target)
+	err := f.svc.ResetMemberMFA(context.Background(), actingAdult, "irrelevant", target)
 	if !errors.Is(err, authdomain.ErrNotHouseholdOwner) {
 		t.Errorf("ResetMemberMFA as an adult (not owner): err = %v, want ErrNotHouseholdOwner", err)
 	}
@@ -534,20 +622,22 @@ func TestResetMemberMFA_NonOwnerRejected(t *testing.T) {
 
 func TestResetMemberMFA_WrongPasswordRejected(t *testing.T) {
 	t.Parallel()
-	svc, _, _, passwords, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	householdID := household.NewHouseholdID()
 	owner := household.NewMemberID()
 	target := household.NewMemberID()
-	seedOwnerPassword(t, passwords, owner, "correct-horse-battery-staple")
-	confirmEnrollment(t, svc, target, householdID)
+	f.members.seed(&household.Member{ID: owner, HouseholdID: householdID, Role: household.RoleOwner})
+	f.members.seed(&household.Member{ID: target, HouseholdID: householdID, Role: household.RoleChild})
+	seedOwnerPassword(t, f.passwords, owner, "correct-horse-battery-staple")
+	confirmEnrollment(t, f.svc, target, householdID)
 
-	err := svc.ResetMemberMFA(context.Background(), owner, household.RoleOwner, "wrong-password", householdID, target)
+	err := f.svc.ResetMemberMFA(context.Background(), owner, "wrong-password", target)
 	if !errors.Is(err, authdomain.ErrOwnerReauthRequired) {
 		t.Errorf("ResetMemberMFA with wrong owner password: err = %v, want ErrOwnerReauthRequired", err)
 	}
 
 	// The target's enrollment must be untouched by a failed reset attempt.
-	status, err := svc.Status(context.Background(), target)
+	status, err := f.svc.Status(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -558,18 +648,20 @@ func TestResetMemberMFA_WrongPasswordRejected(t *testing.T) {
 
 func TestResetMemberMFA_CorrectPassword_RemovesTargetEnrollment(t *testing.T) {
 	t.Parallel()
-	svc, _, _, passwords, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	householdID := household.NewHouseholdID()
 	owner := household.NewMemberID()
 	target := household.NewMemberID()
-	seedOwnerPassword(t, passwords, owner, "correct-horse-battery-staple")
-	confirmEnrollment(t, svc, target, householdID)
+	f.members.seed(&household.Member{ID: owner, HouseholdID: householdID, Role: household.RoleOwner})
+	f.members.seed(&household.Member{ID: target, HouseholdID: householdID, Role: household.RoleChild})
+	seedOwnerPassword(t, f.passwords, owner, "correct-horse-battery-staple")
+	confirmEnrollment(t, f.svc, target, householdID)
 
-	if err := svc.ResetMemberMFA(context.Background(), owner, household.RoleOwner, "correct-horse-battery-staple", householdID, target); err != nil {
+	if err := f.svc.ResetMemberMFA(context.Background(), owner, "correct-horse-battery-staple", target); err != nil {
 		t.Fatalf("ResetMemberMFA: %v", err)
 	}
 
-	status, err := svc.Status(context.Background(), target)
+	status, err := f.svc.Status(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
@@ -580,15 +672,61 @@ func TestResetMemberMFA_CorrectPassword_RemovesTargetEnrollment(t *testing.T) {
 
 func TestResetMemberMFA_TargetNotEnrolled(t *testing.T) {
 	t.Parallel()
-	svc, _, _, passwords, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	householdID := household.NewHouseholdID()
 	owner := household.NewMemberID()
 	target := household.NewMemberID()
-	seedOwnerPassword(t, passwords, owner, "correct-horse-battery-staple")
+	f.members.seed(&household.Member{ID: owner, HouseholdID: householdID, Role: household.RoleOwner})
+	f.members.seed(&household.Member{ID: target, HouseholdID: householdID, Role: household.RoleChild})
+	seedOwnerPassword(t, f.passwords, owner, "correct-horse-battery-staple")
 
-	err := svc.ResetMemberMFA(context.Background(), owner, household.RoleOwner, "correct-horse-battery-staple", householdID, target)
+	err := f.svc.ResetMemberMFA(context.Background(), owner, "correct-horse-battery-staple", target)
 	if !errors.Is(err, authdomain.ErrMFANotEnrolled) {
 		t.Errorf("ResetMemberMFA on an unenrolled target: err = %v, want ErrMFANotEnrolled", err)
+	}
+}
+
+// TestResetMemberMFA_CrossHouseholdTargetRejected is the app-layer coverage
+// for finding 5 (NES-134 CodeRabbit round 3): the service resolves the
+// target's household itself and rejects a target outside the acting
+// owner's own household, even though the acting member genuinely is an
+// owner (of a DIFFERENT household).
+func TestResetMemberMFA_CrossHouseholdTargetRejected(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	ownerHousehold := household.NewHouseholdID()
+	otherHousehold := household.NewHouseholdID()
+	owner := household.NewMemberID()
+	target := household.NewMemberID()
+	f.members.seed(&household.Member{ID: owner, HouseholdID: ownerHousehold, Role: household.RoleOwner})
+	f.members.seed(&household.Member{ID: target, HouseholdID: otherHousehold, Role: household.RoleAdult})
+	seedOwnerPassword(t, f.passwords, owner, "correct-horse-battery-staple")
+	confirmEnrollment(t, f.svc, target, otherHousehold)
+
+	err := f.svc.ResetMemberMFA(context.Background(), owner, "correct-horse-battery-staple", target)
+	if !errors.Is(err, authdomain.ErrMFANotEnrolled) {
+		t.Errorf("ResetMemberMFA against a cross-household target: err = %v, want ErrMFANotEnrolled", err)
+	}
+
+	// The victim's enrollment in the OTHER household must be untouched.
+	status, err := f.svc.Status(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.Confirmed() {
+		t.Error("a cross-household reset attempt must not remove the victim's enrollment")
+	}
+}
+
+func TestResetMemberMFA_UnknownActingMember(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	err := f.svc.ResetMemberMFA(context.Background(), household.NewMemberID(), "irrelevant", household.NewMemberID())
+	if err == nil {
+		t.Fatal("ResetMemberMFA with an unknown acting member must fail")
+	}
+	if errors.Is(err, authdomain.ErrNotHouseholdOwner) || errors.Is(err, authdomain.ErrOwnerReauthRequired) {
+		t.Errorf("unexpected specific sentinel for an unknown acting member: %v", err)
 	}
 }
 
@@ -598,25 +736,24 @@ func TestResetMemberMFA_TargetNotEnrolled(t *testing.T) {
 
 func TestBeginEnrollment_SecretNeverLogged(t *testing.T) {
 	t.Parallel()
-	svc, _, totpFake, _, logBuf := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
 
-	secret, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice")
+	secret, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice")
 	if err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
-	if strings.Contains(logBuf.String(), secret) {
-		t.Errorf("BeginEnrollment logged the raw secret: %s", logBuf.String())
+	if strings.Contains(f.logs.String(), secret) {
+		t.Errorf("BeginEnrollment logged the raw secret: %s", f.logs.String())
 	}
 
-	if _, err := svc.ConfirmEnrollment(context.Background(), memberID, "123456"); err != nil {
+	if _, err := f.svc.ConfirmEnrollment(context.Background(), memberID, "123456"); err != nil {
 		t.Fatalf("ConfirmEnrollment: %v", err)
 	}
-	if strings.Contains(logBuf.String(), secret) {
-		t.Errorf("ConfirmEnrollment logged the raw secret: %s", logBuf.String())
+	if strings.Contains(f.logs.String(), secret) {
+		t.Errorf("ConfirmEnrollment logged the raw secret: %s", f.logs.String())
 	}
-	_ = totpFake
 }
 
 // ---------------------------------------------------------------------------
@@ -625,12 +762,12 @@ func TestBeginEnrollment_SecretNeverLogged(t *testing.T) {
 
 func TestDisenroll_NoCredentialSupplied(t *testing.T) {
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	confirmEnrollment(t, svc, memberID, householdID)
+	confirmEnrollment(t, f.svc, memberID, householdID)
 
-	err := svc.Disenroll(context.Background(), memberID, householdID, "", "")
+	err := f.svc.Disenroll(context.Background(), memberID, householdID, "", "")
 	if !errors.Is(err, authdomain.ErrMFAVerificationRequired) {
 		t.Errorf("Disenroll with neither code nor recovery code: err = %v, want ErrMFAVerificationRequired", err)
 	}
@@ -640,14 +777,14 @@ func TestDisenroll_UnconfirmedEnrollment_NotEnrolled(t *testing.T) {
 	// Disenroll (and every other action requiring active MFA) must treat an
 	// unconfirmed enrollment as though it doesn't exist.
 	t.Parallel()
-	svc, _, _, _, _ := newMFAFixture(t)
+	f := newMFAFixture(t)
 	memberID := household.NewMemberID()
 	householdID := household.NewHouseholdID()
-	if _, _, err := svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
+	if _, _, err := f.svc.BeginEnrollment(context.Background(), memberID, householdID, "Alice"); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
 
-	err := svc.Disenroll(context.Background(), memberID, householdID, "123456", "")
+	err := f.svc.Disenroll(context.Background(), memberID, householdID, "123456", "")
 	if !errors.Is(err, authdomain.ErrMFANotEnrolled) {
 		t.Errorf("Disenroll against an unconfirmed enrollment: err = %v, want ErrMFANotEnrolled", err)
 	}

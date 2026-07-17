@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -116,7 +117,7 @@ func TestMFAServiceBeginEnrollment_SecretNotStoredInPlaintext(t *testing.T) {
 	}
 
 	cipher := mfaTestCipher(t)
-	svc, err := authapp.NewMFAService(authadapter.NewMFARepository(pool), cipher, totp.NewProvider(), credRepo, discardMFALogger())
+	svc, err := authapp.NewMFAService(authadapter.NewMFARepository(pool), cipher, totp.NewProvider(), credRepo, hhRepo, discardMFALogger())
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
@@ -174,8 +175,8 @@ func TestMFABeginEnrollment_AlreadyConfirmedRejected(t *testing.T) {
 	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret-1")); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
-	if err := repo.ConfirmEnrollment(testCtx(t), memberID); err != nil {
-		t.Fatalf("ConfirmEnrollment: %v", err)
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
 	}
 
 	err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret-2"))
@@ -200,6 +201,37 @@ func TestMFABeginEnrollment_UnknownMemberInHousehold(t *testing.T) {
 	}
 }
 
+// TestMFABeginEnrollment_CrossHouseholdCannotTouchVictimRow is the gated
+// tenant-isolation check (NES-134 CodeRabbit round 3, finding 3): a
+// BeginEnrollment call for an ALREADY-ENROLLED member, but supplying a
+// DIFFERENT household id than the member's real one, must never overwrite
+// that member's pending secret — it must be reported the same as an
+// unknown member (no signal about which occurred), and the victim's row
+// must survive completely untouched.
+func TestMFABeginEnrollment_CrossHouseholdCannotTouchVictimRow(t *testing.T) {
+	repo, victimHouseholdID, victimMemberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), victimMemberID, victimHouseholdID, []byte("victim-secret")); err != nil {
+		t.Fatalf("seed victim BeginEnrollment: %v", err)
+	}
+
+	attackerHouseholdID := household.NewHouseholdID()
+	err := repo.BeginEnrollment(testCtx(t), victimMemberID, attackerHouseholdID, []byte("attacker-supplied-secret"))
+	if !errors.Is(err, household.ErrMemberNotFound) {
+		t.Fatalf("cross-household BeginEnrollment: err = %v, want ErrMemberNotFound", err)
+	}
+
+	enrollment, err := repo.GetEnrollment(testCtx(t), victimMemberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if string(enrollment.TOTPSecretEnc) != "victim-secret" {
+		t.Error("a cross-household BeginEnrollment attempt must not overwrite the victim's pending secret")
+	}
+	if enrollment.HouseholdID != victimHouseholdID {
+		t.Error("a cross-household BeginEnrollment attempt must not change the victim's household_id")
+	}
+}
+
 func TestMFAGetEnrollment_NotEnrolled(t *testing.T) {
 	repo, _, memberID := newTestMFARepo(t)
 	_, err := repo.GetEnrollment(testCtx(t), memberID)
@@ -208,10 +240,118 @@ func TestMFAGetEnrollment_NotEnrolled(t *testing.T) {
 	}
 }
 
-func TestMFAConfirmEnrollment_NotEnrolled(t *testing.T) {
+func TestMFAConfirmEnrollmentWithCodes_NotEnrolled(t *testing.T) {
 	repo, _, memberID := newTestMFARepo(t)
-	if err := repo.ConfirmEnrollment(testCtx(t), memberID); !errors.Is(err, authdomain.ErrMFANotEnrolled) {
-		t.Errorf("ConfirmEnrollment(never enrolled) error = %v, want ErrMFANotEnrolled", err)
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); !errors.Is(err, authdomain.ErrMFANotEnrolled) {
+		t.Errorf("ConfirmEnrollmentWithCodes(never enrolled) error = %v, want ErrMFANotEnrolled", err)
+	}
+}
+
+// TestMFAConfirmEnrollmentWithCodes_StoresCodesAtomically directly exercises
+// the atomic confirm+store contract's happy path: a single call both
+// confirms the enrollment AND persists the given hashes.
+func TestMFAConfirmEnrollmentWithCodes_StoresCodesAtomically(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+
+	hashes := []string{"hash-1", "hash-2", "hash-3"}
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, hashes); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
+	}
+
+	enrollment, err := repo.GetEnrollment(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if !enrollment.Confirmed() {
+		t.Error("ConfirmEnrollmentWithCodes must confirm the enrollment")
+	}
+
+	codes, err := repo.ListUnusedRecoveryCodes(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("ListUnusedRecoveryCodes: %v", err)
+	}
+	if len(codes) != len(hashes) {
+		t.Fatalf("stored %d recovery codes, want %d", len(codes), len(hashes))
+	}
+	got := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		got[c.CodeHash] = true
+	}
+	for _, h := range hashes {
+		if !got[h] {
+			t.Errorf("missing expected recovery code hash %q", h)
+		}
+	}
+}
+
+// TestMFAConfirmEnrollmentWithCodes_ConcurrentRace_ExactlyOneWins is the
+// gated concurrency check (NES-134 CodeRabbit round 3, finding 4): two
+// callers racing to confirm the SAME still-unconfirmed enrollment with
+// DIFFERENT code sets must resolve to exactly one winner — the loser gets
+// ErrMFAAlreadyEnrolled, and its hashes are never persisted at all (not
+// even transiently, and not silently overwritten after the fact).
+func TestMFAConfirmEnrollmentWithCodes_ConcurrentRace_ExactlyOneWins(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	ctx := testCtx(t)
+
+	hashesA := []string{"race-hash-a1", "race-hash-a2"}
+	hashesB := []string{"race-hash-b1", "race-hash-b2"}
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = repo.ConfirmEnrollmentWithCodes(ctx, memberID, hashesA)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = repo.ConfirmEnrollmentWithCodes(ctx, memberID, hashesB)
+	}()
+	wg.Wait()
+
+	successes := 0
+	var winnerHashes []string
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			successes++
+			if i == 0 {
+				winnerHashes = hashesA
+			} else {
+				winnerHashes = hashesB
+			}
+		case errors.Is(err, authdomain.ErrMFAAlreadyEnrolled):
+			// Expected outcome for the loser.
+		default:
+			t.Errorf("unexpected error from racing ConfirmEnrollmentWithCodes: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("racing ConfirmEnrollmentWithCodes: %d succeeded, want exactly 1", successes)
+	}
+
+	codes, err := repo.ListUnusedRecoveryCodes(ctx, memberID)
+	if err != nil {
+		t.Fatalf("ListUnusedRecoveryCodes: %v", err)
+	}
+	if len(codes) != len(winnerHashes) {
+		t.Fatalf("stored %d recovery codes, want %d (the winner's set)", len(codes), len(winnerHashes))
+	}
+	gotHashes := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		gotHashes[c.CodeHash] = true
+	}
+	for _, h := range winnerHashes {
+		if !gotHashes[h] {
+			t.Errorf("missing winner's hash %q in stored recovery codes", h)
+		}
 	}
 }
 
@@ -220,8 +360,8 @@ func TestMFADeleteEnrollment_CascadesRecoveryCodes(t *testing.T) {
 	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
-	if err := repo.ConfirmEnrollment(testCtx(t), memberID); err != nil {
-		t.Fatalf("ConfirmEnrollment: %v", err)
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
 	}
 	if err := repo.ReplaceRecoveryCodes(testCtx(t), memberID, []string{"hash-a", "hash-b", "hash-c"}); err != nil {
 		t.Fatalf("ReplaceRecoveryCodes: %v", err)
@@ -273,8 +413,8 @@ func TestMFAReplaceRecoveryCodes_AtomicallyReplacesFullSet(t *testing.T) {
 	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
-	if err := repo.ConfirmEnrollment(testCtx(t), memberID); err != nil {
-		t.Fatalf("ConfirmEnrollment: %v", err)
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
 	}
 
 	if err := repo.ReplaceRecoveryCodes(testCtx(t), memberID, []string{"hash-1", "hash-2"}); err != nil {
@@ -312,8 +452,8 @@ func TestMFAMarkRecoveryCodeUsed_ExcludesFromUnusedList(t *testing.T) {
 	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
 		t.Fatalf("BeginEnrollment: %v", err)
 	}
-	if err := repo.ConfirmEnrollment(testCtx(t), memberID); err != nil {
-		t.Fatalf("ConfirmEnrollment: %v", err)
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
 	}
 	if err := repo.ReplaceRecoveryCodes(testCtx(t), memberID, []string{"hash-1", "hash-2", "hash-3"}); err != nil {
 		t.Fatalf("ReplaceRecoveryCodes: %v", err)

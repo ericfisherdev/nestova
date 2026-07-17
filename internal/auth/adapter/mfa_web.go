@@ -129,7 +129,13 @@ func mfaStatus(enrollment *authdomain.MFAEnrollment) components.MFAEnrollmentSta
 // and renders the QR/manual-entry reveal. On any hard failure it writes the
 // response directly and returns ok=false; on success it returns the member
 // and the one-time reveal for the caller to compose into the full page.
-func (h *MFAWebHandlers) Enroll(w http.ResponseWriter, r *http.Request) (member *household.Member, reveal *components.MFAEnrollReveal, ok bool) {
+//
+// A stale enroll request against an ALREADY-CONFIRMED enrollment (e.g. a
+// second browser tab, or a double-submitted form, after the member already
+// confirmed MFA elsewhere) is an expected conflict, not a server error: it
+// redirects to redirectTo (the current, already-active state) instead of a
+// 500.
+func (h *MFAWebHandlers) Enroll(w http.ResponseWriter, r *http.Request, redirectTo string) (member *household.Member, reveal *components.MFAEnrollReveal, ok bool) {
 	member, ok = h.requireMember(w, r)
 	if !ok {
 		return nil, nil, false
@@ -145,6 +151,10 @@ func (h *MFAWebHandlers) Enroll(w http.ResponseWriter, r *http.Request) (member 
 
 	secret, otpauthURL, err := h.mfa.BeginEnrollment(r.Context(), member.ID, member.HouseholdID, member.DisplayName)
 	if err != nil {
+		if errors.Is(err, authdomain.ErrMFAAlreadyEnrolled) {
+			http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+			return nil, nil, false
+		}
 		h.logger.ErrorContext(r.Context(), "mfa: begin enrollment", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return nil, nil, false
@@ -256,11 +266,20 @@ func (h *MFAWebHandlers) Disenroll(w http.ResponseWriter, r *http.Request, redir
 
 // AdminReset handles the mutation behind POST /settings/mfa/reset: the
 // household owner resets another member's MFA (e.g. a lost-device recovery
-// path), after re-entering their OWN password. Same ok/status contract as
-// Disenroll — a successful reset redirects on its own; a failure that needs
-// re-rendering the page (wrong password, unknown target member) returns
-// ok=true with errMsg; a hard failure (CSRF, not the owner) is written
-// directly.
+// path), after re-entering their OWN password. This handler passes only
+// member ids to authapp.MFAService.ResetMemberMFA — it does NOT itself
+// resolve or trust a role/household claim for the authorization decision;
+// the service resolves the acting member's own role and household, and
+// verifies the target belongs to it, from the source of truth (see that
+// method's doc). The member.Role check below is a cheap, redundant
+// fail-fast for a nicer 403 on the common case (a non-owner submits the
+// form) — it is NOT what makes this endpoint safe; the service's own
+// independent check is.
+//
+// Same ok/status contract as Disenroll — a successful reset redirects on
+// its own; a failure that needs re-rendering the page (wrong password,
+// unknown/cross-household target) returns ok=true with errMsg; a hard
+// failure (CSRF, not the owner) is written directly.
 func (h *MFAWebHandlers) AdminReset(w http.ResponseWriter, r *http.Request, redirectTo string) (member *household.Member, errMsg string, status int, ok bool) {
 	member, ok = h.requireMember(w, r)
 	if !ok {
@@ -283,15 +302,9 @@ func (h *MFAWebHandlers) AdminReset(w http.ResponseWriter, r *http.Request, redi
 	if err != nil {
 		return member, genericOwnerReauthError, http.StatusBadRequest, true
 	}
-	target, err := h.households.GetMember(r.Context(), targetID)
-	if err != nil || target.HouseholdID != member.HouseholdID {
-		// A target outside the owner's own household is treated identically
-		// to an unknown member — no signal is given either way.
-		return member, genericOwnerReauthError, http.StatusBadRequest, true
-	}
 
 	ownerPassword := r.FormValue("owner_password")
-	resetErr := h.mfa.ResetMemberMFA(r.Context(), member.ID, member.Role, ownerPassword, member.HouseholdID, targetID)
+	resetErr := h.mfa.ResetMemberMFA(r.Context(), member.ID, ownerPassword, targetID)
 	if resetErr != nil {
 		switch {
 		case errors.Is(resetErr, authdomain.ErrOwnerReauthRequired), errors.Is(resetErr, authdomain.ErrMFANotEnrolled):
