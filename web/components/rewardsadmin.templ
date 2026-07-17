@@ -31,11 +31,29 @@ type RewardAdminListItem struct {
 
 // RewardAdminListPage is the view model for the GET /admin/rewards page.
 type RewardAdminListPage struct {
+	// PendingRedemptions is the parent fulfillment inbox (NES-127): every
+	// pending redemption in the household, oldest first, rendered above the
+	// catalogue list.
+	PendingRedemptions []RedemptionInboxItem
 	// Rewards holds every reward in the household — active and archived —
 	// ordered active-first then by name (see ListAllRewards).
 	Rewards []RewardAdminListItem
-	// CSRFToken is embedded in every row's Archive form.
+	// CSRFToken is embedded in every row's Archive form and every inbox row's
+	// Fulfill/Deny form.
 	CSRFToken string
+}
+
+// RedemptionInboxItem is the view model for one pending redemption in the
+// parent fulfillment inbox (NES-127).
+type RedemptionInboxItem struct {
+	// ID is the string form of the RewardRedemptionID UUID.
+	ID string
+	// RewardName is the redeemed reward's name.
+	RewardName string
+	// MemberName is the redeeming member's display name.
+	MemberName string
+	// CreatedAt is the pre-formatted date the redemption was requested.
+	CreatedAt string
 }
 
 // RewardAdminForm is the view model for the create/edit reward form. All
@@ -70,9 +88,10 @@ type RewardAdminForm struct {
 // Admin list page
 // ---------------------------------------------------------------------------
 
-// RewardsAdminPage renders the parent-only reward catalogue: every reward,
-// active and archived, each with Edit and (for active rewards) Archive
-// actions, plus a link to create a new reward (NES-126 AC1).
+// RewardsAdminPage renders the parent-only reward catalogue: the pending
+// redemption fulfillment inbox (NES-127), followed by every reward, active
+// and archived, each with Edit and (for active rewards) Archive actions, plus
+// a link to create a new reward (NES-126 AC1).
 templ RewardsAdminPage(page RewardAdminListPage) {
 	<div class="p-6">
 		<div class="mb-6 flex items-center justify-between gap-4">
@@ -85,6 +104,7 @@ templ RewardsAdminPage(page RewardAdminListPage) {
 				class={ "inline-flex shrink-0 items-center justify-center rounded-control px-4 py-2 font-medium transition-colors", buttonVariantClass(ButtonPrimary) }
 			>Add reward</a>
 		</div>
+		@RedemptionInbox(page.PendingRedemptions, page.CSRFToken)
 		<div class="rounded-card bg-surface p-4 shadow-warm">
 			if len(page.Rewards) == 0 {
 				<p class="text-sm text-ink-muted">No rewards yet — add one to get started.</p>
@@ -100,6 +120,83 @@ templ RewardsAdminPage(page RewardAdminListPage) {
 			<a href="/rewards" class="text-sm font-medium text-sage hover:underline">Back to rewards</a>
 		</p>
 	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Redemption fulfillment inbox (NES-127)
+// ---------------------------------------------------------------------------
+
+// RedemptionInbox renders the parent-only fulfillment inbox: every pending
+// redemption, oldest first, each with in-place HTMX Fulfill/Deny actions.
+// Renders nothing when there are no pending redemptions, so the admin page
+// stays uncluttered once the inbox is caught up.
+templ RedemptionInbox(items []RedemptionInboxItem, csrfToken string) {
+	if len(items) > 0 {
+		<div class="mb-6 rounded-card bg-surface p-4 shadow-warm">
+			<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Pending Redemptions</h2>
+			<ul id="redemption-inbox" class="flex flex-col gap-3">
+				for _, item := range items {
+					@redemptionInboxRow(item, csrfToken)
+				}
+			</ul>
+		</div>
+	}
+}
+
+// redemptionInboxRow renders one pending redemption with its Fulfill and Deny
+// (with an optional reason field) actions. Both actions target the row itself
+// (hx-target/hx-swap="outerHTML") so a successful action removes just that
+// row via redemptionInboxRowRemoved, without a full page reload.
+templ redemptionInboxRow(item RedemptionInboxItem, csrfToken string) {
+	<li
+		id={ fmt.Sprintf("redemption-%s", item.ID) }
+		class="flex flex-wrap items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface-warm px-4 py-3"
+	>
+		<div class="min-w-0 flex-1">
+			<p class="truncate text-sm text-ink">
+				<span class="font-medium">{ item.MemberName }</span> wants to redeem <span class="font-medium">{ item.RewardName }</span>
+			</p>
+			<p class="text-xs text-ink-muted">Requested { item.CreatedAt }</p>
+		</div>
+		<div class="flex shrink-0 flex-wrap items-center gap-2">
+			<form
+				method="post"
+				action={ templ.SafeURL(fmt.Sprintf("/admin/rewards/redemptions/%s/fulfill", item.ID)) }
+				hx-post={ fmt.Sprintf("/admin/rewards/redemptions/%s/fulfill", item.ID) }
+				hx-target={ fmt.Sprintf("#redemption-%s", item.ID) }
+				hx-swap="outerHTML"
+			>
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				@Button("Fulfill", ButtonPrimary, "submit")
+			</form>
+			<form
+				method="post"
+				action={ templ.SafeURL(fmt.Sprintf("/admin/rewards/redemptions/%s/deny", item.ID)) }
+				hx-post={ fmt.Sprintf("/admin/rewards/redemptions/%s/deny", item.ID) }
+				hx-target={ fmt.Sprintf("#redemption-%s", item.ID) }
+				hx-swap="outerHTML"
+				class="flex items-center gap-2"
+			>
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				<label for={ fmt.Sprintf("deny-reason-%s", item.ID) } class="sr-only">Reason for denying { item.RewardName }</label>
+				<input
+					id={ fmt.Sprintf("deny-reason-%s", item.ID) }
+					type="text"
+					name="reason"
+					placeholder="Reason (optional)"
+					class="w-36 rounded-control border border-sidebar-border bg-surface px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+				/>
+				@Button("Deny", ButtonSecondary, "submit")
+			</form>
+		</div>
+	</li>
+}
+
+// RedemptionInboxRowRemoved renders an empty placeholder replacing a resolved
+// redemption's inbox row in place (its own hx-target), used by both Fulfill
+// and Deny, mirroring TradeCardRemoved's identical precedent.
+templ RedemptionInboxRowRemoved(id string) {
+	<li id={ fmt.Sprintf("redemption-%s", id) } class="hidden"></li>
 }
 
 // rewardAdminRow renders one reward's admin list entry.

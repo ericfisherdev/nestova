@@ -19,8 +19,9 @@ func TestRedemptionStatusParseAndValid(t *testing.T) {
 		input string
 		want  domain.RedemptionStatus
 	}{
-		{"requested", domain.RedemptionRequested},
+		{"pending", domain.RedemptionPending},
 		{"fulfilled", domain.RedemptionFulfilled},
+		{"denied", domain.RedemptionDenied},
 		{"cancelled", domain.RedemptionCancelled},
 	}
 	for _, tc := range cases {
@@ -41,15 +42,20 @@ func TestRedemptionStatusParseAndValid(t *testing.T) {
 }
 
 func TestRedemptionStatusParseUnknown(t *testing.T) {
-	_, err := domain.ParseRedemptionStatus("pending")
+	_, err := domain.ParseRedemptionStatus("unknown")
 	if err == nil {
 		t.Error("ParseRedemptionStatus(unknown) error = nil, want non-nil")
 	}
 }
 
 func TestRedemptionStatusValid(t *testing.T) {
-	if domain.RedemptionStatus("pending").Valid() {
-		t.Error("RedemptionStatus(pending).Valid() = true, want false")
+	if domain.RedemptionStatus("unknown").Valid() {
+		t.Error("RedemptionStatus(unknown).Valid() = true, want false")
+	}
+	// "requested" was NES-127's pre-rename value; it must no longer validate,
+	// confirming the migration's rename to "pending" is reflected here too.
+	if domain.RedemptionStatus("requested").Valid() {
+		t.Error(`RedemptionStatus("requested").Valid() = true, want false (renamed to "pending" by NES-127)`)
 	}
 }
 
@@ -222,13 +228,13 @@ func TestRewardRedemptionConstruction(t *testing.T) {
 		HouseholdID: hid,
 		RewardID:    rid,
 		MemberID:    mid,
-		Status:      domain.RedemptionRequested,
+		Status:      domain.RedemptionPending,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
 
-	if redemption.Status != domain.RedemptionRequested {
-		t.Errorf("Status = %v, want %v", redemption.Status, domain.RedemptionRequested)
+	if redemption.Status != domain.RedemptionPending {
+		t.Errorf("Status = %v, want %v", redemption.Status, domain.RedemptionPending)
 	}
 	if redemption.MemberID != mid {
 		t.Errorf("MemberID = %v, want %v", redemption.MemberID, mid)

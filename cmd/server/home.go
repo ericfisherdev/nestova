@@ -232,6 +232,9 @@ func registerWebRoutes(
 		}
 		gamificationHandlers.Redeem(layoutFn)(w, r)
 	})))
+	// POST /rewards/redemptions/{id}/cancel — member self-cancel of their own
+	// still-pending redemption (NES-127); refunds the debited points.
+	mux.Handle("POST /rewards/redemptions/{id}/cancel", requireMember(http.HandlerFunc(gamificationHandlers.CancelRedemption)))
 
 	// Reward catalogue admin routes (NES-126) — RequireMember-gated at the
 	// router; each handler additionally checks isParent (owner/adult) and
@@ -266,6 +269,14 @@ func registerWebRoutes(
 		gamificationHandlers.UpdateReward(rewardAdminLayoutFn(r))(w, r)
 	})))
 	mux.Handle("POST /admin/rewards/{id}/archive", requireMember(http.HandlerFunc(gamificationHandlers.ArchiveReward)))
+
+	// Redemption fulfillment inbox actions (NES-127) — parent-only (owner/
+	// adult); each handler re-checks the role itself, mirroring the reward
+	// admin routes' gate immediately above.
+	// POST /admin/rewards/redemptions/{id}/fulfill approves a pending redemption.
+	// POST /admin/rewards/redemptions/{id}/deny     rejects it and refunds the points.
+	mux.Handle("POST /admin/rewards/redemptions/{id}/fulfill", requireMember(http.HandlerFunc(gamificationHandlers.FulfillRedemption)))
+	mux.Handle("POST /admin/rewards/redemptions/{id}/deny", requireMember(http.HandlerFunc(gamificationHandlers.DenyRedemption)))
 
 	// Groceries routes — RequireMember-gated (NES-45).
 	// GET  /groceries                          renders the usage tracker, pantry,

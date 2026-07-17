@@ -160,7 +160,7 @@ func TestRewardRepository_ListStorefrontRewards_UnlimitedStockAlwaysIncluded(t *
 	h, m1, _ := seedHousehold(t, pool)
 
 	reward := seedRewardFull(t, rewardRepo, h.ID, "Unlimited reward", 10, nil)
-	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionRequested)
+	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionPending)
 	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionFulfilled)
 
 	got, err := rewardRepo.ListStorefrontRewards(testCtx(t), h.ID)
@@ -184,7 +184,7 @@ func TestRewardRepository_ListStorefrontRewards_ExcludesOutOfStock(t *testing.T)
 	h, m1, _ := seedHousehold(t, pool)
 
 	reward := seedRewardFull(t, rewardRepo, h.ID, "Limited reward", 10, intPtr(1))
-	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionRequested)
+	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionPending)
 
 	got, err := rewardRepo.ListStorefrontRewards(testCtx(t), h.ID)
 	if err != nil {
@@ -204,7 +204,7 @@ func TestRewardRepository_ListStorefrontRewards_ComputesRemainingStock(t *testin
 	h, m1, _ := seedHousehold(t, pool)
 
 	reward := seedRewardFull(t, rewardRepo, h.ID, "Five-stock reward", 10, intPtr(5))
-	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionRequested)
+	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionPending)
 	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionFulfilled)
 
 	got, err := rewardRepo.ListStorefrontRewards(testCtx(t), h.ID)
@@ -239,6 +239,30 @@ func TestRewardRepository_ListStorefrontRewards_IgnoresCancelledRedemptions(t *t
 	}
 	if got[0].RemainingStock == nil || *got[0].RemainingStock != 1 {
 		t.Errorf("RemainingStock = %v, want 1 (cancelled redemption excluded from the count)", got[0].RemainingStock)
+	}
+}
+
+// TestRewardRepository_ListStorefrontRewards_IgnoresDeniedRedemptions
+// verifies that a denied redemption does not count against the reward's
+// stock cap either (NES-127), mirroring the cancelled case immediately
+// above.
+func TestRewardRepository_ListStorefrontRewards_IgnoresDeniedRedemptions(t *testing.T) {
+	pool := newTestPool(t)
+	rewardRepo := adapter.NewRewardPostgresRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	reward := seedRewardFull(t, rewardRepo, h.ID, "One-stock reward", 10, intPtr(1))
+	seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionDenied)
+
+	got, err := rewardRepo.ListStorefrontRewards(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListStorefrontRewards: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListStorefrontRewards = %d rewards, want 1 (denied redemption must not count)", len(got))
+	}
+	if got[0].RemainingStock == nil || *got[0].RemainingStock != 1 {
+		t.Errorf("RemainingStock = %v, want 1 (denied redemption excluded from the count)", got[0].RemainingStock)
 	}
 }
 

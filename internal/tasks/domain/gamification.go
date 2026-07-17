@@ -83,23 +83,33 @@ func ParseRewardRedemptionID(s string) (RewardRedemptionID, error) {
 // constraint.
 type RedemptionStatus string
 
-// Reward redemption lifecycle statuses.
+// Reward redemption lifecycle statuses. NES-127 renamed the original
+// "requested" value to "pending" (same meaning: awaiting a parent's decision)
+// and added "denied" — see 00025_reward_redemption_fulfillment.sql, which
+// backfills every existing 'requested' row to 'pending' before tightening the
+// CHECK constraint.
 const (
-	// RedemptionRequested marks a redemption that has been submitted by a member
-	// but not yet acted on by a household admin.
-	RedemptionRequested RedemptionStatus = "requested"
+	// RedemptionPending marks a redemption that has been submitted by a member
+	// but not yet acted on by a household parent (owner or adult).
+	RedemptionPending RedemptionStatus = "pending"
 	// RedemptionFulfilled marks a redemption that has been approved and delivered
-	// by a household admin.
+	// by a household parent. Terminal — a fulfilled redemption cannot be denied
+	// or cancelled afterward.
 	RedemptionFulfilled RedemptionStatus = "fulfilled"
-	// RedemptionCancelled marks a redemption that was cancelled before fulfilment,
-	// either by the member or an admin.
+	// RedemptionDenied marks a redemption a parent rejected (NES-127); the
+	// debited points are refunded via a compensating point_ledger entry (see
+	// [SourceTypeRedemptionRefund]) and an optional reason is recorded.
+	RedemptionDenied RedemptionStatus = "denied"
+	// RedemptionCancelled marks a redemption the requesting member withdrew
+	// themselves before fulfilment (NES-127); the debited points are refunded
+	// the same way as a denial.
 	RedemptionCancelled RedemptionStatus = "cancelled"
 )
 
 // Valid reports whether s is a known redemption status.
 func (s RedemptionStatus) Valid() bool {
 	switch s {
-	case RedemptionRequested, RedemptionFulfilled, RedemptionCancelled:
+	case RedemptionPending, RedemptionFulfilled, RedemptionDenied, RedemptionCancelled:
 		return true
 	default:
 		return false
@@ -177,10 +187,45 @@ type RewardRedemption struct {
 	RewardID    RewardID
 	MemberID    household.MemberID
 	Status      RedemptionStatus
+	// DeniedReason is the optional free-text reason a parent gave when denying
+	// this redemption (NES-127). Nil for every status other than
+	// [RedemptionDenied], and nil for a denial where the parent left no reason.
+	DeniedReason *string
 	// CreatedAt is when the redemption was requested; UpdatedAt records the most
-	// recent status transition (fulfilled/cancelled) for the audit trail.
+	// recent status transition (fulfilled/denied/cancelled) for the audit trail.
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// RedemptionDetail is a read model for one reward_redemption row joined with
+// its reward's name (NES-127), so the parent fulfillment inbox
+// ([RewardRepository.ListPendingRedemptions]) and a member's own redemption
+// list ([RewardRepository.ListMemberRedemptions]) can render without an N+1
+// reward lookup per row, mirroring [StorefrontReward]'s join-once precedent.
+type RedemptionDetail struct {
+	ID           RewardRedemptionID
+	HouseholdID  household.HouseholdID
+	RewardID     RewardID
+	RewardName   string
+	MemberID     household.MemberID
+	Status       RedemptionStatus
+	DeniedReason *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// ResolvedRedemption carries the fields needed to build and route a
+// notification to the redeeming member after a fulfillment-inbox action
+// (NES-127), resolved within the same transaction as the status-changing
+// UPDATE so the caller can notify without a separate round trip — mirroring
+// [AcceptedTrade] and [DeclinedTrade]'s shape.
+type ResolvedRedemption struct {
+	RedemptionID RewardRedemptionID
+	HouseholdID  household.HouseholdID
+	MemberID     household.MemberID
+	RewardName   string
+	Status       RedemptionStatus
+	DeniedReason *string
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +272,37 @@ var (
 	// mirroring the reward.quantity_available CHECK constraint. A nil
 	// quantity (unlimited stock) is always valid.
 	ErrInvalidRewardQuantity = errors.New("tasks: reward quantity available must be zero or greater")
+
+	// ErrRewardOutOfStock is returned by RewardRepository.RedeemWithDebit
+	// (NES-127) when the reward's quantity_available cap has been reached by
+	// other non-cancelled, non-denied redemptions, checked atomically inside
+	// the same transaction as the debit so two concurrent redeems for the
+	// last unit of a finite-stock reward cannot both succeed.
+	ErrRewardOutOfStock = errors.New("tasks: reward is out of stock")
+
+	// ErrRedemptionNotFound is returned by the redemption fulfillment
+	// use-cases (NES-127) when the requested RewardRedemptionID is unknown or
+	// belongs to another household.
+	ErrRedemptionNotFound = errors.New("tasks: redemption not found")
+
+	// ErrRedemptionNotPending is returned by Fulfill and Deny when the
+	// redemption is not currently pending (already fulfilled, denied, or
+	// cancelled), and by Cancel when the redemption is not pending OR does not
+	// belong to the cancelling member — the two cases are deliberately not
+	// disambiguated for Cancel, mirroring
+	// [ChoreTradeRepository.Decline]'s ErrTradeNotPending precedent: a member
+	// should not learn whether a redemption exists at all from a failed
+	// cancel of someone else's redemption.
+	ErrRedemptionNotPending = errors.New("tasks: redemption is not pending")
 )
+
+// SourceTypeRedemptionRefund is the point_ledger source_type recorded for the
+// compensating credit issued when a pending redemption is denied or cancelled
+// (NES-127). source_id is set to the SAME reward_redemption.id as the
+// original debit's source_id, so PointLedgerRepository.History's
+// reward_redemption→reward join resolves the reward name for the refund row
+// exactly the way it already does for the original "redemption" debit.
+const SourceTypeRedemptionRefund = "redemption_refund"
 
 // ---------------------------------------------------------------------------
 // Port types
@@ -245,8 +320,9 @@ type MemberPoints struct {
 //   - TaskTitle is populated for a SourceType of "task_instance" (a
 //     completion award) or [SourceTypeClaimExpiry] (a claim-expiry penalty) —
 //     both key SourceID off task_instance.id.
-//   - RewardName is populated for a SourceType of "redemption" — keyed off
-//     reward_redemption.id via SourceID.
+//   - RewardName is populated for a SourceType of "redemption" (the original
+//     debit) or [SourceTypeRedemptionRefund] (a denial/cancellation refund,
+//     NES-127) — both keyed off reward_redemption.id via SourceID.
 //
 // At most one of TaskTitle/RewardName is ever non-empty for a given entry.
 // Both are empty for a manual adjustment (no SourceID) or when the joined
@@ -367,9 +443,10 @@ type RewardRepository interface {
 
 	// ListStorefrontRewards returns active, in-stock rewards for the member
 	// storefront (NES-126 AC2): a reward is excluded when Active is false or
-	// when QuantityAvailable is non-nil and the reward's non-cancelled
-	// redemption count has reached it. Returns an empty slice (not an error)
-	// when none qualify.
+	// when QuantityAvailable is non-nil and the reward's non-cancelled,
+	// non-denied redemption count has reached it (NES-127: a denied
+	// redemption frees its reserved unit exactly like a cancelled one).
+	// Returns an empty slice (not an error) when none qualify.
 	ListStorefrontRewards(ctx context.Context, householdID household.HouseholdID) ([]StorefrontReward, error)
 
 	// ListAllRewards returns every reward for the household — active and
@@ -399,4 +476,53 @@ type RewardRepository interface {
 	// Returns [ErrRewardNotFound] when redemption.RewardID is unknown or belongs
 	// to another household.
 	Redeem(ctx context.Context, redemption *RewardRedemption) error
+
+	// ListPendingRedemptions returns every pending redemption in the
+	// household, joined with its reward's name, oldest first — the
+	// parent-only fulfillment inbox (NES-127). Returns an empty slice (not an
+	// error) when none are pending.
+	ListPendingRedemptions(ctx context.Context, householdID household.HouseholdID) ([]RedemptionDetail, error)
+
+	// ListMemberRedemptions returns memberID's most recent redemptions —
+	// regardless of status — joined with their reward's name, newest first,
+	// capped at limit rows: the member-facing "My redemptions" list
+	// (NES-127). Returns an empty slice (not an error) when the member has
+	// none.
+	ListMemberRedemptions(
+		ctx context.Context,
+		householdID household.HouseholdID,
+		memberID household.MemberID,
+		limit int,
+	) ([]RedemptionDetail, error)
+
+	// Fulfill transitions a pending redemption to fulfilled (NES-127).
+	// Returns [ErrRedemptionNotFound] when id is unknown or belongs to
+	// another household, and [ErrRedemptionNotPending] when the redemption is
+	// not currently pending.
+	Fulfill(ctx context.Context, householdID household.HouseholdID, id RewardRedemptionID) (ResolvedRedemption, error)
+
+	// Deny transitions a pending redemption to denied, records reason (may be
+	// empty), and atomically appends a compensating point_ledger entry
+	// (source_type [SourceTypeRedemptionRefund]) for the exact amount
+	// originally debited (NES-127). Returns [ErrRedemptionNotFound] /
+	// [ErrRedemptionNotPending] under the same conditions as Fulfill.
+	Deny(
+		ctx context.Context,
+		householdID household.HouseholdID,
+		id RewardRedemptionID,
+		reason string,
+	) (ResolvedRedemption, error)
+
+	// Cancel transitions a pending redemption belonging to memberID to
+	// cancelled and appends the same compensating refund as Deny (NES-127).
+	// Returns [ErrRedemptionNotPending] when the redemption is unknown,
+	// belongs to another household, does not belong to memberID, or is not
+	// currently pending — see [ErrRedemptionNotPending]'s doc for why these
+	// cases are not disambiguated.
+	Cancel(
+		ctx context.Context,
+		householdID household.HouseholdID,
+		id RewardRedemptionID,
+		memberID household.MemberID,
+	) (ResolvedRedemption, error)
 }

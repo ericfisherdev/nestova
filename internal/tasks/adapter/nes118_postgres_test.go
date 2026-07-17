@@ -628,11 +628,11 @@ func TestPointLedger_History_RedemptionDebit(t *testing.T) {
 		HouseholdID: h.ID,
 		RewardID:    reward.ID,
 		MemberID:    m1,
-		Status:      domain.RedemptionRequested,
+		Status:      domain.RedemptionPending,
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
 	}
-	if err := rewardRepo.RedeemWithDebit(testCtx(t), redemption, reward.CostPoints); err != nil {
+	if _, err := rewardRepo.RedeemWithDebit(testCtx(t), redemption); err != nil {
 		t.Fatalf("RedeemWithDebit: %v", err)
 	}
 

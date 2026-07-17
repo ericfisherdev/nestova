@@ -223,7 +223,7 @@ func buildRedemption(
 		HouseholdID: householdID,
 		RewardID:    rewardID,
 		MemberID:    memberID,
-		Status:      domain.RedemptionRequested,
+		Status:      domain.RedemptionPending,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -243,8 +243,12 @@ func TestRedeemWithDebit_SuccessDebitsBalance(t *testing.T) {
 	reward := seedReward(t, rewardRepo, h.ID, "Coffee", 30)
 	redemption := buildRedemption(h.ID, m1, reward.ID)
 
-	if err := rewardRepo.RedeemWithDebit(testCtx(t), redemption, 30); err != nil {
+	debited, err := rewardRepo.RedeemWithDebit(testCtx(t), redemption)
+	if err != nil {
 		t.Fatalf("RedeemWithDebit: %v", err)
+	}
+	if debited != 30 {
+		t.Errorf("RedeemWithDebit debited = %d, want 30 (the reward's locked cost_points)", debited)
 	}
 
 	// Balance must drop by exactly 30.
@@ -262,8 +266,8 @@ func TestRedeemWithDebit_SuccessDebitsBalance(t *testing.T) {
 	if err := pool.QueryRow(testCtx(t), q, redemption.ID.String()).Scan(&status); err != nil {
 		t.Fatalf("read redemption row: %v", err)
 	}
-	if status != "requested" {
-		t.Errorf("status = %q, want requested", status)
+	if status != "pending" {
+		t.Errorf("status = %q, want pending", status)
 	}
 
 	// The debit ledger row must exist with source_type = 'redemption'.
@@ -291,7 +295,7 @@ func TestRedeemWithDebit_InsufficientPointsRollback(t *testing.T) {
 	reward := seedReward(t, rewardRepo, h.ID, "Expensive", 100) // costs 100
 	redemption := buildRedemption(h.ID, m1, reward.ID)
 
-	err := rewardRepo.RedeemWithDebit(testCtx(t), redemption, 100)
+	_, err := rewardRepo.RedeemWithDebit(testCtx(t), redemption)
 	if !errors.Is(err, domain.ErrInsufficientPoints) {
 		t.Fatalf("RedeemWithDebit(insufficient) = %v, want ErrInsufficientPoints", err)
 	}
@@ -341,7 +345,7 @@ func TestRedeemWithDebit_UnknownRewardFK(t *testing.T) {
 	nonExistentRewardID := domain.NewRewardID()
 	redemption := buildRedemption(h.ID, m1, nonExistentRewardID)
 
-	err := rewardRepo.RedeemWithDebit(testCtx(t), redemption, 50)
+	_, err := rewardRepo.RedeemWithDebit(testCtx(t), redemption)
 	if !errors.Is(err, domain.ErrRewardNotFound) {
 		t.Fatalf("RedeemWithDebit(unknown reward) = %v, want ErrRewardNotFound", err)
 	}
@@ -374,7 +378,7 @@ func TestRedeemWithDebit_CrossHouseholdRewardRejected(t *testing.T) {
 	// Attempt: mB (hB member) redeems a reward belonging to hA.
 	redemption := buildRedemption(hB.ID, mB, rewardA.ID)
 
-	err := rewardRepo.RedeemWithDebit(testCtx(t), redemption, 10)
+	_, err := rewardRepo.RedeemWithDebit(testCtx(t), redemption)
 	if !errors.Is(err, domain.ErrRewardNotFound) {
 		t.Fatalf("RedeemWithDebit(cross-household) = %v, want ErrRewardNotFound", err)
 	}
@@ -417,7 +421,7 @@ func TestRedeemWithDebit_ConcurrentRedeemsSerialized(t *testing.T) {
 		wg.Add(1)
 		go func(r *domain.RewardRedemption) {
 			defer wg.Done()
-			err := rewardRepo.RedeemWithDebit(ctx, r, cost)
+			_, err := rewardRepo.RedeemWithDebit(ctx, r)
 			mu.Lock()
 			results = append(results, err)
 			mu.Unlock()

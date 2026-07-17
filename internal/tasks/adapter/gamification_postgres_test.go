@@ -643,7 +643,7 @@ func TestRewardRepository_Redeem(t *testing.T) {
 		HouseholdID: h.ID,
 		RewardID:    reward.ID,
 		MemberID:    m1,
-		Status:      domain.RedemptionRequested,
+		Status:      domain.RedemptionPending,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -657,8 +657,8 @@ func TestRewardRepository_Redeem(t *testing.T) {
 	if err := pool.QueryRow(testCtx(t), q, redemption.ID.String()).Scan(&status); err != nil {
 		t.Fatalf("read redemption row: %v", err)
 	}
-	if status != "requested" {
-		t.Errorf("status = %q, want requested", status)
+	if status != "pending" {
+		t.Errorf("status = %q, want pending", status)
 	}
 }
 
@@ -676,7 +676,7 @@ func TestRewardRepository_RedeemUnknownRewardReturnsErrRewardNotFound(t *testing
 		HouseholdID: h.ID,
 		RewardID:    domain.NewRewardID(), // does not exist
 		MemberID:    m1,
-		Status:      domain.RedemptionRequested,
+		Status:      domain.RedemptionPending,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -715,7 +715,7 @@ func TestRewardRepository_CrossHouseholdIsolation(t *testing.T) {
 		HouseholdID: hB.ID,
 		RewardID:    rewardA.ID,
 		MemberID:    mB,
-		Status:      domain.RedemptionRequested,
+		Status:      domain.RedemptionPending,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}

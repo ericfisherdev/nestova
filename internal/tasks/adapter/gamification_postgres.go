@@ -148,13 +148,14 @@ func (r *PointLedgerPostgresRepository) Leaderboard(
 // is enriched with recurring_task.title (for a "task_instance" award or
 // domain.SourceTypeClaimExpiry penalty, both keyed via point_ledger.source_id
 // -> task_instance.id -> recurring_task.id) or reward.name (for a
-// "redemption" debit, keyed via source_id -> reward_redemption.id ->
-// reward.id) so the caller can build a human-readable reason without an
-// additional query per entry. The two LEFT JOIN chains are each gated by
-// source_type so a row only ever matches the chain relevant to its own kind;
-// COALESCE collapses an unresolved or inapplicable join to "" rather than a
-// NULL scan target. The ordering tiebreaks on pl.id (a UUIDv7, so
-// time-ordered) after created_at, so the result is deterministic even when
+// "redemption" debit or a [domain.SourceTypeRedemptionRefund] denial/
+// cancellation credit (NES-127), both keyed via source_id ->
+// reward_redemption.id -> reward.id) so the caller can build a human-readable
+// reason without an additional query per entry. The two LEFT JOIN chains are
+// each gated by source_type so a row only ever matches the chain relevant to
+// its own kind; COALESCE collapses an unresolved or inapplicable join to ""
+// rather than a NULL scan target. The ordering tiebreaks on pl.id (a UUIDv7,
+// so time-ordered) after created_at, so the result is deterministic even when
 // two entries share the same created_at value.
 // Returns an empty slice (not an error) when the member has no entries.
 func (r *PointLedgerPostgresRepository) History(
@@ -172,7 +173,7 @@ func (r *PointLedgerPostgresRepository) History(
 		        AND ti.id = pl.source_id
 		  LEFT JOIN recurring_task rt ON rt.id = ti.recurring_task_id
 		  LEFT JOIN reward_redemption rr
-		         ON pl.source_type = 'redemption'
+		         ON pl.source_type IN ('redemption', $5)
 		        AND rr.id = pl.source_id
 		  LEFT JOIN reward rw ON rw.id = rr.reward_id
 		 WHERE pl.household_id = $1
@@ -184,6 +185,7 @@ func (r *PointLedgerPostgresRepository) History(
 		memberID.String(),
 		domain.SourceTypeClaimExpiry,
 		limit,
+		domain.SourceTypeRedemptionRefund,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("history: %w", err)
@@ -329,9 +331,12 @@ func (r *RewardPostgresRepository) ListActiveRewards(
 
 // ListStorefrontRewards returns active, in-stock rewards for the member
 // storefront (NES-126 AC2), each joined with its remaining stock. A reward is
-// excluded when quantity_available is set and the reward's non-cancelled
-// redemption count has reached it; a nil quantity_available (unlimited)
-// always qualifies. Ordered by cost_points ascending, matching
+// excluded when quantity_available is set and the reward's non-cancelled,
+// non-denied redemption count has reached it (NES-127: a denied redemption
+// frees its reserved unit exactly like a cancelled one — see
+// [domain.RewardRepository.RedeemWithDebit]'s matching atomic stock check
+// applying the same predicate at write time); a nil quantity_available
+// (unlimited) always qualifies. Ordered by cost_points ascending, matching
 // ListActiveRewards.
 // Returns an empty slice (not an error) when none qualify.
 func (r *RewardPostgresRepository) ListStorefrontRewards(
@@ -345,7 +350,7 @@ func (r *RewardPostgresRepository) ListStorefrontRewards(
 		           SELECT reward_id, COUNT(*) AS count
 		             FROM reward_redemption
 		            WHERE household_id = $1
-		              AND status != 'cancelled'
+		              AND status NOT IN ('cancelled', 'denied')
 		            GROUP BY reward_id
 		       ) redeemed ON redeemed.reward_id = r.id
 		 WHERE r.household_id = $1
@@ -536,7 +541,19 @@ func (r *RewardPostgresRepository) Redeem(ctx context.Context, redemption *domai
 
 // RedeemWithDebit atomically records a reward redemption and debits the
 // member's point balance in a single database transaction. It is the NES-37
-// write-path that guarantees the balance check and the debit are race-safe.
+// write-path that guarantees the balance check and the debit are race-safe,
+// extended by NES-127 to also guarantee finite-stock rewards cannot be
+// over-redeemed, and to close a TOCTOU gap (CodeRabbit finding): the
+// reward's active flag and cost_points are read and locked INSIDE this
+// transaction, not passed in by the caller — a caller-supplied cost or
+// active flag could have been read before a concurrent archive or price edit
+// committed, letting an archived reward be redeemed or a stale price be
+// debited. The only reward-identifying input the caller supplies is
+// redemption.RewardID; the returned int is the cost actually debited,
+// straight from the row this method locked, so callers never need to trust
+// their own pre-transaction read for anything but an early, optimistic
+// fail-fast (see [RewardRedeemer.RedeemWithDebit]'s doc on the app-layer
+// side of that split).
 //
 // Protocol:
 //  1. Begin a transaction.
@@ -545,38 +562,55 @@ func (r *RewardPostgresRepository) Redeem(ctx context.Context, redemption *domai
 //     pair within the same Postgres instance, eliminating the TOCTOU window
 //     between reading the balance and inserting the debit row. The lock is
 //     transaction-scoped and released automatically on commit/rollback.
-//  3. Compute the member's current balance inside the transaction so the read
-//     is protected by the advisory lock.
-//  4. If balance < costPoints → rollback, return [domain.ErrInsufficientPoints].
-//  5. INSERT the reward_redemption row (status = 'requested').
+//  3. SELECT active, cost_points, quantity_available ... FOR UPDATE the
+//     reward row itself. Unlike the advisory lock in step 2 (scoped per
+//     member), this locks per REWARD, so it also serialises two DIFFERENT
+//     members concurrently redeeming the same finite-stock reward — the case
+//     the per-member lock cannot cover — AND makes every value read here
+//     authoritative for the rest of this transaction: no concurrent archive
+//     or price edit can commit against this row until this transaction ends.
+//     Every caller acquires locks in the same order (advisory lock, then
+//     this row lock), so the two lock types can never deadlock against each
+//     other.
+//  4. If no row is found → rollback, return [domain.ErrRewardNotFound]. If
+//     the locked row is not active → rollback, return
+//     [domain.ErrRewardNotFound] (an archived reward is "not found" from the
+//     redeemer's perspective, matching the app layer's existing convention).
+//  5. Compute the member's current balance inside the transaction so the read
+//     is protected by the advisory lock. If balance < the LOCKED cost_points
+//     → rollback, return [domain.ErrInsufficientPoints].
+//  6. If the locked row's quantity_available is non-nil, count the reward's
+//     current non-cancelled, non-denied redemptions (now safe to trust: under
+//     READ COMMITTED, a fresh statement issued after the FOR UPDATE lock is
+//     granted sees every row a competing transaction committed before
+//     releasing that same lock). If the count has already reached
+//     quantity_available → rollback, return [domain.ErrRewardOutOfStock].
+//  7. INSERT the reward_redemption row (status = 'pending').
 //     A 23503 FK violation on the reward column → rollback,
 //     return [domain.ErrRewardNotFound].
-//  6. INSERT a negative point_ledger row
-//     (source_type = 'redemption', points = -costPoints).
-//  7. Commit.
+//  8. INSERT a negative point_ledger row (source_type = 'redemption', points
+//     = -<locked cost_points>).
+//  9. Commit.
 //
 // Error contracts:
-//   - Returns [domain.ErrInsufficientPoints] when balance < costPoints.
 //   - Returns [domain.ErrRewardNotFound] when redemption.RewardID does not
-//     exist within the household (FK violation on reward_redemption_reward_fk).
+//     exist within the household, is archived (active = false), or the
+//     subsequent INSERT's FK violates reward_redemption_reward_fk.
+//   - Returns [domain.ErrInsufficientPoints] when balance < the reward's
+//     current (locked) cost_points.
+//   - Returns [domain.ErrRewardOutOfStock] when the reward has a finite
+//     quantity_available and it has already been reached.
 func (r *RewardPostgresRepository) RedeemWithDebit(
 	ctx context.Context,
 	redemption *domain.RewardRedemption,
-	costPoints int,
-) error {
+) (int, error) {
 	if redemption == nil {
-		return errors.New("adapter: redeem with debit: nil redemption")
+		return 0, errors.New("adapter: redeem with debit: nil redemption")
 	}
 
-	beginner, ok := r.dbtx.(interface {
-		Begin(context.Context) (pgx.Tx, error)
-	})
-	if !ok {
-		return errors.New("redeem with debit: executor does not support transactions")
-	}
-	tx, err := beginner.Begin(ctx)
+	tx, err := beginTx(ctx, r.dbtx, "redeem with debit")
 	if err != nil {
-		return fmt.Errorf("redeem with debit: begin: %w", err)
+		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -590,10 +624,40 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 		redemption.HouseholdID.String(),
 		redemption.MemberID.String(),
 	); err != nil {
-		return fmt.Errorf("redeem with debit: advisory lock: %w", err)
+		return 0, fmt.Errorf("redeem with debit: advisory lock: %w", err)
 	}
 
-	// Step 3: read the current balance inside the transaction.
+	// Step 3: lock the reward row and read the fields this transaction must
+	// treat as authoritative (active, cost_points, quantity_available) — see
+	// this method's doc for why these are never trusted from the caller.
+	const lockRewardQ = `
+		SELECT active, cost_points, quantity_available
+		  FROM reward
+		 WHERE id = $1 AND household_id = $2
+		 FOR UPDATE`
+	var (
+		active            bool
+		costPoints        int
+		quantityAvailable *int
+	)
+	if err := tx.QueryRow(ctx, lockRewardQ,
+		redemption.RewardID.String(),
+		redemption.HouseholdID.String(),
+	).Scan(&active, &costPoints, &quantityAvailable); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, domain.ErrRewardNotFound
+		}
+		return 0, fmt.Errorf("redeem with debit: lock reward: %w", err)
+	}
+
+	// Step 4: an archived reward can no longer be redeemed, regardless of
+	// what the caller believed when it decided to call this method.
+	if !active {
+		return 0, domain.ErrRewardNotFound
+	}
+
+	// Step 5: read the current balance inside the transaction and guard
+	// insufficient funds against the LOCKED cost, not a caller-supplied one.
 	const balQ = `
 		SELECT COALESCE(SUM(points), 0)
 		  FROM point_ledger
@@ -604,15 +668,34 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 		redemption.HouseholdID.String(),
 		redemption.MemberID.String(),
 	).Scan(&balance); err != nil {
-		return fmt.Errorf("redeem with debit: read balance: %w", err)
+		return 0, fmt.Errorf("redeem with debit: read balance: %w", err)
 	}
-
-	// Step 4: guard insufficient funds.
 	if balance < costPoints {
-		return domain.ErrInsufficientPoints
+		return 0, domain.ErrInsufficientPoints
 	}
 
-	// Step 5: insert the redemption row.
+	// Step 6: finite-stock guard (NES-127). Nil quantity_available means
+	// unlimited stock — skip the check entirely.
+	if quantityAvailable != nil {
+		const stockCountQ = `
+			SELECT COUNT(*)
+			  FROM reward_redemption
+			 WHERE household_id = $1
+			   AND reward_id    = $2
+			   AND status NOT IN ('cancelled', 'denied')`
+		var redeemedCount int
+		if err := tx.QueryRow(ctx, stockCountQ,
+			redemption.HouseholdID.String(),
+			redemption.RewardID.String(),
+		).Scan(&redeemedCount); err != nil {
+			return 0, fmt.Errorf("redeem with debit: count redemptions: %w", err)
+		}
+		if redeemedCount >= *quantityAvailable {
+			return 0, domain.ErrRewardOutOfStock
+		}
+	}
+
+	// Step 7: insert the redemption row.
 	const redemptionQ = `
 		INSERT INTO reward_redemption
 			(id, household_id, reward_id, member_id, status, created_at, updated_at)
@@ -631,15 +714,16 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 		if errors.As(err, &pgErr) &&
 			pgErr.Code == sqlstateForeignKeyViolation &&
 			pgErr.ConstraintName == constraintRewardRedemptionRewardFK {
-			return domain.ErrRewardNotFound
+			return 0, domain.ErrRewardNotFound
 		}
-		return fmt.Errorf("redeem with debit: insert redemption: %w", err)
+		return 0, fmt.Errorf("redeem with debit: insert redemption: %w", err)
 	}
 
-	// Step 6: append the debit ledger entry.
-	// source_type = 'redemption', points is negative to represent a debit.
-	// The id is generated app-side as UUIDv7 for index locality, matching all
-	// other point entry creation sites in this codebase.
+	// Step 8: append the debit ledger entry, using the LOCKED cost, not a
+	// caller-supplied one. source_type = 'redemption', points is negative to
+	// represent a debit. The id is generated app-side as UUIDv7 for index
+	// locality, matching all other point entry creation sites in this
+	// codebase.
 	redemptionUUID := redemption.ID.String()
 	const debitQ = `
 		INSERT INTO point_ledger
@@ -652,13 +736,386 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 		redemptionUUID,
 		-costPoints,
 	); err != nil {
-		return fmt.Errorf("redeem with debit: insert ledger debit: %w", err)
+		return 0, fmt.Errorf("redeem with debit: insert ledger debit: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("redeem with debit: commit: %w", err)
+		return 0, fmt.Errorf("redeem with debit: commit: %w", err)
+	}
+	return costPoints, nil
+}
+
+// ---------------------------------------------------------------------------
+// Redemption fulfillment (NES-127) — parent inbox + member self-service.
+// ---------------------------------------------------------------------------
+
+// redemptionDetailSelectSQL joins reward_redemption to its reward for the
+// parent fulfillment inbox and the member "my redemptions" list, so neither
+// caller needs a reward lookup per row. The JOIN is INNER: reward_redemption_
+// reward_fk is ON DELETE RESTRICT (00024_reward_catalog_admin.sql), so a
+// redemption row can never outlive its reward, mirroring
+// tradeSummarySelectSQL's identical INNER-join rationale.
+const redemptionDetailSelectSQL = `
+	SELECT rr.id, rr.household_id, rr.reward_id, rw.name, rr.member_id,
+	       rr.status, rr.denied_reason, rr.created_at, rr.updated_at
+	  FROM reward_redemption rr
+	  JOIN reward rw ON rw.id = rr.reward_id`
+
+// ListPendingRedemptions returns every pending redemption in the household,
+// oldest first — the parent-only fulfillment inbox (NES-127). rr.id (a
+// UUIDv7, so itself time-ordered) breaks ties for two redemptions requested
+// in the same instant, mirroring PointLedgerPostgresRepository.History's
+// identical tie-break precedent. Returns an empty slice (not an error) when
+// none are pending.
+func (r *RewardPostgresRepository) ListPendingRedemptions(
+	ctx context.Context,
+	householdID household.HouseholdID,
+) ([]domain.RedemptionDetail, error) {
+	q := redemptionDetailSelectSQL + `
+		 WHERE rr.household_id = $1
+		   AND rr.status       = 'pending'
+		 ORDER BY rr.created_at, rr.id`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String())
+	if err != nil {
+		return nil, fmt.Errorf("list pending redemptions: %w", err)
+	}
+	defer rows.Close()
+
+	details := make([]domain.RedemptionDetail, 0)
+	for rows.Next() {
+		d, err := scanRedemptionDetail(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list pending redemptions: scan: %w", err)
+		}
+		details = append(details, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list pending redemptions: %w", err)
+	}
+	return details, nil
+}
+
+// ListMemberRedemptions returns memberID's most recent redemptions —
+// regardless of status — newest first, capped at limit rows: the
+// member-facing "My redemptions" list (NES-127). rr.id breaks ties in the
+// same (descending) direction as created_at, mirroring ListPendingRedemptions'
+// tie-break. Returns an empty slice (not an error) when the member has none.
+func (r *RewardPostgresRepository) ListMemberRedemptions(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+	limit int,
+) ([]domain.RedemptionDetail, error) {
+	q := redemptionDetailSelectSQL + `
+		 WHERE rr.household_id = $1
+		   AND rr.member_id    = $2
+		 ORDER BY rr.created_at DESC, rr.id DESC
+		 LIMIT $3`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String(), memberID.String(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list member redemptions: %w", err)
+	}
+	defer rows.Close()
+
+	details := make([]domain.RedemptionDetail, 0)
+	for rows.Next() {
+		d, err := scanRedemptionDetail(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list member redemptions: scan: %w", err)
+		}
+		details = append(details, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list member redemptions: %w", err)
+	}
+	return details, nil
+}
+
+// Fulfill transitions a pending redemption to fulfilled (NES-127). The
+// conditional UPDATE's WHERE status = 'pending' is itself the concurrency
+// guard: two concurrent Fulfill/Deny attempts on the same redemption
+// serialise on Postgres' row lock, and the loser's statement re-evaluates the
+// WHERE clause against the now-committed row (READ COMMITTED's EvalPlanQual),
+// so it always sees the up-to-date status and correctly matches 0 rows rather
+// than double-resolving the redemption.
+func (r *RewardPostgresRepository) Fulfill(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
+) (domain.ResolvedRedemption, error) {
+	const q = `
+		UPDATE reward_redemption rr
+		   SET status = 'fulfilled', updated_at = now()
+		  FROM reward rw
+		 WHERE rr.id           = $1
+		   AND rr.household_id = $2
+		   AND rr.status       = 'pending'
+		   AND rw.id           = rr.reward_id
+		RETURNING rr.member_id, rw.name`
+	var memberIDStr, rewardName string
+	err := r.dbtx.QueryRow(ctx, q, id.String(), householdID.String()).Scan(&memberIDStr, &rewardName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No open transaction at this point, so reading through r.dbtx (the
+			// pool) borrows one connection, not two — unlike Deny below, which
+			// must pass its own still-open tx instead.
+			return domain.ResolvedRedemption{}, redemptionNotPendingOrNotFound(ctx, r.dbtx, householdID, id)
+		}
+		return domain.ResolvedRedemption{}, fmt.Errorf("fulfill redemption: %w", err)
+	}
+	memberID, err := household.ParseMemberID(memberIDStr)
+	if err != nil {
+		return domain.ResolvedRedemption{}, fmt.Errorf("fulfill redemption: parse member id: %w", err)
+	}
+	return domain.ResolvedRedemption{
+		RedemptionID: id,
+		HouseholdID:  householdID,
+		MemberID:     memberID,
+		RewardName:   rewardName,
+		Status:       domain.RedemptionFulfilled,
+	}, nil
+}
+
+// Deny transitions a pending redemption to denied, records reason (empty
+// means no reason given, stored as NULL), and atomically appends a
+// compensating refund ledger entry for the exact amount originally debited
+// (NES-127). See Fulfill's doc for why the conditional UPDATE alone is a
+// sufficient concurrency guard.
+func (r *RewardPostgresRepository) Deny(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
+	reason string,
+) (domain.ResolvedRedemption, error) {
+	tx, err := beginTx(ctx, r.dbtx, "deny redemption")
+	if err != nil {
+		return domain.ResolvedRedemption{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var reasonArg *string
+	if reason != "" {
+		reasonArg = &reason
+	}
+
+	const resolveQ = `
+		UPDATE reward_redemption rr
+		   SET status = 'denied', denied_reason = $3, updated_at = now()
+		  FROM reward rw
+		 WHERE rr.id           = $1
+		   AND rr.household_id = $2
+		   AND rr.status       = 'pending'
+		   AND rw.id           = rr.reward_id
+		RETURNING rr.member_id, rw.name`
+	var memberIDStr, rewardName string
+	err = tx.QueryRow(ctx, resolveQ, id.String(), householdID.String(), reasonArg).Scan(&memberIDStr, &rewardName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Read through the already-open tx, not r.dbtx (the pool) — this
+			// transaction still holds a connection checked out, and borrowing a
+			// SECOND one here to disambiguate would risk pool exhaustion under
+			// load (the same class of bug fixed for
+			// TaskInstanceRepository.disambiguateTerminal, NES-116).
+			return domain.ResolvedRedemption{}, redemptionNotPendingOrNotFound(ctx, tx, householdID, id)
+		}
+		return domain.ResolvedRedemption{}, fmt.Errorf("deny redemption: resolve: %w", err)
+	}
+	memberID, err := household.ParseMemberID(memberIDStr)
+	if err != nil {
+		return domain.ResolvedRedemption{}, fmt.Errorf("deny redemption: parse member id: %w", err)
+	}
+
+	if err := refundRedemption(ctx, tx, householdID, memberID, id); err != nil {
+		return domain.ResolvedRedemption{}, fmt.Errorf("deny redemption: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ResolvedRedemption{}, fmt.Errorf("deny redemption: commit: %w", err)
+	}
+
+	return domain.ResolvedRedemption{
+		RedemptionID: id,
+		HouseholdID:  householdID,
+		MemberID:     memberID,
+		RewardName:   rewardName,
+		Status:       domain.RedemptionDenied,
+		DeniedReason: reasonArg,
+	}, nil
+}
+
+// Cancel transitions a pending redemption belonging to memberID to cancelled
+// and appends the same compensating refund as Deny (NES-127). Unlike Fulfill/
+// Deny, a 0-row UPDATE here returns [domain.ErrRedemptionNotPending] without
+// a disambiguating existence check — see the sentinel's doc for why a member
+// should not learn whether a redemption exists at all from a failed cancel of
+// someone else's redemption.
+func (r *RewardPostgresRepository) Cancel(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
+	memberID household.MemberID,
+) (domain.ResolvedRedemption, error) {
+	tx, err := beginTx(ctx, r.dbtx, "cancel redemption")
+	if err != nil {
+		return domain.ResolvedRedemption{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const resolveQ = `
+		UPDATE reward_redemption rr
+		   SET status = 'cancelled', updated_at = now()
+		  FROM reward rw
+		 WHERE rr.id           = $1
+		   AND rr.household_id = $2
+		   AND rr.member_id    = $3
+		   AND rr.status       = 'pending'
+		   AND rw.id           = rr.reward_id
+		RETURNING rw.name`
+	var rewardName string
+	err = tx.QueryRow(ctx, resolveQ, id.String(), householdID.String(), memberID.String()).Scan(&rewardName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ResolvedRedemption{}, fmt.Errorf("cancel redemption: %w", domain.ErrRedemptionNotPending)
+		}
+		return domain.ResolvedRedemption{}, fmt.Errorf("cancel redemption: resolve: %w", err)
+	}
+
+	if err := refundRedemption(ctx, tx, householdID, memberID, id); err != nil {
+		return domain.ResolvedRedemption{}, fmt.Errorf("cancel redemption: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ResolvedRedemption{}, fmt.Errorf("cancel redemption: commit: %w", err)
+	}
+
+	return domain.ResolvedRedemption{
+		RedemptionID: id,
+		HouseholdID:  householdID,
+		MemberID:     memberID,
+		RewardName:   rewardName,
+		Status:       domain.RedemptionCancelled,
+	}, nil
+}
+
+// redemptionNotPendingOrNotFound disambiguates a 0-row Fulfill/Deny UPDATE:
+// [domain.ErrRedemptionNotFound] when id truly does not exist in the
+// household, [domain.ErrRedemptionNotPending] when it exists but is no longer
+// pending. Parents act on any redemption in their household (unlike Cancel,
+// which is member-scoped), so this extra existence check is worth the one
+// additional query on the — expected to be rare — failure path, giving a
+// parent a correct 404 for a stale/malformed id versus a 409 for a
+// concurrently-resolved one.
+//
+// q is the caller's read seam: Fulfill (no open transaction at the call site)
+// passes r.dbtx (the pool); Deny (still holding its own open tx at the call
+// site) passes that tx instead, so this check reuses the connection the
+// caller already has checked out rather than borrowing a second one while
+// the first is still live — see rowQuerier's doc.
+func redemptionNotPendingOrNotFound(
+	ctx context.Context,
+	q rowQuerier,
+	householdID household.HouseholdID,
+	id domain.RewardRedemptionID,
+) error {
+	const existsQ = `SELECT 1 FROM reward_redemption WHERE id = $1 AND household_id = $2`
+	var found int
+	err := q.QueryRow(ctx, existsQ, id.String(), householdID.String()).Scan(&found)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrRedemptionNotFound
+		}
+		return fmt.Errorf("check redemption exists: %w", err)
+	}
+	return domain.ErrRedemptionNotPending
+}
+
+// refundRedemption looks up the original debit ledger entry for redemptionID
+// (source_type = 'redemption') and appends a compensating positive entry
+// (source_type = [domain.SourceTypeRedemptionRefund]) for the exact same
+// magnitude, within tx. Called by Deny and Cancel after their status-changing
+// UPDATE has already matched exactly one row, so the corresponding debit is
+// guaranteed to exist by the redeem-time invariant: RedeemWithDebit always
+// inserts the redemption row and its debit in the very same transaction, so
+// the two either both exist or neither does.
+func refundRedemption(
+	ctx context.Context,
+	tx pgx.Tx,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+	redemptionID domain.RewardRedemptionID,
+) error {
+	const debitQ = `
+		SELECT points FROM point_ledger
+		 WHERE household_id = $1 AND source_type = 'redemption' AND source_id = $2`
+	var debitPoints int
+	if err := tx.QueryRow(ctx, debitQ, householdID.String(), redemptionID.String()).Scan(&debitPoints); err != nil {
+		return fmt.Errorf("find original debit: %w", err)
+	}
+
+	const refundQ = `
+		INSERT INTO point_ledger
+			(id, household_id, member_id, source_type, source_id, points, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())`
+	if _, err := tx.Exec(ctx, refundQ,
+		domain.NewPointEntryID().String(),
+		householdID.String(),
+		memberID.String(),
+		domain.SourceTypeRedemptionRefund,
+		redemptionID.String(),
+		-debitPoints,
+	); err != nil {
+		return fmt.Errorf("insert refund: %w", err)
 	}
 	return nil
+}
+
+// scanRedemptionDetail scans a redemptionDetailSelectSQL row into a
+// [domain.RedemptionDetail].
+func scanRedemptionDetail(r row) (domain.RedemptionDetail, error) {
+	var (
+		idStr, householdIDStr, rewardIDStr, memberIDStr, statusStr string
+		rewardName                                                 string
+		deniedReason                                               *string
+		createdAt, updatedAt                                       time.Time
+	)
+	err := r.Scan(
+		&idStr, &householdIDStr, &rewardIDStr, &rewardName, &memberIDStr,
+		&statusStr, &deniedReason, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return domain.RedemptionDetail{}, err
+	}
+	id, err := domain.ParseRewardRedemptionID(idStr)
+	if err != nil {
+		return domain.RedemptionDetail{}, fmt.Errorf("scan redemption detail: %w", err)
+	}
+	householdID, err := household.ParseHouseholdID(householdIDStr)
+	if err != nil {
+		return domain.RedemptionDetail{}, fmt.Errorf("scan redemption detail: %w", err)
+	}
+	rewardID, err := domain.ParseRewardID(rewardIDStr)
+	if err != nil {
+		return domain.RedemptionDetail{}, fmt.Errorf("scan redemption detail: %w", err)
+	}
+	memberID, err := household.ParseMemberID(memberIDStr)
+	if err != nil {
+		return domain.RedemptionDetail{}, fmt.Errorf("scan redemption detail: %w", err)
+	}
+	status, err := domain.ParseRedemptionStatus(statusStr)
+	if err != nil {
+		return domain.RedemptionDetail{}, fmt.Errorf("scan redemption detail: %w", err)
+	}
+	return domain.RedemptionDetail{
+		ID:           id,
+		HouseholdID:  householdID,
+		RewardID:     rewardID,
+		RewardName:   rewardName,
+		MemberID:     memberID,
+		Status:       status,
+		DeniedReason: deniedReason,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}, nil
 }
 
 // scanReward scans a reward row (rewardColumns order) from r into a new
