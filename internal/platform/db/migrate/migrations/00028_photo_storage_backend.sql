@@ -22,7 +22,10 @@
 -- is ever done.
 ALTER TABLE photo
     ADD COLUMN storage_backend text NOT NULL DEFAULT 'local'
-        CHECK (storage_backend IN ('local', 's3'));
+        CHECK (storage_backend IN ('local'));
+-- The CHECK admits only 'local' today: no code path can read an s3-backed
+-- row yet, so an 's3' value would be valid in the schema but unreadable by
+-- the application. NES-132 widens this constraint alongside the S3 adapter.
 
 -- +goose Down
 ALTER TABLE photo DROP COLUMN IF EXISTS storage_backend;
