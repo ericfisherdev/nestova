@@ -22,6 +22,7 @@ type fakePhotoStore struct {
 	putErr       error
 	openErr      error
 	puts         int
+	openCalls    int
 	deleted      []domain.StorageRef
 	lastPutClass domain.PhotoClass
 	// lastPutBytes records the exact bytes the most recent Put call read, so
@@ -68,6 +69,7 @@ func refFor(hash string) domain.StorageRef {
 }
 
 func (f *fakePhotoStore) Open(context.Context, domain.StorageRef) (domain.PhotoReader, error) {
+	f.openCalls++
 	if f.openErr != nil {
 		return nil, f.openErr
 	}

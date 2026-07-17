@@ -332,6 +332,59 @@ func TestService_CompleteInstance_NonePolicy_BehavesAsToday(t *testing.T) {
 	}
 }
 
+// TestService_CompleteInstance_InactiveParent_ExemptFromPhotoPolicy verifies
+// the inactive-parent exemption: an instance whose parent task is inactive
+// (archived) completes with ZERO photos captured even though the task's
+// PhotoPolicy is before_after and no photoChecker is configured — archiving
+// a task waives its photo requirement for whatever open instances remain
+// (see RecurringTask.PhotoPolicy's doc). A nil photoChecker here doubles as
+// proof the gate is skipped entirely, not merely satisfied: a policy that
+// were still enforced would fail closed per
+// TestService_CompleteInstance_PhotoPolicy_NilCheckerFailsClosed.
+func TestService_CompleteInstance_InactiveParent_ExemptFromPhotoPolicy(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	h := household.NewHouseholdID()
+	m := household.NewMemberID()
+	rt := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: h,
+		Points:      10,
+		Active:      false, // archived
+		PhotoPolicy: domain.PhotoPolicyBeforeAfter,
+	}
+	if err := taskRepo.Create(t.Context(), rt); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	inst := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h,
+		DueOn:           domain.DueOnPtr(time.Now()),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(t.Context(), inst); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); err != nil {
+		t.Errorf("CompleteInstance(inactive parent, before_after policy, no photos) = %v, want nil", err)
+	}
+	got, err := instRepo.Get(t.Context(), h, inst.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != domain.StatusDone {
+		t.Errorf("Status = %v, want done", got.Status)
+	}
+}
+
 // TestService_CompleteInstance_PhotoPolicy_NilCheckerFailsClosed verifies
 // that a task requiring photos with no photoChecker configured never
 // silently allows completion — the instance must remain pending/incomplete,

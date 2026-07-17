@@ -118,19 +118,35 @@ func (s *TaskService) CreateRecurringTask(
 // points = 0 produce no ledger row. Re-completing an already-done instance
 // returns the terminal-state sentinel without making a second award.
 //
-// NES-120 photo policy gate: when the instance's parent recurring task's
-// PhotoPolicy is not [domain.PhotoPolicyNone], completion is blocked until
-// the required chore-proof photo(s) (NES-119) have been captured. This
-// check reads the CURRENT policy (a fresh RecurringTaskRepository.Get, not
-// a value cached on the instance — see [domain.RecurringTask.PhotoPolicy]'s
-// doc) and the instance's CURRENT photo state via [s.photoChecker], and both
-// happen BEFORE — and outside the same transaction as — the CompleteAndAward
-// call below. This is a deliberate read-then-act sequence, not an atomic
-// check: nothing currently deletes a task_instance_photo row (see media's
+// NES-120 photo policy gate: when the instance's parent recurring task is
+// ACTIVE and its PhotoPolicy is not [domain.PhotoPolicyNone], completion is
+// blocked until the required chore-proof photo(s) (NES-119) have been
+// captured. This check reads the CURRENT policy (a fresh
+// RecurringTaskRepository.Get, not a value cached on the instance — see
+// [domain.RecurringTask.PhotoPolicy]'s doc) and the instance's CURRENT
+// photo state via [s.photoChecker], and both happen BEFORE — and outside
+// the same transaction as — the CompleteAndAward call below. This is a
+// deliberate read-then-act sequence, not an atomic check: nothing
+// currently deletes a task_instance_photo row (see media's
 // TaskInstancePhotoRepository, which exposes no delete method), so a racing
 // photo removal between this check and CompleteAndAward is not a real
 // exposure today; if a delete capability is ever added, this gate would
 // need to move inside CompleteAndAward's own transaction to stay race-free.
+// The same applies to a racing policy EDIT: no code path updates
+// photo_policy after task creation today (there is no edit-task feature in
+// this codebase), so the read above can never observe a policy that changes
+// mid-request; if an edit-task flow is ever added, this read and the photo
+// check together would need to move inside CompleteAndAward's own
+// transaction for the same reason.
+//
+// Inactive-parent exemption: an instance whose parent task is inactive
+// (archived) is NEVER gated on PhotoPolicy, regardless of what the policy
+// value is — see [domain.RecurringTask.PhotoPolicy]'s doc for the
+// rationale. This also keeps the gate consistent with the /tasks row
+// builder, which only resolves capture-UI metadata for an ACTIVE parent
+// (an inactive parent's row already renders as "(archived)" with no
+// capture controls at all — gating completion on a photo the member has no
+// way to capture from that row would be a dead end).
 //
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
@@ -139,8 +155,8 @@ func (s *TaskService) CreateRecurringTask(
 //     done or skipped — checked before the photo gate, so an already-finished
 //     chore reports "already done" rather than a photo requirement.
 //   - Returns [domain.ErrBeforePhotoRequired] or [domain.ErrAfterPhotoRequired]
-//     when the parent task's PhotoPolicy requires a photo that has not been
-//     captured yet.
+//     when the parent task is ACTIVE and its PhotoPolicy requires a photo
+//     that has not been captured yet.
 func (s *TaskService) CompleteInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -160,7 +176,7 @@ func (s *TaskService) CompleteInstance(
 	if err != nil {
 		return fmt.Errorf("complete instance: %w", err)
 	}
-	if task.PhotoPolicy.RequiresPhotos() {
+	if task.Active && task.PhotoPolicy.RequiresPhotos() {
 		if err := s.requirePhotos(ctx, householdID, id, task.PhotoPolicy); err != nil {
 			return err
 		}
