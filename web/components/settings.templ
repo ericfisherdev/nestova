@@ -1,0 +1,178 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// View models
+// ---------------------------------------------------------------------------
+
+// KioskDeviceView is the view model for one row in the settings page's kiosk
+// device history (NES-128): the currently active device (if any) plus every
+// previously revoked one, newest first.
+type KioskDeviceView struct {
+	// ID is the string form of the KioskDeviceID UUID.
+	ID string
+	// Name is the device's operator-chosen label (e.g. "Kitchen wall display").
+	Name string
+	// CreatedAtLabel is the pre-formatted provisioning date.
+	CreatedAtLabel string
+	// Active is true for the one device (at most) currently authorized.
+	Active bool
+	// RevokedAtLabel is the pre-formatted revocation date, empty while Active.
+	RevokedAtLabel string
+}
+
+// KioskActivationReveal is the view model for the one-time activation-code
+// reveal shown immediately after GenerateActivationCode — never
+// reconstructable afterward, since only the code's hash is persisted. Unlike
+// the kiosk_device bearer token, this code is short-lived and single-use, so
+// it is safe for the settings page to display (the long-lived device token
+// itself is never shown here — it is minted only when the kiosk redeems this
+// code).
+type KioskActivationReveal struct {
+	// Code is the raw activation code, shown once for manual entry on the
+	// kiosk device.
+	Code string
+	// ActivationURL is the absolute one-click link that, visited from the
+	// kiosk device's own browser, redeems Code and lands on /kiosk.
+	ActivationURL string
+	// ExpiresInMinutes is the code's validity window, pre-computed by the
+	// handler from domain.ActivationCodeTTL.
+	ExpiresInMinutes int
+}
+
+// SettingsView is the view model for the GET /settings page.
+type SettingsView struct {
+	// Devices is the household's full kiosk device history, newest first.
+	Devices []KioskDeviceView
+	// NewToken is set only immediately after a successful
+	// GenerateActivationCode, to render the one-time reveal panel; nil on
+	// every other render.
+	NewToken *KioskActivationReveal
+	// CSRFToken is embedded in the generate and revoke forms.
+	CSRFToken string
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
+// SettingsPage renders the parent-only household settings page. NES-128 adds
+// its first section: kiosk device provisioning.
+templ SettingsPage(view SettingsView) {
+	<div class="mx-auto flex max-w-3xl flex-col gap-6 p-6">
+		<h1 class="text-2xl font-semibold text-ink">Settings</h1>
+		@kioskSection(view)
+	</div>
+}
+
+templ kioskSection(view SettingsView) {
+	@Card("Kiosk display") {
+		<p class="mb-4 text-sm text-ink-secondary">
+			A kiosk is a wall-mounted touchscreen that shows chores, the calendar,
+			meals, shopping, and photos without a member login. Generating a new
+			activation code automatically revokes the household's previous kiosk
+			device once the code is redeemed.
+		</p>
+		if view.NewToken != nil {
+			@kioskActivationReveal(*view.NewToken)
+		}
+		@kioskDeviceList(view.Devices, view.CSRFToken)
+		@kioskGenerateForm(view.CSRFToken)
+	}
+}
+
+// kioskActivationReveal shows the newly generated activation code and
+// activation link exactly once — after this render, only the code's hash
+// exists server-side. Unlike the kiosk device's own long-lived bearer token
+// (never shown here), this code expires in ExpiresInMinutes and can only be
+// redeemed once, so its appearing here — and in the activation link's query
+// string — is a bounded, accepted exposure.
+templ kioskActivationReveal(reveal KioskActivationReveal) {
+	<div class="mb-4 rounded-control border-2 border-sage bg-sage-tint p-4" role="alert">
+		<p class="mb-2 font-semibold text-sage-darker">
+			New activation code — expires in { fmt.Sprintf("%d", reveal.ExpiresInMinutes) } minutes and works once
+		</p>
+		<label class="mb-1 block text-sm font-medium text-ink-secondary" for="kiosk-activation-url">
+			Open on the kiosk device
+		</label>
+		<input
+			id="kiosk-activation-url"
+			type="text"
+			readonly
+			value={ reveal.ActivationURL }
+			class="mb-3 w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 font-mono text-sm"
+		/>
+		<label class="mb-1 block text-sm font-medium text-ink-secondary" for="kiosk-code-value">
+			Or enter this code manually on the kiosk
+		</label>
+		<input
+			id="kiosk-code-value"
+			type="text"
+			readonly
+			value={ reveal.Code }
+			class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-center font-mono text-lg tracking-widest"
+		/>
+	</div>
+}
+
+templ kioskDeviceList(devices []KioskDeviceView, csrfToken string) {
+	if len(devices) == 0 {
+		<p class="mb-4 text-sm text-ink-muted">No kiosk device has been provisioned yet.</p>
+	} else {
+		<ul class="mb-4 flex flex-col gap-2">
+			for _, d := range devices {
+				@kioskDeviceRow(d, csrfToken)
+			}
+		</ul>
+	}
+}
+
+templ kioskDeviceRow(d KioskDeviceView, csrfToken string) {
+	<li class="flex items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface p-3">
+		<div>
+			<p class="font-medium text-ink">{ d.Name }</p>
+			if d.Active {
+				<p class="text-sm text-ink-muted">Active since { d.CreatedAtLabel }</p>
+			} else {
+				<p class="text-sm text-ink-muted">Revoked { d.RevokedAtLabel }</p>
+			}
+		</div>
+		if d.Active {
+			<form method="post" action={ templ.SafeURL("/settings/kiosk/" + d.ID + "/revoke") }>
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				<button
+					type="submit"
+					class="min-h-[48px] min-w-[48px] rounded-control border border-sidebar-border bg-red-50 px-4 py-2 font-medium text-red-700 hover:bg-red-100"
+				>
+					Revoke
+				</button>
+			</form>
+		}
+	</li>
+}
+
+templ kioskGenerateForm(csrfToken string) {
+	<form method="post" action="/settings/kiosk/generate" class="flex items-end gap-3">
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<div class="flex-1">
+			<label class="mb-1 block text-sm font-medium text-ink-secondary" for="kiosk-name">
+				Device name
+			</label>
+			<input
+				id="kiosk-name"
+				type="text"
+				name="name"
+				placeholder="Kitchen wall display"
+				required
+				class="w-full rounded-control border border-sidebar-border px-3 py-2"
+			/>
+		</div>
+		<button
+			type="submit"
+			class="min-h-[48px] rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark"
+		>
+			Generate activation code
+		</button>
+	</form>
+}

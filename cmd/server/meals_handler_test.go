@@ -47,6 +47,10 @@ func (r *mealsShoppingRecorder) UpdateStatus(context.Context, household.Househol
 	return nil, trackingdomain.ErrShoppingListItemNotFound
 }
 
+func (r *mealsShoppingRecorder) MarkInCart(context.Context, household.HouseholdID, trackingdomain.ShoppingListItemID) (*trackingdomain.ShoppingListItem, error) {
+	return nil, trackingdomain.ErrShoppingListItemNotFound
+}
+
 func (r *mealsShoppingRecorder) ListByStatus(context.Context, household.HouseholdID, trackingdomain.ItemStatus) ([]*trackingdomain.ShoppingListItem, error) {
 	return nil, nil
 }

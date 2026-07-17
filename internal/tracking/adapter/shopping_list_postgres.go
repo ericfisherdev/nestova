@@ -129,6 +129,43 @@ func (r *ShoppingListRepository) UpdateStatus(ctx context.Context, householdID h
 	return item, nil
 }
 
+// MarkInCart transitions an item from needed to in_cart, or no-ops (returns
+// the item unchanged) if it is already in_cart — both are captured by the
+// single guarded UPDATE below, which only ever matches a row whose CURRENT
+// status is needed or in_cart. If zero rows match, a follow-up existence
+// check distinguishes an unknown/cross-household id
+// (domain.ErrShoppingListItemNotFound) from an item that exists but is past
+// the point where "in cart" still applies, i.e. already purchased
+// (domain.ErrShoppingListItemNotInCartable) — the item is never moved
+// backward out of purchased.
+func (r *ShoppingListRepository) MarkInCart(ctx context.Context, householdID household.HouseholdID, id domain.ShoppingListItemID) (*domain.ShoppingListItem, error) {
+	const q = `
+		UPDATE shopping_list_item SET status = 'in_cart'
+		 WHERE id = $1 AND household_id = $2 AND status IN ('needed', 'in_cart')
+		RETURNING ` + shoppingListColumns
+	item, err := scanShoppingListItem(r.dbtx.QueryRow(ctx, q, id.String(), householdID.String()))
+	if err == nil {
+		return item, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("mark shopping list item in cart: %w", err)
+	}
+
+	var exists bool
+	existsErr := r.dbtx.QueryRow(ctx,
+		`SELECT true FROM shopping_list_item WHERE id = $1 AND household_id = $2`,
+		id.String(), householdID.String(),
+	).Scan(&exists)
+	switch {
+	case errors.Is(existsErr, pgx.ErrNoRows):
+		return nil, domain.ErrShoppingListItemNotFound
+	case existsErr != nil:
+		return nil, fmt.Errorf("mark shopping list item in cart: check existence: %w", existsErr)
+	default:
+		return nil, domain.ErrShoppingListItemNotInCartable
+	}
+}
+
 // ListByStatus returns the household's items in the given status ordered by
 // creation.
 func (r *ShoppingListRepository) ListByStatus(ctx context.Context, householdID household.HouseholdID, status domain.ItemStatus) ([]*domain.ShoppingListItem, error) {

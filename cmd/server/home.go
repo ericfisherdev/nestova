@@ -11,6 +11,7 @@ import (
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
@@ -426,6 +427,63 @@ func registerMediaPages(
 	mux.Handle("POST /albums/{id}/photos/{photoID}/move", requireMember(http.HandlerFunc(mediaHandlers.MovePhoto)))
 	// Full-screen rotating slideshow (NES-76) — a standalone page, not the shell.
 	mux.Handle("GET /album/{id}", requireMember(http.HandlerFunc(mediaHandlers.AlbumViewer)))
+}
+
+// registerSettingsPage wires the parent-only /settings page (NES-128 adds its
+// first section: kiosk device provisioning). RequireMember-gated at the
+// router, same as every other member page; the parent-only role check happens
+// inside each handler (mirroring /admin/rewards and /trades/history), so a
+// child member reaches a real 403 rather than a router-level dead end.
+func registerSettingsPage(
+	mux *http.ServeMux,
+	logger *slog.Logger,
+	sm *scs.SessionManager,
+	households household.HouseholdRepository,
+	settingsHandlers *kioskadapter.SettingsWebHandlers,
+) {
+	requireMember := authadapter.RequireMember(sm)
+	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
+		return func(member *household.Member) func(templ.Component) templ.Component {
+			return func(c templ.Component) templ.Component {
+				props, nav := dashboardShell(r, sm, member, households, logger, "")
+				return components.Layout(props, nav, c)
+			}
+		}
+	}
+
+	mux.Handle("GET /settings", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		settingsHandlers.Page(layoutFor(r))(w, r)
+	})))
+	mux.Handle("POST /settings/kiosk/generate", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		settingsHandlers.GenerateActivationCode(layoutFor(r))(w, r)
+	})))
+	mux.Handle("POST /settings/kiosk/{id}/revoke", requireMember(http.HandlerFunc(settingsHandlers.RevokeKioskToken)))
+}
+
+// registerKioskPages wires the /kiosk/* touch-first kiosk shell (NES-128).
+// GET/POST /kiosk/activate is deliberately public — the kiosk device has no
+// identity until that request succeeds (see KioskWebHandlers.Activate: GET
+// carries the one-click link's ?code=, POST carries the manual entry form) —
+// every other route is gated by RequireKioskOrMember so a browser with
+// neither a kiosk cookie nor a member session gets a bare 401 (AC1), never a
+// peek at household data.
+func registerKioskPages(mux *http.ServeMux, kioskHandlers *kioskadapter.KioskWebHandlers) {
+	mux.HandleFunc("GET /kiosk/activate", kioskHandlers.Activate)
+	mux.HandleFunc("POST /kiosk/activate", kioskHandlers.Activate)
+
+	requireKioskOrMember := kioskadapter.RequireKioskOrMember()
+	mux.Handle("GET /kiosk/{$}", requireKioskOrMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/kiosk/chores", http.StatusSeeOther)
+	})))
+	mux.Handle("GET /kiosk/chores", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Chores)))
+	mux.Handle("GET /kiosk/calendar", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Calendar)))
+	mux.Handle("GET /kiosk/meals", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Meals)))
+	mux.Handle("GET /kiosk/shopping", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Shopping)))
+	// POST /kiosk/shopping/{id}/in-cart is the one member-free mutation the
+	// kiosk exposes (AC5): marking a needed item in-cart.
+	mux.Handle("POST /kiosk/shopping/{id}/in-cart", requireKioskOrMember(http.HandlerFunc(kioskHandlers.MarkInCart)))
+	mux.Handle("GET /kiosk/photos", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Photos)))
+	mux.Handle("GET /kiosk/photos/{id}/raw", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Raw)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

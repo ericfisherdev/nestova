@@ -41,6 +41,21 @@ func (f *fakeShoppingListRepo) UpdateStatus(_ context.Context, householdID house
 	return nil, domain.ErrShoppingListItemNotFound
 }
 
+func (f *fakeShoppingListRepo) MarkInCart(_ context.Context, householdID household.HouseholdID, id domain.ShoppingListItemID) (*domain.ShoppingListItem, error) {
+	for _, item := range f.items {
+		if item.ID == id && item.HouseholdID == householdID {
+			switch item.Status {
+			case domain.StatusNeeded, domain.StatusInCart:
+				item.Status = domain.StatusInCart
+				return item, nil
+			default:
+				return nil, domain.ErrShoppingListItemNotInCartable
+			}
+		}
+	}
+	return nil, domain.ErrShoppingListItemNotFound
+}
+
 func (f *fakeShoppingListRepo) ListByStatus(_ context.Context, householdID household.HouseholdID, status domain.ItemStatus) ([]*domain.ShoppingListItem, error) {
 	var out []*domain.ShoppingListItem
 	for _, item := range f.items {
