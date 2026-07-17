@@ -68,18 +68,23 @@ templ KioskLayout(props KioskShellProps, content templ.Component) {
 			<title>Nestova Kiosk</title>
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
-			<!-- htmx.min.js (NES-129): the chores tab's QR-refresh self-poll
-			     (hx-get/hx-trigger on #kiosk-chores-content) is the kiosk shell's
-			     first htmx consumer — mirroring layout.templ's identical script-order
-			     precedent (htmx has no init-ordering dependency on the other scripts
-			     here, unlike kiosk-idle.js/alpine.min.js below, so its position
-			     relative to them does not matter; it is placed first purely to match
-			     layout.templ's convention). -->
+			<!-- htmx.min.js (NES-129): every kiosk tab's content-fragment self-poll
+			     (hx-get/hx-trigger on its own #kiosk-{tab}-content wrapper, NES-130)
+			     is the kiosk shell's first htmx consumer — mirroring layout.templ's
+			     identical script-order precedent (htmx has no init-ordering
+			     dependency on the other scripts here, unlike
+			     kiosk-idle.js/alpine.min.js below, so its position relative to them
+			     does not matter; it is placed first purely to match layout.templ's
+			     convention). -->
 			<script src="/static/js/htmx.min.js" defer></script>
 			<!-- kiosk-idle.js registers Alpine.data('kioskIdle', ...) and must load and
 			     run BEFORE alpine.min.js (see layout.templ's script-order rule: Alpine
 			     dispatches 'alpine:init' as soon as its own deferred script runs, so a
 			     listener registered after that has already fired never sees it).
+			     kiosk-idle.js only listens for touchstart/mousedown/keydown (NES-128):
+			     it does not observe htmx events or DOM mutations, so the NES-130
+			     content polls above never reset the idle timer on their own — only an
+			     actual touch/click/keypress does.
 			     album.js is reused verbatim from the NES-76 album viewer and keeps that
 			     page's own script order (after alpine.min.js) rather than this rule, to
 			     stay byte-for-byte consistent with the one other page that loads it. -->
@@ -303,28 +308,34 @@ type KioskChoresView struct {
 	// the two point-economy surfaces and the chores tab is the kiosk's
 	// primary actionable one.
 	Rewards []KioskRewardView
-	// QRRefreshTrigger is the pre-formatted htmx hx-trigger polling
-	// declaration (e.g. "every 300s") this page's content self-refreshes on
-	// (NES-129), so a display left open on this tab keeps its QR codes
+	// ContentPollTrigger is the pre-formatted htmx hx-trigger polling
+	// declaration (e.g. "every 15s") this tab's content self-refreshes on
+	// (NES-130), so a chore claimed or completed elsewhere shows up on an
+	// untouched display within seconds, and this tab's QR codes stay
 	// re-signed well ahead of deeplinkapp.LinkTTL — see
-	// kioskQRRefreshInterval's doc comment (internal/kiosk/adapter). Computed
-	// server-side (not hardcoded here) so it always tracks that constant.
-	QRRefreshTrigger string
+	// kioskContentPollInterval's doc comment (internal/kiosk/adapter).
+	// Computed server-side (not hardcoded here) so every tab always tracks
+	// that single shared constant. Every kiosk tab's view model carries this
+	// same field (see KioskCalendarView, KioskMealsView, KioskShoppingView,
+	// KioskPhotosView).
+	ContentPollTrigger string
 }
 
 // KioskChoresPage renders the chores tab's content as a self-polling
 // fragment: the outer div carries its own hx-get/hx-trigger targeting GET
-// /kiosk/chores/content (NES-129), so it re-arms on every swap regardless of
-// whether the CURRENT render came from a full navigation (wrapped in
-// KioskLayout by KioskWebHandlers.Chores) or from a previous poll
+// /kiosk/chores/content (NES-129/NES-130), so it re-arms on every swap
+// regardless of whether the CURRENT render came from a full navigation
+// (wrapped in KioskLayout by KioskWebHandlers.Chores) or from a previous poll
 // (KioskWebHandlers.ChoresContent, which renders this component directly,
-// unwrapped).
+// unwrapped). htmx does not swap a non-2xx response by default (see
+// httpserver's RequireKioskOrMember, which 401s a revoked device) — a failed
+// poll simply leaves this fragment as it was, and the next interval retries.
 templ KioskChoresPage(view KioskChoresView) {
 	<div
 		id="kiosk-chores-content"
 		class="p-4"
 		hx-get="/kiosk/chores/content"
-		hx-trigger={ view.QRRefreshTrigger }
+		hx-trigger={ view.ContentPollTrigger }
 		hx-target="this"
 		hx-swap="outerHTML"
 	>
@@ -432,10 +443,22 @@ templ kioskRewardRow(rw KioskRewardView) {
 type KioskCalendarView struct {
 	RangeLabel string
 	Items      []CalendarItemView
+	// ContentPollTrigger — see KioskChoresView's field of the same name.
+	ContentPollTrigger string
 }
 
+// KioskCalendarPage renders the calendar tab's content as a self-polling
+// fragment (NES-130) — see KioskChoresPage's doc comment for the shared
+// wrapper contract every kiosk tab follows.
 templ KioskCalendarPage(view KioskCalendarView) {
-	<div class="p-4">
+	<div
+		id="kiosk-calendar-content"
+		class="p-4"
+		hx-get="/kiosk/calendar/content"
+		hx-trigger={ view.ContentPollTrigger }
+		hx-target="this"
+		hx-swap="outerHTML"
+	>
 		<h1 class="mb-1 text-xl font-semibold">Calendar</h1>
 		<p class="mb-4 text-sm text-ink-muted">{ view.RangeLabel }</p>
 		if len(view.Items) == 0 {
@@ -471,10 +494,22 @@ type KioskMealDayView struct {
 type KioskMealsView struct {
 	WeekLabel string
 	Days      []KioskMealDayView
+	// ContentPollTrigger — see KioskChoresView's field of the same name.
+	ContentPollTrigger string
 }
 
+// KioskMealsPage renders the meals tab's content as a self-polling fragment
+// (NES-130) — see KioskChoresPage's doc comment for the shared wrapper
+// contract every kiosk tab follows.
 templ KioskMealsPage(view KioskMealsView) {
-	<div class="p-4">
+	<div
+		id="kiosk-meals-content"
+		class="p-4"
+		hx-get="/kiosk/meals/content"
+		hx-trigger={ view.ContentPollTrigger }
+		hx-target="this"
+		hx-swap="outerHTML"
+	>
 		<h1 class="mb-1 text-xl font-semibold">Meals</h1>
 		<p class="mb-4 text-sm text-ink-muted">{ view.WeekLabel }</p>
 		if len(view.Days) == 0 {
@@ -516,10 +551,25 @@ type KioskShoppingView struct {
 	Needed    []ShoppingItemView
 	InCart    []ShoppingItemView
 	CSRFToken string
+	// ContentPollTrigger — see KioskChoresView's field of the same name.
+	ContentPollTrigger string
 }
 
+// KioskShoppingPage renders the shopping tab's content as a self-polling
+// fragment (NES-130) — see KioskChoresPage's doc comment for the shared
+// wrapper contract every kiosk tab follows. The wrapper's own hx-get/
+// hx-trigger polling is independent of the in-cart form's plain (non-htmx)
+// POST below: a native form submit navigates the whole page rather than
+// triggering this wrapper's own swap, so the two do not interact.
 templ KioskShoppingPage(view KioskShoppingView) {
-	<div class="p-4">
+	<div
+		id="kiosk-shopping-content"
+		class="p-4"
+		hx-get="/kiosk/shopping/content"
+		hx-trigger={ view.ContentPollTrigger }
+		hx-target="this"
+		hx-swap="outerHTML"
+	>
 		<h1 class="mb-4 text-xl font-semibold">Shopping list</h1>
 		<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">Needed</h2>
 		if len(view.Needed) == 0 {
@@ -590,10 +640,22 @@ templ kioskShoppingReadOnlyRow(item ShoppingItemView) {
 // no upload, delete, or album-management affordance (those stay on /photos).
 type KioskPhotosView struct {
 	Photos []PhotoView
+	// ContentPollTrigger — see KioskChoresView's field of the same name.
+	ContentPollTrigger string
 }
 
+// KioskPhotosPage renders the photos tab's content as a self-polling
+// fragment (NES-130) — see KioskChoresPage's doc comment for the shared
+// wrapper contract every kiosk tab follows.
 templ KioskPhotosPage(view KioskPhotosView) {
-	<div class="p-4">
+	<div
+		id="kiosk-photos-content"
+		class="p-4"
+		hx-get="/kiosk/photos/content"
+		hx-trigger={ view.ContentPollTrigger }
+		hx-target="this"
+		hx-swap="outerHTML"
+	>
 		<h1 class="mb-4 text-xl font-semibold">Photos</h1>
 		if len(view.Photos) == 0 {
 			<p class="text-ink-muted">No photos yet.</p>

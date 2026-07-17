@@ -55,17 +55,29 @@ const (
 // would otherwise blur its modules past reliable scan range.
 const kioskQRModuleSize = 4
 
-// kioskQRRefreshInterval bounds how often the kiosk chores tab's content
-// self-polls for a fresh render (NES-129 finding: a display left open past
-// deeplinkapp.LinkTTL would otherwise keep showing QR codes that scan
-// straight to the friendly-but-useless "rescan from the kiosk" page). Set to
-// HALF the deep link's own TTL so a freshly re-signed QR is always in place
-// well before the previous one could expire, regardless of where in its poll
-// cycle the display currently sits. NES-130 is expected to tighten the
-// kiosk's overall content refresh to seconds-level polling/SSE for other
-// tabs too; this interval exists specifically to bound QR staleness on the
-// chores tab until then — see ChoresContent and KioskChoresView.QRRefreshTrigger.
-const kioskQRRefreshInterval = deeplinkapp.LinkTTL / 2
+// kioskContentPollInterval is how often every kiosk tab's content fragment
+// self-polls for a fresh render (NES-130): a chore claimed or completed
+// elsewhere (the phone QR flow, or any other change to household data) must
+// show up on an untouched display within seconds, and a display left open
+// past deeplinkapp.LinkTTL must not keep showing chores-tab QR codes that
+// scan to an already-expired "rescan from the kiosk" page.
+//
+// 15s satisfies both with one mechanism: it is well under LinkTTL/2 (the
+// safety margin NES-129's chores-only poll originally used before this
+// constant replaced it), so a freshly re-signed QR is always in place long
+// before the previous one could expire, while also being fast enough that a
+// claim/complete elsewhere feels close to live. Every tab's content
+// fragment (ChoresContent, CalendarContent, MealsContent, ShoppingContent,
+// PhotosContent) shares this single interval rather than each computing its
+// own cadence — see kioskContentPollTrigger.
+const kioskContentPollInterval = 15 * time.Second
+
+// kioskContentPollTrigger is the pre-formatted htmx hx-trigger polling
+// declaration every kiosk tab's content wrapper carries (e.g. "every 15s"),
+// computed once from kioskContentPollInterval so every tab's view model
+// always tracks that single constant rather than duplicating the interval as
+// a literal string per tab.
+var kioskContentPollTrigger = "every " + strconv.Itoa(int(kioskContentPollInterval.Seconds())) + "s"
 
 // kioskDisplayDateLayout / kioskDisplayDateTimeLayout format calendar and meal
 // dates for the kiosk. Duplicated in miniature from calendaradapter's own
@@ -360,11 +372,11 @@ func (h *KioskWebHandlers) Chores(w http.ResponseWriter, r *http.Request) {
 
 // ChoresContent handles GET /kiosk/chores/content: it re-renders just the
 // chores tab's inner content (never the full kiosk shell) — the target of
-// that content's own self-poll (see KioskChoresView.QRRefreshTrigger and
-// kioskQRRefreshInterval), so a display left open on this tab keeps showing
-// freshly-signed QR codes without a full page reload. Mirrors
-// tasksadapter.WebHandlers.Groups' identical "re-render just the polled
-// fragment" shape.
+// that content's own self-poll (see KioskChoresView.ContentPollTrigger and
+// kioskContentPollInterval), so a display left open on this tab picks up a
+// claim/complete from elsewhere and keeps showing freshly-signed QR codes,
+// without a full page reload. Mirrors tasksadapter.WebHandlers.Groups'
+// identical "re-render just the polled fragment" shape.
 func (h *KioskWebHandlers) ChoresContent(w http.ResponseWriter, r *http.Request) {
 	householdID, ok := CurrentHouseholdID(r.Context())
 	if !ok {
@@ -477,12 +489,8 @@ func (h *KioskWebHandlers) buildChoresView(r *http.Request, householdID househol
 	}
 
 	view := components.KioskChoresView{
-		Chores: rows,
-		// htmx's polling trigger syntax ("every <N>s") is expressed in
-		// seconds in every documented example — computed here (not
-		// hardcoded in the template) so it always tracks kioskQRRefreshInterval,
-		// which is itself derived from deeplinkapp.LinkTTL.
-		QRRefreshTrigger: "every " + strconv.Itoa(int(kioskQRRefreshInterval.Seconds())) + "s",
+		Chores:             rows,
+		ContentPollTrigger: kioskContentPollTrigger,
 	}
 	if qr, err := h.deepLinkQR(r, deeplinkdomain.ActionAddChore, ""); err != nil {
 		h.logger.ErrorContext(ctx, "kiosk: build add-chore deep link qr", "error", err)
@@ -578,6 +586,26 @@ func (h *KioskWebHandlers) Calendar(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, householdID, components.KioskTabCalendar, components.KioskCalendarPage(view))
 }
 
+// CalendarContent handles GET /kiosk/calendar/content: it re-renders just the
+// calendar tab's inner content (never the full kiosk shell) — the target of
+// that content's own self-poll (NES-130) — mirroring ChoresContent's shape.
+func (h *KioskWebHandlers) CalendarContent(w http.ResponseWriter, r *http.Request) {
+	householdID, ok := CurrentHouseholdID(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	view, err := h.buildCalendarView(r.Context(), householdID)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: build calendar content", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.KioskCalendarPage(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: render calendar content", "error", err)
+	}
+}
+
 func (h *KioskWebHandlers) buildCalendarView(ctx context.Context, householdID household.HouseholdID) (components.KioskCalendarView, error) {
 	from := tasksdomain.DateOf(h.now())
 	to := from.AddDate(0, 0, kioskCalendarWindowDays)
@@ -601,8 +629,9 @@ func (h *KioskWebHandlers) buildCalendarView(ctx context.Context, householdID ho
 		})
 	}
 	return components.KioskCalendarView{
-		RangeLabel: from.Format("Jan 2") + " – " + to.Format("Jan 2, 2006"),
-		Items:      views,
+		RangeLabel:         from.Format("Jan 2") + " – " + to.Format("Jan 2, 2006"),
+		Items:              views,
+		ContentPollTrigger: kioskContentPollTrigger,
 	}, nil
 }
 
@@ -624,6 +653,26 @@ func (h *KioskWebHandlers) Meals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.render(w, r, householdID, components.KioskTabMeals, components.KioskMealsPage(view))
+}
+
+// MealsContent handles GET /kiosk/meals/content: it re-renders just the
+// meals tab's inner content (never the full kiosk shell) — the target of
+// that content's own self-poll (NES-130) — mirroring ChoresContent's shape.
+func (h *KioskWebHandlers) MealsContent(w http.ResponseWriter, r *http.Request) {
+	householdID, ok := CurrentHouseholdID(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	view, err := h.buildMealsView(r.Context(), householdID)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: build meals content", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.KioskMealsPage(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: render meals content", "error", err)
+	}
 }
 
 func (h *KioskWebHandlers) buildMealsView(ctx context.Context, householdID household.HouseholdID) (components.KioskMealsView, error) {
@@ -673,8 +722,9 @@ func (h *KioskWebHandlers) buildMealsView(ctx context.Context, householdID house
 	}
 
 	return components.KioskMealsView{
-		WeekLabel: weekStart.Format("Jan 2") + " – " + weekEnd.Format("Jan 2, 2006"),
-		Days:      days,
+		WeekLabel:          weekStart.Format("Jan 2") + " – " + weekEnd.Format("Jan 2, 2006"),
+		Days:               days,
+		ContentPollTrigger: kioskContentPollTrigger,
 	}, nil
 }
 
@@ -698,6 +748,27 @@ func (h *KioskWebHandlers) Shopping(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, householdID, components.KioskTabShopping, components.KioskShoppingPage(view))
 }
 
+// ShoppingContent handles GET /kiosk/shopping/content: it re-renders just
+// the shopping tab's inner content (never the full kiosk shell) — the
+// target of that content's own self-poll (NES-130) — mirroring
+// ChoresContent's shape. The one mutation this tab exposes, MarkInCart, still
+// lives on its own dedicated POST route; this handler is read-only.
+func (h *KioskWebHandlers) ShoppingContent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := CurrentHouseholdID(r.Context()); !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	view, err := h.buildShoppingView(r)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: build shopping content", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.KioskShoppingPage(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: render shopping content", "error", err)
+	}
+}
+
 func (h *KioskWebHandlers) buildShoppingView(r *http.Request) (components.KioskShoppingView, error) {
 	householdID, _ := CurrentHouseholdID(r.Context())
 	needed, err := h.shopping.ListByStatus(r.Context(), householdID, trackingdomain.StatusNeeded)
@@ -713,9 +784,10 @@ func (h *KioskWebHandlers) buildShoppingView(r *http.Request) (components.KioskS
 		return components.KioskShoppingView{}, err
 	}
 	return components.KioskShoppingView{
-		Needed:    toKioskShoppingItemViews(needed, names),
-		InCart:    toKioskShoppingItemViews(inCart, names),
-		CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
+		Needed:             toKioskShoppingItemViews(needed, names),
+		InCart:             toKioskShoppingItemViews(inCart, names),
+		CSRFToken:          authadapter.GetCSRFToken(r.Context(), h.sm),
+		ContentPollTrigger: kioskContentPollTrigger,
 	}, nil
 }
 
@@ -846,14 +918,48 @@ func (h *KioskWebHandlers) Photos(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	photos, err := h.photos.List(r.Context(), householdID)
+	view, err := h.buildPhotosView(r.Context(), householdID)
 	if err != nil {
-		h.logger.ErrorContext(r.Context(), "kiosk: list photos", "error", err)
+		h.logger.ErrorContext(r.Context(), "kiosk: build photos view", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	view := components.KioskPhotosView{Photos: toKioskPhotoViews(photos)}
 	h.render(w, r, householdID, components.KioskTabPhotos, components.KioskPhotosPage(view))
+}
+
+// PhotosContent handles GET /kiosk/photos/content: it re-renders just the
+// photos tab's inner content (never the full kiosk shell) — the target of
+// that content's own self-poll (NES-130) — mirroring ChoresContent's shape.
+func (h *KioskWebHandlers) PhotosContent(w http.ResponseWriter, r *http.Request) {
+	householdID, ok := CurrentHouseholdID(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	view, err := h.buildPhotosView(r.Context(), householdID)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: build photos content", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.KioskPhotosPage(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: render photos content", "error", err)
+	}
+}
+
+// buildPhotosView loads the household's most recent photos as the photos
+// tab's read-only grid view model. Shared by Photos and PhotosContent so the
+// content-fragment self-poll (NES-130) always renders the exact same view
+// the full page would.
+func (h *KioskWebHandlers) buildPhotosView(ctx context.Context, householdID household.HouseholdID) (components.KioskPhotosView, error) {
+	photos, err := h.photos.List(ctx, householdID)
+	if err != nil {
+		return components.KioskPhotosView{}, err
+	}
+	return components.KioskPhotosView{
+		Photos:             toKioskPhotoViews(photos),
+		ContentPollTrigger: kioskContentPollTrigger,
+	}, nil
 }
 
 // toKioskPhotoViews maps the household's photos to the read-only grid view,

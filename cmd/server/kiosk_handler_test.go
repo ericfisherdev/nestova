@@ -142,6 +142,43 @@ func (f *fakeActivationCodeRepo) Redeem(_ context.Context, codeHash string, now 
 	return f.devices.Create(context.Background(), device)
 }
 
+// kioskRecurringTaskRepo is a RecurringTaskRepository whose ListActive result
+// is configured directly, letting a kiosk content-fragment test seed a
+// chore's title/category without a database. fakeRecurringTaskRepo
+// (tasks_handler_test.go's shared fake) hardcodes ListActive to nil, so it
+// alone cannot exercise AC1's "the fragment reflects current state" contract.
+type kioskRecurringTaskRepo struct {
+	fakeRecurringTaskRepo
+	active []*tasksdomain.RecurringTask
+}
+
+func (r *kioskRecurringTaskRepo) ListActive(_ context.Context, _ household.HouseholdID) ([]*tasksdomain.RecurringTask, error) {
+	return r.active, nil
+}
+
+// Compile-time assertion.
+var _ tasksdomain.RecurringTaskRepository = (*kioskRecurringTaskRepo)(nil)
+
+// kioskTaskInstanceRepo is a TaskInstanceRepository whose pending instances
+// are configured directly and can be mutated between two requests, letting
+// AC1's "a claim made elsewhere shows up on the next poll" flow be exercised
+// end-to-end. fakeTaskInstanceRepo (tasks_handler_test.go's shared fake)
+// hardcodes ListByHousehold to nil, so it alone cannot seed chores content.
+type kioskTaskInstanceRepo struct {
+	fakeTaskInstanceRepo
+	pending []*tasksdomain.TaskInstance
+}
+
+func (r *kioskTaskInstanceRepo) ListByHousehold(_ context.Context, _ household.HouseholdID, status tasksdomain.InstanceStatus, _, _ time.Time) ([]*tasksdomain.TaskInstance, error) {
+	if status != tasksdomain.StatusPending {
+		return nil, nil
+	}
+	return r.pending, nil
+}
+
+// Compile-time assertion.
+var _ tasksdomain.TaskInstanceRepository = (*kioskTaskInstanceRepo)(nil)
+
 // ---------------------------------------------------------------------------
 // Test harness
 // ---------------------------------------------------------------------------
@@ -156,9 +193,11 @@ const kioskTestPublicBaseURL = "https://kiosk.test"
 
 // kioskFakes bundles the fakes a kiosk test seeds and asserts against.
 type kioskFakes struct {
-	devices  *fakeKioskDeviceRepo
-	codes    *fakeActivationCodeRepo
-	shopping *fakeShoppingRepo
+	devices   *fakeKioskDeviceRepo
+	codes     *fakeActivationCodeRepo
+	shopping  *fakeShoppingRepo
+	recurring *kioskRecurringTaskRepo
+	instances *kioskTaskInstanceRepo
 }
 
 // buildKioskTestHandler wires the full /kiosk/* and /settings route surface
@@ -180,8 +219,8 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 		rewardRepo = rewards[0]
 	}
 
-	recurringRepo := fakeRecurringTaskRepo{}
-	instanceRepo := &fakeTaskInstanceRepo{}
+	recurringRepo := &kioskRecurringTaskRepo{}
+	instanceRepo := &kioskTaskInstanceRepo{}
 
 	unifiedCalendar, err := calendarapp.NewUnifiedCalendarService(
 		fakeExternalEventLister{}, instanceRepo, recurringRepo, fakeSubscriptionLister{}, householdRepo, logger,
@@ -254,7 +293,10 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 			kioskadapter.AuthenticateDevice(kioskSvc, logger)(mux),
 		),
 	)
-	return handler, sm, kioskSvc, &kioskFakes{devices: devices, codes: codes, shopping: shoppingRepo}
+	return handler, sm, kioskSvc, &kioskFakes{
+		devices: devices, codes: codes, shopping: shoppingRepo,
+		recurring: recurringRepo, instances: instanceRepo,
+	}
 }
 
 // provisionDevice runs the full CreateActivationCode + Redeem round trip a
@@ -649,52 +691,166 @@ func TestKioskChores_RevokedDeviceDenied(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NES-129: QR refresh self-poll
+// NES-130: content self-poll, generalized to every kiosk tab (NES-129
+// originally added this only for the chores tab's QR refresh)
 // ---------------------------------------------------------------------------
 
-// TestKioskChores_SelfPollsForFreshQRCodes asserts the chores tab's content
-// wrapper carries the htmx self-poll wiring (finding: a display left open
-// past deeplinkapp.LinkTTL would otherwise keep showing QR codes that scan
-// to an already-expired rescan page), and that its target,
-// GET /kiosk/chores/content, returns just the content fragment (not the full
-// kiosk shell) so the poll never duplicates <html>/<head>/the tab bar.
-func TestKioskChores_SelfPollsForFreshQRCodes(t *testing.T) {
+// kioskContentPollCase describes one tab's content-fragment wiring: its full
+// page route, its own content-fragment endpoint, and the wrapper id every
+// kiosk tab's content div carries (see web/components/kiosk.templ).
+type kioskContentPollCase struct {
+	tab          string
+	pageRoute    string
+	contentRoute string
+	wrapperID    string
+}
+
+// kioskContentPollCases enumerates all five kiosk tabs (NES-130): every tab
+// gets a content-fragment endpoint and a matching self-poll wrapper,
+// generalizing NES-129's chores-only mechanism.
+var kioskContentPollCases = []kioskContentPollCase{
+	{"chores", "/kiosk/chores", "/kiosk/chores/content", "kiosk-chores-content"},
+	{"calendar", "/kiosk/calendar", "/kiosk/calendar/content", "kiosk-calendar-content"},
+	{"meals", "/kiosk/meals", "/kiosk/meals/content", "kiosk-meals-content"},
+	{"shopping", "/kiosk/shopping", "/kiosk/shopping/content", "kiosk-shopping-content"},
+	{"photos", "/kiosk/photos", "/kiosk/photos/content", "kiosk-photos-content"},
+}
+
+// assertKioskPollWiring asserts html carries the complete self-poll wiring
+// for tc's tab: the wrapper id plus all four htmx attributes. Applied to
+// BOTH the full-page response and the poll fragment response — a fragment
+// that silently dropped hx-trigger (or any of the other three) would still
+// render fine on this swap but never re-arm the next one, wedging the tab at
+// whatever it happened to show, so the fragment needs the exact same
+// assertion the full page gets, not just a wrapper-id check.
+func assertKioskPollWiring(t *testing.T, html string, tc kioskContentPollCase) {
+	t.Helper()
+	for _, want := range []string{
+		`id="` + tc.wrapperID + `"`,
+		`hx-get="` + tc.contentRoute + `"`,
+		// kioskContentPollInterval (internal/kiosk/adapter) is 15s, well
+		// under deeplinkapp.LinkTTL/2 (5m), so the chores tab's QR codes
+		// stay re-signed with room to spare.
+		`hx-trigger="every 15s"`,
+		`hx-target="this"`,
+		`hx-swap="outerHTML"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("response missing self-poll wiring %q: %s", want, html)
+		}
+	}
+}
+
+// TestKioskTabs_SelfPollEvery15Seconds asserts every kiosk tab's content
+// wrapper carries the htmx self-poll wiring at the shared 15s cadence
+// (NES-130 generalizes NES-129's chores-only QR-refresh poll into one
+// mechanism used by every tab), and that each tab's content-fragment
+// endpoint returns just the fragment (not the full kiosk shell) — with the
+// SAME complete wiring re-armed on it, so the poll never duplicates
+// <html>/<head>/the tab bar and never stalls after its first swap.
+func TestKioskTabs_SelfPollEvery15Seconds(t *testing.T) {
+	for _, tc := range kioskContentPollCases {
+		t.Run(tc.tab, func(t *testing.T) {
+			adult := adminTestAdult()
+			handler, _, kioskSvc, _ := buildKioskTestHandler(t, adult)
+			_, rawToken := provisionDevice(t, kioskSvc, adult.HouseholdID, "Kitchen")
+
+			req := httptest.NewRequest(http.MethodGet, tc.pageRoute, nil)
+			req.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s: status = %d, want 200", tc.pageRoute, rec.Code)
+			}
+			assertKioskPollWiring(t, rec.Body.String(), tc)
+
+			contentReq := httptest.NewRequest(http.MethodGet, tc.contentRoute, nil)
+			contentReq.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+			contentRec := httptest.NewRecorder()
+			handler.ServeHTTP(contentRec, contentReq)
+			if contentRec.Code != http.StatusOK {
+				t.Fatalf("GET %s: status = %d, want 200", tc.contentRoute, contentRec.Code)
+			}
+			contentBody := contentRec.Body.String()
+			if strings.Contains(contentBody, "<html") {
+				t.Errorf("the poll fragment must not include the full kiosk shell: %s", contentBody)
+			}
+			assertKioskPollWiring(t, contentBody, tc)
+		})
+	}
+}
+
+// TestKioskTabsContent_NoIdentityUnauthorized mirrors
+// TestKioskChoresContent_NoIdentityUnauthorized for every tab's
+// content-fragment endpoint (NES-130): none may become an unauthenticated
+// back door into household data, and (per htmx's default of not swapping a
+// non-2xx response) a revoked device's poll leaves the kiosk's last-good
+// content in place rather than replacing it with an error page.
+func TestKioskTabsContent_NoIdentityUnauthorized(t *testing.T) {
+	for _, tc := range kioskContentPollCases {
+		t.Run(tc.tab, func(t *testing.T) {
+			handler, _, _, _ := buildKioskTestHandler(t, testMember())
+
+			req := httptest.NewRequest(http.MethodGet, tc.contentRoute, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("GET %s with no identity: status = %d, want 401", tc.contentRoute, rec.Code)
+			}
+		})
+	}
+}
+
+// TestKioskChoresContent_ReflectsClaimMadeElsewhere is the AC1 regression
+// test: a chore claimed from a phone (the QR deep-link flow, simulated here
+// by mutating the instance directly, as the real Claim call would) must
+// appear as claimed the next time the chores content fragment is polled —
+// without the kiosk itself performing any action.
+func TestKioskChoresContent_ReflectsClaimMadeElsewhere(t *testing.T) {
 	adult := adminTestAdult()
-	handler, _, kioskSvc, _ := buildKioskTestHandler(t, adult)
+	handler, _, kioskSvc, fakes := buildKioskTestHandler(t, adult)
 	_, rawToken := provisionDevice(t, kioskSvc, adult.HouseholdID, "Kitchen")
 
-	req := httptest.NewRequest(http.MethodGet, "/kiosk/chores", nil)
-	req.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /kiosk/chores: status = %d, want 200", rec.Code)
+	recurringID := tasksdomain.NewRecurringTaskID()
+	fakes.recurring.active = []*tasksdomain.RecurringTask{
+		{ID: recurringID, HouseholdID: adult.HouseholdID, Title: "Wash dishes", Category: "chore", Active: true},
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `id="kiosk-chores-content"`) {
-		t.Errorf("response missing the self-poll wrapper id: %s", body)
+	today := tasksdomain.DateOf(time.Now())
+	instance := &tasksdomain.TaskInstance{
+		ID: tasksdomain.NewTaskInstanceID(), RecurringTaskID: recurringID, HouseholdID: adult.HouseholdID,
+		DueOn: &today, Status: tasksdomain.StatusPending, Kind: tasksdomain.KindScheduled,
 	}
-	if !strings.Contains(body, `hx-get="/kiosk/chores/content"`) {
-		t.Errorf("response missing the poll target: %s", body)
+	fakes.instances.pending = []*tasksdomain.TaskInstance{instance}
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/kiosk/chores/content", nil)
+	firstReq.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("GET /kiosk/chores/content before claim: status = %d, want 200; body: %s", firstRec.Code, firstRec.Body.String())
 	}
-	// deeplinkapp.LinkTTL is 10 minutes; the poll interval is half of that.
-	if !strings.Contains(body, `hx-trigger="every 300s"`) {
-		t.Errorf("response missing the expected poll interval (every 300s): %s", body)
+	if strings.Contains(firstRec.Body.String(), adult.DisplayName) {
+		t.Fatalf("unassigned chore must not already show an assignee: %s", firstRec.Body.String())
+	}
+	if !strings.Contains(firstRec.Body.String(), "Anyone") {
+		t.Errorf("unassigned chore should render the Anyone placeholder: %s", firstRec.Body.String())
 	}
 
-	contentReq := httptest.NewRequest(http.MethodGet, "/kiosk/chores/content", nil)
-	contentReq.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
-	contentRec := httptest.NewRecorder()
-	handler.ServeHTTP(contentRec, contentReq)
-	if contentRec.Code != http.StatusOK {
-		t.Fatalf("GET /kiosk/chores/content: status = %d, want 200", contentRec.Code)
+	// Simulate the phone-side claim (NES-129's QR deep link ultimately calls
+	// TaskInstanceRepository.Claim; mutating AssigneeID directly here is
+	// equivalent from ChoresContent's read-only point of view).
+	instance.AssigneeID = &adult.ID
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/kiosk/chores/content", nil)
+	secondReq.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("GET /kiosk/chores/content after claim: status = %d, want 200; body: %s", secondRec.Code, secondRec.Body.String())
 	}
-	contentBody := contentRec.Body.String()
-	if strings.Contains(contentBody, "<html") {
-		t.Errorf("the poll fragment must not include the full kiosk shell: %s", contentBody)
-	}
-	if !strings.Contains(contentBody, `id="kiosk-chores-content"`) {
-		t.Errorf("poll fragment missing its own self-poll wrapper (must re-arm on every swap): %s", contentBody)
+	if !strings.Contains(secondRec.Body.String(), adult.DisplayName) {
+		t.Errorf("chore claimed elsewhere did not show up on the next poll: %s", secondRec.Body.String())
 	}
 }
 
