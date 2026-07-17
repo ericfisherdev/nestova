@@ -75,7 +75,7 @@ func newTaskInstancePhoto(hh household.HouseholdID, instanceID domain.TaskInstan
 
 func TestTaskInstancePhotoRepositoryCreateAndList(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	member := seedMember(t, pool, hh, "Alex")
 	instance := seedTaskInstance(t, pool, hh)
@@ -111,6 +111,69 @@ func TestTaskInstancePhotoRepositoryCreateAndList(t *testing.T) {
 	}
 }
 
+// TestTaskInstancePhotoRepositoryCreateStampsConfiguredBackend mirrors
+// TestPhotoRepositoryCreateStampsConfiguredBackend (postgres_test.go) one
+// table over: Create stamps storage_backend from the repository's OWN
+// configured backend, never the column DEFAULT, verified on both the
+// in-place struct Create populates and a fresh Get.
+func TestTaskInstancePhotoRepositoryCreateStampsConfiguredBackend(t *testing.T) {
+	pool := newTestPool(t)
+	hh := seedHousehold(t, pool)
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	cases := []struct {
+		name    string
+		backend domain.StorageBackend
+	}{
+		{"local backend", domain.StorageBackendLocal},
+		{"s3 backend", domain.StorageBackendS3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := adapter.NewTaskInstancePhotoRepository(pool, tc.backend)
+			photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
+			photo.ContentHash = fakeHash("backend-stamp-" + tc.name)
+			if err := repo.Create(ctx, photo); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if photo.StorageBackend != tc.backend {
+				t.Fatalf("Create did not stamp photo.StorageBackend: got %q, want %q", photo.StorageBackend, tc.backend)
+			}
+
+			got, err := repo.Get(ctx, photo.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.StorageBackend != tc.backend {
+				t.Fatalf("Get returned StorageBackend %q, want %q (the persisted column value)", got.StorageBackend, tc.backend)
+			}
+			// Clean up the 's3'-tagged row explicitly — see
+			// TestPhotoRepositoryCreateStampsConfiguredBackend's identical
+			// comment for why a leftover 's3' row would corrupt the shared
+			// test harness's cleanup. TaskInstancePhotoRepository has no
+			// plain Delete-by-id; DeleteUploadedBefore with a cutoff just
+			// past this row's UploadedAt removes exactly it.
+			if _, err := repo.DeleteUploadedBefore(ctx, photo.UploadedAt.Add(time.Second)); err != nil {
+				t.Fatalf("cleanup DeleteUploadedBefore: %v", err)
+			}
+		})
+	}
+}
+
+// TestNewTaskInstancePhotoRepositoryRejectsInvalidBackend mirrors
+// TestNewPhotoRepositoryRejectsInvalidBackend: an unknown StorageBackend
+// must fail loudly at construction.
+func TestNewTaskInstancePhotoRepositoryRejectsInvalidBackend(t *testing.T) {
+	pool := newTestPool(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewTaskInstancePhotoRepository with an invalid backend should have panicked")
+		}
+	}()
+	adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackend("azure-blob"))
+}
+
 // TestTaskInstancePhotoRepositoryGet verifies NES-120's raw-serving lookup:
 // Get returns the exact photo by id, and ErrTaskInstancePhotoNotFound for an
 // unknown id. Get is deliberately ID-only (mirrors PhotoRepository.Get) —
@@ -119,7 +182,7 @@ func TestTaskInstancePhotoRepositoryCreateAndList(t *testing.T) {
 // chore_photo_service_test.go's OpenBytes tests for that enforcement.
 func TestTaskInstancePhotoRepositoryGet(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	member := seedMember(t, pool, hh, "Alex")
 	instance := seedTaskInstance(t, pool, hh)
@@ -153,7 +216,7 @@ func TestTaskInstancePhotoRepositoryGet(t *testing.T) {
 // builder relies on.
 func TestTaskInstancePhotoRepositoryListByInstances(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	member := seedMember(t, pool, hh, "Alex")
 	instanceA := seedTaskInstance(t, pool, hh)
@@ -209,7 +272,7 @@ func TestTaskInstancePhotoRepositoryListByInstances(t *testing.T) {
 
 func TestTaskInstancePhotoRepositoryLatestTakenAt(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	instance := seedTaskInstance(t, pool, hh)
 	ctx := testCtx(t)
@@ -250,7 +313,7 @@ func TestTaskInstancePhotoRepositoryLatestTakenAt(t *testing.T) {
 // both report false here, and household-scoping is exercised directly.
 func TestTaskInstancePhotoRepositoryInstanceExists(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hhA := seedHousehold(t, pool)
 	hhB := seedHousehold(t, pool)
 	instance := seedTaskInstance(t, pool, hhA)
@@ -269,7 +332,7 @@ func TestTaskInstancePhotoRepositoryInstanceExists(t *testing.T) {
 
 func TestTaskInstancePhotoRepositoryCreateUnknownInstanceAndUploader(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	instance := seedTaskInstance(t, pool, hh)
 	ctx := testCtx(t)
@@ -288,7 +351,7 @@ func TestTaskInstancePhotoRepositoryCreateUnknownInstanceAndUploader(t *testing.
 
 func TestTaskInstancePhotoRepositoryCrossHouseholdInstanceRejected(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hhA := seedHousehold(t, pool)
 	hhB := seedHousehold(t, pool)
 	instanceInA := seedTaskInstance(t, pool, hhA)
@@ -303,14 +366,116 @@ func TestTaskInstancePhotoRepositoryCrossHouseholdInstanceRejected(t *testing.T)
 	}
 }
 
+// TestTaskInstancePhotoRepositoryListAllStorageRefs covers the storage
+// reaper's chore-proof source of truth (NES-132,
+// ReaperService.referencedRefs): every chore-proof photo's StorageRef,
+// across every household, and an empty (not nil) slice when there are none.
+func TestTaskInstancePhotoRepositoryListAllStorageRefs(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	ctx := testCtx(t)
+
+	if refs, err := repo.ListAllStorageRefs(ctx); err != nil || len(refs) != 0 {
+		t.Fatalf("ListAllStorageRefs on an empty table = %v (err %v), want an empty slice", refs, err)
+	}
+
+	hhA := seedHousehold(t, pool)
+	hhB := seedHousehold(t, pool)
+	instanceA := seedTaskInstance(t, pool, hhA)
+	instanceB := seedTaskInstance(t, pool, hhB)
+
+	photoA := newTaskInstancePhoto(hhA, instanceA, domain.PhotoKindBefore, time.Now().UTC(), nil)
+	photoA.StorageRef = domain.StorageRef("households/" + hhA.String() + "/chore-photos/aa/one.jpg")
+	photoA.ContentHash = fakeHash("refs-chore-one")
+	photoB := newTaskInstancePhoto(hhB, instanceB, domain.PhotoKindBefore, time.Now().UTC(), nil)
+	photoB.StorageRef = domain.StorageRef("households/" + hhB.String() + "/chore-photos/bb/two.jpg")
+	photoB.ContentHash = fakeHash("refs-chore-two")
+	if err := repo.Create(ctx, photoA); err != nil {
+		t.Fatalf("Create photoA: %v", err)
+	}
+	if err := repo.Create(ctx, photoB); err != nil {
+		t.Fatalf("Create photoB: %v", err)
+	}
+
+	refs, err := repo.ListAllStorageRefs(ctx)
+	if err != nil {
+		t.Fatalf("ListAllStorageRefs: %v", err)
+	}
+	want := map[domain.StorageRef]bool{photoA.StorageRef: true, photoB.StorageRef: true}
+	if len(refs) != 2 {
+		t.Fatalf("ListAllStorageRefs = %v, want exactly 2 refs across both households", refs)
+	}
+	for _, ref := range refs {
+		if !want[ref] {
+			t.Fatalf("ListAllStorageRefs returned unexpected ref %q", ref)
+		}
+		delete(want, ref)
+	}
+	if len(want) != 0 {
+		t.Fatalf("ListAllStorageRefs missing refs: %v", want)
+	}
+}
+
+// TestTaskInstancePhotoRepositoryDeleteUploadedBefore covers the optional
+// per-class retention pass (NES-132, ReaperService): a row uploaded before
+// cutoff is removed and counted; a row uploaded on/after cutoff survives.
+// uploaded_at is server-assigned (DEFAULT now()) by Create, so this seeds
+// two rows, captures the second's actual uploaded_at as the cutoff, and
+// asserts only the first (necessarily earlier) row is deleted.
+func TestTaskInstancePhotoRepositoryDeleteUploadedBefore(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	hh := seedHousehold(t, pool)
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	older := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
+	older.ContentHash = fakeHash("retention-older")
+	if err := repo.Create(ctx, older); err != nil {
+		t.Fatalf("Create older: %v", err)
+	}
+
+	newer := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
+	newer.ContentHash = fakeHash("retention-newer")
+	if err := repo.Create(ctx, newer); err != nil {
+		t.Fatalf("Create newer: %v", err)
+	}
+
+	// Use the server-assigned newer.UploadedAt (Create's own RETURNING
+	// uploaded_at) as the cutoff, rather than a wall-clock time.Now()
+	// bracketed by sleeps: this is deterministic and CI-pause-proof, and
+	// only relies on the ordering guarantee Postgres itself already gives —
+	// each Create runs in its own implicit (autocommit) transaction, so
+	// newer's now() genuinely postdates older's.
+	if !older.UploadedAt.Before(newer.UploadedAt) {
+		t.Fatalf("test precondition failed: older.UploadedAt (%v) is not before newer.UploadedAt (%v)", older.UploadedAt, newer.UploadedAt)
+	}
+
+	n, err := repo.DeleteUploadedBefore(ctx, newer.UploadedAt)
+	if err != nil {
+		t.Fatalf("DeleteUploadedBefore: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("DeleteUploadedBefore deleted %d rows, want 1", n)
+	}
+
+	remaining, err := repo.ListByInstance(ctx, hh, instance)
+	if err != nil {
+		t.Fatalf("ListByInstance: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != newer.ID {
+		t.Fatalf("remaining rows = %+v, want only the newer row", remaining)
+	}
+}
+
 // TestChoreProofPhotoNeverAppearsInAlbumQueries covers AC5 structurally: a
 // chore-proof upload lands in task_instance_photo, a table entirely separate
 // from photo/album_photo, so PhotoRepository.ListByHousehold (the query the
 // /photos album page reads) never returns it.
 func TestChoreProofPhotoNeverAppearsInAlbumQueries(t *testing.T) {
 	pool := newTestPool(t)
-	choreRepo := adapter.NewTaskInstancePhotoRepository(pool)
-	albumPhotoRepo := adapter.NewPhotoRepository(pool)
+	choreRepo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	albumPhotoRepo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	instance := seedTaskInstance(t, pool, hh)
 	ctx := testCtx(t)
@@ -339,7 +504,7 @@ func TestChoreProofPhotoNeverAppearsInAlbumQueries(t *testing.T) {
 // directions.
 func TestTaskInstancePhotoRepositoryCreateEnforcesOrdering(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
 
@@ -433,7 +598,7 @@ func TestTaskInstancePhotoRepositoryCreateEnforcesOrdering(t *testing.T) {
 // never both and never neither.
 func TestTaskInstancePhotoRepositoryCreateSerializesOrderingUnderConcurrency(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
 

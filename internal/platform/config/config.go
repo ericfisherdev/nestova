@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"net/url"
 	"os"
@@ -303,19 +304,93 @@ type RecipesConfig struct {
 	BaseURL         string
 }
 
+// MediaStorageBackend selects which domain.PhotoStore implementation photo
+// bytes are persisted through, app-wide: the composition root (cmd/server)
+// selects a single backend once at startup from this value — see the 00028
+// migration's doc for why storage_backend is a per-deployment choice, not a
+// per-photo one, and NES-132's ticket for why that makes local/S3
+// deliberately all-or-nothing within one running deployment (switching
+// backends does not retroactively move already-stored bytes; that is
+// NES-133's planned migrate/verify tooling's job).
+type MediaStorageBackend string
+
+// MediaStorageBackend values. Local (LocalPhotoStore, the pre-NES-132
+// default) is always available with no configuration; S3 (S3PhotoStore,
+// NES-132) is opt-in and requires MediaConfig.S3 to be populated.
+const (
+	MediaStorageBackendLocal MediaStorageBackend = "local"
+	MediaStorageBackendS3    MediaStorageBackend = "s3"
+)
+
+// S3Config configures the optional S3-compatible PhotoStore backend
+// (NES-132). It is only consulted when MediaConfig.Backend is
+// MediaStorageBackendS3; every field is otherwise ignored (and unvalidated)
+// so a local-backend deployment never has to set any of it.
+type S3Config struct {
+	// Endpoint is the S3-compatible API's base URL. Blank targets real AWS
+	// S3 (the SDK's regional default endpoint); a custom endpoint — MinIO or
+	// Garage on the LAN, or Cloudflare R2 — is a first-class target for this
+	// app's local-appliance deployment story, not an afterthought, so this is
+	// deliberately supported from day one rather than added later.
+	Endpoint string
+	// Region is passed to every S3 request. AWS S3 requires a real region;
+	// most S3-compatible servers (MinIO, Garage) accept any non-empty value
+	// (e.g. "us-east-1") since they do not partition by region.
+	Region string
+	// Bucket is the single bucket every photo (both classes — see
+	// PhotoClass) is stored under, namespaced by the same
+	// households/<household>/<class-prefix>/... key layout LocalPhotoStore
+	// uses (see classKeyPrefix).
+	Bucket string
+	// AccessKeyID / SecretAccessKey are optional static credentials. When
+	// BOTH are blank, the AWS SDK's default credential chain (environment,
+	// shared config/credentials file, EC2/ECS instance role, etc.) supplies
+	// credentials instead — so a deployment that already provisions
+	// credentials another way (e.g. an IAM role) never needs to duplicate
+	// them here. Config.validate enforces both-or-neither, mirroring
+	// TLSConfig's CertFile/KeyFile pairing.
+	AccessKeyID     string
+	SecretAccessKey string
+	// UsePathStyle forces path-style bucket addressing
+	// (https://endpoint/bucket/key instead of https://bucket.endpoint/key).
+	// MinIO and most self-hosted S3-compatible servers require this; real
+	// AWS S3 does not.
+	UsePathStyle bool
+	// PresignTTL is how long a presigned GET URL (PhotoStore.URL) stays
+	// valid when the caller passes a non-positive ttl — S3PhotoStore's own
+	// applied default. Kept short: a presigned URL is a bearer credential
+	// for as long as it is valid, so the default favors a tight window over
+	// convenience.
+	PresignTTL time.Duration
+}
+
 // MediaConfig configures photo storage for the rotating album (NES-72): where
 // the local PhotoStore writes photo bytes and the per-upload size cap. The root
 // has a safe default in every environment (no secret), so it is never required.
 type MediaConfig struct {
 	// Root is the directory the local PhotoStore writes photo bytes under.
+	// Consulted only when Backend is MediaStorageBackendLocal.
 	Root string
-	// MaxUploadBytes caps a single photo upload (bytes).
+	// MaxUploadBytes caps a single photo upload (bytes), enforced by
+	// whichever backend is active.
 	MaxUploadBytes int64
 	// ChoreProofFreshnessWindow bounds how far a chore-proof photo's EXIF
 	// capture time may fall from the upload instant, in either direction,
 	// before ChoreProofPhotoService.Upload rejects it with
 	// domain.ErrPhotoStale (NES-119).
 	ChoreProofFreshnessWindow time.Duration
+	// Backend selects the domain.PhotoStore implementation (NES-132).
+	// Defaults to MediaStorageBackendLocal.
+	Backend MediaStorageBackend
+	// S3 configures the S3-compatible backend; consulted only when Backend
+	// is MediaStorageBackendS3.
+	S3 S3Config
+	// ChoreProofRetention is how old a chore-proof (before/after) photo must
+	// be, by UploadedAt, before the storage reaper deletes its row and lets
+	// its object age out — zero (the default) means keep forever. Album
+	// photos have no such retention knob: only chore-proof photos are
+	// transient documentation, not the family's photo library.
+	ChoreProofRetention time.Duration
 }
 
 // devMediaRoot is the default photo-storage directory when MEDIA_ROOT is unset.
@@ -330,6 +405,39 @@ const defaultMaxUploadBytes int64 = 25 << 20
 // chore to opening the upload form on a shared household device, tight
 // enough to reject a photo pulled from an earlier day's camera roll.
 const defaultChoreProofFreshnessWindow = 60 * time.Minute
+
+// defaultS3PresignTTL is S3_PRESIGN_TTL's default (NES-132): long enough for
+// a slow phone connection to actually fetch the photo after the redirect,
+// short enough that a leaked/cached URL stops working soon after.
+const defaultS3PresignTTL = 15 * time.Minute
+
+// defaultChoreProofRetentionDays is MEDIA_CHORE_PROOF_RETENTION_DAYS' default
+// (NES-132): 0 means "keep forever" — retention is opt-in, not a surprise
+// data-loss default.
+const defaultChoreProofRetentionDays = 0
+
+// maxChoreProofRetentionDays bounds MEDIA_CHORE_PROOF_RETENTION_DAYS so
+// choreProofRetentionDuration's days*24*time.Hour conversion can never
+// silently overflow time.Duration's underlying int64 nanoseconds — a value
+// above this both fails to represent a meaningful retention window and,
+// left unchecked, would wrap into a nonsensical (or even negative)
+// time.Duration. ~292 years is comfortably beyond any real retention
+// policy this app would ever configure.
+const maxChoreProofRetentionDays = math.MaxInt64 / int64(24*time.Hour)
+
+// choreProofRetentionDuration converts days into a time.Duration with a
+// checked conversion: negative and overflowing values are both rejected
+// explicitly, rather than let a raw days*24*time.Hour multiplication wrap
+// silently (see maxChoreProofRetentionDays' doc).
+func choreProofRetentionDuration(days int64) (time.Duration, error) {
+	if days < 0 {
+		return 0, fmt.Errorf("MEDIA_CHORE_PROOF_RETENTION_DAYS must be >= 0, got %d", days)
+	}
+	if days > maxChoreProofRetentionDays {
+		return 0, fmt.Errorf("MEDIA_CHORE_PROOF_RETENTION_DAYS must be <= %d, got %d", maxChoreProofRetentionDays, days)
+	}
+	return time.Duration(days) * 24 * time.Hour, nil
+}
 
 // Load reads configuration from the environment and validates it. In
 // development it first loads an optional .env file (real environment variables
@@ -382,6 +490,14 @@ func Load() (Config, error) {
 	maxUploadBytes, err := getint64("MEDIA_MAX_UPLOAD_BYTES", defaultMaxUploadBytes)
 	collect(err)
 	choreProofFreshnessWindow, err := getduration("MEDIA_CHORE_PROOF_FRESHNESS_WINDOW", defaultChoreProofFreshnessWindow)
+	collect(err)
+	s3PresignTTL, err := getduration("S3_PRESIGN_TTL", defaultS3PresignTTL)
+	collect(err)
+	s3UsePathStyle, err := getbool("S3_USE_PATH_STYLE", false)
+	collect(err)
+	choreProofRetentionDays, err := getint64("MEDIA_CHORE_PROOF_RETENTION_DAYS", defaultChoreProofRetentionDays)
+	collect(err)
+	choreProofRetention, err := choreProofRetentionDuration(choreProofRetentionDays)
 	collect(err)
 	hstsEnabled, err := getbool("HSTS_ENABLED", false)
 	collect(err)
@@ -491,6 +607,19 @@ func Load() (Config, error) {
 			Root:                      strings.TrimSpace(getenv("MEDIA_ROOT", devMediaRoot)),
 			MaxUploadBytes:            maxUploadBytes,
 			ChoreProofFreshnessWindow: choreProofFreshnessWindow,
+			// Normalized so casing/whitespace in the environment does not defeat
+			// the enum validation below, mirroring DB.Provider's identical pattern.
+			Backend: MediaStorageBackend(strings.ToLower(strings.TrimSpace(getenv("MEDIA_STORAGE_BACKEND", string(MediaStorageBackendLocal))))),
+			S3: S3Config{
+				Endpoint:        strings.TrimSpace(os.Getenv("S3_ENDPOINT")),
+				Region:          strings.TrimSpace(os.Getenv("S3_REGION")),
+				Bucket:          strings.TrimSpace(os.Getenv("S3_BUCKET")),
+				AccessKeyID:     strings.TrimSpace(os.Getenv("S3_ACCESS_KEY_ID")),
+				SecretAccessKey: strings.TrimSpace(os.Getenv("S3_SECRET_ACCESS_KEY")),
+				UsePathStyle:    s3UsePathStyle,
+				PresignTTL:      s3PresignTTL,
+			},
+			ChoreProofRetention: choreProofRetention,
 		},
 		TLS: TLSConfig{
 			CertFile: strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
@@ -598,6 +727,40 @@ func (c Config) validate() []error {
 	}
 	if c.Media.ChoreProofFreshnessWindow <= 0 {
 		errs = append(errs, fmt.Errorf("MEDIA_CHORE_PROOF_FRESHNESS_WINDOW must be positive, got %v", c.Media.ChoreProofFreshnessWindow))
+	}
+	// No c.Media.ChoreProofRetention range check here: choreProofRetentionDuration
+	// (called during Load, before cfg is ever built) already rejects a
+	// negative or overflowing MEDIA_CHORE_PROOF_RETENTION_DAYS with a
+	// checked conversion, so a Config that reaches validate() always
+	// carries an already-valid ChoreProofRetention — see that function's doc.
+	switch c.Media.Backend {
+	case MediaStorageBackendLocal, MediaStorageBackendS3:
+	default:
+		errs = append(errs, fmt.Errorf("MEDIA_STORAGE_BACKEND must be one of %s|%s, got %q",
+			MediaStorageBackendLocal, MediaStorageBackendS3, c.Media.Backend))
+	}
+	// The S3 knobs are only required when the S3 backend is actually
+	// selected — a local-backend deployment (the default) never has to set
+	// any of them, mirroring RECIPES_EXTERNAL_ENABLED's identical
+	// enabled-gates-required-fields pattern below.
+	if c.Media.Backend == MediaStorageBackendS3 {
+		if c.Media.S3.Bucket == "" {
+			errs = append(errs, errors.New("S3_BUCKET is required when MEDIA_STORAGE_BACKEND=s3"))
+		}
+		if c.Media.S3.Region == "" {
+			errs = append(errs, errors.New("S3_REGION is required when MEDIA_STORAGE_BACKEND=s3"))
+		}
+		if c.Media.S3.PresignTTL <= 0 {
+			errs = append(errs, fmt.Errorf("S3_PRESIGN_TTL must be positive, got %v", c.Media.S3.PresignTTL))
+		}
+	}
+	// Static S3 credentials are both-or-neither (mirroring TLS_CERT_FILE/
+	// TLS_KEY_FILE above): a lone access key or secret is always a
+	// misconfiguration, never a valid partial state, regardless of backend —
+	// checked unconditionally so it is caught even before an operator flips
+	// MEDIA_STORAGE_BACKEND to s3.
+	if (c.Media.S3.AccessKeyID == "") != (c.Media.S3.SecretAccessKey == "") {
+		errs = append(errs, errors.New("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
 	}
 
 	// PUBLIC_BASE_URL is optional (empty means "derive from the request"), but

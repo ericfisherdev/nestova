@@ -69,17 +69,22 @@ func (r StorageRef) String() string { return string(r) }
 // pre-NES-123 photo, same as ContentHash). TakenAt is the EXIF capture time
 // (UTC) when the upload carried one; UploadedBy is the member who added it,
 // nilled (not deleted) if that member is removed so the photo survives.
+// StorageBackend (NES-132) is populated by PhotoRepository.Create from the
+// repository's own configured backend, never by the caller — see that
+// method's doc — so it is the zero value on a Photo the caller is still
+// building, exactly like CreatedAt.
 type Photo struct {
-	ID          PhotoID
-	HouseholdID household.HouseholdID
-	StorageRef  StorageRef
-	ContentHash string
-	SizeBytes   int64
-	ContentType string
-	TakenAt     *time.Time
-	Caption     string
-	UploadedBy  *household.MemberID
-	CreatedAt   time.Time
+	ID             PhotoID
+	HouseholdID    household.HouseholdID
+	StorageRef     StorageRef
+	ContentHash    string
+	SizeBytes      int64
+	ContentType    string
+	TakenAt        *time.Time
+	Caption        string
+	UploadedBy     *household.MemberID
+	CreatedAt      time.Time
+	StorageBackend StorageBackend
 }
 
 // Validate reports whether the photo is well-formed, wrapping ErrInvalidPhoto.
@@ -114,10 +119,37 @@ func (p Photo) Validate() error {
 // (not an error) when none match. FindByContentHash returns ErrPhotoNotFound
 // when no household photo carries that hash — the expected "not a duplicate"
 // outcome, not an exceptional one.
+//
+// Every implementation is constructed bound to ONE StorageBackend (NES-132),
+// matching the composition root's single-backend-per-deployment selection
+// (see StorageBackend's doc) — Create stamps that value onto photo.
+// StorageBackend itself, ignoring whatever the caller may have left on the
+// struct, so the column always reflects which backend genuinely wrote the
+// bytes, never the column's DEFAULT by omission.
 type PhotoRepository interface {
 	Create(ctx context.Context, photo *Photo) error
 	Get(ctx context.Context, id PhotoID) (*Photo, error)
 	FindByContentHash(ctx context.Context, householdID household.HouseholdID, hash string) (*Photo, error)
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*Photo, error)
 	Delete(ctx context.Context, id PhotoID) error
+
+	// ListAllStorageRefs returns the StorageRef of every photo row across
+	// every household — the storage reaper's (NES-132/133, ReaperService in
+	// media/app) source of truth for "which album-class objects are still
+	// referenced." Bucket-wide, not household-scoped, mirroring
+	// ObjectLister.ListObjects' identical scope; returns an empty slice (not
+	// an error) when there are no photos yet.
+	ListAllStorageRefs(ctx context.Context) ([]StorageRef, error)
+
+	// ExistsByStorageRef reports whether ANY photo row currently references
+	// ref, across every household — a targeted, single-ref query the
+	// storage reaper (ReaperService.sweepClass) runs immediately before
+	// deleting an apparently-orphaned object, closing the bulk of the
+	// TOCTOU window between the bulk ListAllStorageRefs snapshot and the
+	// delete: a row referencing ref that commits in that window (e.g. a
+	// restore re-inserting it) is caught by THIS check even though it
+	// postdates the snapshot. See ReaperService's doc for the residual,
+	// deliberately-accepted window this does not close, and the operator
+	// contract that makes it acceptable.
+	ExistsByStorageRef(ctx context.Context, ref StorageRef) (bool, error)
 }

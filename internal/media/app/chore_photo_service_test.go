@@ -91,6 +91,12 @@ type fakeTaskInstancePhotoRepo struct {
 	// matching a genuinely unknown id.
 	getPhoto *domain.TaskInstancePhoto
 	getErr   error
+	// existsOverride mirrors fakePhotoRepo's identical field (see its doc):
+	// lets a test make ExistsByStorageRef diverge from a prior
+	// ListAllStorageRefs snapshot, simulating a row committed after the
+	// reaper's bulk snapshot but before its per-object recheck.
+	existsOverride map[domain.StorageRef]bool
+	existsCalls    []domain.StorageRef
 }
 
 func newFakeTaskInstancePhotoRepo() *fakeTaskInstancePhotoRepo {
@@ -147,6 +153,50 @@ func (f *fakeTaskInstancePhotoRepo) Get(context.Context, domain.TaskInstancePhot
 		return f.getPhoto, nil
 	}
 	return nil, domain.ErrTaskInstancePhotoNotFound
+}
+
+// ListAllStorageRefs reflects every photo Create has recorded — unused by
+// this file's Upload/OpenBytes-focused tests, but genuinely functional
+// (rather than a stub) so reaper_service_test.go can reuse this same fake.
+func (f *fakeTaskInstancePhotoRepo) ListAllStorageRefs(context.Context) ([]domain.StorageRef, error) {
+	refs := make([]domain.StorageRef, 0, len(f.created))
+	for _, p := range f.created {
+		refs = append(refs, p.StorageRef)
+	}
+	return refs, nil
+}
+
+// ExistsByStorageRef mirrors fakePhotoRepo's identical method (see its
+// doc): existsOverride first, otherwise a live lookup against f.created.
+func (f *fakeTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef) (bool, error) {
+	f.existsCalls = append(f.existsCalls, ref)
+	if v, ok := f.existsOverride[ref]; ok {
+		return v, nil
+	}
+	for _, p := range f.created {
+		if p.StorageRef == ref {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteUploadedBefore removes every created row whose UploadedAt precedes
+// cutoff and reports how many were removed — genuinely functional (not a
+// stub) so reaper_service_test.go can reuse this same fake to exercise the
+// retention pass.
+func (f *fakeTaskInstancePhotoRepo) DeleteUploadedBefore(_ context.Context, cutoff time.Time) (int64, error) {
+	kept := f.created[:0:0]
+	var n int64
+	for _, p := range f.created {
+		if p.UploadedAt.Before(cutoff) {
+			n++
+			continue
+		}
+		kept = append(kept, p)
+	}
+	f.created = kept
+	return n, nil
 }
 
 // --- helpers ---
@@ -636,6 +686,94 @@ func TestChoreProofPhotoService_OpenBytes_UnknownIDPropagates(t *testing.T) {
 	_, _, err := svc.OpenBytes(context.Background(), household.NewHouseholdID(), domain.NewTaskInstancePhotoID())
 	if !errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
 		t.Errorf("OpenBytes(unknown id) = %v, want ErrTaskInstancePhotoNotFound", err)
+	}
+}
+
+// TestChoreProofPhotoService_RawServe_StreamsWhenBackendLacksDirectURL
+// mirrors TestPhotoServiceRawServeStreamsWhenBackendLacksDirectURL, one
+// table over (NES-132): a local-like backend (SupportsDirectURL false)
+// yields a Body to stream, never a RedirectURL.
+func TestChoreProofPhotoService_RawServe_StreamsWhenBackendLacksDirectURL(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakeTaskInstancePhotoRepo()
+	hh := household.NewHouseholdID()
+	photo := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
+		StorageRef: domain.StorageRef("hh/aa/abc.jpg"), ContentType: domain.ContentTypeJPEG,
+	}
+	repo.getPhoto = photo
+	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
+
+	result, err := svc.RawServe(context.Background(), hh, photo.ID)
+	if err != nil {
+		t.Fatalf("RawServe: %v", err)
+	}
+	if result.RedirectURL != "" {
+		t.Fatalf("RedirectURL = %q, want empty for a local-like backend", result.RedirectURL)
+	}
+	if result.Body == nil {
+		t.Fatal("Body is nil, want a stream for a local-like backend")
+	}
+	_ = result.Body.Close()
+	if result.ContentType != domain.ContentTypeJPEG {
+		t.Errorf("ContentType = %q, want %q", result.ContentType, domain.ContentTypeJPEG)
+	}
+}
+
+// TestChoreProofPhotoService_RawServe_RedirectsWhenBackendSupportsDirectURL
+// mirrors TestPhotoServiceRawServeRedirectsWhenBackendSupportsDirectURL: an
+// S3-like backend yields a RedirectURL, never opening/streaming a body.
+func TestChoreProofPhotoService_RawServe_RedirectsWhenBackendSupportsDirectURL(t *testing.T) {
+	store := &fakePhotoStore{directURL: true}
+	repo := newFakeTaskInstancePhotoRepo()
+	hh := household.NewHouseholdID()
+	photo := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
+		StorageRef: domain.StorageRef("households/hh/chore-photos/aa/abc.jpg"), ContentType: domain.ContentTypeJPEG,
+	}
+	repo.getPhoto = photo
+	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
+
+	result, err := svc.RawServe(context.Background(), hh, photo.ID)
+	if err != nil {
+		t.Fatalf("RawServe: %v", err)
+	}
+	if result.RedirectURL != "households/hh/chore-photos/aa/abc.jpg" {
+		t.Fatalf("RedirectURL = %q, want the fake store's URL() result", result.RedirectURL)
+	}
+	if result.Body != nil {
+		t.Fatal("Body is non-nil, want none for an S3-like backend redirect")
+	}
+	if store.openCalls != 0 {
+		t.Fatalf("Open was called %d times, want 0 (redirect must never open/stream)", store.openCalls)
+	}
+}
+
+// TestChoreProofPhotoService_RawServe_CrossHouseholdRejected mirrors
+// TestChoreProofPhotoService_OpenBytes_CrossHouseholdRejected: ownership is
+// enforced BEFORE the store is ever consulted, regardless of backend.
+func TestChoreProofPhotoService_RawServe_CrossHouseholdRejected(t *testing.T) {
+	store := &fakePhotoStore{directURL: true}
+	repo := newFakeTaskInstancePhotoRepo()
+	photo := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), HouseholdID: household.NewHouseholdID(),
+		StorageRef: domain.StorageRef("hh/aa/abc.jpg"), ContentType: domain.ContentTypeJPEG,
+	}
+	repo.getPhoto = photo
+	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
+
+	_, err := svc.RawServe(context.Background(), household.NewHouseholdID(), photo.ID)
+	if !errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
+		t.Errorf("cross-household RawServe = %v, want ErrTaskInstancePhotoNotFound", err)
+	}
+	if store.openCalls != 0 {
+		t.Error("cross-household RawServe must never touch the store")
+	}
+	// directURL is true on this fake specifically so a bug that checked
+	// ownership AFTER branching on SupportsDirectURL would still be caught:
+	// URL must never be called either.
+	if store.urlCalls != 0 {
+		t.Error("cross-household RawServe must never call URL")
 	}
 }
 

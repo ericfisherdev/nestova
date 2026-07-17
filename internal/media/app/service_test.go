@@ -19,10 +19,15 @@ import (
 // --- fakes ---
 
 type fakePhotoStore struct {
-	putErr       error
-	openErr      error
-	puts         int
-	openCalls    int
+	putErr    error
+	openErr   error
+	urlErr    error
+	puts      int
+	openCalls int
+	// urlCalls counts URL invocations — asserted at 0 by ownership-rejection
+	// tests (RawServe must reject a cross-household id BEFORE ever
+	// consulting the store, on either the Open or the URL branch).
+	urlCalls     int
 	deleted      []domain.StorageRef
 	lastPutClass domain.PhotoClass
 	// lastPutBytes records the exact bytes the most recent Put call read, so
@@ -30,6 +35,9 @@ type fakePhotoStore struct {
 	// ChoreProofPhotoService.Upload must send EXIF-scrubbed bytes, never the
 	// raw upload — see chore_photo_service_test.go).
 	lastPutBytes []byte
+	// directURL backs SupportsDirectURL — false (LocalPhotoStore-like)
+	// unless a test opts into the S3-like redirect path.
+	directURL bool
 }
 
 // Put hashes the bytes it's given and derives Ref from the hash — like the
@@ -85,8 +93,17 @@ func (f *fakePhotoStore) Delete(_ context.Context, ref domain.StorageRef) error 
 // itself, back as a stable locator, since nothing under test exercises a
 // real URL/ttl semantic.
 func (f *fakePhotoStore) URL(_ context.Context, ref domain.StorageRef, _ time.Duration) (string, error) {
+	f.urlCalls++
+	if f.urlErr != nil {
+		return "", f.urlErr
+	}
 	return ref.String(), nil
 }
+
+// SupportsDirectURL defaults to false (mirroring LocalPhotoStore) so
+// existing tests that never set directURL keep exercising the
+// Open-and-stream path; RawServe tests flip it to exercise the redirect path.
+func (f *fakePhotoStore) SupportsDirectURL() bool { return f.directURL }
 
 // fakePhotoReader adapts a *bytes.Reader (already Read+ReadAt+Seek) into a
 // domain.PhotoReader with a no-op Close.
@@ -121,6 +138,15 @@ type fakePhotoRepo struct {
 	raceHash      string
 	raceWinner    *domain.Photo
 	raceFindCalls int
+
+	// existsOverride lets a test make ExistsByStorageRef answer DIFFERENTLY
+	// from what a ListAllStorageRefs snapshot (taken earlier in the same
+	// Run) would show — simulating a row that commits in the gap between
+	// the reaper's bulk snapshot and its per-object recheck (e.g. a
+	// restore), which the recheck must catch even though the snapshot
+	// could not have. Unset refs fall back to a live f.store lookup.
+	existsOverride map[domain.StorageRef]bool
+	existsCalls    []domain.StorageRef
 }
 
 func newFakePhotoRepo() *fakePhotoRepo {
@@ -173,6 +199,29 @@ func (f *fakePhotoRepo) Delete(_ context.Context, id domain.PhotoID) error {
 	delete(f.store, id)
 	f.deleted = append(f.deleted, id)
 	return nil
+}
+
+func (f *fakePhotoRepo) ListAllStorageRefs(context.Context) ([]domain.StorageRef, error) {
+	refs := make([]domain.StorageRef, 0, len(f.store))
+	for _, p := range f.store {
+		refs = append(refs, p.StorageRef)
+	}
+	return refs, nil
+}
+
+// ExistsByStorageRef checks existsOverride first (see its doc), otherwise
+// falls back to a live lookup against f.store.
+func (f *fakePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef) (bool, error) {
+	f.existsCalls = append(f.existsCalls, ref)
+	if v, ok := f.existsOverride[ref]; ok {
+		return v, nil
+	}
+	for _, p := range f.store {
+		if p.StorageRef == ref {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type fakeAlbumRepo struct {
@@ -431,6 +480,84 @@ func TestPhotoServiceDeleteIsRowsOnly(t *testing.T) {
 	}
 	if len(store.deleted) != 0 {
 		t.Fatalf("Delete must never remove stored bytes, got deleted=%v", store.deleted)
+	}
+}
+
+// TestPhotoServiceRawServeStreamsWhenBackendLacksDirectURL covers
+// RawServe's local-backend branch (NES-132): SupportsDirectURL false means
+// RawServe opens and returns a Body to stream, never a RedirectURL.
+func TestPhotoServiceRawServeStreamsWhenBackendLacksDirectURL(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+	id := domain.NewPhotoID()
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "hh/aa/x.jpg"}
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+
+	result, err := svc.RawServe(context.Background(), hh, id)
+	if err != nil {
+		t.Fatalf("RawServe: %v", err)
+	}
+	if result.RedirectURL != "" {
+		t.Fatalf("RedirectURL = %q, want empty for a local-like backend", result.RedirectURL)
+	}
+	if result.Body == nil {
+		t.Fatal("Body is nil, want a stream for a local-like backend")
+	}
+	_ = result.Body.Close()
+	if store.openCalls != 1 {
+		t.Fatalf("Open was called %d times, want 1", store.openCalls)
+	}
+}
+
+// TestPhotoServiceRawServeRedirectsWhenBackendSupportsDirectURL covers
+// RawServe's S3-like backend branch: SupportsDirectURL true means RawServe
+// calls URL and returns a RedirectURL, never opening/streaming a body.
+func TestPhotoServiceRawServeRedirectsWhenBackendSupportsDirectURL(t *testing.T) {
+	store := &fakePhotoStore{directURL: true}
+	repo := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+	id := domain.NewPhotoID()
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "households/hh/photos/aa/x.jpg"}
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+
+	result, err := svc.RawServe(context.Background(), hh, id)
+	if err != nil {
+		t.Fatalf("RawServe: %v", err)
+	}
+	if result.RedirectURL != "households/hh/photos/aa/x.jpg" {
+		t.Fatalf("RedirectURL = %q, want the fake store's URL() result", result.RedirectURL)
+	}
+	if result.Body != nil {
+		t.Fatal("Body is non-nil, want none for an S3-like backend redirect")
+	}
+	if store.openCalls != 0 {
+		t.Fatalf("Open was called %d times, want 0 (redirect must never open/stream)", store.openCalls)
+	}
+}
+
+// TestPhotoServiceRawServeRejectsOtherHousehold mirrors
+// TestPhotoServiceDeleteRejectsOtherHousehold: RawServe must enforce
+// ownership BEFORE consulting the store at all, regardless of backend.
+func TestPhotoServiceRawServeRejectsOtherHousehold(t *testing.T) {
+	store := &fakePhotoStore{directURL: true}
+	repo := newFakePhotoRepo()
+	other := household.NewHouseholdID()
+	id := domain.NewPhotoID()
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: other, StorageRef: "x/y/z.jpg"}
+	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+
+	if _, err := svc.RawServe(context.Background(), household.NewHouseholdID(), id); !errors.Is(err, domain.ErrPhotoNotFound) {
+		t.Fatalf("cross-household RawServe = %v, want ErrPhotoNotFound", err)
+	}
+	if store.openCalls != 0 {
+		t.Fatal("cross-household RawServe must never touch the store")
+	}
+	// directURL is true on this fake specifically so a bug that checked
+	// ownership AFTER branching on SupportsDirectURL would still be caught:
+	// URL must never be called either.
+	if store.urlCalls != 0 {
+		t.Fatal("cross-household RawServe must never call URL")
 	}
 }
 

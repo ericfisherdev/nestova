@@ -303,7 +303,7 @@ func runServer(logger *slog.Logger) error {
 	// rest of NES-119's media wiring further below, purely because
 	// TaskService needs it now; both consumers below share this single
 	// repository instance.
-	proofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	proofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool, mediaStorageBackend(cfg.Media.Backend))
 	proofPhotoChecker := tasksadapter.NewProofPhotoChecker(proofPhotoRepo)
 
 	// NES-32: task UI wiring — TaskService + HTTP handlers for the tasks list
@@ -491,13 +491,18 @@ func runServer(logger *slog.Logger) error {
 	}
 	calendarViewHandlers := calendaradapter.NewViewHandlers(unifiedCalendarService, calendarAccountRepo, householdRepo, sm, logger)
 
-	// NES-7: media (rotating photo album) — storage, services, and the /photos UI.
-	photoStore, err := mediaadapter.NewLocalPhotoStore(cfg.Media.Root, cfg.Media.MaxUploadBytes)
+	// NES-7/NES-132: media (rotating photo album) — storage, services, and
+	// the /photos UI. photoStore is selected ONCE, app-wide, from
+	// cfg.Media.Backend (see MediaConfig.Backend's doc for why local/S3 are
+	// deliberately all-or-nothing within one running deployment); nothing
+	// downstream of this point knows or cares which concrete backend it got,
+	// since both satisfy domain.PhotoStore identically.
+	photoStore, err := newPhotoStore(context.Background(), cfg.Media)
 	if err != nil {
 		return fmt.Errorf("create photo store: %w", err)
 	}
 	albumRepo := mediaadapter.NewAlbumRepository(pool)
-	photoRepo := mediaadapter.NewPhotoRepository(pool)
+	photoRepo := mediaadapter.NewPhotoRepository(pool, mediaStorageBackend(cfg.Media.Backend))
 	albumPhotoRepo := mediaadapter.NewAlbumPhotoRepository(pool)
 	photoService, err := mediaapp.NewPhotoService(photoStore, mediaadapter.NewExifReader(), photoRepo)
 	if err != nil {

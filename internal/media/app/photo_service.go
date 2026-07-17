@@ -160,6 +160,11 @@ func (s *PhotoService) List(ctx context.Context, householdID household.Household
 // set from the validated format at upload) so the web layer can serve the bytes
 // with an explicit Content-Type instead of letting the browser sniff them. The
 // web layer uses it to serve a photo only to its owning household.
+//
+// OpenBytes always streams through the Go process regardless of backend —
+// kiosk/adapter.KioskWebHandlers.Raw calls it directly (see that handler's
+// doc) and is not one of the two routes NES-132 redirects. See RawServe for
+// the backend-aware seam WebHandlers.Raw uses instead.
 func (s *PhotoService) OpenBytes(ctx context.Context, householdID household.HouseholdID, id domain.PhotoID) (io.ReadCloser, string, error) {
 	photo, err := s.ownedPhoto(ctx, householdID, id)
 	if err != nil {
@@ -170,6 +175,46 @@ func (s *PhotoService) OpenBytes(ctx context.Context, householdID household.Hous
 		return nil, "", err
 	}
 	return rc, contentTypeForRef(photo.StorageRef), nil
+}
+
+// RawServeResult is what PhotoService.RawServe returns: exactly one of
+// RedirectURL (non-empty) or Body (non-nil) is set, mirroring the two ways a
+// PhotoStore backend can serve bytes — see domain.PhotoStore.SupportsDirectURL's
+// doc. RedirectURL is a presigned URL the caller should 302 the client to,
+// bypassing the Go process entirely (an S3-backed store); Body is a stream
+// the caller must copy through and Close (a local-filesystem store, which
+// has no browser-navigable URL to hand back).
+type RawServeResult struct {
+	RedirectURL string
+	Body        io.ReadCloser
+	ContentType string
+}
+
+// RawServe is the backend-aware serving seam behind GET /photos/{id}/raw
+// (NES-132): it asks the store, via SupportsDirectURL, whether it can hand
+// back a browser-navigable presigned URL (an S3-backed store) or must be
+// Open-and-streamed through the Go process (LocalPhotoStore) — deciding
+// here, once, at the service layer, keeps WebHandlers.Raw thin (just "was a
+// URL or a body returned") rather than duplicating a backend check in the
+// handler. Returns domain.ErrPhotoNotFound for an unknown or
+// cross-household id, exactly like OpenBytes.
+func (s *PhotoService) RawServe(ctx context.Context, householdID household.HouseholdID, id domain.PhotoID) (RawServeResult, error) {
+	photo, err := s.ownedPhoto(ctx, householdID, id)
+	if err != nil {
+		return RawServeResult{}, err
+	}
+	if s.store.SupportsDirectURL() {
+		url, err := s.store.URL(ctx, photo.StorageRef, 0)
+		if err != nil {
+			return RawServeResult{}, err
+		}
+		return RawServeResult{RedirectURL: url}, nil
+	}
+	rc, err := s.store.Open(ctx, photo.StorageRef)
+	if err != nil {
+		return RawServeResult{}, err
+	}
+	return RawServeResult{Body: rc, ContentType: contentTypeForRef(photo.StorageRef)}, nil
 }
 
 // contentTypeForRef maps a stored ref's extension to its image content type,

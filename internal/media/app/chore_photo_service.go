@@ -259,6 +259,30 @@ func (s *ChoreProofPhotoService) OpenBytes(ctx context.Context, householdID hous
 	return rc, photo.ContentType, nil
 }
 
+// RawServe is ChoreProofPhotoService's mirror of PhotoService.RawServe — see
+// that method's doc for the full rationale (the backend-aware
+// redirect-or-stream seam behind GET /tasks/photos/{id}/raw, NES-132).
+// Returns domain.ErrTaskInstancePhotoNotFound for an unknown or
+// cross-household id, exactly like OpenBytes.
+func (s *ChoreProofPhotoService) RawServe(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstancePhotoID) (RawServeResult, error) {
+	photo, err := s.ownedPhoto(ctx, householdID, id)
+	if err != nil {
+		return RawServeResult{}, err
+	}
+	if s.store.SupportsDirectURL() {
+		url, err := s.store.URL(ctx, photo.StorageRef, 0)
+		if err != nil {
+			return RawServeResult{}, err
+		}
+		return RawServeResult{RedirectURL: url}, nil
+	}
+	rc, err := s.store.Open(ctx, photo.StorageRef)
+	if err != nil {
+		return RawServeResult{}, err
+	}
+	return RawServeResult{Body: rc, ContentType: photo.ContentType}, nil
+}
+
 // ownedPhoto fetches a chore-proof photo and confirms it belongs to
 // householdID, returning domain.ErrTaskInstancePhotoNotFound otherwise so a
 // tenant cannot probe another household's photo ids — mirrors

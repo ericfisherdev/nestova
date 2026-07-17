@@ -199,7 +199,7 @@ func TestAlbumCreateUnknownHousehold(t *testing.T) {
 
 func TestPhotoRepositoryCRUD(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewPhotoRepository(pool)
+	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	member := seedMember(t, pool, hh, "Alex")
 	ctx := testCtx(t)
@@ -242,14 +242,126 @@ func TestPhotoRepositoryCRUD(t *testing.T) {
 	}
 }
 
+// TestPhotoRepositoryCreateStampsConfiguredBackend covers NES-132's CodeRabbit
+// finding: Create must stamp storage_backend from the repository's OWN
+// configured backend (never the column's DEFAULT), and a repository
+// constructed for one backend must never contaminate rows with another's
+// value. A repo built with StorageBackendLocal always writes 'local'; one
+// built with StorageBackendS3 always writes 's3' — asserted both on the
+// struct Create populates in place and on a fresh Get (proving the column
+// itself, not just the in-memory value, is correct).
+func TestPhotoRepositoryCreateStampsConfiguredBackend(t *testing.T) {
+	pool := newTestPool(t)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	cases := []struct {
+		name    string
+		backend domain.StorageBackend
+	}{
+		{"local backend", domain.StorageBackendLocal},
+		{"s3 backend", domain.StorageBackendS3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := adapter.NewPhotoRepository(pool, tc.backend)
+			photo := newPhoto(hh, "households/"+hh.String()+"/photos/aa/"+tc.name+".jpg", nil)
+			photo.ContentHash = fakeHash("backend-stamp-" + tc.name)
+			if err := repo.Create(ctx, photo); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if photo.StorageBackend != tc.backend {
+				t.Fatalf("Create did not stamp photo.StorageBackend: got %q, want %q", photo.StorageBackend, tc.backend)
+			}
+
+			got, err := repo.Get(ctx, photo.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.StorageBackend != tc.backend {
+				t.Fatalf("Get returned StorageBackend %q, want %q (the persisted column value)", got.StorageBackend, tc.backend)
+			}
+			// Clean up the 's3'-tagged row explicitly: the shared test
+			// harness's cleanup rolls every migration back, including
+			// 00032's down-migration (which re-narrows storage_backend's
+			// CHECK to 'local' only) — a leftover 's3' row would make that
+			// down-migration itself fail and silently corrupt the DB for
+			// every test that runs after this one (newTestPool's Cleanup
+			// only t.Logf's a failure, it does not Fatal).
+			if err := repo.Delete(ctx, photo.ID); err != nil {
+				t.Fatalf("cleanup Delete: %v", err)
+			}
+		})
+	}
+}
+
+// TestNewPhotoRepositoryRejectsInvalidBackend covers the constructor's panic
+// guard: an unknown StorageBackend must fail loudly at construction, not
+// silently persist a bogus value the CHECK constraint would reject anyway.
+func TestNewPhotoRepositoryRejectsInvalidBackend(t *testing.T) {
+	pool := newTestPool(t)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewPhotoRepository with an invalid backend should have panicked")
+		}
+	}()
+	adapter.NewPhotoRepository(pool, domain.StorageBackend("azure-blob"))
+}
+
 func TestPhotoCreateUnknownUploader(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewPhotoRepository(pool)
+	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	stranger := household.NewMemberID()
 	photo := newPhoto(hh, "hh/aa/x.jpg", &stranger)
 	if err := repo.Create(testCtx(t), photo); !errors.Is(err, household.ErrMemberNotFound) {
 		t.Fatalf("Create with unknown uploader = %v, want ErrMemberNotFound", err)
+	}
+}
+
+// TestPhotoRepositoryListAllStorageRefs covers the storage reaper's source
+// of truth (NES-132, ReaperService.referencedRefs): every photo's
+// StorageRef, across every household (bucket-wide, not household-scoped —
+// see the domain port doc), and an empty (not nil) slice when there are no
+// photos at all.
+func TestPhotoRepositoryListAllStorageRefs(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
+	ctx := testCtx(t)
+
+	if refs, err := repo.ListAllStorageRefs(ctx); err != nil || len(refs) != 0 {
+		t.Fatalf("ListAllStorageRefs on an empty table = %v (err %v), want an empty slice", refs, err)
+	}
+
+	hhA := seedHousehold(t, pool)
+	hhB := seedHousehold(t, pool)
+	photoA := newPhoto(hhA, "households/"+hhA.String()+"/photos/aa/one.jpg", nil)
+	photoA.ContentHash = fakeHash("refs-one")
+	photoB := newPhoto(hhB, "households/"+hhB.String()+"/photos/bb/two.jpg", nil)
+	photoB.ContentHash = fakeHash("refs-two")
+	if err := repo.Create(ctx, photoA); err != nil {
+		t.Fatalf("Create photoA: %v", err)
+	}
+	if err := repo.Create(ctx, photoB); err != nil {
+		t.Fatalf("Create photoB: %v", err)
+	}
+
+	refs, err := repo.ListAllStorageRefs(ctx)
+	if err != nil {
+		t.Fatalf("ListAllStorageRefs: %v", err)
+	}
+	want := map[domain.StorageRef]bool{photoA.StorageRef: true, photoB.StorageRef: true}
+	if len(refs) != 2 {
+		t.Fatalf("ListAllStorageRefs = %v, want exactly 2 refs across both households", refs)
+	}
+	for _, ref := range refs {
+		if !want[ref] {
+			t.Fatalf("ListAllStorageRefs returned unexpected ref %q", ref)
+		}
+		delete(want, ref)
+	}
+	if len(want) != 0 {
+		t.Fatalf("ListAllStorageRefs missing refs: %v", want)
 	}
 }
 
@@ -259,7 +371,7 @@ func TestPhotoCreateUnknownUploader(t *testing.T) {
 // (the pre-NES-123/legacy state) never matches.
 func TestPhotoFindByContentHash(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewPhotoRepository(pool)
+	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
 
@@ -294,7 +406,7 @@ func TestPhotoFindByContentHash(t *testing.T) {
 // content hash, but the same hash is fine across different households.
 func TestPhotoCreateDuplicateContentHashRejected(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewPhotoRepository(pool)
+	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
 
@@ -323,7 +435,7 @@ func TestPhotoCreateDuplicateContentHashRejected(t *testing.T) {
 func TestAlbumPhotoOrderingAndCascade(t *testing.T) {
 	pool := newTestPool(t)
 	albums := adapter.NewAlbumRepository(pool)
-	photos := adapter.NewPhotoRepository(pool)
+	photos := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	members := adapter.NewAlbumPhotoRepository(pool)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
@@ -408,7 +520,7 @@ func TestAddToUnknownAlbumReportsNotFound(t *testing.T) {
 func TestReorderRejectsIncompleteOrder(t *testing.T) {
 	pool := newTestPool(t)
 	albums := adapter.NewAlbumRepository(pool)
-	photos := adapter.NewPhotoRepository(pool)
+	photos := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	members := adapter.NewAlbumPhotoRepository(pool)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
@@ -444,7 +556,7 @@ func TestReorderRejectsIncompleteOrder(t *testing.T) {
 func TestAddPhotoFromAnotherHouseholdRejected(t *testing.T) {
 	pool := newTestPool(t)
 	albums := adapter.NewAlbumRepository(pool)
-	photos := adapter.NewPhotoRepository(pool)
+	photos := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	members := adapter.NewAlbumPhotoRepository(pool)
 	ctx := testCtx(t)
 

@@ -36,6 +36,9 @@ type fakeMediaStore struct {
 	bytes        []byte
 	putErr       error
 	lastPutClass mediadomain.PhotoClass
+	// directURL backs SupportsDirectURL — false (LocalPhotoStore-like)
+	// unless a test opts into the S3-like redirect path.
+	directURL bool
 }
 
 // Put hashes the bytes it's given (like the real content-addressed store) so
@@ -67,8 +70,13 @@ func (f *fakeMediaStore) Open(context.Context, mediadomain.StorageRef) (mediadom
 func (f *fakeMediaStore) Delete(context.Context, mediadomain.StorageRef) error { return nil }
 
 func (f *fakeMediaStore) URL(_ context.Context, ref mediadomain.StorageRef, _ time.Duration) (string, error) {
-	return ref.String(), nil
+	return "https://minio.example/nestova-photos/" + ref.String() + "?X-Amz-Signature=fake", nil
 }
+
+// SupportsDirectURL defaults to false (mirroring LocalPhotoStore); handler
+// tests that need to exercise the redirect-to-presigned-URL path flip
+// directURL to true before wiring the store into a service.
+func (f *fakeMediaStore) SupportsDirectURL() bool { return f.directURL }
 
 // fakeMediaPhotoReader adapts a *bytes.Reader (already Read+ReadAt+Seek) into
 // a mediadomain.PhotoReader with a no-op Close.
@@ -132,6 +140,27 @@ func (f *fakeMediaPhotoRepo) ListByHousehold(_ context.Context, householdID hous
 func (f *fakeMediaPhotoRepo) Delete(_ context.Context, id mediadomain.PhotoID) error {
 	delete(f.store, id)
 	return nil
+}
+
+// ListAllStorageRefs is unused by these handler tests; implemented only to
+// satisfy the interface (NES-132 added it for the storage reaper).
+func (f *fakeMediaPhotoRepo) ListAllStorageRefs(context.Context) ([]mediadomain.StorageRef, error) {
+	refs := make([]mediadomain.StorageRef, 0, len(f.store))
+	for _, p := range f.store {
+		refs = append(refs, p.StorageRef)
+	}
+	return refs, nil
+}
+
+// ExistsByStorageRef is unused by these handler tests; implemented only to
+// satisfy the interface (NES-132's reaper TOCTOU recheck).
+func (f *fakeMediaPhotoRepo) ExistsByStorageRef(_ context.Context, ref mediadomain.StorageRef) (bool, error) {
+	for _, p := range f.store {
+		if p.StorageRef == ref {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type fakeMediaAlbumRepo struct {
@@ -559,6 +588,55 @@ func TestMediaRawStreamsToOwnerAndRejectsOthers(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-household raw: status=%d, want 404", rec.Code)
+	}
+}
+
+// TestMediaRawRedirectsWhenBackendSupportsDirectURL covers NES-132's AC1:
+// with an S3-like backend (SupportsDirectURL true), GET /photos/{id}/raw
+// must 302-redirect to the presigned URL PhotoStore.URL returns — bytes
+// never flow through the Go process — rather than streaming a body, exactly
+// mirroring TestMediaRawStreamsToOwnerAndRejectsOthers' local-backend case
+// but for the opposite branch of the RawServe seam.
+func TestMediaRawRedirectsWhenBackendSupportsDirectURL(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{bytes: []byte("the-image-bytes"), directURL: true}
+	repo := newFakeMediaPhotoRepo()
+	handler, sm, _, _ := buildMediaTestHandler(t, member, store, repo)
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	owned := mediadomain.NewPhotoID()
+	repo.store[owned] = &mediadomain.Photo{ID: owned, HouseholdID: member.HouseholdID, StorageRef: "households/hh/photos/aa/x.jpg"}
+	req := httptest.NewRequest(http.MethodGet, "/photos/"+owned.String()+"/raw", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("raw with a direct-URL backend: status=%d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "nestova-photos") || !strings.Contains(loc, "X-Amz-Signature") {
+		t.Fatalf("Location = %q, want a presigned URL containing the bucket and a signature parameter", loc)
+	}
+	// The redirect RESPONSE ITSELF (carrying the presigned URL, a
+	// short-lived bearer credential) must never be cached — no-store, not
+	// just private.
+	if cc := rec.Header().Get("Cache-Control"); cc != "private, no-store" {
+		t.Fatalf("redirect Cache-Control = %q, want %q", cc, "private, no-store")
+	}
+	if strings.Contains(rec.Body.String(), "the-image-bytes") {
+		t.Fatal("raw redirected but ALSO streamed bytes through the Go process")
+	}
+
+	// Cross-household photo still 404s before any redirect is built.
+	foreign := mediadomain.NewPhotoID()
+	repo.store[foreign] = &mediadomain.Photo{ID: foreign, HouseholdID: household.NewHouseholdID(), StorageRef: "households/other/photos/aa/y.jpg"}
+	req = httptest.NewRequest(http.MethodGet, "/photos/"+foreign.String()+"/raw", nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-household raw with a direct-URL backend: status=%d, want 404", rec.Code)
 	}
 }
 

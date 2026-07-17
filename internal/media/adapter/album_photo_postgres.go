@@ -172,7 +172,7 @@ func (r *AlbumPhotoRepository) inTx(ctx context.Context, label string, fn func(p
 // an empty slice when the album has no photos (or does not exist).
 func (r *AlbumPhotoRepository) ListByAlbumOrdered(ctx context.Context, albumID domain.AlbumID) ([]*domain.Photo, error) {
 	const q = `
-		SELECT p.id, p.household_id, p.storage_ref, p.content_sha256, p.size_bytes, p.content_type,
+		SELECT p.id, p.household_id, p.storage_ref, p.storage_backend, p.content_sha256, p.size_bytes, p.content_type,
 		       p.taken_at, p.caption, p.uploaded_by, p.created_at
 		  FROM album_photo ap
 		  JOIN photo p ON p.id = ap.photo_id

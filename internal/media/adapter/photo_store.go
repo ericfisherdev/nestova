@@ -1,88 +1,18 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"image"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	// Image format decoders registered for image.DecodeConfig: jpeg/png from the
-	// standard library, webp from x/image (its init registers the format).
-	_ "image/jpeg"
-	_ "image/png"
-
-	// webp decoder registered for image.DecodeConfig (the package init registers it).
-	_ "golang.org/x/image/webp"
-
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/media/domain"
 )
-
-// acceptedTypes maps an accepted (server-sniffed) content type to the file
-// extension used for the stored object. Anything else is rejected as
-// ErrUnsupportedMediaType — this is also the HEIC/non-image rejection path,
-// since HEIC and any other unlisted type simply is not a key in this map. Keys
-// are domain.ContentType* — the same constants Photo.Validate checks against —
-// so the accept-list has one source of truth across the domain and adapter.
-var acceptedTypes = map[string]string{
-	domain.ContentTypeJPEG: "jpg",
-	domain.ContentTypePNG:  "png",
-	domain.ContentTypeWebP: "webp",
-}
-
-// formatToType maps an image.DecodeConfig format name back to its content type,
-// so the sniffed type can be cross-checked against the actual decoded bytes.
-var formatToType = map[string]string{
-	"jpeg": domain.ContentTypeJPEG,
-	"png":  domain.ContentTypePNG,
-	"webp": domain.ContentTypeWebP,
-}
-
-// sniffLen is how many leading bytes Put reads to determine the upload's true
-// content type via http.DetectContentType — the client's declared Content-Type
-// is never consulted, so a renamed or mislabeled file cannot slip past it.
-const sniffLen = 512
-
-// tempFilePattern names the staging file Put streams an upload into before it
-// is hashed, validated, and atomically renamed into its content-addressed home.
-const tempFilePattern = "upload-*.tmp"
-
-// maxDecodePixels bounds width*height for the full image.Decode below,
-// checked against image.DecodeConfig's header-only dimensions before that
-// decode allocates a full pixel buffer — a guard against a decompression bomb
-// (a small file whose header claims enormous dimensions). 50 megapixels
-// comfortably covers real camera photos (a 45 MP sensor is toward the high
-// end of current consumer hardware) while bounding worst-case decode memory.
-const maxDecodePixels = 50_000_000
-
-// classKeyPrefix maps a domain.PhotoClass to the literal path segment
-// LocalPhotoStore namespaces its keys under (see LocalPhotoStore's doc for
-// the full key layout), so one class's bytes can never land under, or be
-// confused with, another class's prefix. An exhaustive switch — never a bare
-// map or a free-form string passed through — means an unrecognized
-// PhotoClass fails Put loudly instead of silently defaulting into some
-// namespace.
-func classKeyPrefix(class domain.PhotoClass) (string, error) {
-	switch class {
-	case domain.PhotoClassAlbum:
-		return "photos", nil
-	case domain.PhotoClassChoreProof:
-		return "chore-photos", nil
-	case domain.PhotoClassRewardImage:
-		return "reward-images", nil
-	default:
-		return "", fmt.Errorf("media/adapter: unknown photo class %d", class)
-	}
-}
 
 // LocalPhotoStore is a domain.PhotoStore backed by the local filesystem.
 // Photos are content-addressed (sha256) under
@@ -119,89 +49,33 @@ func NewLocalPhotoStore(root string, maxUploadBytes int64) (*LocalPhotoStore, er
 	return &LocalPhotoStore{root: root, maxUploadBytes: maxUploadBytes}, nil
 }
 
-// Put streams r to a staging file under root — never buffering the whole
-// upload in memory — while hashing it and enforcing the size cap, sniffs the
-// true content type from the first sniffLen bytes (the caller never supplies
-// one; it is not trusted), cross-validates that the bytes actually decode as
-// that type, and atomically renames the staging file into its
-// content-addressed, class-namespaced home (see classKeyPrefix). Any
-// rejection — including an unrecognized class — removes the staging file,
-// leaving no partial upload behind.
+// Put streams r to a staging file under root via validateAndStage — never
+// buffering the whole upload in memory, sniffing the true content type from
+// the bytes themselves (the caller never supplies one; it is not trusted),
+// cross-validating that the bytes actually decode as that type — then
+// atomically renames the staged file into its content-addressed,
+// class-namespaced home (see buildStorageKey). Any rejection — including an
+// unrecognized class — removes the staging file, leaving no partial upload
+// behind.
 func (s *LocalPhotoStore) Put(_ context.Context, householdID household.HouseholdID, class domain.PhotoClass, r io.Reader) (domain.PutResult, error) {
-	classPrefix, err := classKeyPrefix(class)
+	if !class.Valid() {
+		return domain.PutResult{}, fmt.Errorf("media/adapter: unknown photo class %d", class)
+	}
+	staged, err := validateAndStage(s.root, s.maxUploadBytes, r)
 	if err != nil {
 		return domain.PutResult{}, err
 	}
-
-	// Caps total bytes read (sniff + copy) at maxUploadBytes+1: enough to detect
-	// an oversize upload without ever buffering more than that in flight.
-	limited := io.LimitReader(r, s.maxUploadBytes+1)
-
-	sniff := make([]byte, sniffLen)
-	n, err := io.ReadFull(limited, sniff)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return domain.PutResult{}, fmt.Errorf("media/adapter: read upload: %w", err)
-	}
-	sniff = sniff[:n]
-	sniffedType := canonicalType(http.DetectContentType(sniff))
-	ext, ok := acceptedTypes[sniffedType]
-	if !ok {
-		return domain.PutResult{}, fmt.Errorf("%w: %q", domain.ErrUnsupportedMediaType, sniffedType)
-	}
-
-	tmp, err := os.CreateTemp(s.root, tempFilePattern)
-	if err != nil {
-		return domain.PutResult{}, fmt.Errorf("media/adapter: create staging file: %w", err)
-	}
-	tmpPath := tmp.Name()
 	renamed := false
 	defer func() {
-		_ = tmp.Close()
 		if !renamed {
-			_ = os.Remove(tmpPath)
+			removeStaged(staged.Path)
 		}
 	}()
 
-	hasher := sha256.New()
-	// Replay the already-consumed sniff prefix ahead of whatever remains on
-	// limited, so the full stream (not just the tail after sniffing) reaches
-	// both the staging file and the hasher.
-	written, err := io.Copy(io.MultiWriter(tmp, hasher), io.MultiReader(bytes.NewReader(sniff), limited))
+	ref, err := buildStorageKey(householdID, class, staged.ContentHash, acceptedTypes[staged.ContentType])
 	if err != nil {
-		return domain.PutResult{}, fmt.Errorf("media/adapter: write upload: %w", err)
+		return domain.PutResult{}, err
 	}
-	if written > s.maxUploadBytes {
-		return domain.PutResult{}, fmt.Errorf("%w: %d bytes exceeds the %d-byte limit", domain.ErrPhotoTooLarge, written, s.maxUploadBytes)
-	}
-
-	// The bytes must actually decode as the sniffed type; this rejects a
-	// corrupt/empty payload or content whose magic bytes lied about its format.
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return domain.PutResult{}, fmt.Errorf("media/adapter: seek staged upload: %w", err)
-	}
-	cfg, format, err := image.DecodeConfig(tmp)
-	if err != nil || formatToType[format] != sniffedType {
-		return domain.PutResult{}, fmt.Errorf("%w: bytes are not a valid %s image", domain.ErrInvalidPhoto, sniffedType)
-	}
-	// Check claimed dimensions before the full decode below allocates a pixel
-	// buffer sized to them — a small file can still claim an enormous width/
-	// height (a decompression bomb), and DecodeConfig alone never allocates
-	// enough to reveal that.
-	if pixels := int64(cfg.Width) * int64(cfg.Height); pixels > maxDecodePixels {
-		return domain.PutResult{}, fmt.Errorf("%w: image is %dx%d (%d pixels), exceeds the %d-pixel limit", domain.ErrInvalidPhoto, cfg.Width, cfg.Height, pixels, maxDecodePixels)
-	}
-	// DecodeConfig only reads the header, so a file truncated partway through
-	// its entropy-coded image data can still pass it; a full Decode is the only
-	// way to catch that.
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return domain.PutResult{}, fmt.Errorf("media/adapter: seek staged upload: %w", err)
-	}
-	if _, _, err := image.Decode(tmp); err != nil {
-		return domain.PutResult{}, fmt.Errorf("%w: image data is truncated or corrupt", domain.ErrInvalidPhoto)
-	}
-
-	sum := hex.EncodeToString(hasher.Sum(nil))
-	ref := filepath.ToSlash(filepath.Join("households", householdID.String(), classPrefix, sum[:2], sum+"."+ext))
 	full, err := s.resolve(ref)
 	if err != nil {
 		return domain.PutResult{}, err
@@ -209,17 +83,17 @@ func (s *LocalPhotoStore) Put(_ context.Context, householdID household.Household
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return domain.PutResult{}, fmt.Errorf("media/adapter: create photo dir: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		return domain.PutResult{}, fmt.Errorf("media/adapter: close staged upload: %w", err)
-	}
 	// Content-addressed, so a file already at full is byte-identical; Rename is
 	// atomic and harmlessly replaces it.
-	if err := os.Rename(tmpPath, full); err != nil {
+	if err := os.Rename(staged.Path, full); err != nil {
 		return domain.PutResult{}, fmt.Errorf("media/adapter: finalize upload: %w", err)
 	}
 	renamed = true
 
-	return domain.PutResult{Ref: domain.StorageRef(ref), ContentHash: sum, SizeBytes: written, ContentType: sniffedType}, nil
+	return domain.PutResult{
+		Ref: domain.StorageRef(ref), ContentHash: staged.ContentHash,
+		SizeBytes: staged.SizeBytes, ContentType: staged.ContentType,
+	}, nil
 }
 
 // Open streams a stored photo's bytes; ErrPhotoNotFound when the ref is
@@ -295,11 +169,7 @@ func (s *LocalPhotoStore) resolve(ref string) (string, error) {
 	return full, nil
 }
 
-// canonicalType lowercases a content type and strips any parameters (e.g.
-// "image/jpeg; charset=binary" -> "image/jpeg").
-func canonicalType(contentType string) string {
-	if i := strings.IndexByte(contentType, ';'); i >= 0 {
-		contentType = contentType[:i]
-	}
-	return strings.ToLower(strings.TrimSpace(contentType))
-}
+// SupportsDirectURL always reports false: LocalPhotoStore's URL never
+// returns a browser-navigable locator (see URL's own doc), so no caller may
+// redirect a client to it.
+func (s *LocalPhotoStore) SupportsDirectURL() bool { return false }
