@@ -110,8 +110,9 @@ func NewChoreProofPhotoService(
 
 // Upload runs a household-scoped preflight to confirm taskInstanceID exists
 // (see the type doc's object lifecycle invariant for why this comes before
-// anything else), buffers r (bounded by maxUploadBytes), validates kind,
-// extracts and validates the EXIF capture time, scrubs EXIF from a JPEG
+// anything else), buffers r (bounded by maxUploadBytes), validates kind and
+// the EXIF capture time BEFORE ever scrubbing (see the validation-order
+// note below for why that ordering matters), scrubs EXIF from a JPEG
 // upload, stores the result under domain.PhotoClassChoreProof, and persists
 // the photo attributed to uploaderID. now is the upload instant the
 // freshness window and EXIF capture time are compared against
@@ -125,7 +126,19 @@ func NewChoreProofPhotoService(
 // same assumed timezone) — see that doc for what breaks the assumption and
 // what the fix would be.
 //
-// Validation order (each returns its own sentinel, wrapped where noted):
+// Threat model note (see domain.ErrPhotoStale's doc for the full
+// statement): every check below that reads EXIF is reading
+// uploader-controlled data, not a cryptographic attestation of capture —
+// this whole gate is a deliberate anti-casual-reuse heuristic for a
+// trusted-family threat model, not tamper-proof provenance.
+//
+// Validation order (each returns its own sentinel, wrapped where noted) is
+// deliberately cheapest-and-most-likely-to-reject first: metadata
+// extraction (a plain EXIF tag read, no image decode) and every check based
+// on it happen BEFORE scrubIfJPEG, which for a rotated photo fully decodes
+// and re-encodes the image — an expensive transform a doomed upload (no
+// timestamp, stale, or already-known to violate the before/after ordering)
+// must never pay for:
 //   - taskInstanceID must exist within householdID, else
 //     domain.ErrTaskInstanceNotFound (preflight; see the type doc — this is
 //     a best-effort fast-fail, not the authoritative check, which is
@@ -141,13 +154,20 @@ func NewChoreProofPhotoService(
 //   - the capture time must be within freshnessWindow of now, in EITHER
 //     direction — a stale cached photo and a camera with a badly-set clock
 //     are both rejected the same way — else domain.ErrPhotoStale.
-//   - PhotoStore.Put's own validation errors (ErrUnsupportedMediaType,
-//     ErrInvalidPhoto) propagate unchanged.
-//   - for kind == domain.PhotoKindAfter, domain.ErrAfterPrecedesBefore when
-//     the capture time is earlier than the instance's most recent
-//     domain.PhotoKindBefore photo — enforced ATOMICALLY by
-//     TaskInstancePhotoRepository.Create itself (see its doc), not checked
-//     here, so it is evaluated AFTER Put succeeds, at Create time.
+//   - for kind == domain.PhotoKindAfter, a best-effort, NON-atomic ordering
+//     preflight (preflightOrderingCheck below) rejects with
+//     domain.ErrAfterPrecedesBefore when the capture time is already
+//     provably earlier than the instance's latest "before" photo as of a
+//     plain (unlocked) read — purely to skip scrubIfJPEG/Put for an
+//     obviously-doomed upload; it is NOT the authoritative enforcement.
+//   - ONLY once every check above has passed: scrubIfJPEG runs (the
+//     potentially expensive decode/re-encode), then PhotoStore.Put's own
+//     validation errors (ErrUnsupportedMediaType, ErrInvalidPhoto)
+//     propagate unchanged.
+//   - TaskInstancePhotoRepository.Create re-checks the before/after
+//     ordering rule ATOMICALLY, inside its own transaction (see its doc),
+//     for BOTH kinds — this is the actual, race-proof enforcement; the
+//     preflight above is only a performance shortcut and can be stale.
 func (s *ChoreProofPhotoService) Upload(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -173,15 +193,22 @@ func (s *ChoreProofPhotoService) Upload(
 		return nil, err
 	}
 
-	finalBytes, taken, err := s.captureAndScrub(raw)
-	if err != nil {
-		return nil, err
-	}
+	taken, orientation := s.captureMetadata(raw)
 	if taken == nil {
 		return nil, domain.ErrPhotoMissingTimestamp
 	}
 	if delta := now.Sub(*taken); delta > s.freshnessWindow || delta < -s.freshnessWindow {
 		return nil, domain.ErrPhotoStale
+	}
+	if kind == domain.PhotoKindAfter {
+		if err := s.preflightOrderingCheck(ctx, householdID, taskInstanceID, *taken); err != nil {
+			return nil, err
+		}
+	}
+
+	finalBytes, err := s.scrubIfJPEG(raw, orientation)
+	if err != nil {
+		return nil, err
 	}
 
 	stored, err := s.store.Put(ctx, householdID, domain.PhotoClassChoreProof, bytes.NewReader(finalBytes))
@@ -211,24 +238,59 @@ func (s *ChoreProofPhotoService) Upload(
 	return photo, nil
 }
 
-// captureAndScrub extracts the EXIF capture time from raw and, for a JPEG
-// upload, returns the EXIF-scrubbed bytes to store instead of raw (see the
-// type doc for why scrubbing must happen before PhotoStore.Put ever sees the
-// bytes). A non-JPEG upload is returned unchanged with a nil capture time —
-// it will fail the caller's ErrPhotoMissingTimestamp check, since no
-// non-JPEG upload can carry an extractable EXIF timestamp today (see
-// jpegSOIPrefix's doc).
-func (s *ChoreProofPhotoService) captureAndScrub(raw []byte) (finalBytes []byte, taken *time.Time, err error) {
+// captureMetadata extracts the EXIF capture time and Orientation tag from a
+// JPEG upload's raw bytes — a plain EXIF tag read, no image decode, cheap
+// even for a large file — or returns (nil, 0) unconditionally for a
+// non-JPEG upload (see jpegSOIPrefix's doc) without ever calling the
+// ChoreProofExif port. Deliberately separate from scrubIfJPEG (see Upload's
+// validation-order doc for why): callers must run every cheap check based
+// on this result BEFORE paying for scrubIfJPEG's potentially expensive
+// decode/re-encode.
+func (s *ChoreProofPhotoService) captureMetadata(raw []byte) (*time.Time, int) {
 	if !bytes.HasPrefix(raw, jpegSOIPrefix) {
-		return raw, nil, nil
+		return nil, 0
 	}
-	var orientation int
-	taken, orientation = s.exif.TakenAtAndOrientation(raw)
+	return s.exif.TakenAtAndOrientation(raw)
+}
+
+// scrubIfJPEG returns raw's EXIF-scrubbed bytes for a JPEG upload (see the
+// type doc for why this must happen before storage), or raw unchanged for
+// anything else. Callers must only reach this after every cheap
+// timestamp/freshness/ordering-preflight check has already passed (see
+// Upload's validation-order doc) — it is the expensive step (a full
+// decode/re-encode for a rotated photo) this reordering exists to avoid
+// paying for on an upload that was going to be rejected anyway.
+func (s *ChoreProofPhotoService) scrubIfJPEG(raw []byte, orientation int) ([]byte, error) {
+	if !bytes.HasPrefix(raw, jpegSOIPrefix) {
+		return raw, nil
+	}
 	scrubbed, err := s.exif.Scrub(raw, orientation)
 	if err != nil {
-		return nil, nil, fmt.Errorf("media/app: scrub exif: %w", err)
+		return nil, fmt.Errorf("media/app: scrub exif: %w", err)
 	}
-	return scrubbed, taken, nil
+	return scrubbed, nil
+}
+
+// preflightOrderingCheck is a best-effort, NON-atomic early rejection for an
+// "after" upload that is already provably invalid based on a plain
+// (unlocked) read of the instance's latest "before" photo — purely to avoid
+// paying for scrubIfJPEG's potentially expensive re-encode (and the
+// PhotoStore.Put write) on an upload that is going to be rejected anyway.
+// It is explicitly NOT the authoritative enforcement:
+// TaskInstancePhotoRepository.Create re-checks this exact rule atomically,
+// inside its own transaction (see that port's doc), and is what actually
+// closes the TOCTOU race a plain, unlocked read here cannot — a concurrent
+// "before" landing between this read and Create's own check is exactly the
+// case Create, not this preflight, is the source of truth for.
+func (s *ChoreProofPhotoService) preflightOrderingCheck(ctx context.Context, householdID household.HouseholdID, taskInstanceID domain.TaskInstanceID, taken time.Time) error {
+	beforeTakenAt, ok, err := s.photos.LatestTakenAt(ctx, householdID, taskInstanceID, domain.PhotoKindBefore)
+	if err != nil {
+		return fmt.Errorf("media/app: check before photo: %w", err)
+	}
+	if ok && domain.AfterPrecedesBefore(taken, beforeTakenAt) {
+		return domain.ErrAfterPrecedesBefore
+	}
+	return nil
 }
 
 // readBounded reads r fully, rejecting anything beyond maxBytes with

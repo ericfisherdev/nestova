@@ -146,7 +146,7 @@ func (ExifReader) Scrub(data []byte, orientation int) ([]byte, error) {
 	if orientation > 1 && orientation <= 8 {
 		return reencodeUpright(data, orientation)
 	}
-	return stripJPEGExif(data), nil
+	return stripJPEGExif(data)
 }
 
 // reencodeUpright decodes data, applies the EXIF Orientation transform o (2-8)
@@ -163,14 +163,18 @@ func (ExifReader) Scrub(data []byte, orientation int) ([]byte, error) {
 func reencodeUpright(data []byte, o int) ([]byte, error) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("media/adapter: decode image config for orientation bake: %w", err)
+		// Wrapped as domain.ErrInvalidPhoto (not a bare infra-style error):
+		// a caller-supplied image that fails to even decode its header is a
+		// client-input problem, and the web layer maps ErrInvalidPhoto to
+		// 400 — a bare error here would fall through to a misleading 500.
+		return nil, fmt.Errorf("%w: decode image config for orientation bake: %v", domain.ErrInvalidPhoto, err)
 	}
 	if pixels := int64(cfg.Width) * int64(cfg.Height); pixels > maxDecodePixels {
 		return nil, fmt.Errorf("%w: image is %dx%d (%d pixels), exceeds the %d-pixel limit", domain.ErrInvalidPhoto, cfg.Width, cfg.Height, pixels, maxDecodePixels)
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("media/adapter: decode image for orientation bake: %w", err)
+		return nil, fmt.Errorf("%w: decode image for orientation bake: %v", domain.ErrInvalidPhoto, err)
 	}
 	upright := applyOrientation(img, o)
 	var out bytes.Buffer
@@ -244,41 +248,49 @@ var exifAPP1Signature = []byte("Exif\x00\x00")
 
 // stripJPEGExif returns data with every EXIF ("Exif\0\0"-signed) APP1
 // segment removed, leaving every other JPEG segment and the entropy-coded
-// scan data byte-for-byte untouched. Non-JPEG input (no SOI marker) is
-// returned unchanged.
+// scan data byte-for-byte untouched. Non-JPEG input (no SOI marker at all)
+// is returned unchanged, nil error — that is a different, legitimate case
+// from "is a JPEG but its internal segment structure is malformed", which is
+// what everything below actually guards against.
 //
 // Hardened against malformed/truncated/adversarial input: the segment walk
 // only runs ahead of the Start-Of-Scan marker (where every APPn/COM/DQT/etc.
-// segment lives), is fully bounds-checked, and falls back to copying the
-// remainder of data verbatim the moment anything looks genuinely malformed
-// (a byte where a marker's code was expected but isn't 0xFF, or a length
-// field that doesn't fit), rather than risking an out-of-bounds read or
-// misinterpreting entropy-coded scan data as a marker.
+// segment lives), is fully bounds-checked, and — this is the load-bearing
+// choice — REJECTS with domain.ErrInvalidPhoto the moment anything looks
+// genuinely malformed (a byte where a marker's code was expected but isn't
+// 0xFF, a length field that doesn't fit, dangling fill bytes with no marker
+// code) rather than falling back to copying the unexamined remainder of
+// data verbatim. That fallback used to be the behavior here, and it was a
+// privacy hole: a structurally-broken segment BEFORE a real EXIF APP1
+// segment (e.g. SOI + one stray junk byte + a valid EXIF segment + a valid
+// image) would make the walk bail out at the junk byte and copy everything
+// after it — including the still-intact EXIF — straight into the "scrubbed"
+// output. Rejecting instead is the privacy-safe default: a chore-proof
+// photo is expected to come straight from a real camera, so a structurally
+// broken JPEG is not worth salvaging, and the caller (PhotoStore.Put
+// downstream, or this rejection directly) treats it the same as any other
+// invalid upload.
 //
 // The JPEG spec permits any number of extra 0xFF fill bytes immediately
 // before a marker's code byte outside scan data — real encoders do emit
 // this occasionally — and this walk consumes them explicitly (see the
 // inner loop below) rather than treating a second consecutive 0xFF as
-// malformed: a strip that stops at the first fill byte and copies the rest
-// verbatim would leave EXIF (including GPS) intact behind a trivial
-// padding prefix, which would defeat the entire privacy contract this
-// function exists for. Fill bytes are copied through unchanged when the
-// segment they precede is KEPT; when that segment is the EXIF one being
-// dropped, its fill bytes are dropped right along with it — they only ever
-// padded up to a segment that no longer exists in the output, so keeping
-// them behind would serve no purpose.
-func stripJPEGExif(data []byte) []byte {
+// malformed, which would otherwise reject perfectly legitimate photos.
+// Fill bytes are copied through unchanged when the segment they precede is
+// KEPT; when that segment is the EXIF one being dropped, its fill bytes are
+// dropped right along with it — they only ever padded up to a segment that
+// no longer exists in the output, so keeping them behind would serve no
+// purpose.
+func stripJPEGExif(data []byte) ([]byte, error) {
 	if len(data) < 2 || data[0] != jpegMarkerByte || data[1] != jpegSOIMarker {
-		return data
+		return data, nil
 	}
 	out := make([]byte, 0, len(data))
 	out = append(out, data[0], data[1])
 	i := 2
 	for i < len(data) {
 		if data[i] != jpegMarkerByte {
-			// Not a marker where one was expected; something is malformed.
-			// Copy the remainder verbatim rather than guess further.
-			return append(out, data[i:]...)
+			return nil, fmt.Errorf("%w: malformed JPEG segment structure (expected a marker byte)", domain.ErrInvalidPhoto)
 		}
 		// Consume any legal 0xFF fill bytes ahead of the actual marker code
 		// byte; j lands on the first non-0xFF byte, which is the code.
@@ -287,25 +299,26 @@ func stripJPEGExif(data []byte) []byte {
 			j++
 		}
 		if j >= len(data) {
-			return append(out, data[i:]...)
+			return nil, fmt.Errorf("%w: truncated JPEG (dangling fill bytes with no marker code)", domain.ErrInvalidPhoto)
 		}
 		marker := data[j]
 		switch {
 		case marker == jpegSOSMarker, marker == jpegEOIMarker:
 			// Everything from here on is scan data (or the end of the
-			// file); no more segments to inspect.
-			return append(out, data[i:]...)
+			// file); no more segments to inspect — a normal, successful
+			// termination of the walk, not malformed input.
+			return append(out, data[i:]...), nil
 		case marker == jpegTEMMarker || (marker >= jpegRestart0 && marker <= jpegRestart7):
 			// Standalone markers: no length field follows.
 			out = append(out, data[i:j+1]...)
 			i = j + 1
 		default:
 			if j+1+jpegLengthBytes > len(data) {
-				return append(out, data[i:]...)
+				return nil, fmt.Errorf("%w: truncated JPEG segment length field", domain.ErrInvalidPhoto)
 			}
 			segLen := int(data[j+1])<<8 | int(data[j+2])
 			if segLen < jpegLengthBytes || j+1+segLen > len(data) {
-				return append(out, data[i:]...)
+				return nil, fmt.Errorf("%w: malformed or truncated JPEG segment length", domain.ErrInvalidPhoto)
 			}
 			segEnd := j + 1 + segLen
 			if !isExifAPP1(marker, data[j+3:segEnd]) {
@@ -314,7 +327,7 @@ func stripJPEGExif(data []byte) []byte {
 			i = segEnd
 		}
 	}
-	return out
+	return out, nil
 }
 
 // isExifAPP1 reports whether marker/payload identify an EXIF APP1 segment

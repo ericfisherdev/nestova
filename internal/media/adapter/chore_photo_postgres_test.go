@@ -234,24 +234,27 @@ func TestChoreProofPhotoNeverAppearsInAlbumQueries(t *testing.T) {
 
 // TestTaskInstancePhotoRepositoryCreateEnforcesOrdering covers AC3's second
 // half at the repository layer (moved here from the app-service layer by
-// the NES-119 atomicity review — see Create's own doc): an "after" photo
-// earlier than the instance's most recent "before" is rejected with
-// ErrAfterPrecedesBefore, one at or after it succeeds, and an "after" with
-// no prior "before" at all succeeds (nothing to compare against).
+// the NES-119 atomicity review — see Create's own doc), from BOTH insertion
+// directions (see ErrAfterPrecedesBefore's doc for why the check is
+// symmetric): an "after" photo earlier than the instance's latest "before"
+// is rejected, and — the direction the NES-119 review round 2 added — a
+// "before" photo later than the instance's earliest "after" is ALSO
+// rejected; the non-violating and no-counterpart-yet cases succeed in both
+// directions.
 func TestTaskInstancePhotoRepositoryCreateEnforcesOrdering(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewTaskInstancePhotoRepository(pool)
 	hh := seedHousehold(t, pool)
 	ctx := testCtx(t)
 
-	beforeTaken := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
 
 	t.Run("after earlier than before is rejected", func(t *testing.T) {
 		instance := seedTaskInstance(t, pool, hh)
-		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, beforeTaken, nil)); err != nil {
+		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, base, nil)); err != nil {
 			t.Fatalf("seed before: %v", err)
 		}
-		violating := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, beforeTaken.Add(-1*time.Minute), nil)
+		violating := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, base.Add(-1*time.Minute), nil)
 		if err := repo.Create(ctx, violating); !errors.Is(err, domain.ErrAfterPrecedesBefore) {
 			t.Fatalf("Create(violating after) = %v, want ErrAfterPrecedesBefore", err)
 		}
@@ -259,10 +262,10 @@ func TestTaskInstancePhotoRepositoryCreateEnforcesOrdering(t *testing.T) {
 
 	t.Run("after at or later than before succeeds", func(t *testing.T) {
 		instance := seedTaskInstance(t, pool, hh)
-		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, beforeTaken, nil)); err != nil {
+		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, base, nil)); err != nil {
 			t.Fatalf("seed before: %v", err)
 		}
-		valid := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, beforeTaken.Add(1*time.Minute), nil)
+		valid := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, base.Add(1*time.Minute), nil)
 		if err := repo.Create(ctx, valid); err != nil {
 			t.Fatalf("Create(valid after): %v", err)
 		}
@@ -270,33 +273,68 @@ func TestTaskInstancePhotoRepositoryCreateEnforcesOrdering(t *testing.T) {
 
 	t.Run("after with no prior before succeeds", func(t *testing.T) {
 		instance := seedTaskInstance(t, pool, hh)
-		afterOnly := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, beforeTaken, nil)
+		afterOnly := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, base, nil)
 		if err := repo.Create(ctx, afterOnly); err != nil {
 			t.Fatalf("Create(after, no before): %v", err)
+		}
+	})
+
+	t.Run("before later than an existing after is rejected", func(t *testing.T) {
+		instance := seedTaskInstance(t, pool, hh)
+		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, base, nil)); err != nil {
+			t.Fatalf("seed after: %v", err)
+		}
+		violating := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, base.Add(1*time.Minute), nil)
+		if err := repo.Create(ctx, violating); !errors.Is(err, domain.ErrAfterPrecedesBefore) {
+			t.Fatalf("Create(violating before) = %v, want ErrAfterPrecedesBefore", err)
+		}
+	})
+
+	t.Run("before at or earlier than an existing after succeeds", func(t *testing.T) {
+		instance := seedTaskInstance(t, pool, hh)
+		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, base, nil)); err != nil {
+			t.Fatalf("seed after: %v", err)
+		}
+		valid := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, base.Add(-1*time.Minute), nil)
+		if err := repo.Create(ctx, valid); err != nil {
+			t.Fatalf("Create(valid before): %v", err)
+		}
+	})
+
+	t.Run("before with no existing after succeeds", func(t *testing.T) {
+		instance := seedTaskInstance(t, pool, hh)
+		beforeOnly := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, base, nil)
+		if err := repo.Create(ctx, beforeOnly); err != nil {
+			t.Fatalf("Create(before, no after): %v", err)
 		}
 	})
 }
 
 // TestTaskInstancePhotoRepositoryCreateSerializesOrderingUnderConcurrency is
 // the gated regression test for the NES-119 atomicity review (MAJOR finding
-// #1): the before/after ordering check and the insert happen atomically,
-// inside one transaction, under a per-task-instance pg_advisory_xact_lock
-// that EVERY Create for that instance acquires regardless of Kind — not
-// just an "after" upload.
+// #1, round 2): it specifically exercises the check-then-insert race the
+// per-task-instance pg_advisory_xact_lock exists to close, rather than a
+// scenario a single, already-committed seed row would have rejected on its
+// own regardless of any locking.
 //
-// Each attempt races a NEW "later before" insert (taken_at strictly after
-// an already-seeded "before") against a violating "after" insert (taken_at
-// strictly before even the ORIGINAL seeded "before", so it is guaranteed
-// invalid no matter how the race with the concurrent later-before resolves).
-// Without the per-instance lock serializing every Create for the instance,
-// the violating after's read of "the latest before" could run in the gap
-// before the concurrent later-before commits, observe only the (still
-// valid-relative-to) original seed, and incorrectly succeed — exactly the
-// TOCTOU race a separate read-then-insert pair (the pre-review app-service
-// check) left open. With the lock, the violating after's check is always
-// consistent with whatever is genuinely committed at that instant, so it
-// must be rejected on every attempt, regardless of which goroutine's
-// transaction happens to acquire the lock first.
+// Each attempt seeds NO photos at all for a fresh instance, then races two
+// concurrent Creates against each other: a "before" at base+10m and an
+// "after" at base+5m (earlier). Without any synchronization, both
+// transactions' ordering checks can run before either has committed —
+// before's check ("is there an existing after I'd violate?") sees none yet,
+// and after's check ("is there an existing before I'd violate?") ALSO sees
+// none yet — so BOTH would pass their own check and both would commit,
+// leaving a persisted after (base+5m) that precedes a persisted before
+// (base+10m): a genuine invariant violation neither individual check caught
+// because each was only ever comparing itself against what existed AT ITS
+// OWN read, not against the other write racing it. The per-instance
+// advisory lock closes exactly this gap: whichever Create acquires the lock
+// first commits (with nothing yet to conflict with, so it always succeeds),
+// and the second, once unblocked, now reads a state that includes the
+// first's already-committed row — so it is correctly rejected. This holds
+// for EITHER winner (see the symmetric check argued in Create's own doc),
+// so exactly one of the two racing writes must succeed on every attempt,
+// never both and never neither.
 func TestTaskInstancePhotoRepositoryCreateSerializesOrderingUnderConcurrency(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewTaskInstancePhotoRepository(pool)
@@ -306,29 +344,66 @@ func TestTaskInstancePhotoRepositoryCreateSerializesOrderingUnderConcurrency(t *
 	const attempts = 15
 	for i := 0; i < attempts; i++ {
 		instance := seedTaskInstance(t, pool, hh)
-		seed := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
-		if err := repo.Create(ctx, newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, seed, nil)); err != nil {
-			t.Fatalf("attempt %d: seed before: %v", i, err)
-		}
-
-		laterBefore := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, seed.Add(5*time.Minute), nil)
-		violatingAfter := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, seed.Add(-1*time.Minute), nil)
+		base := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+		before := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, base.Add(10*time.Minute), nil)
+		after := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, base.Add(5*time.Minute), nil)
 
 		var wg sync.WaitGroup
-		var afterErr error
+		var beforeErr, afterErr error
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_ = repo.Create(ctx, laterBefore) // outcome not asserted; it races the after below
+			beforeErr = repo.Create(ctx, before)
 		}()
 		go func() {
 			defer wg.Done()
-			afterErr = repo.Create(ctx, violatingAfter)
+			afterErr = repo.Create(ctx, after)
 		}()
 		wg.Wait()
 
-		if !errors.Is(afterErr, domain.ErrAfterPrecedesBefore) {
-			t.Fatalf("attempt %d: violating after Create = %v, want ErrAfterPrecedesBefore (it precedes the seeded before regardless of the concurrent later-before's outcome)", i, afterErr)
+		beforeOK := beforeErr == nil
+		afterOK := afterErr == nil
+		if beforeOK == afterOK {
+			t.Fatalf("attempt %d: before ok=%v (err=%v), after ok=%v (err=%v) — want exactly one to succeed and the other rejected with ErrAfterPrecedesBefore", i, beforeOK, beforeErr, afterOK, afterErr)
 		}
+		if !beforeOK && !errors.Is(beforeErr, domain.ErrAfterPrecedesBefore) {
+			t.Fatalf("attempt %d: before Create failed with %v, want ErrAfterPrecedesBefore", i, beforeErr)
+		}
+		if !afterOK && !errors.Is(afterErr, domain.ErrAfterPrecedesBefore) {
+			t.Fatalf("attempt %d: after Create failed with %v, want ErrAfterPrecedesBefore", i, afterErr)
+		}
+
+		list, err := repo.ListByInstance(ctx, hh, instance)
+		if err != nil {
+			t.Fatalf("attempt %d: ListByInstance: %v", i, err)
+		}
+		assertNoOrderingViolation(t, i, list)
+	}
+}
+
+// assertNoOrderingViolation fails the test if photos' persisted state has an
+// "after" whose taken_at precedes any "before"'s taken_at for the same
+// instance — the invariant ErrAfterPrecedesBefore exists to protect,
+// checked directly against what actually got committed rather than
+// trusting the two Create calls' own return values alone.
+func assertNoOrderingViolation(t *testing.T, attempt int, photos []*domain.TaskInstancePhoto) {
+	t.Helper()
+	var latestBefore, earliestAfter *time.Time
+	for _, p := range photos {
+		switch p.Kind {
+		case domain.PhotoKindBefore:
+			if latestBefore == nil || p.TakenAt.After(*latestBefore) {
+				ta := p.TakenAt
+				latestBefore = &ta
+			}
+		case domain.PhotoKindAfter:
+			if earliestAfter == nil || p.TakenAt.Before(*earliestAfter) {
+				ta := p.TakenAt
+				earliestAfter = &ta
+			}
+		}
+	}
+	if latestBefore != nil && earliestAfter != nil && domain.AfterPrecedesBefore(*earliestAfter, *latestBefore) {
+		t.Fatalf("attempt %d: persisted state violates the invariant: earliest after %s precedes latest before %s", attempt, earliestAfter, latestBefore)
 	}
 }

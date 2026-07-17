@@ -92,26 +92,54 @@ var (
 	// direction — see the service's doc) than the configured freshness
 	// window, e.g. a photo pulled from the camera roll days later, or one
 	// whose camera clock is set far in the future.
+	//
+	// Threat model, stated explicitly: the EXIF metadata this whole gate
+	// (ErrPhotoMissingTimestamp, this error, and ErrAfterPrecedesBefore)
+	// relies on is UPLOADER-CONTROLLED data, not a cryptographic attestation
+	// of when or how a photo was actually captured — a household member with
+	// the right tools could hand-craft an EXIF DateTimeOriginal tag on
+	// arbitrary bytes and defeat all three checks. That is a known,
+	// deliberately accepted limitation, not an oversight: Nestova's threat
+	// model here is a family household coordinating chores among people who
+	// already trust each other, and the freshness gate exists to stop
+	// CASUAL reuse — re-submitting yesterday's photo, or a sibling's old
+	// photo, as if it were fresh — not to defeat a household member
+	// motivated enough to forge EXIF bytes by hand. Cryptographic
+	// proof-of-capture (e.g. a signed capture attestation from a trusted
+	// camera app) is explicitly out of scope for this ticket and would be a
+	// different, much heavier feature if ever needed.
 	ErrPhotoStale = errors.New("media: photo capture time is outside the freshness window")
 	// ErrAfterPrecedesBefore is returned by TaskInstancePhotoRepository.Create
-	// when an "after" photo's EXIF capture time is earlier than the most
-	// recent "before" photo already recorded for the same task instance —
-	// the work could not have been photographed as finished before it was
-	// photographed as started. Enforced ATOMICALLY inside Create's own
-	// transaction (see the port's doc) rather than as a separate
-	// check-then-insert from the caller, so a concurrent write for the same
-	// instance can never race this decision.
+	// when an "after" photo's EXIF capture time is earlier than a "before"
+	// photo's for the same task instance — the work could not have been
+	// photographed as finished before it was photographed as started. This
+	// single invariant is enforced from BOTH insertion directions: inserting
+	// an "after" checks it against the instance's latest existing "before",
+	// and inserting a "before" checks it against the instance's earliest
+	// existing "after" (see Create's doc for why both directions matter —
+	// without the second, a "before" that lands chronologically after an
+	// already-recorded "after" would slip through uncaught). Enforced
+	// ATOMICALLY inside Create's own transaction (see the port's doc) rather
+	// than as a separate check-then-insert from the caller, so a concurrent
+	// write for the same instance can never race this decision.
 	ErrAfterPrecedesBefore = errors.New("media: after photo was taken before the before photo")
 )
 
-// AfterPrecedesBefore reports whether an "after" chore-proof photo taken at
-// afterTaken is invalid because it precedes beforeTaken, the most recent
-// "before" photo already recorded for the same task instance. This is the
-// RULE; TaskInstancePhotoRepository.Create is what APPLIES it atomically
-// (holding a per-instance lock across the read of the latest "before" and
-// the insert, inside one transaction — see its doc) so the decision stays
-// consistent with whatever is genuinely committed at decision time,
-// regardless of a concurrent write to the same instance.
+// AfterPrecedesBefore reports whether afterTaken (an "after" chore-proof
+// photo's capture time, existing or about to be inserted) is invalid because
+// it precedes beforeTaken (a "before" photo's capture time, existing or
+// about to be inserted, for the SAME task instance) — the one invariant
+// ErrAfterPrecedesBefore protects. It is deliberately symmetric in its two
+// time.Time parameters: TaskInstancePhotoRepository.Create calls it BOTH
+// ways (afterTaken = the new row's TakenAt when inserting an "after", or =
+// an existing row's TakenAt when inserting a "before" — see Create's doc for
+// which extreme each direction reads) rather than defining two
+// differently-named predicates for what is the same underlying rule.
+// TaskInstancePhotoRepository.Create is what APPLIES this rule atomically
+// (holding a per-instance lock across the read and the insert, inside one
+// transaction — see its doc) so the decision stays consistent with whatever
+// is genuinely committed at decision time, regardless of a concurrent write
+// to the same instance.
 func AfterPrecedesBefore(afterTaken, beforeTaken time.Time) bool {
 	return afterTaken.Before(beforeTaken)
 }
@@ -209,17 +237,20 @@ func (p TaskInstancePhoto) Validate() error {
 //     COMMON case fails fast without wasted work, but Create's own FK check
 //     is what actually closes the TOCTOU gap if the instance is removed
 //     between that preflight and this call.
-//   - Create returns ErrAfterPrecedesBefore for an "after" photo (photo.Kind
-//     == PhotoKindAfter) whose TakenAt is earlier than the instance's most
-//     recent PhotoKindBefore photo. This check and the insert happen
-//     ATOMICALLY, inside one transaction, under a per-task-instance
-//     advisory lock that EVERY Create for that instance acquires
-//     (regardless of kind) before touching it — see the adapter's
+//   - Create returns ErrAfterPrecedesBefore when photo would violate the
+//     before/after ordering invariant (see ErrAfterPrecedesBefore's own doc
+//     for the symmetric, both-directions definition): for photo.Kind ==
+//     PhotoKindAfter, TakenAt earlier than the instance's LATEST existing
+//     PhotoKindBefore photo; for photo.Kind == PhotoKindBefore, TakenAt
+//     later than the instance's EARLIEST existing PhotoKindAfter photo. This
+//     check and the insert happen ATOMICALLY, inside one transaction, under
+//     a per-task-instance advisory lock that EVERY Create for that instance
+//     acquires (regardless of kind) before touching it — see the adapter's
 //     implementation doc for why a "before" insert must also take the lock,
-//     not just an "after" one: without it, a concurrent "before" insert
-//     landing in the gap between an "after" upload's read of the latest
-//     "before" and its own insert could commit a stale-relative-to-reality
-//     decision. The lock serializes every Create for the SAME instance
+//     not just an "after" one: without it, a concurrent write of the OTHER
+//     kind landing in the gap between this Create's own read and its insert
+//     could commit a stale-relative-to-reality decision, in either
+//     direction. The lock serializes every Create for the SAME instance
 //     against every other; Creates for DIFFERENT instances never contend.
 //   - InstanceExists reports whether taskInstanceID exists within
 //     householdID, with no side effects and no lock — a lightweight,
@@ -236,9 +267,9 @@ func (p TaskInstancePhoto) Validate() error {
 //     has no chore-proof photos.
 type TaskInstancePhotoRepository interface {
 	// Create persists a new chore-proof photo, populating UploadedAt, and
-	// atomically enforces the before/after ordering rule for an "after"
-	// photo — see the type doc's error contracts for the full atomicity
-	// argument.
+	// atomically enforces the before/after ordering rule from whichever
+	// direction photo.Kind inserts — see the type doc's error contracts for
+	// the full, symmetric atomicity argument.
 	Create(ctx context.Context, photo *TaskInstancePhoto) error
 
 	// InstanceExists reports whether taskInstanceID exists within
