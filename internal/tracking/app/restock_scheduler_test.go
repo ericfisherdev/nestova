@@ -68,6 +68,10 @@ func (f *fakeRestockShoppingRepo) UpdateStatus(context.Context, household.Househ
 	return nil, domain.ErrShoppingListItemNotFound
 }
 
+func (f *fakeRestockShoppingRepo) MarkInCart(context.Context, household.HouseholdID, domain.ShoppingListItemID) (*domain.ShoppingListItem, error) {
+	return nil, domain.ErrShoppingListItemNotFound
+}
+
 func (f *fakeRestockShoppingRepo) ListByStatus(context.Context, household.HouseholdID, domain.ItemStatus) ([]*domain.ShoppingListItem, error) {
 	return nil, nil
 }

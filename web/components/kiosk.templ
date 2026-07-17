@@ -1,0 +1,477 @@
+package components
+
+import "fmt"
+
+// ---------------------------------------------------------------------------
+// Shell
+// ---------------------------------------------------------------------------
+
+// KioskTab identifies one of the five kiosk bottom-tab-bar destinations.
+type KioskTab string
+
+// The five kiosk tabs, in bottom-tab-bar order.
+const (
+	KioskTabChores   KioskTab = "chores"
+	KioskTabCalendar KioskTab = "calendar"
+	KioskTabMeals    KioskTab = "meals"
+	KioskTabShopping KioskTab = "shopping"
+	KioskTabPhotos   KioskTab = "photos"
+)
+
+// kioskTabDefs is the fixed bottom-tab-bar content, in display order.
+var kioskTabDefs = []struct {
+	Tab   KioskTab
+	Label string
+	Href  string
+}{
+	{KioskTabChores, "Chores", "/kiosk/chores"},
+	{KioskTabCalendar, "Calendar", "/kiosk/calendar"},
+	{KioskTabMeals, "Meals", "/kiosk/meals"},
+	{KioskTabShopping, "Shopping", "/kiosk/shopping"},
+	{KioskTabPhotos, "Photos", "/kiosk/photos"},
+}
+
+// KioskScreensaverView is the view model for the idle-timeout screensaver
+// overlay: the household's slideshow album, reusing the exact [SlideView]
+// shape and rendering the NES-76 album viewer already knows how to build.
+// A nil Slides (or empty) means the household has no album yet; the overlay
+// still shows (idle is still enforced) with a plain branded placeholder.
+type KioskScreensaverView struct {
+	RotationSeconds int
+	Slides          []SlideView
+}
+
+// KioskShellProps configures the kiosk chrome shared by every tab page: which
+// tab is active and the screensaver data every page carries (idle can strike
+// on any tab).
+type KioskShellProps struct {
+	Active      KioskTab
+	Screensaver KioskScreensaverView
+}
+
+// idleTimeoutMs is how long the kiosk waits with no touch before showing the
+// screensaver (AC4): two minutes, matching the ticket's brief.
+const idleTimeoutMs = 120000
+
+// KioskLayout renders the touch-first kiosk shell around content: a full-bleed
+// page (not the member dashboard shell — a kiosk has no sidebar, no member
+// identity, no logout), a bottom tab bar sized for touch, and a full-screen
+// idle screensaver overlay that never navigates away from the current tab (see
+// web/static/js/kiosk-idle.js) — touching it simply hides it again, so the
+// underlying tab content (never replaced) is what "return to last tab" means.
+templ KioskLayout(props KioskShellProps, content templ.Component) {
+	<!DOCTYPE html>
+	<html lang="en" class="h-full">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+			<title>Nestova Kiosk</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+			<!-- kiosk-idle.js registers Alpine.data('kioskIdle', ...) and must load and
+			     run BEFORE alpine.min.js (see layout.templ's script-order rule: Alpine
+			     dispatches 'alpine:init' as soon as its own deferred script runs, so a
+			     listener registered after that has already fired never sees it).
+			     album.js is reused verbatim from the NES-76 album viewer and keeps that
+			     page's own script order (after alpine.min.js) rather than this rule, to
+			     stay byte-for-byte consistent with the one other page that loads it. -->
+			<script src="/static/js/kiosk-idle.js" defer></script>
+			<script src="/static/js/gsap.min.js" defer></script>
+			<script src="/static/js/alpine.min.js" defer></script>
+			<script src="/static/js/album.js" defer></script>
+		</head>
+		<body
+			class="flex h-full flex-col overflow-hidden bg-main text-ink"
+			x-data="kioskIdle"
+			data-idle-timeout-ms={ fmt.Sprintf("%d", idleTimeoutMs) }
+		>
+			<main id="kiosk-main" class="flex-1 overflow-y-auto pb-24">
+				@content
+			</main>
+			@kioskTabBar(props.Active)
+			@kioskScreensaver(props.Screensaver)
+		</body>
+	</html>
+}
+
+// kioskTabBar is the bottom navigation: five full-width, touch-sized links
+// (min 48x48px per AC3), no hover-dependent affordance — the active tab is
+// distinguished by a persistent tint/underline, not a :hover state.
+templ kioskTabBar(active KioskTab) {
+	<nav
+		class="fixed inset-x-0 bottom-0 z-30 flex border-t border-sidebar-border bg-sidebar"
+		aria-label="Kiosk sections"
+		data-testid="kiosk-tab-bar"
+	>
+		for _, def := range kioskTabDefs {
+			@kioskTabItem(def.Tab, def.Label, def.Href, def.Tab == active)
+		}
+	</nav>
+}
+
+templ kioskTabItem(tab KioskTab, label, href string, active bool) {
+	<a
+		href={ templ.SafeURL(href) }
+		class={
+			"flex min-h-[64px] flex-1 flex-col items-center justify-center gap-1 text-sm font-medium transition-colors",
+			kioskTabItemClass(active),
+		}
+		if active {
+			aria-current="page"
+		}
+		data-testid={ "kiosk-tab-" + string(tab) }
+	>
+		{ label }
+	</a>
+}
+
+func kioskTabItemClass(active bool) string {
+	if active {
+		return "bg-sage-tint text-sage-darker"
+	}
+	return "text-ink-secondary"
+}
+
+// kioskScreensaver is the full-screen idle overlay. It reuses [albumSlide]
+// (the NES-76 slide renderer) and the same album.js Alpine component
+// ('albumViewer') the standalone album viewer page uses, driven here by
+// kiosk-idle.js's 'x-show="screensaverActive"' instead of a page navigation.
+templ kioskScreensaver(view KioskScreensaverView) {
+	<div
+		x-show="screensaverActive"
+		x-cloak
+		x-on:click="dismiss()"
+		x-on:touchstart="dismiss()"
+		class="fixed inset-0 z-40 h-full w-full bg-black text-white"
+		data-testid="kiosk-screensaver"
+	>
+		if len(view.Slides) == 0 {
+			<div class="flex h-full flex-col items-center justify-center gap-2 text-center">
+				<p class="text-2xl font-semibold">Nestova</p>
+				<p class="text-sm text-white/60">Add photos to an album to see them here.</p>
+			</div>
+		} else {
+			<div
+				class="relative h-full w-full"
+				x-data="albumViewer"
+				data-rotation-seconds={ fmt.Sprintf("%d", view.RotationSeconds) }
+			>
+				for i, slide := range view.Slides {
+					@albumSlide(slide, i)
+				}
+			</div>
+		}
+	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Device activation (unauthenticated — the kiosk has no identity yet)
+// ---------------------------------------------------------------------------
+
+// KioskActivationFormView is the view model for GET/POST /kiosk/activate's
+// manual entry form.
+type KioskActivationFormView struct {
+	// Error is a generic message shown when the last redemption attempt
+	// failed; empty on the form's first render.
+	Error     string
+	CSRFToken string
+}
+
+// KioskActivationPage is a standalone document (not the kiosk shell — the
+// device has no identity, and so no tab bar or screensaver, until this
+// succeeds) for typing in the activation code a parent generated from
+// settings.
+templ KioskActivationPage(view KioskActivationFormView) {
+	<!DOCTYPE html>
+	<html lang="en" class="h-full">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+			<title>Activate kiosk — Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="flex h-full items-center justify-center bg-main p-6">
+			<div class="w-full max-w-sm rounded-card bg-surface p-6 shadow-warm">
+				<h1 class="mb-1 text-xl font-semibold text-ink">Activate this kiosk</h1>
+				<p class="mb-4 text-sm text-ink-muted">
+					Enter the activation code shown on the household's settings page.
+				</p>
+				if view.Error != "" {
+					<p class="mb-4 rounded-control bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+						{ view.Error }
+					</p>
+				}
+				<form method="post" action="/kiosk/activate">
+					<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+					<label class="mb-1 block text-sm font-medium text-ink-secondary" for="activation-code">
+						Activation code
+					</label>
+					<input
+						id="activation-code"
+						name="code"
+						type="text"
+						autocapitalize="characters"
+						autocomplete="off"
+						required
+						placeholder="XXXX-XXXX-XX"
+						class="mb-4 w-full rounded-control border border-sidebar-border px-3 py-3 text-center font-mono text-lg tracking-widest"
+					/>
+					<button
+						type="submit"
+						class="min-h-[48px] w-full rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm"
+					>
+						Activate
+					</button>
+				</form>
+			</div>
+		</body>
+	</html>
+}
+
+// ---------------------------------------------------------------------------
+// Chores tab
+// ---------------------------------------------------------------------------
+
+// KioskChoreView is one read-only chore row: no complete/skip/claim actions —
+// those are member-attributed and deferred to the NES-129 QR deep link.
+type KioskChoreView struct {
+	Title    string
+	Category string // "chore" or "maintenance"; rendered via categoryBadge
+	DueLabel string
+	// AssigneeName/AssigneeInitials/AssigneeColor are "" when unassigned. They
+	// are pre-computed by the handler (household.Member.Initials()) so this
+	// package never needs its own name-to-initials logic.
+	AssigneeName     string
+	AssigneeInitials string
+	AssigneeColor    string
+}
+
+// KioskChoresView is the view model for GET /kiosk/chores.
+type KioskChoresView struct {
+	Chores []KioskChoreView
+}
+
+templ KioskChoresPage(view KioskChoresView) {
+	<div class="p-4">
+		<h1 class="mb-4 text-xl font-semibold">Chores</h1>
+		if len(view.Chores) == 0 {
+			<p class="text-ink-muted">Nothing due — all caught up.</p>
+		} else {
+			<ul class="flex flex-col gap-2" data-testid="kiosk-chore-list">
+				for _, c := range view.Chores {
+					@kioskChoreRow(c)
+				}
+			</ul>
+		}
+	</div>
+}
+
+templ kioskChoreRow(c KioskChoreView) {
+	<li class="flex min-h-[48px] items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface p-3">
+		<div class="flex min-w-0 flex-col gap-1">
+			<span class="truncate font-medium text-ink">{ c.Title }</span>
+			<div class="flex items-center gap-2">
+				@categoryBadge(c.Category)
+				<span class="text-sm text-ink-muted">{ c.DueLabel }</span>
+			</div>
+		</div>
+		if c.AssigneeName != "" {
+			@MemberAvatar(MemberView{Name: c.AssigneeName, Initials: c.AssigneeInitials, Color: c.AssigneeColor})
+		} else {
+			<span class="shrink-0 text-sm text-ink-muted">Anyone</span>
+		}
+	</li>
+}
+
+// ---------------------------------------------------------------------------
+// Calendar tab
+// ---------------------------------------------------------------------------
+
+// KioskCalendarView is the view model for GET /kiosk/calendar. It reuses
+// [CalendarItemView] and [calendarItemRow] verbatim — the /calendar page's
+// item row is already a read-only row with no interactive affordance, so
+// there is nothing kiosk-specific to build for it.
+type KioskCalendarView struct {
+	RangeLabel string
+	Items      []CalendarItemView
+}
+
+templ KioskCalendarPage(view KioskCalendarView) {
+	<div class="p-4">
+		<h1 class="mb-1 text-xl font-semibold">Calendar</h1>
+		<p class="mb-4 text-sm text-ink-muted">{ view.RangeLabel }</p>
+		if len(view.Items) == 0 {
+			<p class="text-ink-muted">Nothing scheduled.</p>
+		} else {
+			<ul class="flex flex-col gap-2" data-testid="kiosk-calendar-list">
+				for _, item := range view.Items {
+					@calendarItemRow(item)
+				}
+			</ul>
+		}
+	</div>
+}
+
+// ---------------------------------------------------------------------------
+// Meals tab
+// ---------------------------------------------------------------------------
+
+// KioskMealSlotView is one filled meal slot; an empty slot is simply omitted
+// (no "assign a recipe" affordance — that mutation stays on the full /meals page).
+type KioskMealSlotView struct {
+	MealLabel   string // "Breakfast", "Lunch", "Dinner", "Snack"
+	RecipeTitle string
+}
+
+// KioskMealDayView groups a day's filled slots.
+type KioskMealDayView struct {
+	DateLabel string
+	Slots     []KioskMealSlotView
+}
+
+// KioskMealsView is the view model for GET /kiosk/meals: the current week's plan.
+type KioskMealsView struct {
+	WeekLabel string
+	Days      []KioskMealDayView
+}
+
+templ KioskMealsPage(view KioskMealsView) {
+	<div class="p-4">
+		<h1 class="mb-1 text-xl font-semibold">Meals</h1>
+		<p class="mb-4 text-sm text-ink-muted">{ view.WeekLabel }</p>
+		if len(view.Days) == 0 {
+			<p class="text-ink-muted">Nothing planned this week.</p>
+		} else {
+			<ul class="flex flex-col gap-3" data-testid="kiosk-meals-list">
+				for _, day := range view.Days {
+					@kioskMealDay(day)
+				}
+			</ul>
+		}
+	</div>
+}
+
+templ kioskMealDay(day KioskMealDayView) {
+	<li class="rounded-control border border-sidebar-border bg-surface p-3">
+		<p class="mb-2 font-medium text-ink">{ day.DateLabel }</p>
+		<ul class="flex flex-col gap-1">
+			for _, slot := range day.Slots {
+				<li class="flex min-h-[48px] items-center gap-2 text-sm">
+					<span class="w-24 shrink-0 font-medium text-ink-muted">{ slot.MealLabel }</span>
+					<span class="text-ink">{ slot.RecipeTitle }</span>
+				</li>
+			}
+		</ul>
+	</li>
+}
+
+// ---------------------------------------------------------------------------
+// Shopping tab
+// ---------------------------------------------------------------------------
+
+// KioskShoppingView is the view model for GET /kiosk/shopping. It reuses
+// [ShoppingItemView] verbatim; the only mutation exposed is marking a needed
+// item in-cart (the one allowed low-risk action, AC5) — every other status
+// transition (back to needed, on to purchased) stays on the full /groceries
+// page, which is member-attributed.
+type KioskShoppingView struct {
+	Needed    []ShoppingItemView
+	InCart    []ShoppingItemView
+	CSRFToken string
+}
+
+templ KioskShoppingPage(view KioskShoppingView) {
+	<div class="p-4">
+		<h1 class="mb-4 text-xl font-semibold">Shopping list</h1>
+		<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">Needed</h2>
+		if len(view.Needed) == 0 {
+			<p class="mb-4 text-sm text-ink-muted">Nothing needed.</p>
+		} else {
+			<ul class="mb-4 flex flex-col gap-2" data-testid="kiosk-shopping-needed">
+				for _, item := range view.Needed {
+					@kioskShoppingNeededRow(item, view.CSRFToken)
+				}
+			</ul>
+		}
+		<h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">In cart</h2>
+		if len(view.InCart) == 0 {
+			<p class="text-sm text-ink-muted">Nothing in the cart yet.</p>
+		} else {
+			<ul class="flex flex-col gap-2" data-testid="kiosk-shopping-in-cart">
+				for _, item := range view.InCart {
+					@kioskShoppingReadOnlyRow(item)
+				}
+			</ul>
+		}
+	</div>
+}
+
+// kioskShoppingNeededRow renders one needed item with exactly one action: mark
+// it in-cart. It posts to the kiosk's own dedicated endpoint (not the generic
+// /groceries/shopping/{id}/status used by the member-facing page), which
+// accepts only the needed→in_cart transition.
+templ kioskShoppingNeededRow(item ShoppingItemView, csrfToken string) {
+	<li class="flex flex-wrap items-center justify-between gap-2 rounded-control border border-sidebar-border bg-surface p-3">
+		<div class="flex min-w-0 flex-col gap-1">
+			<div class="flex items-center gap-2">
+				<span class="truncate font-medium text-ink">{ item.Name }</span>
+				@sourceBadge(item.SourceLabel)
+			</div>
+			<span class="text-sm text-ink-muted">{ item.QuantityLabel }</span>
+		</div>
+		<form method="post" action={ templ.SafeURL(fmt.Sprintf("/kiosk/shopping/%s/in-cart", item.ID)) }>
+			<input type="hidden" name="csrf_token" value={ csrfToken }/>
+			<button
+				type="submit"
+				class="min-h-[48px] min-w-[48px] rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm"
+			>
+				In cart
+			</button>
+		</form>
+	</li>
+}
+
+templ kioskShoppingReadOnlyRow(item ShoppingItemView) {
+	<li class="flex flex-wrap items-center justify-between gap-2 rounded-control border border-sidebar-border bg-surface-warm p-3">
+		<div class="flex min-w-0 flex-col gap-1">
+			<div class="flex items-center gap-2">
+				<span class="truncate font-medium text-ink">{ item.Name }</span>
+				@sourceBadge(item.SourceLabel)
+			</div>
+			<span class="text-sm text-ink-muted">{ item.QuantityLabel }</span>
+		</div>
+	</li>
+}
+
+// ---------------------------------------------------------------------------
+// Photos tab
+// ---------------------------------------------------------------------------
+
+// KioskPhotosView is the view model for GET /kiosk/photos: a read-only grid of
+// the household's most recent photos. It reuses [PhotoView] verbatim; there is
+// no upload, delete, or album-management affordance (those stay on /photos).
+type KioskPhotosView struct {
+	Photos []PhotoView
+}
+
+templ KioskPhotosPage(view KioskPhotosView) {
+	<div class="p-4">
+		<h1 class="mb-4 text-xl font-semibold">Photos</h1>
+		if len(view.Photos) == 0 {
+			<p class="text-ink-muted">No photos yet.</p>
+		} else {
+			<div class="grid grid-cols-2 gap-2 sm:grid-cols-3" data-testid="kiosk-photo-grid">
+				for _, p := range view.Photos {
+					@kioskPhotoTile(p)
+				}
+			</div>
+		}
+	</div>
+}
+
+templ kioskPhotoTile(p PhotoView) {
+	<figure class="aspect-square overflow-hidden rounded-control bg-surface-warm">
+		<img src={ p.RawURL } alt={ p.Caption } class="h-full w-full object-cover"/>
+	</figure>
+}

@@ -47,6 +47,10 @@ func (f *fakeMealPlanShoppingRepo) UpdateStatus(context.Context, household.House
 	return nil, tracking.ErrShoppingListItemNotFound
 }
 
+func (f *fakeMealPlanShoppingRepo) MarkInCart(context.Context, household.HouseholdID, tracking.ShoppingListItemID) (*tracking.ShoppingListItem, error) {
+	return nil, tracking.ErrShoppingListItemNotFound
+}
+
 func (f *fakeMealPlanShoppingRepo) ListByStatus(context.Context, household.HouseholdID, tracking.ItemStatus) ([]*tracking.ShoppingListItem, error) {
 	return nil, nil
 }

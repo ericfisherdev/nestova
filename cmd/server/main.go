@@ -18,6 +18,8 @@ import (
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
+	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
+	kioskapp "github.com/ericfisherdev/nestova/internal/kiosk/app"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
 	mealsdomain "github.com/ericfisherdev/nestova/internal/meals/domain"
@@ -469,6 +471,24 @@ func runServer(logger *slog.Logger) error {
 	}
 	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger, cfg.Media.MaxUploadBytes)
 
+	// NES-128: kiosk device auth + the touch-first kiosk shell. The kiosk
+	// service authenticates the wall-mounted display's bearer-token cookie
+	// (a DEVICE identity, never a member session); the web handlers build
+	// read-only views directly from each bounded context's application
+	// service, reusing exactly the same services already wired above.
+	kioskDeviceRepo := kioskadapter.NewKioskDeviceRepository(pool)
+	kioskActivationCodeRepo := kioskadapter.NewActivationCodeRepository(pool)
+	kioskService, err := kioskapp.NewKioskService(kioskDeviceRepo, kioskActivationCodeRepo, nil)
+	if err != nil {
+		return fmt.Errorf("create kiosk service: %w", err)
+	}
+	settingsWebHandlers := kioskadapter.NewSettingsWebHandlers(kioskService, sm, logger)
+	kioskWebHandlers := kioskadapter.NewKioskWebHandlers(
+		kioskService, taskInstanceRepo, recurringTaskRepo, unifiedCalendarService,
+		plannerService, recipeRepo, shoppingListService, ingredientRepo,
+		albumService, photoService, householdRepo, sm, logger, cfg.Session.Secure, nil,
+	)
+
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,
 		Ready: func(ctx context.Context) error {
@@ -484,11 +504,18 @@ func runServer(logger *slog.Logger) error {
 		Middleware: []middleware.Middleware{
 			sm.LoadAndSave,
 			authadapter.Authenticate(sm, householdRepo),
+			// NES-128: loads the kiosk device identity (if the request carries a
+			// valid, active kiosk cookie) alongside the member identity above;
+			// neither middleware rejects a request on its own — RequireMember and
+			// kioskadapter.RequireKioskOrMember enforce identity per route group.
+			kioskadapter.AuthenticateDevice(kioskService, logger),
 		},
 		Routes: func(mux *http.ServeMux) {
 			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers)
+			registerKioskPages(mux, kioskWebHandlers)
 		},
 	})
 

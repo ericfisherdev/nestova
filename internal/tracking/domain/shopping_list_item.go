@@ -17,6 +17,10 @@ var (
 	// ErrInvalidShoppingListItem is returned when an item is not identified by
 	// exactly one of an ingredient or a free-text name.
 	ErrInvalidShoppingListItem = errors.New("tracking: shopping list item must have exactly one of ingredient or name")
+	// ErrShoppingListItemNotInCartable is returned by MarkInCart when the item
+	// exists but its current status is neither needed nor in_cart (i.e. it is
+	// already purchased) — the item cannot move backward into in_cart.
+	ErrShoppingListItemNotInCartable = errors.New("tracking: shopping list item cannot be marked in cart from its current status")
 )
 
 // ShoppingListItem is one entry on a household's unified shopping list. It is
@@ -79,6 +83,15 @@ func (i *ShoppingListItem) Validate() error {
 //   - UpdateStatus transitions an item's status within householdID and returns
 //     the updated item, or ErrShoppingListItemNotFound when the id is unknown in
 //     that household (so a member cannot transition another household's item).
+//   - MarkInCart atomically transitions an item from needed to in_cart within
+//     householdID; if it is already in_cart the call is a no-op (still
+//     returns the item, unchanged). Any other current status (i.e. already
+//     purchased) is rejected with ErrShoppingListItemNotInCartable rather
+//     than moving the item backward. Returns ErrShoppingListItemNotFound when
+//     the id is unknown in that household. This is the guarded, single-target
+//     transition the kiosk's device-authenticated shopping tab uses (NES-128
+//     AC5) — unlike UpdateStatus, which accepts any of the three lifecycle
+//     statuses and is reserved for the member-facing /groceries page.
 //   - ListByStatus returns the household's items in the given status ordered by
 //     creation, or an empty slice when none match.
 type ShoppingListRepository interface {
@@ -86,5 +99,6 @@ type ShoppingListRepository interface {
 	AddRestockIfAbsent(ctx context.Context, item *ShoppingListItem) (inserted bool, err error)
 	AddMealPlanIfAbsent(ctx context.Context, item *ShoppingListItem) (inserted bool, err error)
 	UpdateStatus(ctx context.Context, householdID household.HouseholdID, id ShoppingListItemID, status ItemStatus) (*ShoppingListItem, error)
+	MarkInCart(ctx context.Context, householdID household.HouseholdID, id ShoppingListItemID) (*ShoppingListItem, error)
 	ListByStatus(ctx context.Context, householdID household.HouseholdID, status ItemStatus) ([]*ShoppingListItem, error)
 }

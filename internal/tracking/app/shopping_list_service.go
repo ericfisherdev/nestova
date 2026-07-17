@@ -62,6 +62,17 @@ func (s *ShoppingListService) TransitionStatus(ctx context.Context, householdID 
 	return s.items.UpdateStatus(ctx, householdID, itemID, status)
 }
 
+// MarkInCart transitions an item to in_cart within householdID, guarding the
+// source state at the repository (needed→in_cart or an in_cart no-op only;
+// any other current status, i.e. already purchased, is rejected with
+// domain.ErrShoppingListItemNotInCartable rather than moving the item
+// backward). This is the kiosk's one allowed shopping mutation (NES-128 AC5);
+// TransitionStatus above remains the member-facing page's unguarded
+// any-status transition.
+func (s *ShoppingListService) MarkInCart(ctx context.Context, householdID household.HouseholdID, itemID domain.ShoppingListItemID) (*domain.ShoppingListItem, error) {
+	return s.items.MarkInCart(ctx, householdID, itemID)
+}
+
 // ListByStatus returns the household's items in the given status.
 func (s *ShoppingListService) ListByStatus(ctx context.Context, householdID household.HouseholdID, status domain.ItemStatus) ([]*domain.ShoppingListItem, error) {
 	if !status.Valid() {
