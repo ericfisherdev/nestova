@@ -139,6 +139,53 @@ func TestFindByEmailUnknownReturnsErrInvalidCredentials(t *testing.T) {
 	}
 }
 
+// TestFindByMemberID covers NES-134's owner-reauth lookup: finding a
+// credential by member id (rather than email) once a password is set, and
+// the ErrInvalidCredentials sentinel both for a member with no password set
+// and for an unknown member id.
+func TestFindByMemberID(t *testing.T) {
+	credRepo, hhRepo, _ := newTestRepos(t)
+	memberID := seedMember(t, hhRepo)
+
+	hash, err := crypto.Hash("supersecret")
+	if err != nil {
+		t.Fatalf("crypto.Hash: %v", err)
+	}
+	if err := credRepo.SetPassword(testCtx(t), memberID, "owner@example.com", hash); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+
+	cred, err := credRepo.FindByMemberID(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("FindByMemberID: %v", err)
+	}
+	if cred.MemberID != memberID {
+		t.Errorf("FindByMemberID MemberID = %v, want %v", cred.MemberID, memberID)
+	}
+	if cred.PasswordHash != hash {
+		t.Errorf("FindByMemberID PasswordHash differs from stored value")
+	}
+}
+
+func TestFindByMemberIDNoPasswordSet(t *testing.T) {
+	credRepo, hhRepo, _ := newTestRepos(t)
+	memberID := seedMember(t, hhRepo)
+
+	_, err := credRepo.FindByMemberID(testCtx(t), memberID)
+	if !errors.Is(err, authdomain.ErrInvalidCredentials) {
+		t.Errorf("FindByMemberID(no password set) error = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestFindByMemberIDUnknownMember(t *testing.T) {
+	credRepo, _, _ := newTestRepos(t)
+
+	_, err := credRepo.FindByMemberID(testCtx(t), household.NewMemberID())
+	if !errors.Is(err, authdomain.ErrInvalidCredentials) {
+		t.Errorf("FindByMemberID(unknown member) error = %v, want ErrInvalidCredentials", err)
+	}
+}
+
 func TestCredentialColumnsArePaired(t *testing.T) {
 	credRepo, hhRepo, pool := newTestRepos(t)
 	memberID := seedMember(t, hhRepo)

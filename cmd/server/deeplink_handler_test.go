@@ -273,6 +273,13 @@ func (r successCredRepo) FindByEmail(_ context.Context, email string) (*authdoma
 	return &authdomain.Credential{MemberID: r.memberID, PasswordHash: r.hash}, nil
 }
 
+func (r successCredRepo) FindByMemberID(_ context.Context, memberID household.MemberID) (*authdomain.Credential, error) {
+	if memberID != r.memberID {
+		return nil, authdomain.ErrInvalidCredentials
+	}
+	return &authdomain.Credential{MemberID: r.memberID, PasswordHash: r.hash}, nil
+}
+
 func (r successCredRepo) SetPassword(_ context.Context, _ household.MemberID, _, _ string) error {
 	return nil
 }

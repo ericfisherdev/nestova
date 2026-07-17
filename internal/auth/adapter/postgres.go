@@ -22,6 +22,9 @@ const (
 	// memberEmailUnique is the unique constraint on member.email (named in the
 	// 00002_auth migration).
 	memberEmailUnique = "member_email_unique"
+	// foreignKeyViolation is the PostgreSQL SQLSTATE for a foreign-key
+	// violation, used by mfa_postgres.go to map member_mfa's tenant FK.
+	foreignKeyViolation = "23503"
 )
 
 // CredentialRepository is the pgx-backed implementation of
@@ -70,6 +73,30 @@ func (r *CredentialRepository) FindByEmail(ctx context.Context, email string) (*
 	memberID, err := household.ParseMemberID(idStr)
 	if err != nil {
 		return nil, fmt.Errorf("find by email: parse member id: %w", err)
+	}
+
+	return &authdomain.Credential{
+		MemberID:     memberID,
+		PasswordHash: passwordHash,
+	}, nil
+}
+
+// FindByMemberID returns the Credential for the given member id, or
+// authdomain.ErrInvalidCredentials when the member has no password_hash set.
+func (r *CredentialRepository) FindByMemberID(ctx context.Context, memberID household.MemberID) (*authdomain.Credential, error) {
+	const q = `
+		SELECT password_hash
+		  FROM member
+		 WHERE id = $1
+		   AND password_hash IS NOT NULL`
+
+	var passwordHash string
+	err := r.dbtx.QueryRow(ctx, q, memberID.String()).Scan(&passwordHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, authdomain.ErrInvalidCredentials
+		}
+		return nil, fmt.Errorf("find by member id: %w", err)
 	}
 
 	return &authdomain.Credential{

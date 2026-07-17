@@ -43,15 +43,29 @@ type KioskActivationReveal struct {
 	ExpiresInMinutes int
 }
 
-// SettingsView is the view model for the GET /settings page.
-type SettingsView struct {
+// KioskSettingsView is the view model for the settings page's kiosk device
+// section, shown only to a parent member (see SettingsView.ShowKioskSection).
+type KioskSettingsView struct {
 	// Devices is the household's full kiosk device history, newest first.
 	Devices []KioskDeviceView
 	// NewToken is set only immediately after a successful
 	// GenerateActivationCode, to render the one-time reveal panel; nil on
 	// every other render.
 	NewToken *KioskActivationReveal
-	// CSRFToken is embedded in the generate and revoke forms.
+}
+
+// SettingsView is the view model for the GET /settings page (NES-128 +
+// NES-134). The MFA section renders for every member regardless of role;
+// the kiosk section renders only when ShowKioskSection is true (parent-only
+// — the page-level parent gate NES-128 originally applied has moved to this
+// section-level flag so every member can reach the page for their own MFA).
+type SettingsView struct {
+	// ShowKioskSection gates the kiosk device section, true only for a
+	// parent (owner/adult) member.
+	ShowKioskSection bool
+	Kiosk            KioskSettingsView
+	MFA              MFASettingsView
+	// CSRFToken is shared by every form on the page (kiosk and MFA alike).
 	CSRFToken string
 }
 
@@ -59,16 +73,20 @@ type SettingsView struct {
 // Page
 // ---------------------------------------------------------------------------
 
-// SettingsPage renders the parent-only household settings page. NES-128 adds
-// its first section: kiosk device provisioning.
+// SettingsPage renders the household settings page. Every member reaches it
+// for their own MFA section (NES-134); the kiosk device section (NES-128)
+// renders only for a parent member.
 templ SettingsPage(view SettingsView) {
 	<div class="mx-auto flex max-w-3xl flex-col gap-6 p-6">
 		<h1 class="text-2xl font-semibold text-ink">Settings</h1>
-		@kioskSection(view)
+		@mfaSection(view.MFA)
+		if view.ShowKioskSection {
+			@kioskSection(view.Kiosk, view.CSRFToken)
+		}
 	</div>
 }
 
-templ kioskSection(view SettingsView) {
+templ kioskSection(view KioskSettingsView, csrfToken string) {
 	@Card("Kiosk display") {
 		<p class="mb-4 text-sm text-ink-secondary">
 			A kiosk is a wall-mounted touchscreen that shows chores, the calendar,
@@ -79,8 +97,8 @@ templ kioskSection(view SettingsView) {
 		if view.NewToken != nil {
 			@kioskActivationReveal(*view.NewToken)
 		}
-		@kioskDeviceList(view.Devices, view.CSRFToken)
-		@kioskGenerateForm(view.CSRFToken)
+		@kioskDeviceList(view.Devices, csrfToken)
+		@kioskGenerateForm(csrfToken)
 	}
 }
 

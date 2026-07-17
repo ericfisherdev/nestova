@@ -8,7 +8,8 @@ import (
 )
 
 func TestSettingsPage_NoDeviceYet(t *testing.T) {
-	out := renderString(t, components.SettingsPage(components.SettingsView{CSRFToken: "csrf-test"}))
+	view := components.SettingsView{ShowKioskSection: true, CSRFToken: "csrf-test"}
+	out := renderString(t, components.SettingsPage(view))
 	if !strings.Contains(out, "No kiosk device has been provisioned yet") {
 		t.Errorf("settings page missing empty-state copy: %q", out)
 	}
@@ -20,11 +21,25 @@ func TestSettingsPage_NoDeviceYet(t *testing.T) {
 	}
 }
 
+func TestSettingsPage_HidesKioskSectionForNonParent(t *testing.T) {
+	view := components.SettingsView{ShowKioskSection: false, CSRFToken: "csrf-test"}
+	out := renderString(t, components.SettingsPage(view))
+	if strings.Contains(out, "Kiosk display") {
+		t.Errorf("settings page must not show the kiosk section for a non-parent member: %q", out)
+	}
+	if strings.Contains(out, `action="/settings/kiosk/generate"`) {
+		t.Errorf("settings page must not offer the kiosk generate form for a non-parent member: %q", out)
+	}
+}
+
 func TestSettingsPage_ShowsActiveDeviceWithRevokeAction(t *testing.T) {
 	view := components.SettingsView{
-		Devices: []components.KioskDeviceView{
-			{ID: "dev-1", Name: "Kitchen wall display", CreatedAtLabel: "Jul 16, 2026 3:04 PM", Active: true},
-			{ID: "dev-0", Name: "Old tablet", RevokedAtLabel: "Jun 1, 2026 9:00 AM", Active: false},
+		ShowKioskSection: true,
+		Kiosk: components.KioskSettingsView{
+			Devices: []components.KioskDeviceView{
+				{ID: "dev-1", Name: "Kitchen wall display", CreatedAtLabel: "Jul 16, 2026 3:04 PM", Active: true},
+				{ID: "dev-0", Name: "Old tablet", RevokedAtLabel: "Jun 1, 2026 9:00 AM", Active: false},
+			},
 		},
 		CSRFToken: "csrf-test",
 	}
@@ -46,10 +61,13 @@ func TestSettingsPage_ShowsActiveDeviceWithRevokeAction(t *testing.T) {
 
 func TestSettingsPage_RevealsNewActivationCodeOnce(t *testing.T) {
 	view := components.SettingsView{
-		NewToken: &components.KioskActivationReveal{
-			Code:             "ABCD-EFGH-JK",
-			ActivationURL:    "https://nestova.local/kiosk/activate?code=ABCD-EFGH-JK",
-			ExpiresInMinutes: 15,
+		ShowKioskSection: true,
+		Kiosk: components.KioskSettingsView{
+			NewToken: &components.KioskActivationReveal{
+				Code:             "ABCD-EFGH-JK",
+				ActivationURL:    "https://nestova.local/kiosk/activate?code=ABCD-EFGH-JK",
+				ExpiresInMinutes: 15,
+			},
 		},
 		CSRFToken: "csrf-test",
 	}

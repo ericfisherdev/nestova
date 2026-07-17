@@ -1,13 +1,13 @@
 package adapter
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 
-	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -15,24 +15,22 @@ import (
 	"github.com/ericfisherdev/nestova/internal/kiosk/app"
 	"github.com/ericfisherdev/nestova/internal/kiosk/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	"github.com/ericfisherdev/nestova/web/components"
 )
-
-// settingsPath is the canonical page path the settings routes redirect back to
-// after a mutation that has nothing left to reveal.
-const settingsPath = "/settings"
 
 // settingsDisplayDateLayout is the human-readable date layout shown for
 // provisioning/revocation timestamps.
 const settingsDisplayDateLayout = "Jan 2, 2006 3:04 PM"
 
-// SettingsLayoutFunc wraps page content in the app shell; home.go provides it,
-// mirroring every other bounded context's adapter.
-type SettingsLayoutFunc func(member *household.Member) func(templ.Component) templ.Component
-
-// SettingsWebHandlers serves the parent-only /settings page's kiosk device
-// section: generating and revoking the household's kiosk token.
+// SettingsWebHandlers serves the kiosk device section of the shared
+// /settings page: generating and revoking the household's kiosk token.
+// NES-134 moved that page's overall composition (which also includes the
+// auth context's per-member MFA section, rendered for every member) to the
+// composition root (cmd/server/home.go's registerSettingsPage) — this type
+// owns only the kiosk-specific reads and mutations, never writing an HTTP
+// response for a mutation's SUCCESS path itself (the composition root does,
+// after composing both sections); it still writes error responses directly
+// for failures that never need the other section (auth/role/CSRF/not-found).
 type SettingsWebHandlers struct {
 	kiosk  *app.KioskService
 	sm     *scs.SessionManager
@@ -56,86 +54,85 @@ func NewSettingsWebHandlers(kiosk *app.KioskService, sm *scs.SessionManager, log
 	return &SettingsWebHandlers{kiosk: kiosk, sm: sm, logger: logger}
 }
 
-// Page handles GET /settings. Parent-only (owner/adult); a child member
-// receives 403, mirroring the reward admin and trade history pages' gate.
-func (h *SettingsWebHandlers) Page(layoutFn SettingsLayoutFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		member, ok := h.requireParent(w, r)
-		if !ok {
-			return
-		}
-		view, err := h.buildView(r, member, nil)
-		if err != nil {
-			h.logger.ErrorContext(r.Context(), "settings: build view", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		if err := render.Page(r.Context(), w, r, layoutFn(member), components.SettingsPage(view)); err != nil {
-			h.logger.ErrorContext(r.Context(), "settings: render page", "error", err)
-		}
+// SectionView builds the kiosk section's view model for member, reporting
+// show=false when the section must not be rendered at all — a non-parent
+// (child) member never sees the kiosk section, matching NES-128's original
+// parent-only gate, now applied at section level rather than blocking the
+// whole /settings page (NES-134 opens the page itself to every member for
+// their own MFA section). reveal is the one-time activation-code reveal to
+// embed, non-nil only in the same response as a successful
+// CreateActivationCode call.
+func (h *SettingsWebHandlers) SectionView(ctx context.Context, member *household.Member, reveal *components.KioskActivationReveal) (view components.KioskSettingsView, show bool, err error) {
+	if !member.Role.IsParent() {
+		return components.KioskSettingsView{}, false, nil
 	}
+	devices, err := h.kiosk.ListByHousehold(ctx, member.HouseholdID)
+	if err != nil {
+		return components.KioskSettingsView{}, false, err
+	}
+	views := make([]components.KioskDeviceView, 0, len(devices))
+	for _, d := range devices {
+		views = append(views, toKioskDeviceView(d))
+	}
+	return components.KioskSettingsView{Devices: views, NewToken: reveal}, true, nil
 }
 
-// GenerateActivationCode handles POST /settings/kiosk/generate. It issues a
-// short-lived, single-use activation code and renders the settings page
-// directly — not a redirect — because the raw code exists only in this one
-// response; a redirect would lose it. The settings page never displays the
-// long-lived kiosk_device bearer token itself: that is generated only when
-// the kiosk device redeems this code at /kiosk/activate.
-func (h *SettingsWebHandlers) GenerateActivationCode(layoutFn SettingsLayoutFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		member, ok := h.requireParent(w, r)
-		if !ok {
-			return
-		}
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		if !authadapter.VerifyCSRF(r, h.sm) {
-			http.Error(w, "invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
-		// Trim before the empty check: a whitespace-only submission (e.g. a
-		// stray space) must fall back to the default the same as a genuinely
-		// empty field, not reach CreateActivationCode with a non-empty string
-		// that Validate then rejects as blank after its own trim — turning a
-		// harmless input into a 500.
-		name := strings.TrimSpace(r.FormValue("name"))
-		if name == "" {
-			name = "Kiosk"
-		}
-		code, rawCode, err := h.kiosk.CreateActivationCode(r.Context(), member.HouseholdID, name)
-		if err != nil {
-			h.logger.ErrorContext(r.Context(), "settings: create activation code", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		reveal := &components.KioskActivationReveal{
-			Code:             rawCode,
-			ActivationURL:    activationURL(r, rawCode),
-			ExpiresInMinutes: int(domain.ActivationCodeTTL.Minutes()),
-		}
-		view, err := h.buildView(r, member, reveal)
-		if err != nil {
-			h.logger.ErrorContext(r.Context(), "settings: build view after code generation", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		h.logger.InfoContext(r.Context(), "kiosk activation code generated", "code_id", code.ID.String())
-		// This response reveals a live credential (even though it is
-		// short-lived and single-use): it must never be cached by a shared
-		// proxy or stored in the browser's disk cache.
-		w.Header().Set("Cache-Control", "no-store")
-		if err := render.Render(r.Context(), w, http.StatusOK, layoutFn(member)(components.SettingsPage(view))); err != nil {
-			h.logger.ErrorContext(r.Context(), "settings: render after code generation", "error", err)
-		}
+// CreateActivationCode handles the mutation behind POST
+// /settings/kiosk/generate: it verifies CSRF and the parent-only gate, then
+// issues a new short-lived, single-use activation code. On any failure it
+// writes the appropriate error response directly and returns ok=false (the
+// caller does nothing further). On success it returns the authenticated
+// member and the one-time reveal; the caller (the composition root) is
+// responsible for composing and rendering the full settings page — the raw
+// code exists only in that one response, so a redirect would lose it. The
+// settings page never displays the long-lived kiosk_device bearer token
+// itself: that is generated only when the kiosk device redeems this code at
+// /kiosk/activate.
+func (h *SettingsWebHandlers) CreateActivationCode(w http.ResponseWriter, r *http.Request) (member *household.Member, reveal *components.KioskActivationReveal, ok bool) {
+	member, ok = h.requireParent(w, r)
+	if !ok {
+		return nil, nil, false
 	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return nil, nil, false
+	}
+	if !authadapter.VerifyCSRF(r, h.sm) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return nil, nil, false
+	}
+
+	// Trim before the empty check: a whitespace-only submission (e.g. a
+	// stray space) must fall back to the default the same as a genuinely
+	// empty field, not reach CreateActivationCode with a non-empty string
+	// that Validate then rejects as blank after its own trim — turning a
+	// harmless input into a 500.
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		name = "Kiosk"
+	}
+	code, rawCode, err := h.kiosk.CreateActivationCode(r.Context(), member.HouseholdID, name)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "settings: create activation code", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+
+	h.logger.InfoContext(r.Context(), "kiosk activation code generated", "code_id", code.ID.String())
+	reveal = &components.KioskActivationReveal{
+		Code:             rawCode,
+		ActivationURL:    activationURL(r, rawCode),
+		ExpiresInMinutes: int(domain.ActivationCodeTTL.Minutes()),
+	}
+	return member, reveal, true
 }
 
-// RevokeKioskToken handles POST /settings/kiosk/{id}/revoke.
+// RevokeKioskToken handles the mutation behind POST
+// /settings/kiosk/{id}/revoke: it verifies CSRF and the parent-only gate,
+// then revokes the device. On any failure it writes the appropriate error
+// response directly and returns ok=false. On success it returns the
+// authenticated member; the caller redirects back to the settings page (no
+// reveal to compose here, unlike CreateActivationCode).
 //
 // Error mapping (mirrors tasksadapter.GamificationWebHandlers.ArchiveReward's
 // convention for a stale parent admin action):
@@ -144,43 +141,38 @@ func (h *SettingsWebHandlers) GenerateActivationCode(layoutFn SettingsLayoutFunc
 //   - malformed device id        → 400
 //   - ErrKioskDeviceNotFound     → 404
 //   - other                      → 500
-func (h *SettingsWebHandlers) RevokeKioskToken(w http.ResponseWriter, r *http.Request) {
-	member, ok := h.requireParent(w, r)
+func (h *SettingsWebHandlers) RevokeKioskToken(w http.ResponseWriter, r *http.Request) (member *household.Member, ok bool) {
+	member, ok = h.requireParent(w, r)
 	if !ok {
-		return
+		return nil, false
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
-		return
+		return nil, false
 	}
 	if !authadapter.VerifyCSRF(r, h.sm) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
-		return
+		return nil, false
 	}
 	id, err := domain.ParseKioskDeviceID(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "invalid kiosk device id", http.StatusBadRequest)
-		return
+		return nil, false
 	}
 	if err := h.kiosk.Revoke(r.Context(), member.HouseholdID, id); err != nil {
 		if errors.Is(err, domain.ErrKioskDeviceNotFound) {
 			http.Error(w, "kiosk device not found", http.StatusNotFound)
-			return
+			return nil, false
 		}
 		h.logger.ErrorContext(r.Context(), "settings: revoke kiosk device", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, false
 	}
-	if render.IsHTMX(r) {
-		w.Header().Set("HX-Redirect", settingsPath)
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	http.Redirect(w, r, settingsPath, http.StatusSeeOther)
+	return member, true
 }
 
 // requireParent resolves the current member and enforces the parent-only role
-// gate shared by every action on this page, writing the appropriate error
+// gate shared by every kiosk-section mutation, writing the appropriate error
 // response and returning ok=false when either check fails.
 func (h *SettingsWebHandlers) requireParent(w http.ResponseWriter, r *http.Request) (*household.Member, bool) {
 	member, ok := authadapter.CurrentMember(r.Context())
@@ -193,24 +185,6 @@ func (h *SettingsWebHandlers) requireParent(w http.ResponseWriter, r *http.Reque
 		return nil, false
 	}
 	return member, true
-}
-
-// buildView assembles the SettingsView for member's household. reveal is
-// non-nil only immediately after a successful GenerateActivationCode.
-func (h *SettingsWebHandlers) buildView(r *http.Request, member *household.Member, reveal *components.KioskActivationReveal) (components.SettingsView, error) {
-	devices, err := h.kiosk.ListByHousehold(r.Context(), member.HouseholdID)
-	if err != nil {
-		return components.SettingsView{}, err
-	}
-	views := make([]components.KioskDeviceView, 0, len(devices))
-	for _, d := range devices {
-		views = append(views, toKioskDeviceView(d))
-	}
-	return components.SettingsView{
-		Devices:   views,
-		NewToken:  reveal,
-		CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
-	}, nil
 }
 
 func toKioskDeviceView(d *domain.KioskDevice) components.KioskDeviceView {

@@ -34,6 +34,8 @@ var ErrEmailAlreadyInUse = errors.New("auth: email already in use")
 // Error contracts:
 //   - FindByEmail returns ErrInvalidCredentials when no member with that email
 //     and a password_hash exists (no user enumeration).
+//   - FindByMemberID returns ErrInvalidCredentials when the member has no
+//     password_hash set.
 //   - SetPassword returns household.ErrMemberNotFound when the member id does
 //     not exist, and ErrEmailAlreadyInUse when the email belongs to another
 //     member.
@@ -42,6 +44,16 @@ type CredentialRepository interface {
 	// returns ErrInvalidCredentials when no active credential is found, so
 	// callers cannot distinguish "no account" from "wrong password".
 	FindByEmail(ctx context.Context, email string) (*Credential, error)
+
+	// FindByMemberID looks up the credential for a known member id, used by
+	// password re-authentication flows where the caller already has an
+	// authenticated member (e.g. the household owner re-entering their own
+	// password to authorize an admin action, NES-134) rather than an email.
+	// Unlike FindByEmail, there is no user-enumeration concern here — the
+	// caller already knows memberID exists — but the error contract mirrors
+	// it for consistency: ErrInvalidCredentials when the member has no
+	// password_hash set.
+	FindByMemberID(ctx context.Context, memberID household.MemberID) (*Credential, error)
 
 	// SetPassword stores (or replaces) the email and password hash on the
 	// member row identified by memberID. Returns household.ErrMemberNotFound
