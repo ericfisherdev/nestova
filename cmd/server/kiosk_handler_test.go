@@ -16,6 +16,7 @@ import (
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	calendardomain "github.com/ericfisherdev/nestova/internal/calendar/domain"
+	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	kioskapp "github.com/ericfisherdev/nestova/internal/kiosk/app"
@@ -144,6 +145,14 @@ func (f *fakeActivationCodeRepo) Redeem(_ context.Context, codeHash string, now 
 // Test harness
 // ---------------------------------------------------------------------------
 
+// kioskTestPublicBaseURL is the PUBLIC_BASE_URL buildKioskTestHandler wires
+// every test with (NES-129), so kiosk QR generation is exercised against a
+// real configured origin rather than always falling back to whatever Host
+// the test's httptest request happens to carry — the fallback path has its
+// own dedicated coverage in internal/kiosk/adapter's white-box
+// deepLinkURL tests.
+const kioskTestPublicBaseURL = "https://kiosk.test"
+
 // kioskFakes bundles the fakes a kiosk test seeds and asserts against.
 type kioskFakes struct {
 	devices  *fakeKioskDeviceRepo
@@ -204,9 +213,19 @@ func buildKioskTestHandler(t *testing.T, member *household.Member) (http.Handler
 		t.Fatalf("NewKioskService: %v", err)
 	}
 	settingsHandlers := kioskadapter.NewSettingsWebHandlers(kioskSvc, sm, logger)
+	deepLinkSigner, err := deeplinkapp.NewSigner([]byte("kiosk-test-harness-deep-link-key"))
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
 	kioskHandlers := kioskadapter.NewKioskWebHandlers(
 		kioskSvc, instanceRepo, recurringRepo, unifiedCalendar, plannerSvc, recipeRepo,
-		shoppingSvc, ingredientCatalog, albumSvc, photoSvc, householdRepo, sm, logger, false, nil,
+		shoppingSvc, ingredientCatalog, albumSvc, photoSvc, householdRepo, &configurableRewardRepo{},
+		// A real (non-empty) publicBaseURL exercises the absolute-URL contract
+		// deep-link QR generation actually promises (NES-129): every generated
+		// link must be reachable from a phone off the kiosk's own network
+		// segment, not merely relative to whatever Host the test's httptest
+		// request happens to carry.
+		sm, logger, false, deepLinkSigner, kioskTestPublicBaseURL, nil,
 	)
 
 	// GET /login is registered so seedAuthedSession (used by the parent/child
@@ -616,6 +635,71 @@ func TestKioskChores_RevokedDeviceDenied(t *testing.T) {
 	handler.ServeHTTP(afterRec, after)
 	if afterRec.Code != http.StatusUnauthorized {
 		t.Fatalf("GET /kiosk/chores after revoke: status = %d, want 401", afterRec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NES-129: QR refresh self-poll
+// ---------------------------------------------------------------------------
+
+// TestKioskChores_SelfPollsForFreshQRCodes asserts the chores tab's content
+// wrapper carries the htmx self-poll wiring (finding: a display left open
+// past deeplinkapp.LinkTTL would otherwise keep showing QR codes that scan
+// to an already-expired rescan page), and that its target,
+// GET /kiosk/chores/content, returns just the content fragment (not the full
+// kiosk shell) so the poll never duplicates <html>/<head>/the tab bar.
+func TestKioskChores_SelfPollsForFreshQRCodes(t *testing.T) {
+	adult := adminTestAdult()
+	handler, _, kioskSvc, _ := buildKioskTestHandler(t, adult)
+	_, rawToken := provisionDevice(t, kioskSvc, adult.HouseholdID, "Kitchen")
+
+	req := httptest.NewRequest(http.MethodGet, "/kiosk/chores", nil)
+	req.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /kiosk/chores: status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="kiosk-chores-content"`) {
+		t.Errorf("response missing the self-poll wrapper id: %s", body)
+	}
+	if !strings.Contains(body, `hx-get="/kiosk/chores/content"`) {
+		t.Errorf("response missing the poll target: %s", body)
+	}
+	// deeplinkapp.LinkTTL is 10 minutes; the poll interval is half of that.
+	if !strings.Contains(body, `hx-trigger="every 300s"`) {
+		t.Errorf("response missing the expected poll interval (every 300s): %s", body)
+	}
+
+	contentReq := httptest.NewRequest(http.MethodGet, "/kiosk/chores/content", nil)
+	contentReq.AddCookie(&http.Cookie{Name: kioskadapter.CookieName, Value: rawToken})
+	contentRec := httptest.NewRecorder()
+	handler.ServeHTTP(contentRec, contentReq)
+	if contentRec.Code != http.StatusOK {
+		t.Fatalf("GET /kiosk/chores/content: status = %d, want 200", contentRec.Code)
+	}
+	contentBody := contentRec.Body.String()
+	if strings.Contains(contentBody, "<html") {
+		t.Errorf("the poll fragment must not include the full kiosk shell: %s", contentBody)
+	}
+	if !strings.Contains(contentBody, `id="kiosk-chores-content"`) {
+		t.Errorf("poll fragment missing its own self-poll wrapper (must re-arm on every swap): %s", contentBody)
+	}
+}
+
+// TestKioskChoresContent_NoIdentityUnauthorized mirrors
+// TestKioskChores_NoIdentityUnauthorized for the poll-target endpoint: it
+// must never become an unauthenticated back door into household data.
+func TestKioskChoresContent_NoIdentityUnauthorized(t *testing.T) {
+	handler, _, _, _ := buildKioskTestHandler(t, testMember())
+
+	req := httptest.NewRequest(http.MethodGet, "/kiosk/chores/content", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /kiosk/chores/content with no identity: status = %d, want 401", rec.Code)
 	}
 }
 
