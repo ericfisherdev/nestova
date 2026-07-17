@@ -17,6 +17,8 @@ import (
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
+	deeplinkadapter "github.com/ericfisherdev/nestova/internal/deeplink/adapter"
+	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	kioskapp "github.com/ericfisherdev/nestova/internal/kiosk/app"
@@ -105,6 +107,13 @@ const (
 	// interval.
 	calendarSyncTickTimeout = 5 * time.Minute
 )
+
+// deepLinkSignerPurpose is the derivation label passed to
+// deeplinkapp.NewSignerFromSecret (NES-129), so the QR deep-link signing key
+// is cryptographically distinct from every other consumer of
+// cfg.Session.Secret (e.g. calendarapp.OAuthStateSigner, which signs with the
+// raw secret directly) even though both trace back to the same root secret.
+const deepLinkSignerPurpose = "nestova:deeplink:v1"
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -471,6 +480,20 @@ func runServer(logger *slog.Logger) error {
 	}
 	mediaWebHandlers := mediaadapter.NewWebHandlers(albumService, photoService, householdRepo, sm, logger, cfg.Media.MaxUploadBytes)
 
+	// NES-129: QR deep-link signing. The signing key is derived from
+	// cfg.Session.Secret (its own doc comment already reserves it for "future
+	// signing needs") via a purpose-scoped HMAC derivation rather than reused
+	// raw, so it stays cryptographically independent of every other secret.Secret
+	// consumer (deeplinkapp.NewSignerFromSecret's doc explains why).
+	deepLinkSigner, err := deeplinkapp.NewSignerFromSecret([]byte(cfg.Session.Secret), deepLinkSignerPurpose)
+	if err != nil {
+		return fmt.Errorf("create deep link signer: %w", err)
+	}
+	deepLinkWebHandlers := deeplinkadapter.NewWebHandlers(
+		deepLinkSigner, taskService, recurringTaskRepo, taskInstanceRepo,
+		rewardService, rewardRepo, sm, logger, nil,
+	)
+
 	// NES-128: kiosk device auth + the touch-first kiosk shell. The kiosk
 	// service authenticates the wall-mounted display's bearer-token cookie
 	// (a DEVICE identity, never a member session); the web handlers build
@@ -486,7 +509,8 @@ func runServer(logger *slog.Logger) error {
 	kioskWebHandlers := kioskadapter.NewKioskWebHandlers(
 		kioskService, taskInstanceRepo, recurringTaskRepo, unifiedCalendarService,
 		plannerService, recipeRepo, shoppingListService, ingredientRepo,
-		albumService, photoService, householdRepo, sm, logger, cfg.Session.Secure, nil,
+		albumService, photoService, householdRepo, rewardRepo, sm, logger,
+		cfg.Session.Secure, deepLinkSigner, cfg.Server.PublicBaseURL, nil,
 	)
 
 	srv := httpserver.New(cfg, httpserver.Deps{
@@ -516,6 +540,7 @@ func runServer(logger *slog.Logger) error {
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers)
 			registerKioskPages(mux, kioskWebHandlers)
+			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},
 	})
 

@@ -10,6 +10,7 @@ import (
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
+	deeplinkadapter "github.com/ericfisherdev/nestova/internal/deeplink/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
@@ -476,6 +477,10 @@ func registerKioskPages(mux *http.ServeMux, kioskHandlers *kioskadapter.KioskWeb
 		http.Redirect(w, r, "/kiosk/chores", http.StatusSeeOther)
 	})))
 	mux.Handle("GET /kiosk/chores", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Chores)))
+	// GET /kiosk/chores/content re-renders the #kiosk-chores-content fragment
+	// (NES-129): the chores tab's own self-poll (hx-trigger="every ...s")
+	// targets this so its QR codes are re-signed well before they expire.
+	mux.Handle("GET /kiosk/chores/content", requireKioskOrMember(http.HandlerFunc(kioskHandlers.ChoresContent)))
 	mux.Handle("GET /kiosk/calendar", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Calendar)))
 	mux.Handle("GET /kiosk/meals", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Meals)))
 	mux.Handle("GET /kiosk/shopping", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Shopping)))
@@ -484,6 +489,30 @@ func registerKioskPages(mux *http.ServeMux, kioskHandlers *kioskadapter.KioskWeb
 	mux.Handle("POST /kiosk/shopping/{id}/in-cart", requireKioskOrMember(http.HandlerFunc(kioskHandlers.MarkInCart)))
 	mux.Handle("GET /kiosk/photos", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Photos)))
 	mux.Handle("GET /kiosk/photos/{id}/raw", requireKioskOrMember(http.HandlerFunc(kioskHandlers.Raw)))
+}
+
+// registerDeepLinkPages wires the /go/{action}/{id} kiosk QR deep links
+// (NES-129). Every route — including the id-less /go/add-chore — requires a
+// MEMBER session (never a kiosk device identity): the whole point of a deep
+// link is to bridge the wall-mounted kiosk to the scanning member's OWN
+// phone, so the kiosk device itself must never be able to satisfy this gate.
+// RequireMember's existing redirect-to-/login?next=... behavior is exactly
+// the login-continuation flow NES-129 needs — no additional code is required
+// for it here; see internal/auth/adapter's sanitizeNext.
+func registerDeepLinkPages(mux *http.ServeMux, sm *scs.SessionManager, deepLinkHandlers *deeplinkadapter.WebHandlers) {
+	requireMember := authadapter.RequireMember(sm)
+
+	mux.Handle("GET /go/add-chore", requireMember(http.HandlerFunc(deepLinkHandlers.ShowAddChore)))
+	mux.Handle("POST /go/add-chore", requireMember(http.HandlerFunc(deepLinkHandlers.ConfirmAddChore)))
+	// GET /go/{action}/done is the PRG (Post-Redirect-Get) landing page every
+	// successful confirm POST redirects to (NES-129) — registered before the
+	// id-shaped pattern only for readability; net/http's ServeMux resolves
+	// the literal "done" path segment to this handler regardless of
+	// registration order (a literal is more specific than a wildcard at the
+	// same position — see WebHandlers.Done's doc comment).
+	mux.Handle("GET /go/{action}/done", requireMember(http.HandlerFunc(deepLinkHandlers.Done)))
+	mux.Handle("GET /go/{action}/{id}", requireMember(http.HandlerFunc(deepLinkHandlers.Show)))
+	mux.Handle("POST /go/{action}/{id}", requireMember(http.HandlerFunc(deepLinkHandlers.Confirm)))
 }
 
 // dashboardShell builds the ShellProps and nav slice for a given protected

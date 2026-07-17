@@ -1,0 +1,84 @@
+package components
+
+// DeepLinkConfirmView is the view model for GET /go/{action}/{id}'s
+// phone-sized confirm screen (NES-129): the page a member's phone lands on
+// after scanning (or being redirected back to, post-login) a kiosk QR code.
+// Confirming is always an explicit tap — never the GET itself — mirroring
+// KioskActivationPage's "GET never redeems" contract.
+type DeepLinkConfirmView struct {
+	// Heading names the action ("Claim this chore?", "Redeem this reward?").
+	Heading string
+	// Description names the specific target ("Take out the trash", "Movie
+	// night — 50 points").
+	Description string
+	// ConfirmLabel labels the single confirm button ("Claim", "Mark done",
+	// "Redeem", "Continue").
+	ConfirmLabel string
+	// FormAction is the exact URL (path plus the original exp/sig query
+	// string) the confirm POST submits to, so the same signed link that
+	// authorized this GET also authorizes the POST that acts on it.
+	FormAction string
+	CSRFToken  string
+}
+
+// DeepLinkConfirmPage is a standalone, phone-sized document (not the member
+// dashboard shell or the kiosk shell — the visitor is a phone that scanned a
+// QR code, with no sidebar or tab bar to show) presenting one action to
+// confirm.
+templ DeepLinkConfirmPage(view DeepLinkConfirmView) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ view.Heading } – Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="flex min-h-screen items-center justify-center bg-sand p-4 font-sans text-ink">
+			<div class="w-full max-w-sm">
+				<div class="rounded-card bg-surface p-6 text-center shadow-warm" data-testid="deeplink-confirm">
+					<h1 class="mb-2 text-xl font-semibold">{ view.Heading }</h1>
+					<p class="mb-6 text-ink-muted">{ view.Description }</p>
+					<form method="POST" action={ templ.SafeURL(view.FormAction) }>
+						<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+						@Button(view.ConfirmLabel, ButtonPrimary, "submit")
+					</form>
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+// DeepLinkMessageView is the view model for a standalone, one-off message
+// page (NES-129): the friendly "rescan from the kiosk" response to an
+// expired or tampered signed link, a domain-rule rejection surfaced after a
+// confirm (already claimed, insufficient points, out of stock, ...), or the
+// success confirmation after a completed action. All three share one shape —
+// a heading and a message, nothing to act on further — so they share one
+// template.
+type DeepLinkMessageView struct {
+	Heading string
+	Message string
+}
+
+templ DeepLinkMessagePage(view DeepLinkMessageView) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ view.Heading } – Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="flex min-h-screen items-center justify-center bg-sand p-4 font-sans text-ink">
+			<div class="w-full max-w-sm">
+				<div class="rounded-card bg-surface p-6 text-center shadow-warm" data-testid="deeplink-message">
+					<h1 class="mb-2 text-xl font-semibold">{ view.Heading }</h1>
+					<p class="text-ink-muted">{ view.Message }</p>
+				</div>
+			</div>
+		</body>
+	</html>
+}

@@ -68,6 +68,14 @@ templ KioskLayout(props KioskShellProps, content templ.Component) {
 			<title>Nestova Kiosk</title>
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
+			<!-- htmx.min.js (NES-129): the chores tab's QR-refresh self-poll
+			     (hx-get/hx-trigger on #kiosk-chores-content) is the kiosk shell's
+			     first htmx consumer — mirroring layout.templ's identical script-order
+			     precedent (htmx has no init-ordering dependency on the other scripts
+			     here, unlike kiosk-idle.js/alpine.min.js below, so its position
+			     relative to them does not matter; it is placed first purely to match
+			     layout.templ's convention). -->
+			<script src="/static/js/htmx.min.js" defer></script>
 			<!-- kiosk-idle.js registers Alpine.data('kioskIdle', ...) and must load and
 			     run BEFORE alpine.min.js (see layout.templ's script-order rule: Alpine
 			     dispatches 'alpine:init' as soon as its own deferred script runs, so a
@@ -246,8 +254,11 @@ templ KioskActivationPage(view KioskActivationFormView) {
 // Chores tab
 // ---------------------------------------------------------------------------
 
-// KioskChoreView is one read-only chore row: no complete/skip/claim actions —
-// those are member-attributed and deferred to the NES-129 QR deep link.
+// KioskChoreView is one read-only chore row, plus its NES-129 QR deep link:
+// scanning it opens the confirm screen for the ONE action this instance's
+// current state allows (claim if unassigned, complete if assigned) on the
+// scanning member's own phone — the kiosk itself performs no member-attributed
+// action directly.
 type KioskChoreView struct {
 	Title    string
 	Category string // "chore" or "maintenance"; rendered via categoryBadge
@@ -258,41 +269,154 @@ type KioskChoreView struct {
 	AssigneeName     string
 	AssigneeInitials string
 	AssigneeColor    string
+	// DeepLinkQR is the "data:image/png;base64,..." QR code for this
+	// instance's claim-or-complete deep link (NES-129). Empty when the QR
+	// could not be generated — the row still renders without it (a
+	// non-critical enhancement, mirroring the screensaver's degrade-gracefully
+	// precedent), just without a scannable code.
+	DeepLinkQR string
+	// DeepLinkActionLabel captions the QR ("Scan to claim" / "Scan to
+	// complete"), naming which of the two DeepLinkQR performs.
+	DeepLinkActionLabel string
 }
 
-// KioskChoresView is the view model for GET /kiosk/chores.
+// KioskRewardView is one active reward's read-only summary plus its NES-129
+// redeem QR. No balance/affordability is shown here — the kiosk is shared,
+// not member-attributed; that check happens on the phone when the scanning
+// member actually attempts to redeem.
+type KioskRewardView struct {
+	Name       string
+	CostPoints int
+	DeepLinkQR string
+}
+
+// KioskChoresView is the view model for GET /kiosk/chores (and its
+// self-poll fragment, GET /kiosk/chores/content).
 type KioskChoresView struct {
 	Chores []KioskChoreView
+	// AddChoreQR is the NES-129 deep link QR that opens the new-chore form on
+	// the scanning member's phone. Empty when it could not be generated.
+	AddChoreQR string
+	// Rewards is the household's active reward catalog, each paired with its
+	// own redeem QR (NES-129). Rendered on this tab (rather than a dedicated
+	// kiosk rewards tab, which does not exist) since chores and rewards are
+	// the two point-economy surfaces and the chores tab is the kiosk's
+	// primary actionable one.
+	Rewards []KioskRewardView
+	// QRRefreshTrigger is the pre-formatted htmx hx-trigger polling
+	// declaration (e.g. "every 300s") this page's content self-refreshes on
+	// (NES-129), so a display left open on this tab keeps its QR codes
+	// re-signed well ahead of deeplinkapp.LinkTTL — see
+	// kioskQRRefreshInterval's doc comment (internal/kiosk/adapter). Computed
+	// server-side (not hardcoded here) so it always tracks that constant.
+	QRRefreshTrigger string
 }
 
+// KioskChoresPage renders the chores tab's content as a self-polling
+// fragment: the outer div carries its own hx-get/hx-trigger targeting GET
+// /kiosk/chores/content (NES-129), so it re-arms on every swap regardless of
+// whether the CURRENT render came from a full navigation (wrapped in
+// KioskLayout by KioskWebHandlers.Chores) or from a previous poll
+// (KioskWebHandlers.ChoresContent, which renders this component directly,
+// unwrapped).
 templ KioskChoresPage(view KioskChoresView) {
-	<div class="p-4">
-		<h1 class="mb-4 text-xl font-semibold">Chores</h1>
+	<div
+		id="kiosk-chores-content"
+		class="p-4"
+		hx-get="/kiosk/chores/content"
+		hx-trigger={ view.QRRefreshTrigger }
+		hx-target="this"
+		hx-swap="outerHTML"
+	>
+		<div class="mb-4 flex flex-col items-center gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<h1 class="text-xl font-semibold">Chores</h1>
+			if view.AddChoreQR != "" {
+				<div class="flex flex-col items-center gap-1" data-testid="kiosk-add-chore-qr">
+					<img
+						src={ view.AddChoreQR }
+						alt="Scan to add a chore"
+						width="128"
+						height="128"
+						class="h-32 w-32 rounded-control border border-sidebar-border bg-white p-2"
+					/>
+					<span class="text-xs text-ink-muted">Scan to add a chore</span>
+				</div>
+			}
+		</div>
 		if len(view.Chores) == 0 {
 			<p class="text-ink-muted">Nothing due — all caught up.</p>
 		} else {
-			<ul class="flex flex-col gap-2" data-testid="kiosk-chore-list">
+			<ul class="flex flex-col gap-3" data-testid="kiosk-chore-list">
 				for _, c := range view.Chores {
 					@kioskChoreRow(c)
+				}
+			</ul>
+		}
+		if len(view.Rewards) > 0 {
+			<h2 class="mt-6 mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">Rewards</h2>
+			<ul class="flex flex-col gap-3" data-testid="kiosk-reward-list">
+				for _, rw := range view.Rewards {
+					@kioskRewardRow(rw)
 				}
 			</ul>
 		}
 	</div>
 }
 
+// kioskChoreRow renders the chore's info as a compact header row, with its
+// deep-link QR (when present) full-width beneath it at a large, easily
+// scannable size (NES-129 — a QR shrunk to fit alongside the row's text was
+// found to be unreliable to scan at typical kiosk viewing/scan distance; a
+// kiosk card can afford to let the QR dominate it, unlike a dense list on a
+// phone screen).
 templ kioskChoreRow(c KioskChoreView) {
-	<li class="flex min-h-[48px] items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface p-3">
-		<div class="flex min-w-0 flex-col gap-1">
-			<span class="truncate font-medium text-ink">{ c.Title }</span>
-			<div class="flex items-center gap-2">
-				@categoryBadge(c.Category)
-				<span class="text-sm text-ink-muted">{ c.DueLabel }</span>
+	<li class="flex flex-col gap-3 rounded-control border border-sidebar-border bg-surface p-3">
+		<div class="flex min-h-[48px] items-center justify-between gap-3">
+			<div class="flex min-w-0 flex-col gap-1">
+				<span class="truncate font-medium text-ink">{ c.Title }</span>
+				<div class="flex items-center gap-2">
+					@categoryBadge(c.Category)
+					<span class="text-sm text-ink-muted">{ c.DueLabel }</span>
+				</div>
 			</div>
+			if c.AssigneeName != "" {
+				@MemberAvatar(MemberView{Name: c.AssigneeName, Initials: c.AssigneeInitials, Color: c.AssigneeColor})
+			} else {
+				<span class="shrink-0 text-sm text-ink-muted">Anyone</span>
+			}
 		</div>
-		if c.AssigneeName != "" {
-			@MemberAvatar(MemberView{Name: c.AssigneeName, Initials: c.AssigneeInitials, Color: c.AssigneeColor})
-		} else {
-			<span class="shrink-0 text-sm text-ink-muted">Anyone</span>
+		if c.DeepLinkQR != "" {
+			<div class="flex flex-col items-center gap-1 border-t border-sidebar-border pt-3" data-testid="kiosk-chore-qr">
+				<img
+					src={ c.DeepLinkQR }
+					alt={ c.DeepLinkActionLabel }
+					width="192"
+					height="192"
+					class="h-48 w-48 rounded-control border border-sidebar-border bg-white p-2"
+				/>
+				<span class="text-xs font-medium text-ink-muted">{ c.DeepLinkActionLabel }</span>
+			</div>
+		}
+	</li>
+}
+
+templ kioskRewardRow(rw KioskRewardView) {
+	<li class="flex flex-col gap-3 rounded-control border border-sidebar-border bg-surface-warm p-3">
+		<div class="flex min-h-[48px] items-center justify-between gap-3">
+			<span class="truncate font-medium text-ink">{ rw.Name }</span>
+			<span class="shrink-0 text-sm text-ink-muted">{ fmt.Sprintf("%d points", rw.CostPoints) }</span>
+		</div>
+		if rw.DeepLinkQR != "" {
+			<div class="flex flex-col items-center gap-1 border-t border-sidebar-border pt-3" data-testid="kiosk-reward-qr">
+				<img
+					src={ rw.DeepLinkQR }
+					alt="Scan to redeem"
+					width="192"
+					height="192"
+					class="h-48 w-48 rounded-control border border-sidebar-border bg-white p-2"
+				/>
+				<span class="text-xs font-medium text-ink-muted">Scan to redeem</span>
+			</div>
 		}
 	</li>
 }

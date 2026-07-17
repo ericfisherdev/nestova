@@ -17,7 +17,7 @@ import (
 var allKeys = []string{
 	"PORT", "APP_ENV", "DATABASE_URL", "DB_MAX_CONNS", "DB_CONNECT_TIMEOUT",
 	"DB_PROVIDER", "DB_POOL_MODE", "DB_SSL_ROOT_CERT", "MIGRATE_DATABASE_URL",
-	"TRUSTED_PROXIES", "SERVER_REQUEST_TIMEOUT",
+	"TRUSTED_PROXIES", "SERVER_REQUEST_TIMEOUT", "PUBLIC_BASE_URL",
 	"SESSION_SECRET", "SESSION_LIFETIME", "SESSION_COOKIE_SECURE",
 	"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
 	"ENCRYPTION_KEY",
@@ -163,6 +163,18 @@ func TestLoadValid(t *testing.T) {
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
 				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
+			},
+		},
+		{
+			name: "PUBLIC_BASE_URL is trimmed of a trailing slash",
+			env:  map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net/"},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second, PublicBaseURL: "https://nestova.tailnet.ts.net"},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20},
 			},
 		},
 		{
@@ -474,6 +486,36 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "relative RECIPES_API_BASE_URL is rejected",
 			env:          map[string]string{"RECIPES_EXTERNAL_ENABLED": "true", "RECIPES_API_KEY": "k", "RECIPES_API_BASE_URL": "/api/recipes"},
 			wantContains: []string{"RECIPES_API_BASE_URL", "absolute"},
+		},
+		{
+			name:         "malformed PUBLIC_BASE_URL",
+			env:          map[string]string{"PUBLIC_BASE_URL": "not-a-url"},
+			wantContains: []string{"PUBLIC_BASE_URL", "absolute"},
+		},
+		{
+			name:         "relative PUBLIC_BASE_URL is rejected",
+			env:          map[string]string{"PUBLIC_BASE_URL": "/go/claim-task/1"},
+			wantContains: []string{"PUBLIC_BASE_URL", "absolute"},
+		},
+		{
+			name:         "PUBLIC_BASE_URL with a path is rejected",
+			env:          map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net/go/claim-task/1"},
+			wantContains: []string{"PUBLIC_BASE_URL", "origin only"},
+		},
+		{
+			name:         "PUBLIC_BASE_URL with a query string is rejected",
+			env:          map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net?foo=bar"},
+			wantContains: []string{"PUBLIC_BASE_URL", "origin only"},
+		},
+		{
+			name:         "PUBLIC_BASE_URL with a fragment is rejected",
+			env:          map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net#section"},
+			wantContains: []string{"PUBLIC_BASE_URL", "origin only"},
+		},
+		{
+			name:         "PUBLIC_BASE_URL with userinfo is rejected",
+			env:          map[string]string{"PUBLIC_BASE_URL": "https://user:pass@nestova.tailnet.ts.net"},
+			wantContains: []string{"PUBLIC_BASE_URL", "origin only"},
 		},
 		{
 			name:         "non-positive connect timeout",

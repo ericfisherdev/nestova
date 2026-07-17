@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ import (
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
+	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
+	deeplinkdomain "github.com/ericfisherdev/nestova/internal/deeplink/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	kioskapp "github.com/ericfisherdev/nestova/internal/kiosk/app"
 	kioskdomain "github.com/ericfisherdev/nestova/internal/kiosk/domain"
@@ -23,6 +26,8 @@ import (
 	mealsdomain "github.com/ericfisherdev/nestova/internal/meals/domain"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
 	mediadomain "github.com/ericfisherdev/nestova/internal/media/domain"
+	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
+	"github.com/ericfisherdev/nestova/internal/platform/qrcode"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 	trackingapp "github.com/ericfisherdev/nestova/internal/tracking/app"
@@ -38,6 +43,29 @@ const (
 	kioskCalendarWindowDays = 7
 	kioskRecentPhotoLimit   = 30
 )
+
+// kioskQRModuleSize is the pixels-per-QR-module passed to qrcode.PNGDataURI
+// for every deep-link QR the kiosk renders (NES-129). A realistic signed
+// deep-link URL (absolute origin + action + UUID + exp + base64url HMAC
+// signature) encodes at roughly 53-61 QR modules per side; at this module
+// size that renders a ~210-245px source PNG, comfortably at or above every
+// on-screen size the templates display it at (128px for the add-chore
+// header QR, 192px for a chore/reward card's QR — see kiosk.templ), so the
+// browser only ever mildly downscales, never upscales, a QR code, which
+// would otherwise blur its modules past reliable scan range.
+const kioskQRModuleSize = 4
+
+// kioskQRRefreshInterval bounds how often the kiosk chores tab's content
+// self-polls for a fresh render (NES-129 finding: a display left open past
+// deeplinkapp.LinkTTL would otherwise keep showing QR codes that scan
+// straight to the friendly-but-useless "rescan from the kiosk" page). Set to
+// HALF the deep link's own TTL so a freshly re-signed QR is always in place
+// well before the previous one could expire, regardless of where in its poll
+// cycle the display currently sits. NES-130 is expected to tighten the
+// kiosk's overall content refresh to seconds-level polling/SSE for other
+// tabs too; this interval exists specifically to bound QR staleness on the
+// chores tab until then — see ChoresContent and KioskChoresView.QRRefreshTrigger.
+const kioskQRRefreshInterval = deeplinkapp.LinkTTL / 2
 
 // kioskDisplayDateLayout / kioskDisplayDateTimeLayout format calendar and meal
 // dates for the kiosk. Duplicated in miniature from calendaradapter's own
@@ -89,9 +117,19 @@ type KioskWebHandlers struct {
 	albums         *mediaapp.AlbumService
 	photos         *mediaapp.PhotoService
 	households     household.HouseholdRepository
-	sm             *scs.SessionManager
-	logger         *slog.Logger
-	cookieSecure   bool
+	// rewards is read-only here (NES-129): the kiosk lists active rewards so
+	// it can render a redeem QR per reward, but never checks a member's
+	// balance or performs a redemption itself — that happens on the phone,
+	// through the actual RewardService.Redeem call the QR deep-links to.
+	rewards      tasksdomain.RewardRepository
+	sm           *scs.SessionManager
+	logger       *slog.Logger
+	cookieSecure bool
+	// deepLinkSigner signs the QR deep links embedded in kiosk cards
+	// (NES-129); publicBaseURL overrides the request-derived base URL for
+	// building their absolute form — see deepLinkURL.
+	deepLinkSigner *deeplinkapp.Signer
+	publicBaseURL  string
 	now            func() time.Time
 }
 
@@ -110,9 +148,12 @@ func NewKioskWebHandlers(
 	albums *mediaapp.AlbumService,
 	photos *mediaapp.PhotoService,
 	households household.HouseholdRepository,
+	rewards tasksdomain.RewardRepository,
 	sm *scs.SessionManager,
 	logger *slog.Logger,
 	cookieSecure bool,
+	deepLinkSigner *deeplinkapp.Signer,
+	publicBaseURL string,
 	now func() time.Time,
 ) *KioskWebHandlers {
 	switch {
@@ -138,10 +179,14 @@ func NewKioskWebHandlers(
 		panic("kiosk/adapter: NewKioskWebHandlers requires a non-nil PhotoService")
 	case households == nil:
 		panic("kiosk/adapter: NewKioskWebHandlers requires a non-nil HouseholdRepository")
+	case rewards == nil:
+		panic("kiosk/adapter: NewKioskWebHandlers requires a non-nil RewardRepository")
 	case sm == nil:
 		panic("kiosk/adapter: NewKioskWebHandlers requires a non-nil session manager")
 	case logger == nil:
 		panic("kiosk/adapter: NewKioskWebHandlers requires a non-nil logger")
+	case deepLinkSigner == nil:
+		panic("kiosk/adapter: NewKioskWebHandlers requires a non-nil deep link Signer")
 	}
 	if now == nil {
 		now = time.Now
@@ -150,7 +195,8 @@ func NewKioskWebHandlers(
 		kiosk: kiosk, taskInstances: taskInstances, recurringTasks: recurringTasks,
 		calendar: calendar, planner: planner, recipes: recipes, shopping: shopping,
 		ingredients: ingredients, albums: albums, photos: photos, households: households,
-		sm: sm, logger: logger, cookieSecure: cookieSecure, now: now,
+		rewards: rewards, sm: sm, logger: logger, cookieSecure: cookieSecure,
+		deepLinkSigner: deepLinkSigner, publicBaseURL: publicBaseURL, now: now,
 	}
 }
 
@@ -239,6 +285,60 @@ func (h *KioskWebHandlers) renderActivationForm(w http.ResponseWriter, r *http.R
 }
 
 // ---------------------------------------------------------------------------
+// QR deep links (NES-129)
+// ---------------------------------------------------------------------------
+
+// deepLinkURL builds the absolute, HMAC-signed /go/ URL for action/id — the
+// exact link a phone reaches by scanning the corresponding kiosk QR code (see
+// deepLinkQR). Signing (not just building the path) happens here, at render
+// time, on every request: the kiosk re-signs its QR codes on every page load,
+// so a live display always shows a link with a fresh
+// deeplinkapp.LinkTTL-minute expiry (NES-129).
+func (h *KioskWebHandlers) deepLinkURL(r *http.Request, action deeplinkdomain.Action, id string) (string, error) {
+	path, err := action.Path(id)
+	if err != nil {
+		return "", err
+	}
+	exp, sig := h.deepLinkSigner.Sign(path, h.now())
+	signedPath := path + "?exp=" + strconv.FormatInt(exp, 10) + "&sig=" + url.QueryEscape(sig)
+	return h.resolveBaseURL(r) + signedPath, nil
+}
+
+// resolveBaseURL mirrors settings_web.go's activationURL base-URL
+// resolution (effective scheme from the ForwardedHeaders middleware, falling
+// back to the on-wire TLS state when that middleware did not run, plus the
+// request Host) — see that function's doc for the full rationale — except
+// publicBaseURL (PUBLIC_BASE_URL, see ServerConfig.PublicBaseURL's doc)
+// always takes precedence when configured, since a QR code must remain
+// scannable by a phone that is not on the kiosk's own network segment.
+func (h *KioskWebHandlers) resolveBaseURL(r *http.Request) string {
+	if h.publicBaseURL != "" {
+		return h.publicBaseURL
+	}
+	scheme := middleware.RequestScheme(r.Context())
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	return scheme + "://" + r.Host
+}
+
+// deepLinkQR renders action/id's signed deep link as a QR PNG data URI. A
+// non-nil error is the caller's to decide how to degrade — every kiosk card
+// that embeds one still renders correctly (just without the QR) when this
+// fails, mirroring buildScreensaver's "non-critical enhancement" precedent.
+func (h *KioskWebHandlers) deepLinkQR(r *http.Request, action deeplinkdomain.Action, id string) (string, error) {
+	link, err := h.deepLinkURL(r, action, id)
+	if err != nil {
+		return "", err
+	}
+	return qrcode.PNGDataURI(link, kioskQRModuleSize)
+}
+
+// ---------------------------------------------------------------------------
 // Chores tab
 // ---------------------------------------------------------------------------
 
@@ -249,7 +349,7 @@ func (h *KioskWebHandlers) Chores(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	view, err := h.buildChoresView(r.Context(), householdID)
+	view, err := h.buildChoresView(r, householdID)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "kiosk: build chores view", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -258,7 +358,32 @@ func (h *KioskWebHandlers) Chores(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, householdID, components.KioskTabChores, components.KioskChoresPage(view))
 }
 
-func (h *KioskWebHandlers) buildChoresView(ctx context.Context, householdID household.HouseholdID) (components.KioskChoresView, error) {
+// ChoresContent handles GET /kiosk/chores/content: it re-renders just the
+// chores tab's inner content (never the full kiosk shell) — the target of
+// that content's own self-poll (see KioskChoresView.QRRefreshTrigger and
+// kioskQRRefreshInterval), so a display left open on this tab keeps showing
+// freshly-signed QR codes without a full page reload. Mirrors
+// tasksadapter.WebHandlers.Groups' identical "re-render just the polled
+// fragment" shape.
+func (h *KioskWebHandlers) ChoresContent(w http.ResponseWriter, r *http.Request) {
+	householdID, ok := CurrentHouseholdID(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	view, err := h.buildChoresView(r, householdID)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: build chores content", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.KioskChoresPage(view)); err != nil {
+		h.logger.ErrorContext(r.Context(), "kiosk: render chores content", "error", err)
+	}
+}
+
+func (h *KioskWebHandlers) buildChoresView(r *http.Request, householdID household.HouseholdID) (components.KioskChoresView, error) {
+	ctx := r.Context()
 	today := tasksdomain.DateOf(h.now())
 
 	activeTasks, err := h.recurringTasks.ListActive(ctx, householdID)
@@ -320,6 +445,23 @@ func (h *KioskWebHandlers) buildChoresView(ctx context.Context, householdID hous
 				row.AssigneeColor = assignee.Color.String()
 			}
 		}
+		// NES-129: the deep-link action depends on the instance's own
+		// assignment state — unassigned scans to claim, assigned scans to
+		// complete — matching exactly which of the two the scanning member
+		// could legitimately do next (the target service call re-validates
+		// this anyway; the QR's action is a display convenience, not a
+		// security boundary).
+		action := deeplinkdomain.ActionClaimTask
+		row.DeepLinkActionLabel = "Scan to claim"
+		if inst.AssigneeID != nil {
+			action = deeplinkdomain.ActionCompleteTask
+			row.DeepLinkActionLabel = "Scan to complete"
+		}
+		if qr, err := h.deepLinkQR(r, action, inst.ID.String()); err != nil {
+			h.logger.ErrorContext(ctx, "kiosk: build chore deep link qr", "instance_id", inst.ID.String(), "error", err)
+		} else {
+			row.DeepLinkQR = qr
+		}
 		sortable = append(sortable, sortableChore{row: row, dueOn: dueOn})
 	}
 
@@ -333,7 +475,54 @@ func (h *KioskWebHandlers) buildChoresView(ctx context.Context, householdID hous
 	for i, s := range sortable {
 		rows[i] = s.row
 	}
-	return components.KioskChoresView{Chores: rows}, nil
+
+	view := components.KioskChoresView{
+		Chores: rows,
+		// htmx's polling trigger syntax ("every <N>s") is expressed in
+		// seconds in every documented example — computed here (not
+		// hardcoded in the template) so it always tracks kioskQRRefreshInterval,
+		// which is itself derived from deeplinkapp.LinkTTL.
+		QRRefreshTrigger: "every " + strconv.Itoa(int(kioskQRRefreshInterval.Seconds())) + "s",
+	}
+	if qr, err := h.deepLinkQR(r, deeplinkdomain.ActionAddChore, ""); err != nil {
+		h.logger.ErrorContext(ctx, "kiosk: build add-chore deep link qr", "error", err)
+	} else {
+		view.AddChoreQR = qr
+	}
+
+	rewardRows, err := h.buildKioskRewardViews(r, householdID)
+	if err != nil {
+		return components.KioskChoresView{}, err
+	}
+	view.Rewards = rewardRows
+
+	return view, nil
+}
+
+// buildKioskRewardViews lists the household's active rewards and pairs each
+// with its own redeem deep-link QR (NES-129). It carries no member-specific
+// data (balance, affordability) — the kiosk is shared, not member-attributed
+// — those checks happen on the phone, inside the real
+// tasksapp.RewardService.Redeem call the QR deep-links to; see [KioskWebHandlers]'s
+// own doc comment for why kiosk view models are rebuilt directly from
+// application services rather than reusing the member-facing rewards page.
+func (h *KioskWebHandlers) buildKioskRewardViews(r *http.Request, householdID household.HouseholdID) ([]components.KioskRewardView, error) {
+	ctx := r.Context()
+	rewards, err := h.rewards.ListActiveRewards(ctx, householdID)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]components.KioskRewardView, 0, len(rewards))
+	for _, reward := range rewards {
+		row := components.KioskRewardView{Name: reward.Name, CostPoints: reward.CostPoints}
+		if qr, err := h.deepLinkQR(r, deeplinkdomain.ActionRedeemReward, reward.ID.String()); err != nil {
+			h.logger.ErrorContext(ctx, "kiosk: build reward deep link qr", "reward_id", reward.ID.String(), "error", err)
+		} else {
+			row.DeepLinkQR = qr
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // sortableChore pairs a chore row with its sort key (dueOn) so sort.Slice's

@@ -156,6 +156,21 @@ type ServerConfig struct {
 	// WriteTimeout's deadline is set once when headers finish reading and does
 	// not reset while the body is still being read (net/http.conn.readRequest).
 	RequestTimeout time.Duration
+	// PublicBaseURL is the externally-reachable origin (scheme + host, no
+	// trailing slash, e.g. "https://nestova.tailxxxx.ts.net") the kiosk's QR
+	// deep links are built against (NES-129), so a phone scanning a code from
+	// off the kiosk's own LAN segment still reaches a working URL. Empty (the
+	// default) means "derive it from the incoming request" instead: the
+	// resolved scheme (RequestScheme, honoring X-Forwarded-Proto from a
+	// trusted proxy) plus the request's Host header. That default already
+	// produces the correct externally-reachable URL for the documented
+	// Tailscale deployment (README "HTTPS deployment") — `tailscale serve`
+	// terminates TLS and forwards to Nestova with Host already set to the
+	// tailnet MagicDNS name — so PublicBaseURL only needs to be set to
+	// override that (e.g. a reverse proxy that changes the Host header, or a
+	// deployment reachable at a name the kiosk's own request Host does not
+	// carry).
+	PublicBaseURL string
 }
 
 // TrustedProxyPrefixes parses TrustedProxies into netip prefixes for the
@@ -386,6 +401,11 @@ func Load() (Config, error) {
 		collect(err)
 	}
 
+	// PUBLIC_BASE_URL (NES-129): the externally-reachable origin QR deep links
+	// are built against. Trimmed of any trailing slash so callers can
+	// unconditionally concatenate a leading-slash path onto it.
+	publicBaseURL := strings.TrimSuffix(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/")
+
 	// The dev DSN convenience default applies only in dev. test and prod
 	// require an explicit DATABASE_URL: an empty value is left empty so
 	// validation rejects it, rather than silently connecting a non-dev run to
@@ -417,8 +437,11 @@ func Load() (Config, error) {
 	collect(err)
 
 	cfg := Config{
-		Env:    env,
-		Server: ServerConfig{Addr: ":" + port, TrustedProxies: trustedProxies, RequestTimeout: serverRequestTimeout},
+		Env: env,
+		Server: ServerConfig{
+			Addr: ":" + port, TrustedProxies: trustedProxies, RequestTimeout: serverRequestTimeout,
+			PublicBaseURL: publicBaseURL,
+		},
 		DB: DBConfig{
 			DSN:         dsn,
 			MaxConns:    maxConns,
@@ -555,6 +578,25 @@ func (c Config) validate() []error {
 	}
 	if c.Media.MaxUploadBytes <= 0 {
 		errs = append(errs, fmt.Errorf("MEDIA_MAX_UPLOAD_BYTES must be positive, got %d", c.Media.MaxUploadBytes))
+	}
+
+	// PUBLIC_BASE_URL is optional (empty means "derive from the request"), but
+	// when set it must be an origin ONLY — scheme + host(:port), nothing else
+	// — so it can be concatenated directly with a deep-link path with no
+	// further validation, normalization, or path-joining logic at request
+	// time. Userinfo, a path, a query, or a fragment would all either be
+	// silently discarded (surprising) or double up with the deep-link path
+	// (broken); rejecting them at startup catches an operator's copy-paste
+	// mistake (e.g. pasting a full activation link) before it ever reaches a
+	// kiosk-rendered QR code.
+	if c.Server.PublicBaseURL != "" {
+		u, err := url.Parse(c.Server.PublicBaseURL)
+		switch {
+		case err != nil, u.Scheme != "http" && u.Scheme != "https", u.Host == "":
+			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an absolute http(s) URL, got %q", c.Server.PublicBaseURL))
+		case u.User != nil, u.Path != "" && u.Path != "/", u.RawQuery != "", u.Fragment != "":
+			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an origin only (scheme + host, no user/path/query/fragment), got %q", c.Server.PublicBaseURL))
+		}
 	}
 
 	// External recipe lookups must not be enabled without the credentials to make
