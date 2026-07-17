@@ -84,12 +84,23 @@ func GenerateActivationCode() (string, error) {
 	return sb.String(), nil
 }
 
-// NormalizeActivationCode uppercases and strips whitespace/hyphens from a
-// user-typed activation code so "abcd-efgh-jk", "ABCD EFGH JK", and
-// "ABCDEFGHJK" all hash identically to the code as generated.
+// crockfordAliases canonicalizes the letters Crockford's Base32 spec treats
+// as decode-time aliases for the digits they are easily confused with when
+// hand-copied: O for 0, and I or L for 1. activationCodeAlphabet never
+// generates any of O/I/L itself, but a person transcribing a code from a
+// screen has no way to know that, so a typed code containing one of these
+// letters must still resolve to the code as generated.
+var crockfordAliases = strings.NewReplacer("O", "0", "I", "1", "L", "1")
+
+// NormalizeActivationCode uppercases, strips whitespace/hyphens, and
+// canonicalizes Crockford alias letters (see crockfordAliases) from a
+// user-typed activation code, so "abcd-efgh-jk", "ABCD EFGH JK", and a version
+// with an O typed for a 0 (or an I/L typed for a 1) all hash identically to
+// the code as generated.
 func NormalizeActivationCode(s string) string {
 	s = strings.ToUpper(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, "-", "")
 	s = strings.ReplaceAll(s, " ", "")
+	s = crockfordAliases.Replace(s)
 	return s
 }

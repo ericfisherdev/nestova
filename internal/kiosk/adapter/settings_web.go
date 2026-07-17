@@ -1,9 +1,11 @@
 package adapter
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
@@ -95,7 +97,12 @@ func (h *SettingsWebHandlers) GenerateActivationCode(layoutFn SettingsLayoutFunc
 			return
 		}
 
-		name := r.FormValue("name")
+		// Trim before the empty check: a whitespace-only submission (e.g. a
+		// stray space) must fall back to the default the same as a genuinely
+		// empty field, not reach CreateActivationCode with a non-empty string
+		// that Validate then rejects as blank after its own trim — turning a
+		// harmless input into a 500.
+		name := strings.TrimSpace(r.FormValue("name"))
 		if name == "" {
 			name = "Kiosk"
 		}
@@ -129,6 +136,14 @@ func (h *SettingsWebHandlers) GenerateActivationCode(layoutFn SettingsLayoutFunc
 }
 
 // RevokeKioskToken handles POST /settings/kiosk/{id}/revoke.
+//
+// Error mapping (mirrors tasksadapter.GamificationWebHandlers.ArchiveReward's
+// convention for a stale parent admin action):
+//   - bad CSRF                   → 403
+//   - not a parent (owner/adult) → 403
+//   - malformed device id        → 400
+//   - ErrKioskDeviceNotFound     → 404
+//   - other                      → 500
 func (h *SettingsWebHandlers) RevokeKioskToken(w http.ResponseWriter, r *http.Request) {
 	member, ok := h.requireParent(w, r)
 	if !ok {
@@ -148,6 +163,10 @@ func (h *SettingsWebHandlers) RevokeKioskToken(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err := h.kiosk.Revoke(r.Context(), member.HouseholdID, id); err != nil {
+		if errors.Is(err, domain.ErrKioskDeviceNotFound) {
+			http.Error(w, "kiosk device not found", http.StatusNotFound)
+			return
+		}
 		h.logger.ErrorContext(r.Context(), "settings: revoke kiosk device", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -207,16 +226,19 @@ func toKioskDeviceView(d *domain.KioskDevice) components.KioskDeviceView {
 	return view
 }
 
-// activationURL builds the absolute one-click link a parent visits from the
-// kiosk device's own browser to redeem the code and set its cookie. It uses
-// the effective scheme resolved by the ForwardedHeaders middleware (https in
-// production, honoring a trusted reverse proxy) and the request's Host, so
-// the link is directly usable regardless of how the server is fronted. The
-// code embedded in this URL is short-lived and single-use (see
-// domain.ActivationCodeTTL): it is worthless as soon as it is redeemed or
-// expires, so its appearing in browser history/access logs/Referer headers is
-// an accepted, bounded exposure — unlike the long-lived device token this
-// flow replaces, which the settings page never displays.
+// activationURL builds the absolute link a parent opens from the kiosk
+// device's own browser. Opening it (a GET) only lands on a confirmation form
+// pre-filled with the code — it never redeems by itself (see
+// KioskWebHandlers.Activate); the device still presses Activate to complete
+// provisioning via a CSRF-checked POST. It uses the effective scheme resolved
+// by the ForwardedHeaders middleware (https in production, honoring a trusted
+// reverse proxy) and the request's Host, so the link is directly usable
+// regardless of how the server is fronted. The code embedded in this URL is
+// short-lived and single-use (see domain.ActivationCodeTTL): it is worthless
+// as soon as it is redeemed or expires, so its appearing in browser
+// history/access logs/Referer headers is an accepted, bounded exposure —
+// unlike the long-lived device token this flow replaces, which the settings
+// page never displays.
 func activationURL(r *http.Request, rawCode string) string {
 	scheme := middleware.RequestScheme(r.Context())
 	if scheme == "" {

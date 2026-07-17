@@ -13,26 +13,33 @@ import (
 // KioskLayout — shell, tab bar, screensaver (NES-128 AC3, AC4)
 // ---------------------------------------------------------------------------
 
-// extractTag returns the single HTML element (from its opening "<a" to its
-// closing "</a>") that carries data-testid=testID, so a test can assert on
-// classes/attributes scoped to exactly that element rather than the whole
-// page (where a substring match could accidentally be satisfied by a
-// different element entirely).
-func extractTag(html, testID string) string {
-	needle := `data-testid="` + testID + `"`
+// extractTag returns the single HTML element of the given tag (e.g. "a",
+// "form") — from its opening "<tag" to its closing "</tag>" — that contains
+// needle, so a test can assert on classes/attributes/text scoped to exactly
+// that element rather than the whole page (where a substring match could
+// accidentally be satisfied by an unrelated element, such as a section
+// heading that happens to repeat a button's label).
+func extractTag(html, needle, tag string) string {
 	idx := strings.Index(html, needle)
 	if idx < 0 {
 		return ""
 	}
-	start := strings.LastIndex(html[:idx], "<a")
+	start := strings.LastIndex(html[:idx], "<"+tag)
 	if start < 0 {
 		return ""
 	}
-	end := strings.Index(html[idx:], "</a>")
+	closeTag := "</" + tag + ">"
+	end := strings.Index(html[idx:], closeTag)
 	if end < 0 {
 		return ""
 	}
-	return html[start : idx+end+len("</a>")]
+	return html[start : idx+end+len(closeTag)]
+}
+
+// extractTagByTestID is extractTag scoped to a data-testid attribute, the
+// common case among this file's tests.
+func extractTagByTestID(html, testID, tag string) string {
+	return extractTag(html, `data-testid="`+testID+`"`, tag)
 }
 
 func TestKioskLayout_RendersTouchSizedTabBarForEveryTab(t *testing.T) {
@@ -52,7 +59,7 @@ func TestKioskLayout_RendersTouchSizedTabBarForEveryTab(t *testing.T) {
 	// The active (shopping) tab is distinguished by a persistent tint and
 	// aria-current, scoped to its own element — not merely present somewhere
 	// on the page.
-	active := extractTag(out, "kiosk-tab-shopping")
+	active := extractTagByTestID(out, "kiosk-tab-shopping", "a")
 	if active == "" {
 		t.Fatalf("could not locate the shopping tab element in: %q", out)
 	}
@@ -64,7 +71,7 @@ func TestKioskLayout_RendersTouchSizedTabBarForEveryTab(t *testing.T) {
 	}
 
 	// An inactive tab must carry neither the tint styling nor aria-current.
-	inactive := extractTag(out, "kiosk-tab-chores")
+	inactive := extractTagByTestID(out, "kiosk-tab-chores", "a")
 	if inactive == "" {
 		t.Fatalf("could not locate the chores tab element in: %q", out)
 	}
@@ -263,8 +270,16 @@ func TestKioskShoppingPage_NeededItemGetsInCartActionOnly(t *testing.T) {
 	if !strings.Contains(out, `value="csrf-test"`) {
 		t.Errorf("in-cart form missing CSRF token: %q", out)
 	}
-	if !strings.Contains(out, "In cart") {
-		t.Errorf("needed row missing the In cart button label: %q", out)
+	// Scoped to the action form itself, not the whole page: the page also
+	// carries an "In cart" SECTION HEADING (for the in-cart list below), so a
+	// bare strings.Contains(out, "In cart") would pass even if the button
+	// itself were missing or renamed.
+	inCartForm := extractTag(out, `action="/kiosk/shopping/item-1/in-cart"`, "form")
+	if inCartForm == "" {
+		t.Fatalf("could not locate the in-cart form element in: %q", out)
+	}
+	if !strings.Contains(inCartForm, "In cart") {
+		t.Errorf("needed row's action form missing the In cart button label: %q", inCartForm)
 	}
 	// Every other status transition the member-facing /groceries page exposes
 	// must be absent here.

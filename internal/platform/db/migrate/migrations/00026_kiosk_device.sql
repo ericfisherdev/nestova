@@ -38,6 +38,16 @@ CREATE TABLE kiosk_device (
 -- display): household_id equality, created_at for a stable newest-first order.
 CREATE INDEX kiosk_device_household_idx ON kiosk_device (household_id, created_at);
 
+-- Storage-level invariant: at most one ACTIVE (revoked_at IS NULL) device per
+-- household. ActivationCodeRepository.Redeem already serializes concurrent
+-- redemptions for one household with a pg_advisory_xact_lock before its
+-- revoke-then-insert step, so this index should never actually be hit by a
+-- legitimate race — it exists as defense in depth: a future code path that
+-- ever inserts a device without going through Redeem's lock fails loudly at
+-- the database rather than silently leaving two devices active.
+CREATE UNIQUE INDEX kiosk_device_household_active_uniq
+    ON kiosk_device (household_id) WHERE revoked_at IS NULL;
+
 -- Kiosk activation codes: the provisioning credential a parent actually sees.
 -- Settings generates a short-lived (15-minute), single-use code — never the
 -- long-lived kiosk_device token — and the kiosk device redeems it at

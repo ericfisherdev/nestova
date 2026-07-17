@@ -33,8 +33,10 @@ type KioskActivationReveal struct {
 	// Code is the raw activation code, shown once for manual entry on the
 	// kiosk device.
 	Code string
-	// ActivationURL is the absolute one-click link that, visited from the
-	// kiosk device's own browser, redeems Code and lands on /kiosk.
+	// ActivationURL is the absolute link that, opened from the kiosk device's
+	// own browser, lands on a confirmation form pre-filled with Code —
+	// visiting the link (a GET) never redeems it by itself; the device still
+	// has to press Activate (a CSRF-checked POST) to complete provisioning.
 	ActivationURL string
 	// ExpiresInMinutes is the code's validity window, pre-computed by the
 	// handler from domain.ActivationCodeTTL.
@@ -94,7 +96,7 @@ templ kioskActivationReveal(reveal KioskActivationReveal) {
 			New activation code — expires in { fmt.Sprintf("%d", reveal.ExpiresInMinutes) } minutes and works once
 		</p>
 		<label class="mb-1 block text-sm font-medium text-ink-secondary" for="kiosk-activation-url">
-			Open on the kiosk device
+			Open on the kiosk device, then confirm the code shown
 		</label>
 		<input
 			id="kiosk-activation-url"

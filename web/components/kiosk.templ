@@ -169,8 +169,14 @@ templ kioskScreensaver(view KioskScreensaverView) {
 // ---------------------------------------------------------------------------
 
 // KioskActivationFormView is the view model for GET/POST /kiosk/activate's
-// manual entry form.
+// confirm-then-submit form.
 type KioskActivationFormView struct {
+	// Code pre-fills the code field — set when GET carried ?code=... from the
+	// one-click activation link, so the parent can review and confirm it
+	// rather than the code being redeemed automatically by the GET itself
+	// (see KioskWebHandlers.Activate: GET never redeems). Empty for a bare
+	// GET /kiosk/activate or after a failed POST.
+	Code string
 	// Error is a generic message shown when the last redemption attempt
 	// failed; empty on the form's first render.
 	Error     string
@@ -179,8 +185,10 @@ type KioskActivationFormView struct {
 
 // KioskActivationPage is a standalone document (not the kiosk shell — the
 // device has no identity, and so no tab bar or screensaver, until this
-// succeeds) for typing in the activation code a parent generated from
-// settings.
+// succeeds) for confirming (or typing in) the activation code a parent
+// generated from settings. Submitting is the only thing that redeems the
+// code — merely loading this page (including via the one-click link's GET)
+// never does.
 templ KioskActivationPage(view KioskActivationFormView) {
 	<!DOCTYPE html>
 	<html lang="en" class="h-full">
@@ -195,7 +203,11 @@ templ KioskActivationPage(view KioskActivationFormView) {
 			<div class="w-full max-w-sm rounded-card bg-surface p-6 shadow-warm">
 				<h1 class="mb-1 text-xl font-semibold text-ink">Activate this kiosk</h1>
 				<p class="mb-4 text-sm text-ink-muted">
-					Enter the activation code shown on the household's settings page.
+					if view.Code != "" {
+						Confirm the activation code below to finish setting up this kiosk.
+					} else {
+						Enter the activation code shown on the household's settings page.
+					}
 				</p>
 				if view.Error != "" {
 					<p class="mb-4 rounded-control bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
@@ -214,6 +226,7 @@ templ KioskActivationPage(view KioskActivationFormView) {
 						autocapitalize="characters"
 						autocomplete="off"
 						required
+						value={ view.Code }
 						placeholder="XXXX-XXXX-XX"
 						class="mb-4 w-full rounded-control border border-sidebar-border px-3 py-3 text-center font-mono text-lg tracking-widest"
 					/>

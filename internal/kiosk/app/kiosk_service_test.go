@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,9 @@ func TestKioskService_CreateActivationCodeThenRedeem(t *testing.T) {
 	if code.CodeHash == rawCode {
 		t.Fatal("the persisted code must store the code's hash, never the raw value")
 	}
+	if want := domain.HashToken(domain.NormalizeActivationCode(rawCode)); code.CodeHash != want {
+		t.Errorf("code.CodeHash = %q, want %q (HashToken(NormalizeActivationCode(rawCode)))", code.CodeHash, want)
+	}
 
 	device, rawToken, err := svc.Redeem(context.Background(), rawCode)
 	if err != nil {
@@ -165,6 +169,9 @@ func TestKioskService_CreateActivationCodeThenRedeem(t *testing.T) {
 	}
 	if device.TokenHash == rawToken {
 		t.Fatal("the persisted device must store the token's hash, never the raw value")
+	}
+	if want := domain.HashToken(rawToken); device.TokenHash != want {
+		t.Errorf("device.TokenHash = %q, want %q (HashToken(rawToken))", device.TokenHash, want)
 	}
 	if device.HouseholdID != householdID {
 		t.Errorf("device household = %v, want %v", device.HouseholdID, householdID)
@@ -257,6 +264,35 @@ func TestKioskService_RedeemAcceptsCaseAndHyphenVariants(t *testing.T) {
 	typedByHand := domain.NormalizeActivationCode(rawCode) // uppercase, no hyphens, as if hand-typed
 	if _, _, err := svc.Redeem(context.Background(), typedByHand); err != nil {
 		t.Errorf("Redeem with a normalized (hand-typed) variant of the code: %v", err)
+	}
+}
+
+// TestKioskService_RedeemAcceptsGenuinelyLowercaseCode is distinct from the
+// case-variant test above: rawCode as generated is already uppercase (the
+// Crockford alphabet has no lowercase symbols), so
+// NormalizeActivationCode(rawCode) never actually exercises the lowercase
+// path — it is already a no-op on case. This test lowercases the raw code
+// itself (as e.g. autocapitalize-off input or a pasted lowercase transcription
+// would produce) to prove Redeem genuinely accepts it.
+func TestKioskService_RedeemAcceptsGenuinelyLowercaseCode(t *testing.T) {
+	devices := newFakeKioskDeviceRepo()
+	codes := newFakeActivationCodeRepo(devices)
+	svc, err := app.NewKioskService(devices, codes, fixedClock(time.Now()))
+	if err != nil {
+		t.Fatalf("NewKioskService: %v", err)
+	}
+	householdID := household.NewHouseholdID()
+
+	_, rawCode, err := svc.CreateActivationCode(context.Background(), householdID, "Kitchen")
+	if err != nil {
+		t.Fatalf("CreateActivationCode: %v", err)
+	}
+	lowercased := strings.ToLower(rawCode)
+	if lowercased == rawCode {
+		t.Fatal("test setup bug: the generated code contains no letters to lowercase")
+	}
+	if _, _, err := svc.Redeem(context.Background(), lowercased); err != nil {
+		t.Errorf("Redeem with a genuinely lowercase code: %v", err)
 	}
 }
 

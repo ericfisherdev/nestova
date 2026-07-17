@@ -13,6 +13,16 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 )
 
+// kioskHouseholdLockNamespace is the first key of the two-integer form of
+// Redeem's per-household pg_advisory_xact_lock. Postgres tracks the
+// single-bigint form (e.g. cmd/server/provisioning.go's onboardingAdvisoryLock)
+// and the two-integer form as genuinely separate lock spaces — the bigint
+// form's pg_locks row has objsubid=1, the two-integer form's has objsubid=2
+// (postgresql.org/docs/current/view-pg-locks.html) — so this cannot collide
+// with that lock regardless of numeric value. Chosen as the ASCII bytes of
+// "KIOS" purely as a memorable, human-readable tag.
+const kioskHouseholdLockNamespace int32 = 0x4B494F53
+
 // ActivationCodeRepository is the pgx-backed domain.ActivationCodeRepository.
 type ActivationCodeRepository struct {
 	dbtx db.TX
@@ -107,6 +117,22 @@ func (r *ActivationCodeRepository) Redeem(ctx context.Context, codeHash string, 
 	hh, err := household.ParseHouseholdID(hhStr)
 	if err != nil {
 		return fmt.Errorf("redeem activation code: parse household id: %w", err)
+	}
+
+	// Serialize the revoke-then-insert replacement per household: two
+	// activation codes for the SAME household redeemed concurrently (two
+	// different browser tabs, or a retried request racing the original) must
+	// never both revoke and insert interleaved — that could leave two active
+	// devices, or revoke the very device the other transaction just created.
+	// pg_advisory_xact_lock blocks the second transaction here until the
+	// first commits or rolls back, auto-releasing at the end of this
+	// transaction either way. The two-key form scopes this lock to a private
+	// namespace (kioskHouseholdLockNamespace) distinct from any other
+	// advisory lock in the app (e.g. onboarding's own single-key lock in
+	// cmd/server/provisioning.go), keyed by hashtext(household_id) so
+	// different households never contend with each other.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, hashtext($2))`, kioskHouseholdLockNamespace, hh.String()); err != nil {
+		return fmt.Errorf("redeem activation code: acquire household lock: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE kiosk_activation_code SET used_at = $2 WHERE id = $1`, codeIDStr, now); err != nil {

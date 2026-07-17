@@ -328,6 +328,76 @@ func TestSettingsGenerateActivationCode_AllowedForParentRevealsCodeOnce(t *testi
 	if devices, _ := fakes.devices.ListByHousehold(context.Background(), adult.HouseholdID); len(devices) != 0 {
 		t.Errorf("generating a code must not itself provision a device, got %d", len(devices))
 	}
+
+	// The reveal is one-time: a later GET /settings must not show it again.
+	rawCode := extractInputValue(rec.Body.String(), "kiosk-code-value")
+	if rawCode == "" {
+		t.Fatal("could not extract the revealed code from the generate response")
+	}
+
+	followUp := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	followUp.Header.Set("Cookie", cookie)
+	followUpRec := httptest.NewRecorder()
+	handler.ServeHTTP(followUpRec, followUp)
+
+	if followUpRec.Code != http.StatusOK {
+		t.Fatalf("GET /settings after generate: status = %d, want 200", followUpRec.Code)
+	}
+	if strings.Contains(followUpRec.Body.String(), rawCode) {
+		t.Errorf("a later GET /settings must not re-display the one-time activation code: %s", followUpRec.Body.String())
+	}
+	if strings.Contains(followUpRec.Body.String(), `id="kiosk-code-value"`) {
+		t.Error("a later GET /settings must not render the reveal panel at all")
+	}
+}
+
+// TestSettingsGenerateActivationCode_WhitespaceOnlyNameFallsBackToDefault is
+// the regression test for MINOR finding #9 (round 2): a whitespace-only name
+// field must trim to empty and fall back to the "Kiosk" default, not reach
+// CreateActivationCode with a non-empty-but-blank-after-trim string that
+// domain.ActivationCode.Validate then rejects as a 500.
+func TestSettingsGenerateActivationCode_WhitespaceOnlyNameFallsBackToDefault(t *testing.T) {
+	adult := adminTestAdult()
+	handler, sm, _, fakes := buildKioskTestHandler(t, adult)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/kiosk/generate", strings.NewReader("csrf_token="+csrfToken+"&name=+++"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/kiosk/generate with a whitespace-only name: status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	var name string
+	for _, code := range fakes.codes.byHash {
+		name = code.Name
+	}
+	if name != "Kiosk" {
+		t.Errorf("activation code name = %q, want the \"Kiosk\" default", name)
+	}
+}
+
+// extractInputValue pulls the value="..." attribute out of the first element
+// carrying id="elementID" in a rendered page body.
+func extractInputValue(body, elementID string) string {
+	idAttr := `id="` + elementID + `"`
+	idx := strings.Index(body, idAttr)
+	if idx < 0 {
+		return ""
+	}
+	rest := body[idx:]
+	valStart := strings.Index(rest, `value="`)
+	if valStart < 0 {
+		return ""
+	}
+	s := rest[valStart+len(`value="`):]
+	end := strings.Index(s, `"`)
+	if end < 0 {
+		return ""
+	}
+	return s[:end]
 }
 
 // TestSettingsRevokeKioskDevice_RoleGateAndSuccess exercises both the child
@@ -373,6 +443,49 @@ func TestSettingsRevokeKioskDevice_RoleGateAndSuccess(t *testing.T) {
 		}
 		if _, ok, _ := kioskSvc.ActiveDevice(context.Background(), adult.HouseholdID); ok {
 			t.Error("device should no longer be active after a parent's revoke")
+		}
+	})
+
+	// MINOR finding #10 (round 2): a stale/unknown device id must map to 404,
+	// mirroring tasksadapter.GamificationWebHandlers.ArchiveReward's
+	// convention — not the generic 500 an unmapped domain error would produce.
+	t.Run("unknown device id returns 404", func(t *testing.T) {
+		adult := adminTestAdult()
+		handler, sm, _, _ := buildKioskTestHandler(t, adult)
+		cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+		unknownID := kioskdomain.NewKioskDeviceID()
+		req := httptest.NewRequest(http.MethodPost, "/settings/kiosk/"+unknownID.String()+"/revoke", strings.NewReader("csrf_token="+csrfToken))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("revoke of an unknown device id: status = %d, want 404; body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	// Re-revoking an already-revoked device hits the same ErrKioskDeviceNotFound
+	// path (Revoke's WHERE clause only matches a still-active row) and must
+	// also map to 404, not a 500.
+	t.Run("already revoked device returns 404", func(t *testing.T) {
+		adult := adminTestAdult()
+		handler, sm, kioskSvc, _ := buildKioskTestHandler(t, adult)
+		device, _ := provisionDevice(t, kioskSvc, adult.HouseholdID, "Kitchen")
+		if err := kioskSvc.Revoke(context.Background(), adult.HouseholdID, device.ID); err != nil {
+			t.Fatalf("pre-revoke: %v", err)
+		}
+		cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+		req := httptest.NewRequest(http.MethodPost, "/settings/kiosk/"+device.ID.String()+"/revoke", strings.NewReader("csrf_token="+csrfToken))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("re-revoke of an already-revoked device: status = %d, want 404; body: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -510,9 +623,32 @@ func TestKioskChores_RevokedDeviceDenied(t *testing.T) {
 // Activation round trip
 // ---------------------------------------------------------------------------
 
-func TestKioskActivate_ValidCodeRedeemsSetsCookieAndRedirects(t *testing.T) {
+// postActivate submits the activation form's POST using the session cookie
+// and CSRF token minted by an initial GET — the only path that can ever
+// redeem a code (see KioskWebHandlers.Activate: GET never redeems).
+func postActivate(t *testing.T, handler http.Handler, rawCode string) *httptest.ResponseRecorder {
+	t.Helper()
+	getReq := httptest.NewRequest(http.MethodGet, "/kiosk/activate", nil)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	csrfToken := extractCSRFToken(getRec.Body.String())
+	sessionCookie := extractCookie(getRec.Result().Cookies(), "session")
+
+	req := httptest.NewRequest(http.MethodPost, "/kiosk/activate", strings.NewReader("csrf_token="+csrfToken+"&code="+rawCode))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", sessionCookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestKioskActivate_GetNeverRedeems is the regression test for MAJOR finding
+// #1: a GET carrying ?code=... (the one-click link, or a prefetch/preview
+// following it) must only render a pre-filled confirmation form — it must
+// never set the device cookie or consume the single-use code.
+func TestKioskActivate_GetNeverRedeems(t *testing.T) {
 	adult := adminTestAdult()
-	handler, _, kioskSvc, _ := buildKioskTestHandler(t, adult)
+	handler, _, kioskSvc, fakes := buildKioskTestHandler(t, adult)
 	_, rawCode, err := kioskSvc.CreateActivationCode(context.Background(), adult.HouseholdID, "Kitchen")
 	if err != nil {
 		t.Fatalf("CreateActivationCode: %v", err)
@@ -522,8 +658,41 @@ func TestKioskActivate_ValidCodeRedeemsSetsCookieAndRedirects(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /kiosk/activate?code=...: status = %d, want 200 (a form, not a redirect); body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `value="`+rawCode+`"`) {
+		t.Errorf("GET should pre-fill the code into the confirmation form: %s", rec.Body.String())
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == kioskadapter.CookieName {
+			t.Errorf("GET must never set the kiosk device cookie, got %q", c.Value)
+		}
+	}
+	for _, code := range fakes.codes.byHash {
+		if code.UsedAt != nil {
+			t.Error("GET must never mark the activation code used")
+		}
+	}
+	// The code must still be genuinely redeemable afterward.
+	postRec := postActivate(t, handler, rawCode)
+	if postRec.Code != http.StatusSeeOther {
+		t.Fatalf("POST after a prior GET: status = %d, want 303; body: %s", postRec.Code, postRec.Body.String())
+	}
+}
+
+func TestKioskActivate_PostRedeemsSetsCookieAndRedirects(t *testing.T) {
+	adult := adminTestAdult()
+	handler, _, kioskSvc, _ := buildKioskTestHandler(t, adult)
+	_, rawCode, err := kioskSvc.CreateActivationCode(context.Background(), adult.HouseholdID, "Kitchen")
+	if err != nil {
+		t.Fatalf("CreateActivationCode: %v", err)
+	}
+
+	rec := postActivate(t, handler, rawCode)
+
 	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("GET /kiosk/activate?code=...: status = %d, want 303; body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("POST /kiosk/activate: status = %d, want 303; body: %s", rec.Code, rec.Body.String())
 	}
 	if loc := rec.Header().Get("Location"); loc != "/kiosk/chores" {
 		t.Errorf("Location = %q, want /kiosk/chores", loc)
@@ -545,12 +714,10 @@ func TestKioskActivate_ValidCodeRedeemsSetsCookieAndRedirects(t *testing.T) {
 func TestKioskActivate_UnknownCodeShowsRetryForm(t *testing.T) {
 	handler, _, _, _ := buildKioskTestHandler(t, testMember())
 
-	req := httptest.NewRequest(http.MethodGet, "/kiosk/activate?code=NEVER-ISSUED", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	rec := postActivate(t, handler, "NEVER-ISSUED")
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /kiosk/activate with an unknown code: status = %d, want 401", rec.Code)
+		t.Fatalf("POST /kiosk/activate with an unknown code: status = %d, want 401", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), `name="code"`) {
 		t.Errorf("failed activation should re-show the manual entry form: %s", rec.Body.String())
@@ -583,16 +750,12 @@ func TestKioskActivate_CodeIsSingleUse(t *testing.T) {
 		t.Fatalf("CreateActivationCode: %v", err)
 	}
 
-	first := httptest.NewRequest(http.MethodGet, "/kiosk/activate?code="+rawCode, nil)
-	firstRec := httptest.NewRecorder()
-	handler.ServeHTTP(firstRec, first)
+	firstRec := postActivate(t, handler, rawCode)
 	if firstRec.Code != http.StatusSeeOther {
 		t.Fatalf("first redemption: status = %d, want 303", firstRec.Code)
 	}
 
-	second := httptest.NewRequest(http.MethodGet, "/kiosk/activate?code="+rawCode, nil)
-	secondRec := httptest.NewRecorder()
-	handler.ServeHTTP(secondRec, second)
+	secondRec := postActivate(t, handler, rawCode)
 	if secondRec.Code != http.StatusUnauthorized {
 		t.Fatalf("second redemption of the same code: status = %d, want 401", secondRec.Code)
 	}
@@ -612,11 +775,9 @@ func TestKioskActivate_ExpiredCodeRejected(t *testing.T) {
 		code.ExpiresAt = time.Now().Add(-time.Minute)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/kiosk/activate?code="+rawCode, nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	rec := postActivate(t, handler, rawCode)
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /kiosk/activate with an expired code: status = %d, want 401", rec.Code)
+		t.Fatalf("POST /kiosk/activate with an expired code: status = %d, want 401", rec.Code)
 	}
 }
 

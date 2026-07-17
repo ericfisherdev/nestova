@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -191,6 +192,15 @@ func TestKioskDeviceRepositoryListByHousehold(t *testing.T) {
 	if err := repo.Create(ctx, first); err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
+	// The household may have at most one ACTIVE device at a time
+	// (kiosk_device_household_active_uniq, added alongside Redeem's
+	// per-household advisory lock): revoke the first before creating the
+	// second, exactly as ActivationCodeRepository.Redeem does on a
+	// replacement, so this test's two rows are a realistic state rather than
+	// two simultaneously active devices the schema no longer allows.
+	if err := repo.Revoke(ctx, hh, first.ID, time.Now()); err != nil {
+		t.Fatalf("revoke first: %v", err)
+	}
 	time.Sleep(5 * time.Millisecond) // ensure a distinct created_at ordering
 	second := newDevice(hh, "New wall display", "raw-token-5")
 	if err := repo.Create(ctx, second); err != nil {
@@ -298,6 +308,13 @@ func TestActivationCodeRepositoryRedeemIsSingleUse(t *testing.T) {
 	if err := codes.Redeem(ctx, code.CodeHash, time.Now(), second); !errors.Is(err, domain.ErrActivationCodeUsed) {
 		t.Errorf("second Redeem error = %v, want ErrActivationCodeUsed", err)
 	}
+
+	// The rejected second redemption must not have partially minted its
+	// device: its token must not authenticate anything at all.
+	deviceRepo := adapter.NewKioskDeviceRepository(pool)
+	if _, err := deviceRepo.GetByTokenHash(ctx, domain.HashToken("raw-device-token-3b")); !errors.Is(err, domain.ErrKioskDeviceNotFound) {
+		t.Errorf("GetByTokenHash for the rejected redemption's device = %v, want ErrKioskDeviceNotFound (no partial mint)", err)
+	}
 }
 
 // TestActivationCodeRepositoryRedeemExpiredCode is the gated regression test
@@ -392,5 +409,67 @@ func TestActivationCodeRepositoryRedeemInsertFailureLeavesPreviousStateIntact(t 
 	retry := &domain.KioskDevice{ID: domain.NewKioskDeviceID(), TokenHash: domain.HashToken("raw-device-token-6c")}
 	if err := codes.Redeem(ctx, code.CodeHash, time.Now(), retry); err != nil {
 		t.Errorf("a failed Redeem must not consume the code; retry failed: %v", err)
+	}
+}
+
+// TestActivationCodeRepositoryRedeemSerializesConcurrentReplacementPerHousehold
+// is the gated regression test for MAJOR finding #2 (round 2): two different,
+// valid, unused codes for the SAME household redeemed concurrently must not
+// race — pg_advisory_xact_lock inside Redeem serializes them so exactly one
+// active device remains once both calls return, never two (a race would let
+// both transactions revoke-then-insert interleaved) and never zero (a race
+// could otherwise have the second transaction's revoke step run after the
+// first's insert but the first's own revoke step, reading a stale view,
+// never see the second's row to revoke it).
+func TestActivationCodeRepositoryRedeemSerializesConcurrentReplacementPerHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	codes := adapter.NewActivationCodeRepository(pool)
+	deviceRepo := adapter.NewKioskDeviceRepository(pool)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	codeA := newActivationCode(hh, "Device A", "raw-code-7a", time.Now().Add(15*time.Minute))
+	if err := codes.Create(ctx, codeA); err != nil {
+		t.Fatalf("Create codeA: %v", err)
+	}
+	codeB := newActivationCode(hh, "Device B", "raw-code-7b", time.Now().Add(15*time.Minute))
+	if err := codes.Create(ctx, codeB); err != nil {
+		t.Fatalf("Create codeB: %v", err)
+	}
+
+	deviceA := &domain.KioskDevice{ID: domain.NewKioskDeviceID(), TokenHash: domain.HashToken("raw-device-token-7a")}
+	deviceB := &domain.KioskDevice{ID: domain.NewKioskDeviceID(), TokenHash: domain.HashToken("raw-device-token-7b")}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = codes.Redeem(context.Background(), codeA.CodeHash, time.Now(), deviceA)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = codes.Redeem(context.Background(), codeB.CodeHash, time.Now(), deviceB)
+	}()
+	wg.Wait()
+
+	if errs[0] != nil {
+		t.Errorf("Redeem codeA: %v", errs[0])
+	}
+	if errs[1] != nil {
+		t.Errorf("Redeem codeB: %v", errs[1])
+	}
+
+	all, err := deviceRepo.ListByHousehold(ctx, hh)
+	if err != nil {
+		t.Fatalf("ListByHousehold: %v", err)
+	}
+	activeCount := 0
+	for _, d := range all {
+		if d.Active() {
+			activeCount++
+		}
+	}
+	if activeCount != 1 {
+		t.Fatalf("active device count after two concurrent redemptions = %d, want exactly 1", activeCount)
 	}
 }
