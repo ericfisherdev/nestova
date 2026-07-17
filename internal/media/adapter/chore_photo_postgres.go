@@ -31,21 +31,29 @@ const choreProofInstanceLockNamespace int32 = 0x43485250
 // PhotoStore, under domain.PhotoClassChoreProof.
 type TaskInstancePhotoRepository struct {
 	dbtx db.TX
+	// backend is the StorageBackend Create stamps onto every row it writes
+	// (NES-132) — see NewTaskInstancePhotoRepository's doc.
+	backend domain.StorageBackend
 }
 
 var _ domain.TaskInstancePhotoRepository = (*TaskInstancePhotoRepository)(nil)
 
 // NewTaskInstancePhotoRepository constructs the repository with an injected
-// query executor.
-func NewTaskInstancePhotoRepository(dbtx db.TX) *TaskInstancePhotoRepository {
+// query executor, bound to backend — mirrors NewPhotoRepository's contract
+// exactly; see that constructor's doc. Panics on a nil dbtx or an invalid
+// backend.
+func NewTaskInstancePhotoRepository(dbtx db.TX, backend domain.StorageBackend) *TaskInstancePhotoRepository {
 	if dbtx == nil {
 		panic("media/adapter: NewTaskInstancePhotoRepository requires a non-nil db.TX")
 	}
-	return &TaskInstancePhotoRepository{dbtx: dbtx}
+	if !backend.Valid() {
+		panic(fmt.Sprintf("media/adapter: NewTaskInstancePhotoRepository requires a valid StorageBackend, got %q", backend))
+	}
+	return &TaskInstancePhotoRepository{dbtx: dbtx, backend: backend}
 }
 
 const taskInstancePhotoColumns = `
-	SELECT id, household_id, task_instance_id, kind, storage_ref, content_sha256,
+	SELECT id, household_id, task_instance_id, kind, storage_ref, storage_backend, content_sha256,
 	       size_bytes, content_type, taken_at, uploaded_by, uploaded_at
 	  FROM task_instance_photo`
 
@@ -150,13 +158,13 @@ func (r *TaskInstancePhotoRepository) Create(ctx context.Context, photo *domain.
 
 	const q = `
 		INSERT INTO task_instance_photo
-			(id, household_id, task_instance_id, kind, storage_ref, content_sha256,
+			(id, household_id, task_instance_id, kind, storage_ref, storage_backend, content_sha256,
 			 size_bytes, content_type, taken_at, uploaded_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING uploaded_at`
 	err = tx.QueryRow(ctx, q,
 		photo.ID.String(), photo.HouseholdID.String(), photo.TaskInstanceID.String(), photo.Kind.String(),
-		photo.StorageRef.String(), photo.ContentHash, photo.SizeBytes, photo.ContentType,
+		photo.StorageRef.String(), r.backend.String(), photo.ContentHash, photo.SizeBytes, photo.ContentType,
 		photo.TakenAt, memberArg(photo.UploadedBy),
 	).Scan(&photo.UploadedAt)
 	if err != nil {
@@ -165,6 +173,7 @@ func (r *TaskInstancePhotoRepository) Create(ctx context.Context, photo *domain.
 		}
 		return fmt.Errorf("create task instance photo: %w", err)
 	}
+	photo.StorageBackend = r.backend
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("create task instance photo: commit: %w", err)
@@ -310,18 +319,65 @@ func (r *TaskInstancePhotoRepository) ListByInstances(ctx context.Context, house
 	return photos, nil
 }
 
+// ListAllStorageRefs returns the StorageRef of every chore-proof photo row
+// across every household (see the domain port doc: the storage reaper's
+// source of truth for referenced chore-proof-class objects), or an empty
+// slice when there are none.
+func (r *TaskInstancePhotoRepository) ListAllStorageRefs(ctx context.Context) ([]domain.StorageRef, error) {
+	rows, err := r.dbtx.Query(ctx, `SELECT storage_ref FROM task_instance_photo`)
+	if err != nil {
+		return nil, fmt.Errorf("list all task instance photo storage refs: %w", err)
+	}
+	defer rows.Close()
+	refs := make([]domain.StorageRef, 0)
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, fmt.Errorf("scan task instance photo storage ref: %w", err)
+		}
+		refs = append(refs, domain.StorageRef(ref))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan task instance photo storage refs: %w", err)
+	}
+	return refs, nil
+}
+
+// DeleteUploadedBefore deletes every chore-proof photo row uploaded strictly
+// before cutoff and reports how many rows were removed — see the domain
+// port doc for why this deletes rows only, never the underlying object.
+func (r *TaskInstancePhotoRepository) DeleteUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.dbtx.Exec(ctx, `DELETE FROM task_instance_photo WHERE uploaded_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete task instance photos uploaded before cutoff: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// ExistsByStorageRef reports whether any chore-proof photo row currently
+// references ref (see the domain port doc: the reaper's targeted, pre-delete
+// TOCTOU-narrowing recheck).
+func (r *TaskInstancePhotoRepository) ExistsByStorageRef(ctx context.Context, ref domain.StorageRef) (bool, error) {
+	var exists bool
+	if err := r.dbtx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM task_instance_photo WHERE storage_ref = $1)`, ref.String()).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check task instance photo storage ref exists: %w", err)
+	}
+	return exists, nil
+}
+
 func scanTaskInstancePhoto(r row) (*domain.TaskInstancePhoto, error) {
 	var (
-		photo         domain.TaskInstancePhoto
-		idStr         string
-		hhStr         string
-		instanceStr   string
-		kindStr       string
-		storageRef    string
-		uploadedByStr *string
+		photo          domain.TaskInstancePhoto
+		idStr          string
+		hhStr          string
+		instanceStr    string
+		kindStr        string
+		storageRef     string
+		storageBackend string
+		uploadedByStr  *string
 	)
 	if err := r.Scan(
-		&idStr, &hhStr, &instanceStr, &kindStr, &storageRef, &photo.ContentHash,
+		&idStr, &hhStr, &instanceStr, &kindStr, &storageRef, &storageBackend, &photo.ContentHash,
 		&photo.SizeBytes, &photo.ContentType, &photo.TakenAt, &uploadedByStr, &photo.UploadedAt,
 	); err != nil {
 		return nil, err
@@ -342,11 +398,16 @@ func scanTaskInstancePhoto(r row) (*domain.TaskInstancePhoto, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse photo kind: %w", err)
 	}
+	backend, err := domain.ParseStorageBackend(storageBackend)
+	if err != nil {
+		return nil, fmt.Errorf("parse storage backend: %w", err)
+	}
 	photo.ID = id
 	photo.HouseholdID = hh
 	photo.TaskInstanceID = instanceID
 	photo.Kind = kind
 	photo.StorageRef = domain.StorageRef(storageRef)
+	photo.StorageBackend = backend
 	if uploadedByStr != nil {
 		memberID, err := household.ParseMemberID(*uploadedByStr)
 		if err != nil {

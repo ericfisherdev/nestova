@@ -130,13 +130,14 @@ func (h *ChoreProofWebHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 	respondAfterMutation(w, r, choreProofRedirectTarget)
 }
 
-// Raw handles GET /tasks/photos/{id}/raw (NES-120): streams a chore-proof
+// Raw handles GET /tasks/photos/{id}/raw (NES-120): serves a chore-proof
 // photo's bytes to its owning household only, for the capture/review
 // section on the /tasks chore row. It is registered under the tasks-owned
 // URL prefix from the composition root, the same as Upload — see this
 // type's doc — and mirrors media/adapter.WebHandlers.Raw's album-path
-// implementation exactly, one table over. Not CSRF-gated (a safe GET) but
-// tenant-checked.
+// implementation exactly, one table over, including its NES-132
+// RawServe-driven redirect-or-stream decision (see that method's doc). Not
+// CSRF-gated (a safe GET) but tenant-checked.
 func (h *ChoreProofWebHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 	member, ok := authadapter.CurrentMember(r.Context())
 	if !ok {
@@ -148,26 +149,35 @@ func (h *ChoreProofWebHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid photo id", http.StatusBadRequest)
 		return
 	}
-	rc, contentType, err := h.photos.OpenBytes(r.Context(), member.HouseholdID, id)
+	result, err := h.photos.RawServe(r.Context(), member.HouseholdID, id)
 	if err != nil {
 		if errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		h.logger.ErrorContext(r.Context(), "chore proof photo: open bytes", "error", err)
+		h.logger.ErrorContext(r.Context(), "chore proof photo: raw serve", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	defer func() { _ = rc.Close() }()
+	if result.RedirectURL != "" {
+		// The 302 response itself must never be cached — see
+		// WebHandlers.Raw's identical redirect branch for the full
+		// rationale (a presigned URL is a short-lived bearer credential).
+		// Must be set BEFORE http.Redirect, which calls WriteHeader.
+		w.Header().Set("Cache-Control", "private, no-store")
+		http.Redirect(w, r, result.RedirectURL, http.StatusFound)
+		return
+	}
+	defer func() { _ = result.Body.Close() }()
 	// Serve with an explicit image content type and forbid MIME sniffing so a
 	// crafted upload cannot be reinterpreted as executable content by the
 	// browser — mirroring WebHandlers.Raw's identical album-path headers.
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", result.ContentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// Private: a chore-proof photo is household-scoped, so a shared/proxy
 	// cache must not store it.
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	if _, err := io.Copy(w, rc); err != nil {
+	w.Header().Set("Cache-Control", photoBytesCacheControl)
+	if _, err := io.Copy(w, result.Body); err != nil {
 		h.logger.ErrorContext(r.Context(), "chore proof photo: stream bytes", "error", err)
 	}
 }

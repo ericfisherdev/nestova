@@ -67,7 +67,7 @@ func TestProofPhotoChecker_ProofPhotos(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instanceRepo := adapter.NewTaskInstanceRepository(pool)
-	mediaPhotos := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	mediaPhotos := mediaadapter.NewTaskInstancePhotoRepository(pool, mediadomain.StorageBackendLocal)
 	checker := adapter.NewProofPhotoChecker(mediaPhotos)
 
 	h, _, _ := seedHousehold(t, pool)
@@ -112,7 +112,7 @@ func TestProofPhotoChecker_ProofPhotosByInstances(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instanceRepo := adapter.NewTaskInstanceRepository(pool)
-	mediaPhotos := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	mediaPhotos := mediaadapter.NewTaskInstancePhotoRepository(pool, mediadomain.StorageBackendLocal)
 	checker := adapter.NewProofPhotoChecker(mediaPhotos)
 
 	h, _, _ := seedHousehold(t, pool)
@@ -177,7 +177,7 @@ func TestTaskService_CompleteInstance_PhotoPolicy_EndToEnd(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instanceRepo := adapter.NewTaskInstanceRepository(pool)
-	mediaPhotos := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	mediaPhotos := mediaadapter.NewTaskInstancePhotoRepository(pool, mediadomain.StorageBackendLocal)
 	checker := adapter.NewProofPhotoChecker(mediaPhotos)
 
 	svc, err := tasksapp.NewTaskService(taskRepo, instanceRepo, checker)

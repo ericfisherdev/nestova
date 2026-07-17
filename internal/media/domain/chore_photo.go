@@ -176,6 +176,11 @@ type TaskInstancePhoto struct {
 	// photo survives, mirroring Photo.UploadedBy.
 	UploadedBy *household.MemberID
 	UploadedAt time.Time
+	// StorageBackend (NES-132) is populated by
+	// TaskInstancePhotoRepository.Create from the repository's own
+	// configured backend, never by the caller — mirrors Photo.StorageBackend
+	// exactly; see that field's doc.
+	StorageBackend StorageBackend
 }
 
 // Validate reports whether the photo is well-formed, wrapping
@@ -209,6 +214,9 @@ func (p TaskInstancePhoto) Validate() error {
 // TaskInstancePhotoRepository persists chore-proof photo metadata (not the
 // bytes, which live behind the PhotoStore — the same port the album path
 // uses, under domain.PhotoClassChoreProof).
+//
+// Every implementation is constructed bound to ONE StorageBackend (NES-132),
+// mirroring PhotoRepository's identical contract — see that port's doc.
 //
 // Object lifecycle invariant (mirrors PhotoRepository/PhotoService's own,
 // documented on Photo's package): stored objects are immutable and
@@ -310,6 +318,35 @@ type TaskInstancePhotoRepository interface {
 	// row order. Returns an empty slice (not an error) when taskInstanceIDs
 	// is empty or none have chore-proof photos.
 	ListByInstances(ctx context.Context, householdID household.HouseholdID, taskInstanceIDs []TaskInstanceID) ([]*TaskInstancePhoto, error)
+
+	// ListAllStorageRefs returns the StorageRef of every chore-proof photo
+	// row across every household — the storage reaper's (NES-132/133,
+	// ReaperService in media/app) source of truth for "which chore-proof
+	// class objects are still referenced." Bucket-wide, not
+	// household-scoped, mirroring ObjectLister.ListObjects' identical scope
+	// and PhotoRepository.ListAllStorageRefs' album-side counterpart.
+	// Returns an empty slice (not an error) when there are no chore-proof
+	// photos yet.
+	ListAllStorageRefs(ctx context.Context) ([]StorageRef, error)
+
+	// DeleteUploadedBefore deletes every chore-proof photo row whose
+	// UploadedAt is strictly earlier than cutoff, and returns how many rows
+	// were removed — the optional per-class retention pass
+	// (MediaConfig.ChoreProofRetention, consumed by ReaperService): a
+	// chore-proof photo is transient documentation of a completed chore, not
+	// the family's photo library, so an operator may opt into expiring old
+	// ones. Deleting the ROW is what this method does; the now-unreferenced
+	// object is reclaimed by the reaper's ordinary orphan sweep after its
+	// own grace window elapses (see ReaperService's doc for why row deletion
+	// and object deletion are deliberately two separate steps, never a
+	// direct object delete here).
+	DeleteUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error)
+
+	// ExistsByStorageRef reports whether ANY chore-proof photo row currently
+	// references ref, across every household — mirrors
+	// PhotoRepository.ExistsByStorageRef exactly; see that method's doc for
+	// the TOCTOU-narrowing role it plays in ReaperService.sweepClass.
+	ExistsByStorageRef(ctx context.Context, ref StorageRef) (bool, error)
 }
 
 // ChoreProofExif extracts the EXIF facts the chore-proof upload path needs

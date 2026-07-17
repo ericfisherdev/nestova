@@ -42,16 +42,16 @@ type PutResult struct {
 }
 
 // PhotoStore persists and serves photo bytes behind a swappable port (a local
-// filesystem adapter first; an object store later, NES-132). Put streams r to
-// storage — it never buffers the whole upload in memory — sniffing the true
-// content type from the bytes themselves (a caller-declared type is never
-// trusted), hashing and size-capping as it copies. class namespaces the
-// resulting StorageRef (see PhotoClass) so bytes uploaded for one purpose can
-// never collide with, or be served as, another's — the calling context
-// chooses class, never the store. Open streams the bytes back (for serving,
-// and for EXIF extraction, which needs the RandomAccessReader half of
-// PhotoReader); Delete removes them; URL returns a locator for already-stored
-// bytes.
+// filesystem adapter, or an object-store adapter — S3PhotoStore, NES-132).
+// Put streams r to storage — it never buffers the whole upload in memory —
+// sniffing the true content type from the bytes themselves (a
+// caller-declared type is never trusted), hashing and size-capping as it
+// copies. class namespaces the resulting StorageRef (see PhotoClass) so
+// bytes uploaded for one purpose can never collide with, or be served as,
+// another's — the calling context chooses class, never the store. Open
+// streams the bytes back (for serving, and for EXIF extraction, which needs
+// the RandomAccessReader half of PhotoReader); Delete removes them; URL
+// returns a locator for already-stored bytes.
 //
 // Put error contract: ErrUnsupportedMediaType when the sniffed type is not an
 // accepted image format, ErrPhotoTooLarge when r exceeds the configured limit,
@@ -65,7 +65,9 @@ type PhotoStore interface {
 	// URL returns a locator for ref's stored bytes, or ErrPhotoNotFound when
 	// ref is unknown. ttl bounds how long the locator stays valid; a backend
 	// that cannot expire what it returns (LocalPhotoStore today) treats ttl as
-	// advisory and ignores it.
+	// advisory and ignores it. A non-positive ttl asks the backend to apply
+	// its own configured default (S3PhotoStore's PresignTTL) rather than the
+	// zero-duration URL a literal interpretation would produce.
 	//
 	// The two backends this port is designed for answer very differently: an
 	// object-store adapter (NES-132) returns a presigned URL a client can
@@ -79,10 +81,22 @@ type PhotoStore interface {
 	// therefore confirms ref resolves to a stored object and returns ref's
 	// own string as a stable (non-navigable) locator — existing view code is
 	// untouched and keeps building its own tenant-checked routes without
-	// calling URL at all. URL exists on the port now purely so NES-132's
-	// object-store adapter can implement it with a real presigned URL without
-	// any interface change.
+	// calling URL at all. See SupportsDirectURL for how a caller decides
+	// which of these two behaviors to expect without knowing the concrete
+	// backend type.
 	URL(ctx context.Context, ref StorageRef, ttl time.Duration) (string, error)
+
+	// SupportsDirectURL reports whether URL returns a browser-navigable
+	// locator a caller may safely redirect a client to (an object-store
+	// backend's presigned GET) as opposed to LocalPhotoStore's
+	// non-navigable stable-string locator (see URL's doc). The application
+	// layer's raw-serving seam (e.g. PhotoService.RawServe) reads this once,
+	// at request time, to decide whether to redirect (SupportsDirectURL
+	// true) or Open-and-stream through the Go process (false) — asking the
+	// store itself, rather than threading a separately-configured "which
+	// backend" flag through every consumer, means the two can never drift
+	// out of sync.
+	SupportsDirectURL() bool
 }
 
 // ExifReader extracts the EXIF capture time from a photo's bytes. TakenAt

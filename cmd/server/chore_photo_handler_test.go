@@ -50,6 +50,10 @@ type fakeTaskInstancePhotoRepoHandler struct {
 	latestTakenAt  time.Time
 	latestOK       bool
 	instanceExists bool
+	// store backs Get (NES-120/NES-132's raw-serving route tests); nil/empty
+	// means every Get reports ErrTaskInstancePhotoNotFound, matching a
+	// genuinely unknown id.
+	store map[mediadomain.TaskInstancePhotoID]*mediadomain.TaskInstancePhoto
 }
 
 func newFakeTaskInstancePhotoRepoHandler() *fakeTaskInstancePhotoRepoHandler {
@@ -81,11 +85,32 @@ func (f *fakeTaskInstancePhotoRepoHandler) ListByInstances(context.Context, hous
 	return nil, nil
 }
 
-// Get is deliberately ID-only (NES-120), mirroring PhotoRepository.Get; unused
-// by NES-119's own upload tests (nothing in this file exercises the NES-120
-// raw-serving route), implemented only to satisfy the interface.
-func (f *fakeTaskInstancePhotoRepoHandler) Get(context.Context, mediadomain.TaskInstancePhotoID) (*mediadomain.TaskInstancePhoto, error) {
+// Get is deliberately ID-only (NES-120), mirroring PhotoRepository.Get:
+// ownership is enforced by the caller (ChoreProofPhotoService.ownedPhoto),
+// not this fake.
+func (f *fakeTaskInstancePhotoRepoHandler) Get(_ context.Context, id mediadomain.TaskInstancePhotoID) (*mediadomain.TaskInstancePhoto, error) {
+	if p, ok := f.store[id]; ok {
+		return p, nil
+	}
 	return nil, mediadomain.ErrTaskInstancePhotoNotFound
+}
+
+// ListAllStorageRefs / DeleteUploadedBefore are unused by this file's
+// upload-focused tests; implemented only to satisfy the interface (NES-132
+// added them for the storage reaper).
+func (f *fakeTaskInstancePhotoRepoHandler) ListAllStorageRefs(context.Context) ([]mediadomain.StorageRef, error) {
+	return nil, nil
+}
+
+func (f *fakeTaskInstancePhotoRepoHandler) DeleteUploadedBefore(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
+// ExistsByStorageRef is unused by this file's upload-focused tests;
+// implemented only to satisfy the interface (NES-132's reaper TOCTOU
+// recheck).
+func (f *fakeTaskInstancePhotoRepoHandler) ExistsByStorageRef(context.Context, mediadomain.StorageRef) (bool, error) {
+	return false, nil
 }
 
 // buildChoreProofTestHandler wires just enough of the composition root
@@ -109,6 +134,7 @@ func buildChoreProofTestHandler(t *testing.T, member *household.Member, store *f
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
 	requireMember := authadapter.RequireMember(sm)
 	mux.Handle("POST /tasks/{id}/photos", requireMember(http.HandlerFunc(handlers.Upload)))
+	mux.Handle("GET /tasks/photos/{id}/raw", requireMember(http.HandlerFunc(handlers.Raw)))
 	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm
 }
 
@@ -332,5 +358,56 @@ func TestChoreProofUploadRejectsMalformedMultipartAsBadRequest(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("malformed multipart upload: status=%d, want 400", rec.Code)
+	}
+}
+
+// TestChoreProofRawRedirectsWhenBackendSupportsDirectURL covers NES-132's
+// AC1 for the chore-proof route: with an S3-like backend, GET
+// /tasks/photos/{id}/raw must 302-redirect to a presigned URL rather than
+// streaming a body — mirroring
+// TestMediaRawRedirectsWhenBackendSupportsDirectURL's album-path coverage,
+// one table over.
+func TestChoreProofRawRedirectsWhenBackendSupportsDirectURL(t *testing.T) {
+	member := testMember()
+	store := &fakeMediaStore{bytes: []byte("the-image-bytes"), directURL: true}
+	repo := newFakeTaskInstancePhotoRepoHandler()
+	handler, sm := buildChoreProofTestHandler(t, member, store, fakeChoreProofExifHandler{}, repo)
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	owned := mediadomain.NewTaskInstancePhotoID()
+	repo.store = map[mediadomain.TaskInstancePhotoID]*mediadomain.TaskInstancePhoto{
+		owned: {ID: owned, HouseholdID: member.HouseholdID, StorageRef: "households/hh/chore-photos/aa/x.jpg", ContentType: "image/jpeg"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tasks/photos/"+owned.String()+"/raw", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("raw with a direct-URL backend: status=%d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "nestova-photos") || !strings.Contains(loc, "X-Amz-Signature") {
+		t.Fatalf("Location = %q, want a presigned URL containing the bucket and a signature parameter", loc)
+	}
+	// The redirect RESPONSE ITSELF (carrying the presigned URL, a
+	// short-lived bearer credential) must never be cached — no-store, not
+	// just private.
+	if cc := rec.Header().Get("Cache-Control"); cc != "private, no-store" {
+		t.Fatalf("redirect Cache-Control = %q, want %q", cc, "private, no-store")
+	}
+	if strings.Contains(rec.Body.String(), "the-image-bytes") {
+		t.Fatal("raw redirected but ALSO streamed bytes through the Go process")
+	}
+
+	// Cross-household photo still 404s before any redirect is built.
+	foreign := mediadomain.NewTaskInstancePhotoID()
+	repo.store[foreign] = &mediadomain.TaskInstancePhoto{ID: foreign, HouseholdID: household.NewHouseholdID(), StorageRef: "households/other/chore-photos/bb/y.jpg", ContentType: "image/jpeg"}
+	req = httptest.NewRequest(http.MethodGet, "/tasks/photos/"+foreign.String()+"/raw", nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-household raw with a direct-URL backend: status=%d, want 404", rec.Code)
 	}
 }

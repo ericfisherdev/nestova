@@ -392,8 +392,14 @@ func (h *WebHandlers) MovePhoto(w http.ResponseWriter, r *http.Request) {
 	respondAfterMutation(w, r, photosPath)
 }
 
-// Raw handles GET /photos/{id}/raw: streams a photo's bytes to its owning
+// Raw handles GET /photos/{id}/raw: serves a photo's bytes to its owning
 // household only. It is not CSRF-gated (a safe GET) but is tenant-checked.
+//
+// RawServe (NES-132) decides HOW to serve: with an S3-backed PhotoStore it
+// 302-redirects to a presigned URL so the bytes bypass the Go process
+// entirely; with LocalPhotoStore it streams through Raw exactly as before —
+// see RawServe's own doc for why that decision lives in the service layer,
+// not here.
 func (h *WebHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 	member, ok := authadapter.CurrentMember(r.Context())
 	if !ok {
@@ -405,24 +411,36 @@ func (h *WebHandlers) Raw(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid photo id", http.StatusBadRequest)
 		return
 	}
-	rc, contentType, err := h.photos.OpenBytes(r.Context(), member.HouseholdID, id)
+	result, err := h.photos.RawServe(r.Context(), member.HouseholdID, id)
 	if err != nil {
 		if errors.Is(err, domain.ErrPhotoNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		h.logger.ErrorContext(r.Context(), "photos: open bytes", "error", err)
+		h.logger.ErrorContext(r.Context(), "photos: raw serve", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	defer func() { _ = rc.Close() }()
+	if result.RedirectURL != "" {
+		// The 302 RESPONSE ITSELF — the Location header carrying the
+		// presigned URL, a short-lived bearer credential — must never be
+		// cached or replayed by a browser/proxy cache; no-store is stricter
+		// than the streamed-body branch's max-age=3600 below on purpose,
+		// since caching this response risks handing out a stale (possibly
+		// expired, possibly since-revoked) presigned URL. Must be set
+		// BEFORE http.Redirect, which calls WriteHeader.
+		w.Header().Set("Cache-Control", "private, no-store")
+		http.Redirect(w, r, result.RedirectURL, http.StatusFound)
+		return
+	}
+	defer func() { _ = result.Body.Close() }()
 	// Serve with an explicit image content type and forbid MIME sniffing so a
 	// crafted upload cannot be reinterpreted as executable content by the browser.
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", result.ContentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// Private: a photo is household-scoped, so a shared/proxy cache must not store it.
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	if _, err := io.Copy(w, rc); err != nil {
+	w.Header().Set("Cache-Control", photoBytesCacheControl)
+	if _, err := io.Copy(w, result.Body); err != nil {
 		h.logger.ErrorContext(r.Context(), "photos: stream bytes", "error", err)
 	}
 }
