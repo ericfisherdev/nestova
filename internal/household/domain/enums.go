@@ -22,6 +22,14 @@ func (r Role) Valid() bool {
 	}
 }
 
+// IsParent reports whether r carries household-parent privileges (owner or
+// adult) — the role gate shared by chore-trade history (NES-122), reward
+// admin (NES-126), and redemption fulfillment (NES-127) across every bounded
+// context that needs to distinguish a parent from a child member.
+func (r Role) IsParent() bool {
+	return r == RoleOwner || r == RoleAdult
+}
+
 // String returns the role's stored value.
 func (r Role) String() string { return string(r) }
 

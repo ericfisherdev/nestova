@@ -97,7 +97,7 @@ func NewTradeWebHandlers(
 // NES-122's role gate for the trade-history page and the dashboard's "View
 // trade history" link. A child member never sees or can access history.
 func isParent(member *household.Member) bool {
-	return member.Role == household.RoleOwner || member.Role == household.RoleAdult
+	return member.Role.IsParent()
 }
 
 // ---------------------------------------------------------------------------

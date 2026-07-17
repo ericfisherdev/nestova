@@ -59,6 +59,9 @@ type RewardsPage struct {
 	// History is the current member's recent point ledger activity, newest
 	// first (NES-118).
 	History []PointHistoryRow
+	// MyRedemptions is the current member's own recent redemptions, newest
+	// first, regardless of status (NES-127).
+	MyRedemptions []MyRedemptionItem
 	// CSRFToken is the per-session CSRF token embedded in every redeem form.
 	CSRFToken string
 	// InsufficientMessage is set when the previous redeem attempt was rejected
@@ -68,6 +71,26 @@ type RewardsPage struct {
 	// link to the reward admin catalogue (NES-126), mirroring
 	// TradeSections.CanViewHistory's role gate (NES-122).
 	CanManageRewards bool
+}
+
+// MyRedemptionItem is the view model for one of the current member's own
+// redemptions in the "My Redemptions" list (NES-127).
+type MyRedemptionItem struct {
+	// ID is the string form of the RewardRedemptionID UUID.
+	ID string
+	// RewardName is the redeemed reward's name.
+	RewardName string
+	// Status is the redemption's lifecycle status ("pending", "fulfilled",
+	// "denied", "cancelled").
+	Status string
+	// DeniedReason is the parent's reason for a denial; empty when the
+	// redemption is not denied, or the parent left no reason.
+	DeniedReason string
+	// CreatedAt is the pre-formatted date the redemption was requested.
+	CreatedAt string
+	// CSRFToken is the per-session CSRF token embedded in the Cancel form,
+	// shown only while Status is "pending".
+	CSRFToken string
 }
 
 // PointHistoryRow is the view model for one entry in the current member's
@@ -114,6 +137,7 @@ templ RewardsPageComponent(page RewardsPage) {
 				@BalanceCard(page.Balance)
 				@Leaderboard(page.Leaderboard)
 				@PointHistory(page.History)
+				@MyRedemptions(page.MyRedemptions)
 			</div>
 			<!-- Right: rewards catalog -->
 			@RewardsCatalog(page.Rewards, page.CSRFToken)
@@ -229,6 +253,71 @@ templ pointHistoryRow(row PointHistoryRow) {
 			{ fmt.Sprintf("%+d", row.Points) }
 		</span>
 	</li>
+}
+
+// ---------------------------------------------------------------------------
+// My redemptions (NES-127)
+// ---------------------------------------------------------------------------
+
+// MyRedemptions renders the current member's own redemptions, newest first,
+// with a status badge each and a Cancel action while still pending. Renders
+// nothing when the member has never redeemed anything, keeping the page
+// uncluttered for a new member.
+templ MyRedemptions(items []MyRedemptionItem) {
+	if len(items) > 0 {
+		<div class="rounded-card bg-surface p-4 shadow-warm">
+			<h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">My Redemptions</h2>
+			<ul class="flex flex-col gap-2">
+				for _, item := range items {
+					@myRedemptionRow(item)
+				}
+			</ul>
+		</div>
+	}
+}
+
+// myRedemptionRow renders one of the member's own redemptions: the reward
+// name, a status badge, and — only while pending — a Cancel action.
+templ myRedemptionRow(item MyRedemptionItem) {
+	<li id={ fmt.Sprintf("my-redemption-%s", item.ID) } class="flex flex-wrap items-center justify-between gap-2 rounded-control px-3 py-2">
+		<div class="min-w-0 flex-1">
+			<p class="truncate text-sm text-ink">{ item.RewardName }</p>
+			<p class="text-xs text-ink-muted">
+				{ item.CreatedAt }
+				if item.Status == "denied" && item.DeniedReason != "" {
+					{ " · " + item.DeniedReason }
+				}
+			</p>
+		</div>
+		<div class="flex shrink-0 items-center gap-2">
+			@redemptionStatusBadge(item.Status)
+			if item.Status == "pending" {
+				<form
+					method="post"
+					action={ templ.SafeURL(fmt.Sprintf("/rewards/redemptions/%s/cancel", item.ID)) }
+					hx-post={ fmt.Sprintf("/rewards/redemptions/%s/cancel", item.ID) }
+				>
+					<input type="hidden" name="csrf_token" value={ item.CSRFToken }/>
+					@Button("Cancel", ButtonSecondary, "submit")
+				</form>
+			}
+		</div>
+	</li>
+}
+
+// redemptionStatusBadge renders a small pill for a redemption's status,
+// mirroring tradeStatusBadge's shape (NES-122).
+templ redemptionStatusBadge(status string) {
+	switch status {
+		case "fulfilled":
+			<span class="inline-flex items-center rounded-control bg-member-sage-tint px-2 py-0.5 text-xs font-medium text-member-sage-fg">Fulfilled</span>
+		case "denied":
+			<span class="inline-flex items-center rounded-control bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">Denied</span>
+		case "cancelled":
+			<span class="inline-flex items-center rounded-control bg-surface-warm px-2 py-0.5 text-xs font-medium text-ink-muted">Cancelled</span>
+		default:
+			<span class="inline-flex items-center rounded-control bg-member-clay-tint px-2 py-0.5 text-xs font-medium text-member-clay-fg">Pending</span>
+	}
 }
 
 // ---------------------------------------------------------------------------

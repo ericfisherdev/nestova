@@ -138,6 +138,99 @@ func TestDownAndStatus(t *testing.T) {
 	}
 }
 
+// TestUpTo_BackfillsPreExistingRequestedRows proves migration 00025 handles a
+// database that already has reward_redemption rows in the pre-NES-127 shape
+// (status = 'requested') — coverage TestUpDownRoundTrip cannot provide, since
+// every other gated test here starts from an empty schema where the
+// backfill's UPDATE trivially matches zero rows and so cannot violate either
+// the old or the new CHECK constraint regardless of statement ordering. See
+// 00025_reward_redemption_fulfillment.sql's Up section doc for the exact
+// ordering bug this guards against (CodeRabbit finding, NES-127).
+func TestUpTo_BackfillsPreExistingRequestedRows(t *testing.T) {
+	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the stepped-migration backfill test")
+	}
+	ctx := context.Background()
+
+	if err := Reset(ctx, dsn); err != nil {
+		t.Fatalf("initial Reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := Reset(ctx, dsn); err != nil {
+			t.Logf("cleanup Reset failed: %v", err)
+		}
+	})
+
+	// Stop at 00024 — the last migration before NES-127 — so the schema still
+	// has the OLD status CHECK (requested/fulfilled/cancelled) and no
+	// denied_reason column.
+	const preMigrationVersion = 24
+	if err := UpTo(ctx, dsn, preMigrationVersion); err != nil {
+		t.Fatalf("UpTo(%d): %v", preMigrationVersion, err)
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Seed a redemption row in the OLD schema's shape: status = 'requested',
+	// raw SQL throughout since this test exercises the schema directly, not
+	// through any application-layer repository.
+	var householdID, memberID, rewardID, redemptionID string
+	if err := db.QueryRow(`INSERT INTO household (name) VALUES ('Pre-migration household') RETURNING id`).Scan(&householdID); err != nil {
+		t.Fatalf("seed household: %v", err)
+	}
+	if err := db.QueryRow(
+		`INSERT INTO member (household_id, display_name, role, color_key) VALUES ($1, 'Alice', 'adult', 'sage') RETURNING id`,
+		householdID,
+	).Scan(&memberID); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	if err := db.QueryRow(
+		`INSERT INTO reward (id, household_id, name, cost_points, active) VALUES (gen_random_uuid(), $1, 'Legacy reward', 10, true) RETURNING id`,
+		householdID,
+	).Scan(&rewardID); err != nil {
+		t.Fatalf("seed reward: %v", err)
+	}
+	if err := db.QueryRow(
+		`INSERT INTO reward_redemption (id, household_id, reward_id, member_id, status)
+		 VALUES (gen_random_uuid(), $1, $2, $3, 'requested') RETURNING id`,
+		householdID, rewardID, memberID,
+	).Scan(&redemptionID); err != nil {
+		t.Fatalf("seed pre-migration redemption (status='requested'): %v", err)
+	}
+
+	// Apply the rest of the migrations, including 00025.
+	if err := Up(ctx, dsn); err != nil {
+		t.Fatalf("Up (through 00025): %v", err)
+	}
+
+	// The pre-existing row must have been backfilled to 'pending', not left
+	// stranded or (had the ordering bug been present) rejected the migration
+	// outright.
+	var status string
+	if err := db.QueryRow(`SELECT status FROM reward_redemption WHERE id = $1`, redemptionID).Scan(&status); err != nil {
+		t.Fatalf("read migrated redemption status: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("status after migration = %q, want %q", status, "pending")
+	}
+
+	// The NEW CHECK constraint must be the one actually enforced now: the
+	// old, pre-rename spelling 'requested' must be rejected.
+	if _, err := db.Exec(`UPDATE reward_redemption SET status = 'requested' WHERE id = $1`, redemptionID); err == nil {
+		t.Error("UPDATE to 'requested' succeeded after migration, want a CHECK constraint violation")
+	}
+
+	// The new 'denied' value must be accepted by the new CHECK constraint.
+	if _, err := db.Exec(`UPDATE reward_redemption SET status = 'denied' WHERE id = $1`, redemptionID); err != nil {
+		t.Errorf("UPDATE to 'denied' after migration failed: %v, want success", err)
+	}
+}
+
 // appliedVersion returns the current goose migration version recorded in the
 // database.
 func appliedVersion(t *testing.T, dsn string) int64 {

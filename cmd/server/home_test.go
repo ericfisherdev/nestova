@@ -152,8 +152,36 @@ func (fakeRewardRepo) Redeem(_ context.Context, _ *tasksdomain.RewardRedemption)
 
 // RedeemWithDebit satisfies the tasksapp.RewardRedeemer interface so this fake
 // can be passed to NewRewardService.
-func (fakeRewardRepo) RedeemWithDebit(_ context.Context, _ *tasksdomain.RewardRedemption, _ int) error {
-	return nil
+func (fakeRewardRepo) RedeemWithDebit(_ context.Context, _ *tasksdomain.RewardRedemption) (int, error) {
+	return 0, nil
+}
+
+func (fakeRewardRepo) ListPendingRedemptions(_ context.Context, _ household.HouseholdID) ([]tasksdomain.RedemptionDetail, error) {
+	return nil, nil
+}
+
+func (fakeRewardRepo) ListMemberRedemptions(
+	_ context.Context, _ household.HouseholdID, _ household.MemberID, _ int,
+) ([]tasksdomain.RedemptionDetail, error) {
+	return nil, nil
+}
+
+func (fakeRewardRepo) Fulfill(
+	_ context.Context, _ household.HouseholdID, _ tasksdomain.RewardRedemptionID,
+) (tasksdomain.ResolvedRedemption, error) {
+	return tasksdomain.ResolvedRedemption{}, tasksdomain.ErrRedemptionNotFound
+}
+
+func (fakeRewardRepo) Deny(
+	_ context.Context, _ household.HouseholdID, _ tasksdomain.RewardRedemptionID, _ string,
+) (tasksdomain.ResolvedRedemption, error) {
+	return tasksdomain.ResolvedRedemption{}, tasksdomain.ErrRedemptionNotFound
+}
+
+func (fakeRewardRepo) Cancel(
+	_ context.Context, _ household.HouseholdID, _ tasksdomain.RewardRedemptionID, _ household.MemberID,
+) (tasksdomain.ResolvedRedemption, error) {
+	return tasksdomain.ResolvedRedemption{}, tasksdomain.ErrRedemptionNotPending
 }
 
 // Compile-time assertion.
@@ -169,13 +197,18 @@ func newTestGamificationHandlers(
 	logger *slog.Logger,
 ) *tasksadapter.GamificationWebHandlers {
 	rewardRepo := fakeRewardRepo{}
-	rewardSvc := tasksapp.NewRewardService(rewardRepo, logger)
+	rewardSvc := tasksapp.NewRewardService(rewardRepo, householdRepo, fakeEnqueuer{}, logger)
 	rewardAdminSvc := tasksapp.NewRewardAdminService(rewardRepo, logger)
+	redemptionSvc, err := tasksapp.NewRedemptionService(rewardRepo, fakeEnqueuer{}, logger)
+	if err != nil {
+		panic("newTestGamificationHandlers: " + err.Error())
+	}
 	return tasksadapter.NewGamificationWebHandlers(
 		fakePointLedgerRepo{},
 		rewardRepo,
 		rewardSvc,
 		rewardAdminSvc,
+		redemptionSvc,
 		instanceRepo,
 		householdRepo,
 		sm,

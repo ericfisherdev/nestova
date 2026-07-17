@@ -40,6 +40,11 @@ const streakLookbackDays = 366
 // scanning aid, not a full audit trail, so an unbounded query is unnecessary.
 const pointHistoryLimit = 20
 
+// myRedemptionsLimit caps how many of the current member's own redemptions
+// buildRewardsPage fetches for the "My Redemptions" list (NES-127), mirroring
+// pointHistoryLimit's scanning-aid rationale.
+const myRedemptionsLimit = 20
+
 // GamificationWebHandlers holds the HTTP handler methods for the /rewards
 // scoreboard + redemption page. All dependencies are injected via the
 // constructor so this type is testable with fakes.
@@ -53,6 +58,7 @@ type GamificationWebHandlers struct {
 	rewards        domain.RewardRepository
 	rewardSvc      *tasksapp.RewardService
 	rewardAdminSvc *tasksapp.RewardAdminService
+	redemptionSvc  *tasksapp.RedemptionService
 	instanceRepo   domain.TaskInstanceRepository
 	households     household.HouseholdRepository
 	sm             *scs.SessionManager
@@ -67,6 +73,7 @@ func NewGamificationWebHandlers(
 	rewards domain.RewardRepository,
 	rewardSvc *tasksapp.RewardService,
 	rewardAdminSvc *tasksapp.RewardAdminService,
+	redemptionSvc *tasksapp.RedemptionService,
 	instanceRepo domain.TaskInstanceRepository,
 	households household.HouseholdRepository,
 	sm *scs.SessionManager,
@@ -83,6 +90,9 @@ func NewGamificationWebHandlers(
 	}
 	if rewardAdminSvc == nil {
 		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil RewardAdminService")
+	}
+	if redemptionSvc == nil {
+		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil RedemptionService")
 	}
 	if instanceRepo == nil {
 		panic("tasks/adapter: NewGamificationWebHandlers requires a non-nil TaskInstanceRepository")
@@ -101,6 +111,7 @@ func NewGamificationWebHandlers(
 		rewards:        rewards,
 		rewardSvc:      rewardSvc,
 		rewardAdminSvc: rewardAdminSvc,
+		redemptionSvc:  redemptionSvc,
 		instanceRepo:   instanceRepo,
 		households:     households,
 		sm:             sm,
@@ -308,17 +319,48 @@ func (h *GamificationWebHandlers) buildRewardsPage(
 		})
 	}
 
+	csrfToken := authadapter.GetCSRFToken(r.Context(), h.sm)
+
+	// Current member's own redemptions, newest first (NES-127 "My
+	// Redemptions"), so they can track a pending request or cancel it.
+	myRedemptions, err := h.rewards.ListMemberRedemptions(ctx, member.HouseholdID, member.ID, myRedemptionsLimit)
+	if err != nil {
+		return components.RewardsPage{}, err
+	}
+	myRedemptionItems := make([]components.MyRedemptionItem, 0, len(myRedemptions))
+	for _, d := range myRedemptions {
+		myRedemptionItems = append(myRedemptionItems, buildMyRedemptionItem(d, csrfToken))
+	}
+
 	return components.RewardsPage{
 		Leaderboard:         rows,
 		Balance:             balance,
 		Rewards:             rewardItems,
 		History:             historyRows,
-		CSRFToken:           authadapter.GetCSRFToken(r.Context(), h.sm),
+		MyRedemptions:       myRedemptionItems,
+		CSRFToken:           csrfToken,
 		InsufficientMessage: insufficientMessage,
 		// CanManageRewards gates the "Manage rewards" link to parents (owner or
 		// adult), mirroring TradeSections.CanViewHistory's role gate (NES-122).
 		CanManageRewards: isParent(member),
 	}, nil
+}
+
+// buildMyRedemptionItem maps one of the member's own redemption details to
+// its "My Redemptions" view (NES-127).
+func buildMyRedemptionItem(d domain.RedemptionDetail, csrfToken string) components.MyRedemptionItem {
+	deniedReason := ""
+	if d.DeniedReason != nil {
+		deniedReason = *d.DeniedReason
+	}
+	return components.MyRedemptionItem{
+		ID:           d.ID.String(),
+		RewardName:   d.RewardName,
+		Status:       d.Status.String(),
+		DeniedReason: deniedReason,
+		CreatedAt:    d.CreatedAt.Format("Jan 2"),
+		CSRFToken:    csrfToken,
+	}
 }
 
 // buildRewardItem maps one storefront read model to its RewardItem view,
@@ -375,6 +417,11 @@ func historyReason(entry domain.PointHistoryEntry) string {
 			return fmt.Sprintf("Redeemed: %s", entry.RewardName)
 		}
 		return "Reward redeemed"
+	case domain.SourceTypeRedemptionRefund:
+		if entry.RewardName != "" {
+			return fmt.Sprintf("Refund: %s", entry.RewardName)
+		}
+		return "Redemption refund"
 	default:
 		return "Points adjustment"
 	}
@@ -438,7 +485,8 @@ func buildLeaderboardRows(
 // TradeWebHandlers.HistoryPage's exact role-gate shape (NES-122).
 // ---------------------------------------------------------------------------
 
-// RewardsAdminPage handles GET /admin/rewards. It lists every reward in the
+// RewardsAdminPage handles GET /admin/rewards. It renders the pending
+// redemption fulfillment inbox (NES-127) followed by every reward in the
 // household — active and archived — for the parent-only catalogue admin
 // (NES-126 AC1).
 func (h *GamificationWebHandlers) RewardsAdminPage(layoutFn LayoutFunc) http.HandlerFunc {
@@ -453,21 +501,79 @@ func (h *GamificationWebHandlers) RewardsAdminPage(layoutFn LayoutFunc) http.Han
 			return
 		}
 
-		rewards, err := h.rewards.ListAllRewards(r.Context(), member.HouseholdID)
+		page, err := h.buildRewardsAdminPage(r, member)
 		if err != nil {
-			h.logger.ErrorContext(r.Context(), "rewards admin: list all rewards", "error", err)
+			h.logger.ErrorContext(r.Context(), "rewards admin: build page", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
-		page := components.RewardAdminListPage{
-			Rewards:   toRewardAdminListItems(rewards),
-			CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
-		}
 		content := components.RewardsAdminPage(page)
 		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
 			h.logger.ErrorContext(r.Context(), "rewards admin: render list", "error", err)
 		}
+	}
+}
+
+// buildRewardsAdminPage assembles the RewardAdminListPage view model: the
+// pending-redemption fulfillment inbox (NES-127) followed by the full
+// catalogue (NES-126). Member display names for the inbox are only resolved
+// when there is at least one pending redemption, so a caught-up household
+// pays no extra ListMembers round trip.
+func (h *GamificationWebHandlers) buildRewardsAdminPage(
+	r *http.Request,
+	member *household.Member,
+) (components.RewardAdminListPage, error) {
+	ctx := r.Context()
+
+	pending, err := h.rewards.ListPendingRedemptions(ctx, member.HouseholdID)
+	if err != nil {
+		return components.RewardAdminListPage{}, err
+	}
+	var memberByID map[household.MemberID]*household.Member
+	if len(pending) > 0 {
+		members, err := h.households.ListMembers(ctx, member.HouseholdID)
+		if err != nil {
+			return components.RewardAdminListPage{}, err
+		}
+		memberByID = make(map[household.MemberID]*household.Member, len(members))
+		for _, m := range members {
+			memberByID[m.ID] = m
+		}
+	}
+	inboxItems := make([]components.RedemptionInboxItem, 0, len(pending))
+	for _, d := range pending {
+		inboxItems = append(inboxItems, buildRedemptionInboxItem(d, memberByID))
+	}
+
+	rewards, err := h.rewards.ListAllRewards(ctx, member.HouseholdID)
+	if err != nil {
+		return components.RewardAdminListPage{}, err
+	}
+
+	return components.RewardAdminListPage{
+		PendingRedemptions: inboxItems,
+		Rewards:            toRewardAdminListItems(rewards),
+		CSRFToken:          authadapter.GetCSRFToken(ctx, h.sm),
+	}, nil
+}
+
+// buildRedemptionInboxItem maps one pending redemption detail to its inbox
+// view, resolving the redeeming member's display name from memberByID (nil
+// when there were no pending redemptions to resolve names for).
+func buildRedemptionInboxItem(
+	d domain.RedemptionDetail,
+	memberByID map[household.MemberID]*household.Member,
+) components.RedemptionInboxItem {
+	memberName := "(unknown member)"
+	if m, ok := memberByID[d.MemberID]; ok {
+		memberName = m.DisplayName
+	}
+	return components.RedemptionInboxItem{
+		ID:         d.ID.String(),
+		RewardName: d.RewardName,
+		MemberName: memberName,
+		CreatedAt:  d.CreatedAt.Format("Jan 2"),
 	}
 }
 
@@ -848,4 +954,148 @@ func adminStockLabel(quantityAvailable *int) string {
 		return "Unlimited"
 	}
 	return fmt.Sprintf("%d available", *quantityAvailable)
+}
+
+// ---------------------------------------------------------------------------
+// Redemption fulfillment (NES-127) — parent inbox actions + member self-cancel.
+// ---------------------------------------------------------------------------
+
+// FulfillRedemption handles POST /admin/rewards/redemptions/{id}/fulfill.
+// Parent-only (owner/adult); approves a pending redemption.
+//
+// Error mapping:
+//   - bad CSRF                   → 403
+//   - not a parent (owner/adult) → 403
+//   - malformed redemption id    → 400
+//   - ErrRedemptionNotFound      → 404
+//   - ErrRedemptionNotPending    → 409
+//   - other                      → 500
+func (h *GamificationWebHandlers) FulfillRedemption(w http.ResponseWriter, r *http.Request) {
+	member, id, ok := h.beginRedemptionMutation(w, r, true)
+	if !ok {
+		return
+	}
+
+	if err := h.redemptionSvc.Fulfill(r.Context(), member.HouseholdID, id); err != nil {
+		h.handleRedemptionMutationError(w, r, err)
+		return
+	}
+
+	h.respondRedemptionInboxRowRemoved(w, r, id.String())
+}
+
+// DenyRedemption handles POST /admin/rewards/redemptions/{id}/deny.
+// Parent-only (owner/adult); rejects a pending redemption and refunds its
+// points. The optional "reason" form field is passed through unvalidated — an
+// empty reason is a legitimate denial with no explanation given.
+//
+// Error mapping: same as FulfillRedemption.
+func (h *GamificationWebHandlers) DenyRedemption(w http.ResponseWriter, r *http.Request) {
+	member, id, ok := h.beginRedemptionMutation(w, r, true)
+	if !ok {
+		return
+	}
+
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if err := h.redemptionSvc.Deny(r.Context(), member.HouseholdID, id, reason); err != nil {
+		h.handleRedemptionMutationError(w, r, err)
+		return
+	}
+
+	h.respondRedemptionInboxRowRemoved(w, r, id.String())
+}
+
+// CancelRedemption handles POST /rewards/redemptions/{id}/cancel. Any member
+// may cancel their own still-pending redemption; the debited points are
+// refunded. Unlike Fulfill/Deny, a successful cancel changes the acting
+// member's own balance and point history, so the response reloads /rewards
+// entirely (mirroring Redeem's HX-Redirect precedent) rather than removing a
+// single row.
+//
+// Error mapping:
+//   - bad CSRF                → 403
+//   - malformed redemption id → 400
+//   - ErrRedemptionNotPending → 409
+//   - other                   → 500
+func (h *GamificationWebHandlers) CancelRedemption(w http.ResponseWriter, r *http.Request) {
+	member, id, ok := h.beginRedemptionMutation(w, r, false)
+	if !ok {
+		return
+	}
+
+	if err := h.redemptionSvc.Cancel(r.Context(), member.HouseholdID, id, member.ID); err != nil {
+		h.handleRedemptionMutationError(w, r, err)
+		return
+	}
+
+	if render.IsHTMX(r) {
+		w.Header().Set("HX-Redirect", "/rewards")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, "/rewards", http.StatusSeeOther)
+}
+
+// beginRedemptionMutation runs the CSRF/session/path-id boilerplate shared by
+// FulfillRedemption, DenyRedemption, and CancelRedemption, mirroring
+// TradeWebHandlers.beginTradeMutation's shape. requireParent gates
+// Fulfill/Deny to owner/adult members; Cancel passes false since any member
+// may act on their own redemption. ok is false when a response has already
+// been written and the caller must return immediately.
+func (h *GamificationWebHandlers) beginRedemptionMutation(
+	w http.ResponseWriter,
+	r *http.Request,
+	requireParent bool,
+) (*household.Member, domain.RewardRedemptionID, bool) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return nil, domain.RewardRedemptionID{}, false
+	}
+	if !authadapter.VerifyCSRF(r, h.sm) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return nil, domain.RewardRedemptionID{}, false
+	}
+	member, ok := authadapter.CurrentMember(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, domain.RewardRedemptionID{}, false
+	}
+	if requireParent && !isParent(member) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return nil, domain.RewardRedemptionID{}, false
+	}
+	id, err := domain.ParseRewardRedemptionID(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid redemption id", http.StatusBadRequest)
+		return nil, domain.RewardRedemptionID{}, false
+	}
+	return member, id, true
+}
+
+// handleRedemptionMutationError maps a RedemptionService error to an HTTP
+// response and writes it. The caller must return immediately after this.
+func (h *GamificationWebHandlers) handleRedemptionMutationError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, domain.ErrRedemptionNotFound):
+		http.Error(w, "redemption not found", http.StatusNotFound)
+	case errors.Is(err, domain.ErrRedemptionNotPending):
+		http.Error(w, "redemption is no longer pending", http.StatusConflict)
+	default:
+		h.logger.ErrorContext(r.Context(), "redemptions: mutation error", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+// respondRedemptionInboxRowRemoved responds after a successful
+// FulfillRedemption/DenyRedemption: HTMX requests receive the resolved row's
+// removal; full navigations get a 303 redirect back to the admin rewards
+// page, mirroring TradeWebHandlers.respondCardRemoved's identical shape.
+func (h *GamificationWebHandlers) respondRedemptionInboxRowRemoved(w http.ResponseWriter, r *http.Request, id string) {
+	if !render.IsHTMX(r) {
+		http.Redirect(w, r, "/admin/rewards", http.StatusSeeOther)
+		return
+	}
+	if err := render.Render(r.Context(), w, http.StatusOK, components.RedemptionInboxRowRemoved(id)); err != nil {
+		h.logger.ErrorContext(r.Context(), "redemptions: render inbox row removal", "error", err)
+	}
 }

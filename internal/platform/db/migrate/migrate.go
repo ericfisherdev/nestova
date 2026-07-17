@@ -72,6 +72,36 @@ func Reset(ctx context.Context, dsn string, opts ...Option) error {
 	return run(ctx, "reset", dsn, opts...)
 }
 
+// UpTo applies migrations up to and including the given goose version — the
+// migration file's numeric filename prefix, e.g. 24 for
+// 00024_reward_catalog_admin.sql. Unlike Up, Down, Status, and Reset, it does
+// not go through goose's command-string dispatcher (RunContext), since
+// "up-to" needs a version argument the others don't take.
+//
+// This exists for gated tests that need to seed data against an
+// intermediate schema (i.e. stop applying migrations partway through) and
+// then apply one specific migration on top of it, to prove that migration
+// handles pre-existing rows correctly — coverage a plain Reset+Up cannot
+// provide, since that always starts from an empty database where a backfill
+// UPDATE trivially matches zero rows.
+func UpTo(ctx context.Context, dsn string, version int64, opts ...Option) error {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	db, err := connect(ctx, dsn, o.poolerSafe)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := goose.UpToContext(ctx, db, dir, version); err != nil {
+		return fmt.Errorf("goose up-to %d: %w", version, err)
+	}
+	return nil
+}
+
 // run opens a database/sql handle via the pgx stdlib driver and executes the
 // goose command against the embedded migrations.
 func run(ctx context.Context, command, dsn string, opts ...Option) error {
@@ -80,17 +110,11 @@ func run(ctx context.Context, command, dsn string, opts ...Option) error {
 		opt(&o)
 	}
 
-	db, err := openDB(dsn, o.poolerSafe)
+	db, err := connect(ctx, dsn, o.poolerSafe)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
-
-	// Verify connectivity up front so an invalid DSN or unreachable database
-	// fails with a clear error before goose starts.
-	if err := db.PingContext(ctx); err != nil {
-		return fmt.Errorf("connect to database: %w", err)
-	}
 
 	if command == "reset" {
 		// On a fresh database the goose_db_version table does not exist yet, so
@@ -106,6 +130,22 @@ func run(ctx context.Context, command, dsn string, opts ...Option) error {
 		return fmt.Errorf("goose %s: %w", command, err)
 	}
 	return nil
+}
+
+// connect opens a database/sql handle via openDB and verifies connectivity up
+// front so an invalid DSN or unreachable database fails with a clear error
+// before goose starts. Shared by run and UpTo. The caller owns closing the
+// returned handle.
+func connect(ctx context.Context, dsn string, poolerSafe bool) (*sql.DB, error) {
+	db, err := openDB(dsn, poolerSafe)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	return db, nil
 }
 
 // openDB returns a database/sql handle over the pgx driver. The default path

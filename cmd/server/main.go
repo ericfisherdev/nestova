@@ -307,15 +307,23 @@ func runServer(logger *slog.Logger) error {
 	// NES-37: gamification UI wiring — scoreboard, streaks, and reward redemption.
 	// NES-126: rewardAdminService adds the parent-only catalogue admin
 	// (create/edit/archive) over the same rewardRepo.
+	// NES-127: redemptionService adds parent fulfillment/denial and member
+	// self-cancel, and rewardService gains outboxRepo/householdRepo so a
+	// redemption can notify the household's parents.
 	pointLedgerRepo := tasksadapter.NewPointLedgerPostgresRepository(pool)
 	rewardRepo := tasksadapter.NewRewardPostgresRepository(pool)
-	rewardService := tasksapp.NewRewardService(rewardRepo, logger)
+	rewardService := tasksapp.NewRewardService(rewardRepo, householdRepo, outboxRepo, logger)
 	rewardAdminService := tasksapp.NewRewardAdminService(rewardRepo, logger)
+	redemptionService, err := tasksapp.NewRedemptionService(rewardRepo, outboxRepo, logger)
+	if err != nil {
+		return fmt.Errorf("create redemption service: %w", err)
+	}
 	gamificationWebHandlers := tasksadapter.NewGamificationWebHandlers(
 		pointLedgerRepo,
 		rewardRepo,
 		rewardService,
 		rewardAdminService,
+		redemptionService,
 		taskInstanceRepo,
 		householdRepo,
 		sm,

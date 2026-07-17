@@ -43,6 +43,23 @@ type configurableRewardRepo struct {
 	// correct household/reward were targeted, not just a non-zero count
 	// (NES-126, CodeRabbit finding).
 	archiveCalls []archiveRewardCall
+
+	// pendingRedemptions and memberRedemptions are returned by
+	// ListPendingRedemptions and ListMemberRedemptions respectively (NES-127).
+	pendingRedemptions []tasksdomain.RedemptionDetail
+	memberRedemptions  []tasksdomain.RedemptionDetail
+	// resolvedRedemption is returned by Fulfill/Deny/Cancel on success; its
+	// Status field is left to the test to set appropriately for the action
+	// under test.
+	resolvedRedemption tasksdomain.ResolvedRedemption
+	// fulfillErr/denyErr/cancelErr override Fulfill/Deny/Cancel's error
+	// return when non-nil (NES-127).
+	fulfillErr, denyErr, cancelErr error
+	// fulfillCalls/denyCalls/cancelCalls record every redemption id passed to
+	// Fulfill/Deny/Cancel, mirroring archiveCalls' call-recording precedent.
+	fulfillCalls []tasksdomain.RewardRedemptionID
+	denyCalls    []tasksdomain.RewardRedemptionID
+	cancelCalls  []tasksdomain.RewardRedemptionID
 }
 
 // archiveRewardCall records one ArchiveReward invocation's arguments.
@@ -126,16 +143,76 @@ func (r *configurableRewardRepo) Redeem(_ context.Context, _ *tasksdomain.Reward
 func (r *configurableRewardRepo) RedeemWithDebit(
 	_ context.Context,
 	_ *tasksdomain.RewardRedemption,
-	_ int,
-) error {
+) (int, error) {
 	r.redeemCalls++
-	return r.redeemErr
+	if r.redeemErr != nil {
+		return 0, r.redeemErr
+	}
+	if r.reward != nil {
+		return r.reward.CostPoints, nil
+	}
+	return 0, nil
+}
+
+func (r *configurableRewardRepo) ListPendingRedemptions(
+	_ context.Context,
+	_ household.HouseholdID,
+) ([]tasksdomain.RedemptionDetail, error) {
+	return r.pendingRedemptions, nil
+}
+
+func (r *configurableRewardRepo) ListMemberRedemptions(
+	_ context.Context,
+	_ household.HouseholdID,
+	_ household.MemberID,
+	_ int,
+) ([]tasksdomain.RedemptionDetail, error) {
+	return r.memberRedemptions, nil
+}
+
+func (r *configurableRewardRepo) Fulfill(
+	_ context.Context,
+	_ household.HouseholdID,
+	id tasksdomain.RewardRedemptionID,
+) (tasksdomain.ResolvedRedemption, error) {
+	r.fulfillCalls = append(r.fulfillCalls, id)
+	if r.fulfillErr != nil {
+		return tasksdomain.ResolvedRedemption{}, r.fulfillErr
+	}
+	return r.resolvedRedemption, nil
+}
+
+func (r *configurableRewardRepo) Deny(
+	_ context.Context,
+	_ household.HouseholdID,
+	id tasksdomain.RewardRedemptionID,
+	_ string,
+) (tasksdomain.ResolvedRedemption, error) {
+	r.denyCalls = append(r.denyCalls, id)
+	if r.denyErr != nil {
+		return tasksdomain.ResolvedRedemption{}, r.denyErr
+	}
+	return r.resolvedRedemption, nil
+}
+
+func (r *configurableRewardRepo) Cancel(
+	_ context.Context,
+	_ household.HouseholdID,
+	id tasksdomain.RewardRedemptionID,
+	_ household.MemberID,
+) (tasksdomain.ResolvedRedemption, error) {
+	r.cancelCalls = append(r.cancelCalls, id)
+	if r.cancelErr != nil {
+		return tasksdomain.ResolvedRedemption{}, r.cancelErr
+	}
+	return r.resolvedRedemption, nil
 }
 
 // Compile-time assertions.
 var (
 	_ tasksdomain.RewardRepository = (*configurableRewardRepo)(nil)
 	_ tasksapp.RewardRedeemer      = (*configurableRewardRepo)(nil)
+	_ tasksapp.RedemptionFulfiller = (*configurableRewardRepo)(nil)
 )
 
 // configurableLedgerRepo is a PointLedgerRepository whose Balance is fixed
@@ -221,13 +298,18 @@ func buildGamificationTestHandlerWithLedger(
 		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger,
 	)
 
-	rewardSvc := tasksapp.NewRewardService(rewardRepo, logger)
+	rewardSvc := tasksapp.NewRewardService(rewardRepo, householdRepo, fakeEnqueuer{}, logger)
 	rewardAdminSvc := tasksapp.NewRewardAdminService(rewardRepo, logger)
+	redemptionSvc, err := tasksapp.NewRedemptionService(rewardRepo, fakeEnqueuer{}, logger)
+	if err != nil {
+		panic("buildGamificationTestHandlerWithLedger: " + err.Error())
+	}
 	gamificationHandlers := tasksadapter.NewGamificationWebHandlers(
 		ledgerRepo,
 		rewardRepo,
 		rewardSvc,
 		rewardAdminSvc,
+		redemptionSvc,
 		instanceRepo,
 		householdRepo,
 		sm,
