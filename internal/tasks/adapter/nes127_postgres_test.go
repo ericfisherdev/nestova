@@ -719,7 +719,9 @@ func TestRewardRepository_ListMemberRedemptions_NewestFirstAllStatuses(t *testin
 }
 
 // TestRewardRepository_ListMemberRedemptions_LimitApplied verifies that the
-// limit parameter caps the number of returned rows.
+// limit parameter caps the number of returned RESOLVED rows — not pending
+// ones, which are never capped (see
+// TestRewardRepository_ListMemberRedemptions_AllPendingAlwaysIncluded).
 func TestRewardRepository_ListMemberRedemptions_LimitApplied(t *testing.T) {
 	pool := newTestPool(t)
 	rewardRepo := adapter.NewRewardPostgresRepository(pool)
@@ -727,7 +729,7 @@ func TestRewardRepository_ListMemberRedemptions_LimitApplied(t *testing.T) {
 
 	reward := seedReward(t, rewardRepo, h.ID, "Badge", 1)
 	for range 3 {
-		seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionPending)
+		seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionFulfilled)
 	}
 
 	got, err := rewardRepo.ListMemberRedemptions(testCtx(t), h.ID, m1, 2)
@@ -736,5 +738,51 @@ func TestRewardRepository_ListMemberRedemptions_LimitApplied(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("ListMemberRedemptions(limit=2) = %d rows, want 2", len(got))
+	}
+}
+
+// TestRewardRepository_ListMemberRedemptions_AllPendingAlwaysIncluded proves
+// the CodeRabbit finding this method's doc describes: a single OLD pending
+// redemption must still be returned even when 25 more recent RESOLVED
+// redemptions exist and the limit is far smaller than 25 — a pending
+// redemption represents debited-but-unresolved points, and "My Redemptions"
+// is the only surface with its Cancel action, so it must never be capped out
+// of view.
+func TestRewardRepository_ListMemberRedemptions_AllPendingAlwaysIncluded(t *testing.T) {
+	pool := newTestPool(t)
+	rewardRepo := adapter.NewRewardPostgresRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+
+	reward := seedReward(t, rewardRepo, h.ID, "Old favor", 5)
+
+	// One old pending redemption, seeded first so it is the oldest row.
+	oldPending := seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionPending)
+	time.Sleep(5 * time.Millisecond)
+
+	// 25 more recent resolved redemptions — far more than the limit below.
+	for range 25 {
+		seedRedemption(t, rewardRepo, h.ID, reward.ID, m1, domain.RedemptionFulfilled)
+	}
+
+	const limit = 20 // mirrors buildRewardsPage's myRedemptionsLimit
+	got, err := rewardRepo.ListMemberRedemptions(testCtx(t), h.ID, m1, limit)
+	if err != nil {
+		t.Fatalf("ListMemberRedemptions: %v", err)
+	}
+
+	// Exactly `limit` resolved rows plus the one pending row, regardless of
+	// how old the pending row is relative to the resolved ones.
+	if len(got) != limit+1 {
+		t.Fatalf("ListMemberRedemptions = %d rows, want %d (limit resolved + 1 always-included pending)", len(got), limit+1)
+	}
+	var foundPending bool
+	for _, d := range got {
+		if d.ID == oldPending.ID {
+			foundPending = true
+			break
+		}
+	}
+	if !foundPending {
+		t.Error("the old pending redemption is missing from the result — it must always be included")
 	}
 }

@@ -58,10 +58,20 @@ ALTER TABLE reward_redemption DROP COLUMN IF EXISTS denied_reason;
 -- restored yet), so no CHECK constraint can be active while this UPDATE runs.
 ALTER TABLE reward_redemption DROP CONSTRAINT reward_redemption_status_check;
 
--- Best-effort inverse: 'denied' has no pre-NES-127 equivalent, so it folds
--- back into 'requested' (the closest surviving status) rather than having no
--- valid target at all.
-UPDATE reward_redemption SET status = 'requested' WHERE status IN ('pending', 'denied');
+-- Best-effort inverse, split by what each status actually means:
+--   - 'pending' folds back to 'requested' — same meaning, still awaiting a
+--     decision, still actionable, points still owed.
+--   - 'denied' must NOT fold back to 'requested': a denied redemption's
+--     points have already been refunded via a compensating point_ledger
+--     entry (RewardRepository.Deny). Restoring it as 'requested' would make
+--     it look actionable again to the pre-NES-127 app, which could then
+--     fulfill it (delivering a reward whose points were already returned) or
+--     — if a future migration ever re-added deny/refund logic downstream —
+--     refund it a second time. 'cancelled' is the correct pre-NES-127
+--     status for "resolved, no longer actionable, points already settled",
+--     which is exactly what a denied-and-refunded redemption is.
+UPDATE reward_redemption SET status = 'requested' WHERE status = 'pending';
+UPDATE reward_redemption SET status = 'cancelled' WHERE status = 'denied';
 
 ALTER TABLE reward_redemption
     ADD CONSTRAINT reward_redemption_status_check

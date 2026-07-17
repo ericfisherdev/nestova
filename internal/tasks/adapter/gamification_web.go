@@ -40,9 +40,12 @@ const streakLookbackDays = 366
 // scanning aid, not a full audit trail, so an unbounded query is unnecessary.
 const pointHistoryLimit = 20
 
-// myRedemptionsLimit caps how many of the current member's own redemptions
-// buildRewardsPage fetches for the "My Redemptions" list (NES-127), mirroring
-// pointHistoryLimit's scanning-aid rationale.
+// myRedemptionsLimit caps how many of the current member's own RESOLVED
+// (fulfilled/denied/cancelled) redemptions buildRewardsPage fetches for the
+// "My Redemptions" list (NES-127), mirroring pointHistoryLimit's
+// scanning-aid rationale. It does NOT cap pending redemptions — see
+// RewardRepository.ListMemberRedemptions' doc for why those are always
+// returned in full regardless of this limit.
 const myRedemptionsLimit = 20
 
 // GamificationWebHandlers holds the HTTP handler methods for the /rewards

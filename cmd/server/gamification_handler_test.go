@@ -55,17 +55,34 @@ type configurableRewardRepo struct {
 	// fulfillErr/denyErr/cancelErr override Fulfill/Deny/Cancel's error
 	// return when non-nil (NES-127).
 	fulfillErr, denyErr, cancelErr error
-	// fulfillCalls/denyCalls/cancelCalls record every redemption id passed to
-	// Fulfill/Deny/Cancel, mirroring archiveCalls' call-recording precedent.
+	// fulfillCalls records every redemption id passed to Fulfill, mirroring
+	// archiveCalls' call-recording precedent.
 	fulfillCalls []tasksdomain.RewardRedemptionID
-	denyCalls    []tasksdomain.RewardRedemptionID
-	cancelCalls  []tasksdomain.RewardRedemptionID
+	// denyCalls and cancelCalls record every Deny/Cancel invocation's full
+	// argument set — not just the redemption id — so a test can assert the
+	// handler passed through the submitted reason (Deny) or the
+	// AUTHENTICATED member id (Cancel), not merely that the method was
+	// called (NES-127, CodeRabbit finding).
+	denyCalls   []denyCall
+	cancelCalls []cancelCall
 }
 
 // archiveRewardCall records one ArchiveReward invocation's arguments.
 type archiveRewardCall struct {
 	householdID household.HouseholdID
 	rewardID    tasksdomain.RewardID
+}
+
+// denyCall records one Deny invocation's arguments.
+type denyCall struct {
+	id     tasksdomain.RewardRedemptionID
+	reason string
+}
+
+// cancelCall records one Cancel invocation's arguments.
+type cancelCall struct {
+	id       tasksdomain.RewardRedemptionID
+	memberID household.MemberID
 }
 
 func (r *configurableRewardRepo) CreateReward(_ context.Context, reward *tasksdomain.Reward) error {
@@ -186,9 +203,9 @@ func (r *configurableRewardRepo) Deny(
 	_ context.Context,
 	_ household.HouseholdID,
 	id tasksdomain.RewardRedemptionID,
-	_ string,
+	reason string,
 ) (tasksdomain.ResolvedRedemption, error) {
-	r.denyCalls = append(r.denyCalls, id)
+	r.denyCalls = append(r.denyCalls, denyCall{id: id, reason: reason})
 	if r.denyErr != nil {
 		return tasksdomain.ResolvedRedemption{}, r.denyErr
 	}
@@ -199,9 +216,9 @@ func (r *configurableRewardRepo) Cancel(
 	_ context.Context,
 	_ household.HouseholdID,
 	id tasksdomain.RewardRedemptionID,
-	_ household.MemberID,
+	memberID household.MemberID,
 ) (tasksdomain.ResolvedRedemption, error) {
-	r.cancelCalls = append(r.cancelCalls, id)
+	r.cancelCalls = append(r.cancelCalls, cancelCall{id: id, memberID: memberID})
 	if r.cancelErr != nil {
 		return tasksdomain.ResolvedRedemption{}, r.cancelErr
 	}
