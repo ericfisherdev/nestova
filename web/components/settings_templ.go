@@ -41,8 +41,10 @@ type KioskActivationReveal struct {
 	// Code is the raw activation code, shown once for manual entry on the
 	// kiosk device.
 	Code string
-	// ActivationURL is the absolute one-click link that, visited from the
-	// kiosk device's own browser, redeems Code and lands on /kiosk.
+	// ActivationURL is the absolute link that, opened from the kiosk device's
+	// own browser, lands on a confirmation form pre-filled with Code —
+	// visiting the link (a GET) never redeems it by itself; the device still
+	// has to press Activate (a CSRF-checked POST) to complete provisioning.
 	ActivationURL string
 	// ExpiresInMinutes is the code's validity window, pre-computed by the
 	// handler from domain.ActivationCodeTTL.
@@ -207,20 +209,20 @@ func kioskActivationReveal(reveal KioskActivationReveal) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", reveal.ExpiresInMinutes))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 94, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 96, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, " minutes and works once</p><label class=\"mb-1 block text-sm font-medium text-ink-secondary\" for=\"kiosk-activation-url\">Open on the kiosk device</label> <input id=\"kiosk-activation-url\" type=\"text\" readonly value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, " minutes and works once</p><label class=\"mb-1 block text-sm font-medium text-ink-secondary\" for=\"kiosk-activation-url\">Open on the kiosk device, then confirm the code shown</label> <input id=\"kiosk-activation-url\" type=\"text\" readonly value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(reveal.ActivationURL)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 103, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 105, Col: 31}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -233,7 +235,7 @@ func kioskActivationReveal(reveal KioskActivationReveal) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(reveal.Code)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 113, Col: 22}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 115, Col: 22}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -321,7 +323,7 @@ func kioskDeviceRow(d KioskDeviceView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(d.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 134, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 136, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -339,7 +341,7 @@ func kioskDeviceRow(d KioskDeviceView, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(d.CreatedAtLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 136, Col: 69}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 138, Col: 69}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -357,7 +359,7 @@ func kioskDeviceRow(d KioskDeviceView, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(d.RevokedAtLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 138, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 140, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -380,7 +382,7 @@ func kioskDeviceRow(d KioskDeviceView, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var13 templ.SafeURL
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/settings/kiosk/" + d.ID + "/revoke"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 142, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 144, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -393,7 +395,7 @@ func kioskDeviceRow(d KioskDeviceView, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 143, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 145, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -440,7 +442,7 @@ func kioskGenerateForm(csrfToken string) templ.Component {
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 157, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/settings.templ`, Line: 159, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {

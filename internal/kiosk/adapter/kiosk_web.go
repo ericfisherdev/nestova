@@ -158,41 +158,50 @@ func NewKioskWebHandlers(
 // Device activation
 // ---------------------------------------------------------------------------
 
-// Activate handles both GET /kiosk/activate?code=... (the one-click link a
+// Activate handles both GET /kiosk/activate[?code=...] (the one-click link a
 // parent visits from the kiosk device's own browser, see the settings page's
-// KioskActivationReveal) and POST /kiosk/activate (the manual entry form, for
-// when scanning/following the link isn't convenient). It is deliberately
-// public (not behind RequireKioskOrMember): the kiosk device has no identity
-// yet until this request succeeds.
+// KioskActivationReveal, and the bare-URL manual-entry landing) and POST
+// /kiosk/activate (the CSRF-checked submit that actually redeems the code).
+// It is deliberately public (not behind RequireKioskOrMember): the kiosk
+// device has no identity yet until a POST here succeeds.
 //
-// A missing code (a bare GET /kiosk/activate, or the link's own retry) shows
-// the manual entry form. A valid, unused, unexpired code redeems into a new
-// device (see app.KioskService.Redeem's atomic contract), sets the device
-// cookie, and redirects into the kiosk shell. An invalid/used/expired code
-// re-shows the entry form with a generic error — never distinguishing which
-// of the three applies, to avoid leaking whether a given code ever existed.
+// GET NEVER redeems a code, even when ?code=... is present: a link preview,
+// browser prefetch, or crawler following the one-click URL would otherwise
+// silently burn a single-use code — or, worse, an attacker-supplied code in a
+// crafted link opened via a top-level navigation could replace the
+// household's active device with GET as the only "confirmation" a person
+// ever saw. GET only renders the confirmation form, pre-filled with the code
+// from the query string if present, so redemption always requires an
+// explicit, CSRF-protected POST the person themselves triggers by pressing
+// Activate.
+//
+// A valid, unused, unexpired code POSTed redeems into a new device (see
+// app.KioskService.Redeem's atomic contract), sets the device cookie, and
+// redirects into the kiosk shell. An invalid/used/expired code re-shows the
+// form with a generic error — never distinguishing which of the three
+// applies, to avoid leaking whether a given code ever existed.
 func (h *KioskWebHandlers) Activate(w http.ResponseWriter, r *http.Request) {
-	var code string
 	switch r.Method {
 	case http.MethodGet:
-		code = r.URL.Query().Get("code")
+		h.renderActivationForm(w, r, http.StatusOK, r.URL.Query().Get("code"), "")
+		return
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 		if !authadapter.VerifyCSRF(r, h.sm) {
-			h.renderActivationForm(w, r, http.StatusForbidden, "Your session expired — please try again.")
+			h.renderActivationForm(w, r, http.StatusForbidden, "", "Your session expired — please try again.")
 			return
 		}
-		code = r.FormValue("code")
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	code := r.FormValue("code")
 	if strings.TrimSpace(code) == "" {
-		h.renderActivationForm(w, r, http.StatusOK, "")
+		h.renderActivationForm(w, r, http.StatusOK, "", "")
 		return
 	}
 
@@ -202,7 +211,7 @@ func (h *KioskWebHandlers) Activate(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, kioskdomain.ErrActivationCodeNotFound),
 			errors.Is(err, kioskdomain.ErrActivationCodeUsed),
 			errors.Is(err, kioskdomain.ErrActivationCodeExpired):
-			h.renderActivationForm(w, r, http.StatusUnauthorized, "That code is invalid, already used, or has expired.")
+			h.renderActivationForm(w, r, http.StatusUnauthorized, "", "That code is invalid, already used, or has expired.")
 			return
 		default:
 			h.logger.ErrorContext(r.Context(), "kiosk: activate", "error", err)
@@ -215,10 +224,12 @@ func (h *KioskWebHandlers) Activate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/kiosk/chores", http.StatusSeeOther)
 }
 
-// renderActivationForm renders the manual activation-code entry page at
-// status, with errMsg shown inline when non-empty.
-func (h *KioskWebHandlers) renderActivationForm(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
+// renderActivationForm renders the activation confirm/entry page at status,
+// pre-filling the code field with prefillCode (from the one-click link's
+// query string) and showing errMsg inline when non-empty.
+func (h *KioskWebHandlers) renderActivationForm(w http.ResponseWriter, r *http.Request, status int, prefillCode, errMsg string) {
 	view := components.KioskActivationFormView{
+		Code:      prefillCode,
 		Error:     errMsg,
 		CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
 	}

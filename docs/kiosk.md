@@ -8,6 +8,18 @@ form on the kiosk at all (see `internal/kiosk/adapter/session.go`'s
 `RequireKioskOrMember`, which always returns a bare 401 instead of ever
 surfacing `/login`).
 
+**Threat model, stated explicitly:** device auth blocks an unauthenticated
+client elsewhere on the LAN (or anyone who has not physically activated a
+device) from reaching `/kiosk/*` at all. It does **not** — and is not meant
+to — restrict what someone standing in front of an already-activated display
+can see: physical access to the mounted screen itself is inside the trusted
+boundary, exactly like a household's own paper calendar on the fridge. Anyone
+who can touch the kiosk can view the five read-only tabs; only mutating an
+item (the one allowed action, marking something in-cart) is gated further by
+CSRF. If that boundary is ever too permissive for a given household's
+placement of the display, mounting location — not application-layer
+restriction — is the control to reach for.
+
 ## Provisioning a device
 
 The settings page never displays the kiosk's long-lived bearer token — that
@@ -54,7 +66,7 @@ chromium \
   --kiosk \
   --noerrdialogs \
   --disable-session-crashed-bubble \
-  --incognito \
+  --user-data-dir=/var/lib/nestova-kiosk/chromium-profile \
   --disable-pinch \
   --overscroll-history-navigation=0 \
   https://<host>/kiosk
@@ -66,15 +78,15 @@ chromium \
   display indefinitely on a screen with no keyboard.
 - `--disable-session-crashed-bubble` — a prior crash or power-cycle must never
   greet the household with a "restore pages?" prompt instead of the kiosk.
-- `--incognito` — the device's cookie (set once by `/kiosk/activate`) is the
-  only persisted state this profile needs; incognito avoids accumulating
-  browser cache/history on an always-on public display. The activation step
-  must be re-run after a restart in this mode — pair it with a systemd unit
-  (below) that only needs to run once per physical device setup, not per
-  Chromium restart, by pointing the browser directly at `/kiosk` after the
-  cookie has already been set via a non-incognito activation pass, or by
-  dropping `--incognito` if session persistence across restarts is preferred
-  for a given deployment.
+- `--user-data-dir=...` — a dedicated, persistent profile directory for this
+  kiosk account, not `--incognito`. The device's cookie (set once by
+  `/kiosk/activate`) is the whole point of activation being a one-time step;
+  `--incognito` discards it on every launch, which would force re-activation
+  on every restart and, worse, mean the kiosk sits at the activation form —
+  showing a live single-use code entry point — after every reboot instead of
+  the read-only tabs. A dedicated `--user-data-dir` keeps the persisted state
+  scoped to this one purpose-built profile rather than a general-purpose
+  browser profile that might accumulate unrelated history.
 - `--disable-pinch` / `--overscroll-history-navigation=0` — a touchscreen's
   pinch and edge-swipe gestures must not zoom or navigate away from the kiosk.
 
@@ -97,6 +109,7 @@ ExecStart=/usr/bin/chromium \
   --kiosk \
   --noerrdialogs \
   --disable-session-crashed-bubble \
+  --user-data-dir=/var/lib/nestova-kiosk/chromium-profile \
   --disable-pinch \
   --overscroll-history-navigation=0 \
   https://<host>/kiosk

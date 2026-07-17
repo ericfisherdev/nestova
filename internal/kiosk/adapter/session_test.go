@@ -111,6 +111,36 @@ func TestAuthenticateDevice_UnknownOrRevokedCookieProceedsAnonymously(t *testing
 	}
 }
 
+// TestAuthenticateDevice_RevokedDeviceProceedsAnonymously exercises the
+// domain.ErrKioskDeviceRevoked sentinel specifically (the test above only
+// ever produces domain.ErrKioskDeviceNotFound via its empty byToken map), so
+// a revoked-but-otherwise-known device's token is confirmed to take the same
+// "proceed anonymously" path as an unknown one — not the infra failure 500 path.
+func TestAuthenticateDevice_RevokedDeviceProceedsAnonymously(t *testing.T) {
+	auth := &fakeAuthenticator{err: domain.ErrKioskDeviceRevoked}
+	var reachedNext bool
+	var sawDevice bool
+	handler := adapter.AuthenticateDevice(auth, testLogger())(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		reachedNext = true
+		_, sawDevice = adapter.CurrentDevice(r.Context())
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/kiosk/chores", nil)
+	req.AddCookie(&http.Cookie{Name: adapter.CookieName, Value: "revoked-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !reachedNext {
+		t.Fatal("a revoked device's token must still proceed to next anonymously, not be rejected here")
+	}
+	if sawDevice {
+		t.Error("a revoked device must not populate a device in context")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
 func TestAuthenticateDevice_InfraFailureReturns500NotAnonymous(t *testing.T) {
 	// A database outage (or any error other than "unknown token"/"revoked")
 	// must NOT be silently treated as "no device": that would let

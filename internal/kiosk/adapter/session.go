@@ -135,7 +135,9 @@ func RequireKioskOrMember() middleware.Middleware {
 				next.ServeHTTP(w, r)
 				return
 			}
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			// A bodyless 401: the kiosk gate never renders content or a
+			// login affordance to an unidentified LAN client.
+			w.WriteHeader(http.StatusUnauthorized)
 		})
 	}
 }
