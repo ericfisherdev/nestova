@@ -9,10 +9,16 @@ CloudWatch) runs unattended safely. Two mechanisms with different jobs:
   usage-priced service here that a dispatch bug can run away with; past the
   quota, sends fail.
 
-Every command below targets account `768962091675` and is idempotent to
-re-run on an account rebuild. Alert emails go to real inboxes, never through
-the app's own notification system — the guardrail must work when the app is
-the thing misbehaving.
+Every command below targets account `768962091675`. The `create-*` Budgets
+APIs are NOT idempotent — budget names are unique and re-running a create
+against an existing budget fails with `DuplicateRecordException` rather than
+converging. On a rebuild of a partially-configured account, either delete
+the existing budget first (`aws budgets delete-budget --account-id
+768962091675 --budget-name <name>`) or apply changes with `update-budget`,
+which takes the FULL budget object via `--new-budget` (same JSON as the
+create). Alert emails go to real inboxes, never through the app's own
+notification system — the guardrail must work when the app is the thing
+misbehaving.
 
 > **TODO(second parent):** every `Subscribers` list below currently has one
 > address. Add the second parent's email to both budgets when known:
@@ -55,7 +61,10 @@ console-only root/owner actions and never need this policy.
 ## Budget 1: monthly cost budget ($10)
 
 Steady state is $3–6/mo, so $5 actual spend means something changed.
-Alerts at 50% actual, 80% forecast, 100% actual.
+Alerts at 50% actual, 80% forecast, 100% actual. Note: forecast-based
+alerts need roughly five weeks of billing history before AWS will emit
+them — on a fresh account the 80% forecast alert stays silent at first,
+which is why both actual-threshold alerts exist alongside it.
 
 ```bash
 aws budgets create-budget --account-id 768962091675 --budget '{
@@ -99,15 +108,28 @@ aws budgets create-notification --account-id 768962091675 \
 Budgets only alert, and lag up to a day. The End User Messaging monthly SMS
 spend limit is enforced at send time: past it, sends fail. The account
 default is $1/mo; raise it deliberately to $10 so legitimate family traffic
-never hits it while a runaway loop still gets cut off the same day:
+never hits it while a runaway loop still gets cut off the same day.
+
+Two prerequisites:
+
+- The override is only accepted up to the account's `MaxLimit` for the
+  Region. A sandbox account's MaxLimit is typically $1 — check first, and
+  if `MaxLimit < 10`, request a spend-limit increase (Service Quotas /
+  support case, part of SMS sandbox exit) before setting the override.
+- Spend limits are per-Region. This deployment sends SMS from a single
+  Region (the one where End User Messaging is configured); run and verify
+  these commands in that Region. If SMS ever gets configured in another
+  Region, repeat there.
 
 ```bash
+aws pinpoint-sms-voice-v2 describe-spend-limits   # check MaxLimit first
 aws pinpoint-sms-voice-v2 set-text-message-spend-limit-override --monthly-limit 10
 aws pinpoint-sms-voice-v2 describe-spend-limits
 ```
 
-`describe-spend-limits` must show `EnforcedLimit: 10` (the override) for
-`TEXT_MESSAGES_MONTHLY_SPEND_LIMIT`.
+Verification: the `TEXT_MESSAGE_MONTHLY_SPEND_LIMIT` entry (singular, per
+the API) must show `EnforcedLimit: 10` AND `Overridden: true` — the
+enforced value alone doesn't prove the override took effect.
 
 ## Console-only steps (root/owner)
 
@@ -125,9 +147,20 @@ aws budgets describe-budgets --account-id 768962091675 \
 aws pinpoint-sms-voice-v2 describe-spend-limits --output table
 ```
 
-Then simulate a breach: temporarily lower `nestova-monthly-cost` to an
-amount under current month-to-date spend
-(`aws budgets update-budget ... "Amount": "0.01"`), wait for the alert
-email (arrives within the hour for actual-threshold breaches), and restore
-the $10 limit. Both parents' inboxes should receive it once the TODO above
-is done.
+Then simulate a breach: temporarily lower `nestova-monthly-cost` under the
+current month-to-date spend — `update-budget` requires the full budget
+object:
+
+```bash
+aws budgets update-budget --account-id 768962091675 --new-budget '{
+  "BudgetName": "nestova-monthly-cost",
+  "BudgetLimit": {"Amount": "0.01", "Unit": "USD"},
+  "TimeUnit": "MONTHLY",
+  "BudgetType": "COST"
+}'
+```
+
+Budget data refreshes at least daily (not hourly), so allow up to ~24h for
+the actual-threshold alert email before concluding it failed, then restore
+the $10 limit with the same command and the original amount. Both parents'
+inboxes should receive it once the TODO above is done.
