@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { execSync } = require('child_process');
+const { requireEnv } = require('./env');
 
 // Edge case: server-side validation boundaries. Several forms carry client-side
 // constraints (min/step), so we POST directly with a real CSRF token to make
@@ -21,7 +22,7 @@ async function csrf(page, path) {
 const TS = Date.now();
 // The authenticated test user (storageState). Seeds tie to THIS user's household
 // so the consume route resolves to the seeded item.
-const EMAIL = process.env.NESTOVA_EMAIL || 'eric@ericfisher.dev';
+const EMAIL = requireEnv('NESTOVA_EMAIL');
 
 test('a subscription with a negative amount is rejected (not created)', async ({ page }) => {
   const token = await csrf(page, '/subscriptions');
