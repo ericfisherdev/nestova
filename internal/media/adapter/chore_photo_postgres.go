@@ -172,6 +172,22 @@ func (r *TaskInstancePhotoRepository) Create(ctx context.Context, photo *domain.
 	return nil
 }
 
+// Get returns the chore-proof photo identified by id (NES-120), or
+// domain.ErrTaskInstancePhotoNotFound when id is unknown. Deliberately
+// ID-only — see the domain port doc: household ownership is enforced by
+// the caller (ChoreProofPhotoService.OpenBytes), mirroring PhotoRepository.
+// Get's identical album-path contract.
+func (r *TaskInstancePhotoRepository) Get(ctx context.Context, id domain.TaskInstancePhotoID) (*domain.TaskInstancePhoto, error) {
+	photo, err := scanTaskInstancePhoto(r.dbtx.QueryRow(ctx, taskInstancePhotoColumns+` WHERE id = $1`, id.String()))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrTaskInstancePhotoNotFound
+		}
+		return nil, fmt.Errorf("get task instance photo: %w", err)
+	}
+	return photo, nil
+}
+
 // InstanceExists reports whether taskInstanceID exists within householdID's
 // task_instance table. See the domain port doc: this is a best-effort
 // preflight convenience for ChoreProofPhotoService.Upload, not the
@@ -242,6 +258,42 @@ func (r *TaskInstancePhotoRepository) ListByInstance(ctx context.Context, househ
 		householdID.String(), taskInstanceID.String())
 	if err != nil {
 		return nil, fmt.Errorf("list task instance photos: %w", err)
+	}
+	defer rows.Close()
+	photos := make([]*domain.TaskInstancePhoto, 0)
+	for rows.Next() {
+		photo, err := scanTaskInstancePhoto(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan task instance photo: %w", err)
+		}
+		photos = append(photos, photo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan task instance photos: %w", err)
+	}
+	return photos, nil
+}
+
+// ListByInstances is ListByInstance's batch counterpart (NES-120): every
+// chore-proof photo across all of taskInstanceIDs, household-scoped, via a
+// single `= ANY($2)` query instead of one round trip per instance — see the
+// domain port doc for the N+1 this exists to avoid. Returns an empty slice
+// (not an error) when taskInstanceIDs is empty; the query is skipped
+// entirely in that case (`= ANY('{}')` would just as validly return zero
+// rows, but skipping avoids the round trip altogether for a caller that
+// legitimately has nothing to ask for).
+func (r *TaskInstancePhotoRepository) ListByInstances(ctx context.Context, householdID household.HouseholdID, taskInstanceIDs []domain.TaskInstanceID) ([]*domain.TaskInstancePhoto, error) {
+	if len(taskInstanceIDs) == 0 {
+		return []*domain.TaskInstancePhoto{}, nil
+	}
+	ids := make([]string, len(taskInstanceIDs))
+	for i, id := range taskInstanceIDs {
+		ids[i] = id.String()
+	}
+	rows, err := r.dbtx.Query(ctx, taskInstancePhotoColumns+` WHERE household_id = $1 AND task_instance_id = ANY($2)`,
+		householdID.String(), ids)
+	if err != nil {
+		return nil, fmt.Errorf("list task instance photos by instances: %w", err)
 	}
 	defer rows.Close()
 	photos := make([]*domain.TaskInstancePhoto, 0)

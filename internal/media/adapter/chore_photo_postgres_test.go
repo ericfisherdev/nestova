@@ -111,6 +111,102 @@ func TestTaskInstancePhotoRepositoryCreateAndList(t *testing.T) {
 	}
 }
 
+// TestTaskInstancePhotoRepositoryGet verifies NES-120's raw-serving lookup:
+// Get returns the exact photo by id, and ErrTaskInstancePhotoNotFound for an
+// unknown id. Get is deliberately ID-only (mirrors PhotoRepository.Get) —
+// household ownership is enforced by ChoreProofPhotoService.OpenBytes, not
+// this repository, so a cross-household id is NOT exercised here; see
+// chore_photo_service_test.go's OpenBytes tests for that enforcement.
+func TestTaskInstancePhotoRepositoryGet(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	hh := seedHousehold(t, pool)
+	member := seedMember(t, pool, hh, "Alex")
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC), &member)
+	if err := repo.Create(ctx, photo); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.Get(ctx, photo.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ID != photo.ID || got.Kind != domain.PhotoKindAfter || got.ContentType != domain.ContentTypeJPEG {
+		t.Errorf("Get returned mismatched photo: %+v", got)
+	}
+	if got.HouseholdID != hh {
+		t.Errorf("Get: HouseholdID = %v, want %v (still returned so the caller can check ownership)", got.HouseholdID, hh)
+	}
+
+	if _, err := repo.Get(ctx, domain.NewTaskInstancePhotoID()); !errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
+		t.Errorf("Get(unknown id) = %v, want ErrTaskInstancePhotoNotFound", err)
+	}
+}
+
+// TestTaskInstancePhotoRepositoryListByInstances verifies NES-120's batch
+// lookup: one query returns every photo across MULTIPLE instances,
+// household-scoped, an empty result for an instance with none, and an empty
+// slice (no query) for an empty id list — the N+1 avoidance the /tasks list
+// builder relies on.
+func TestTaskInstancePhotoRepositoryListByInstances(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewTaskInstancePhotoRepository(pool)
+	hh := seedHousehold(t, pool)
+	member := seedMember(t, pool, hh, "Alex")
+	instanceA := seedTaskInstance(t, pool, hh)
+	instanceB := seedTaskInstance(t, pool, hh)
+	instanceC := seedTaskInstance(t, pool, hh) // no photos at all
+	ctx := testCtx(t)
+
+	photoA := newTaskInstancePhoto(hh, instanceA, domain.PhotoKindBefore, time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC), &member)
+	if err := repo.Create(ctx, photoA); err != nil {
+		t.Fatalf("Create photoA: %v", err)
+	}
+	photoB := newTaskInstancePhoto(hh, instanceB, domain.PhotoKindAfter, time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC), &member)
+	if err := repo.Create(ctx, photoB); err != nil {
+		t.Fatalf("Create photoB: %v", err)
+	}
+
+	// A photo for an instance NOT in the requested list must never leak in.
+	otherInstance := seedTaskInstance(t, pool, hh)
+	otherPhoto := newTaskInstancePhoto(hh, otherInstance, domain.PhotoKindBefore, time.Date(2026, 3, 3, 8, 0, 0, 0, time.UTC), &member)
+	if err := repo.Create(ctx, otherPhoto); err != nil {
+		t.Fatalf("Create otherPhoto: %v", err)
+	}
+
+	got, err := repo.ListByInstances(ctx, hh, []domain.TaskInstanceID{instanceA, instanceB, instanceC})
+	if err != nil {
+		t.Fatalf("ListByInstances: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListByInstances returned %d photos, want 2: %+v", len(got), got)
+	}
+	byID := make(map[domain.TaskInstancePhotoID]*domain.TaskInstancePhoto, len(got))
+	for _, p := range got {
+		byID[p.ID] = p
+	}
+	if _, ok := byID[photoA.ID]; !ok {
+		t.Errorf("ListByInstances missing photoA: %+v", got)
+	}
+	if _, ok := byID[photoB.ID]; !ok {
+		t.Errorf("ListByInstances missing photoB: %+v", got)
+	}
+	if _, ok := byID[otherPhoto.ID]; ok {
+		t.Errorf("ListByInstances leaked a photo from an instance not in the request: %+v", got)
+	}
+
+	empty, err := repo.ListByInstances(ctx, hh, nil)
+	if err != nil {
+		t.Fatalf("ListByInstances(empty): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("ListByInstances(empty) = %d photos, want 0", len(empty))
+	}
+}
+
 func TestTaskInstancePhotoRepositoryLatestTakenAt(t *testing.T) {
 	pool := newTestPool(t)
 	repo := adapter.NewTaskInstancePhotoRepository(pool)

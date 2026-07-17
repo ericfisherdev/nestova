@@ -69,6 +69,28 @@ type TaskRow struct {
 	// is never offerable, matching the trade domain's own rules exactly
 	// rather than re-deriving them here.
 	Tradeable bool
+	// PhotoPolicy is the parent recurring task's proof-photo requirement
+	// (NES-120): "none", "after_only", or "before_after". Empty for an
+	// archived/unresolvable parent (mirrors Title/Category's "(archived)"
+	// fallback) and treated by the template exactly like "none" — an
+	// archived task's instances never gained a real requirement to
+	// preserve.
+	PhotoPolicy string
+	// BeforePhotoRawURL is the raw-bytes URL of the instance's most recent
+	// "before" chore-proof photo (NES-119), or empty when none has been
+	// captured yet. Only meaningful when PhotoPolicy == "before_after".
+	BeforePhotoRawURL string
+	// AfterPhotoRawURL mirrors BeforePhotoRawURL for the "after" photo.
+	// Meaningful when PhotoPolicy is "after_only" or "before_after".
+	AfterPhotoRawURL string
+	// PhotoError is a friendly, non-empty message shown inline on the row
+	// (NES-120) after a completion attempt was blocked by an unmet photo
+	// policy, or empty when no such error is being displayed. Unlike the
+	// other fields above, this is set only by WebHandlers' completion error
+	// path (handleCompleteError), never by the normal buildTaskRows/
+	// buildInstanceRow read path, so it never lingers into a later,
+	// unrelated render of the same row.
+	PhotoError string
 }
 
 // TaskGroup is a named group of task rows shown together in the list (e.g.
@@ -263,6 +285,117 @@ templ TaskRowItem(row TaskRow) {
 				<span class="text-sm font-medium text-ink-muted">Skipped</span>
 			}
 		</div>
+		@proofPhotoSection(row)
+	</div>
+}
+
+// requiresProofPhotos reports whether row's parent task's PhotoPolicy calls
+// for at least one chore-proof photo (NES-120) — mirrors
+// domain.PhotoPolicy.RequiresPhotos without importing the tasks domain
+// package into web/components (this package stays framework-agnostic view
+// models only; the handler is what maps the domain enum to this plain
+// string).
+func requiresProofPhotos(row TaskRow) bool {
+	return row.PhotoPolicy == "after_only" || row.PhotoPolicy == "before_after"
+}
+
+// showAfterProofSlot reports whether the "after" capture/review slot should
+// render: always for an after_only policy, and for a before_after policy
+// only once the "before" photo already exists — media's own
+// ErrAfterPrecedesBefore ordering rule (NES-119) would reject an "after"
+// upload taken before any "before" photo exists, so hiding the affordance
+// until then avoids inviting a confusing, doomed-to-fail upload attempt.
+func showAfterProofSlot(row TaskRow) bool {
+	switch row.PhotoPolicy {
+	case "after_only":
+		return true
+	case "before_after":
+		return row.BeforePhotoRawURL != ""
+	default:
+		return false
+	}
+}
+
+// proofPhotoSection renders the chore-proof photo capture/review affordance
+// (NES-120) for a row whose parent task's PhotoPolicy requires photos: a
+// capture button for each still-missing required photo, and the captured
+// image itself — side by side once both exist for a before_after policy —
+// once captured. Rendered only for an actionable (pending/overdue) row,
+// matching the action buttons' own visibility condition above; a
+// done/skipped instance's photos are historical, not something to keep
+// capturing toward.
+templ proofPhotoSection(row TaskRow) {
+	if requiresProofPhotos(row) && (row.Status == "pending" || row.Status == "overdue") {
+		<div class="mt-1 flex w-full flex-wrap items-center gap-3 border-t border-sidebar-border pt-2" data-testid="proof-photo-section">
+			if row.PhotoError != "" {
+				<p role="alert" class="w-full text-sm text-red-600">{ row.PhotoError }</p>
+			}
+			if row.PhotoPolicy == "before_after" {
+				@proofPhotoSlot(row.InstanceID, row.CSRFToken, "before", "Before", row.BeforePhotoRawURL)
+			}
+			if showAfterProofSlot(row) {
+				@proofPhotoSlot(row.InstanceID, row.CSRFToken, "after", "After", row.AfterPhotoRawURL)
+			}
+		</div>
+	}
+}
+
+// proofPhotoSlot renders one before/after slot: the captured photo (raw
+// image, via GET /tasks/photos/{id}/raw) once rawURL is non-empty, or a
+// camera-direct capture button that posts straight to the NES-119 upload
+// endpoint (POST /tasks/{id}/photos) otherwise. The file input auto-submits
+// its enclosing form on selection (onchange) so taking the photo IS the
+// upload action — no separate "upload" button — matching the ticket's
+// camera-direct capture guidance; capture="environment" and
+// accept="image/jpeg" steer a phone's camera app to the rear camera and
+// JPEG output respectively. This is a plain (non-htmx) multipart form
+// submission: the upload endpoint already redirects the whole page on
+// success and returns a plain-text error on failure — deliberately NOT
+// wired through hx-post, so this capture affordance cannot interact with
+// the 422-response-handling override Layout's htmx-config meta tag adds for
+// the Complete action's inline error (see that meta tag's doc).
+//
+// The file input is sr-only (visually hidden but still focusable) and
+// nested inside its own <label> — real HTML semantics, not an ARIA role
+// hack — so :focus-within on the label gives a sighted keyboard user a
+// visible ring the moment Tab reaches the input, which a bare sr-only
+// input's own (invisible) focus outline would never show. Mirrors the
+// identical focus-within:ring pattern NES-124's uploadDropzone label
+// already established for the same sr-only-input-inside-a-label shape.
+templ proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) {
+	<div class="flex flex-col items-center gap-1" data-testid={ "proof-photo-slot-" + kind }>
+		if rawURL != "" {
+			<img
+				src={ rawURL }
+				alt={ label + " photo" }
+				class="h-20 w-20 rounded-control object-cover shadow-warm"
+				data-testid={ "proof-photo-image-" + kind }
+			/>
+			<span class="text-xs text-ink-muted">{ label }</span>
+		} else {
+			<form
+				method="post"
+				action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/photos", instanceID)) }
+				enctype="multipart/form-data"
+				class="flex flex-col items-center gap-1"
+			>
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				<input type="hidden" name="kind" value={ kind }/>
+				<label class="flex h-20 w-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-control border-2 border-dashed border-sidebar-border text-xs text-ink-muted transition-colors hover:bg-surface-warm focus-within:outline-none focus-within:ring-2 focus-within:ring-sage focus-within:ring-offset-2">
+					<span aria-hidden="true">+</span>
+					<span>{ label }</span>
+					<input
+						type="file"
+						name="photo"
+						accept="image/jpeg"
+						capture="environment"
+						class="sr-only"
+						onchange="this.form.requestSubmit()"
+						data-testid={ "proof-photo-input-" + kind }
+					/>
+				</label>
+			</form>
+		}
 	</div>
 }
 

@@ -348,12 +348,12 @@ func buildGroceriesTestHandler(
 
 	recurringRepo := fakeRecurringTaskRepo{}
 	instanceRepo := &fakeTaskInstanceRepo{}
-	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo)
+	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo, nil)
 	if err != nil {
 		panic("buildGroceriesTestHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(
-		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger,
+		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil,
 	)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := buildGroceryHandlers(fakes, householdRepo, sm, logger)

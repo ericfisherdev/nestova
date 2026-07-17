@@ -23,7 +23,7 @@ func TestService_CompleteInstance_CallsCompleteAndAward(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instRepo)
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestService_CompleteInstance_OverdueAccepted(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instRepo)
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestService_CompleteInstance_TerminalStatePropagated(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instRepo)
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestService_CompleteInstance_NotFound(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instRepo)
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -190,5 +190,173 @@ func TestService_CompleteInstance_NotFound(t *testing.T) {
 	err = svc.CompleteInstance(t.Context(), h, domain.NewTaskInstanceID(), m, time.Now())
 	if !errors.Is(err, domain.ErrInstanceNotFound) {
 		t.Errorf("CompleteInstance(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NES-120 photo policy gate
+// ---------------------------------------------------------------------------
+
+// seedPolicyTaskAndInstance creates a pending instance of a recurring task
+// with the given PhotoPolicy and returns both, for the photo-gate tests
+// below.
+func seedPolicyTaskAndInstance(
+	t *testing.T,
+	taskRepo *fakeRecurringTaskRepo,
+	instRepo *fakeTaskInstanceRepo,
+	h household.HouseholdID,
+	policy domain.PhotoPolicy,
+) *domain.TaskInstance {
+	t.Helper()
+	rt := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: h,
+		Points:      10,
+		Active:      true,
+		PhotoPolicy: policy,
+	}
+	if err := taskRepo.Create(t.Context(), rt); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	inst := &domain.TaskInstance{
+		ID:              domain.NewTaskInstanceID(),
+		RecurringTaskID: rt.ID,
+		HouseholdID:     h,
+		DueOn:           domain.DueOnPtr(time.Now()),
+		Status:          domain.StatusPending,
+	}
+	if err := instRepo.Insert(t.Context(), inst); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	return inst
+}
+
+// TestService_CompleteInstance_BeforeAfterPolicy_BlocksUntilBothPhotos
+// verifies AC1: a before_after task cannot be completed with no photos, nor
+// with only a before photo, and succeeds only once both exist.
+func TestService_CompleteInstance_BeforeAfterPolicy_BlocksUntilBothPhotos(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newFakeTaskInstanceRepo()
+	photoChecker := newFakeProofPhotoChecker()
+
+	svc, err := app.NewTaskService(taskRepo, instRepo, photoChecker)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	h := household.NewHouseholdID()
+	m := household.NewMemberID()
+	inst := seedPolicyTaskAndInstance(t, taskRepo, instRepo, h, domain.PhotoPolicyBeforeAfter)
+
+	// No photos yet.
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); !errors.Is(err, domain.ErrBeforePhotoRequired) {
+		t.Errorf("CompleteInstance(no photos) = %v, want ErrBeforePhotoRequired", err)
+	}
+
+	// Before only.
+	photoChecker.seed(inst.ID, "before-id", "")
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); !errors.Is(err, domain.ErrAfterPhotoRequired) {
+		t.Errorf("CompleteInstance(before only) = %v, want ErrAfterPhotoRequired", err)
+	}
+
+	// Both photos.
+	photoChecker.seed(inst.ID, "before-id", "after-id")
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); err != nil {
+		t.Errorf("CompleteInstance(both photos) = %v, want nil", err)
+	}
+	got, err := instRepo.Get(t.Context(), h, inst.ID)
+	if err != nil {
+		t.Fatalf("Get after CompleteInstance: %v", err)
+	}
+	if got.Status != domain.StatusDone {
+		t.Errorf("Status = %v, want done", got.Status)
+	}
+}
+
+// TestService_CompleteInstance_AfterOnlyPolicy_RequiresOnlyAfter verifies
+// AC1: an after_only task is blocked with no after photo (even with a
+// before photo present) and succeeds once the after photo exists — the
+// before photo is never required.
+func TestService_CompleteInstance_AfterOnlyPolicy_RequiresOnlyAfter(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newFakeTaskInstanceRepo()
+	photoChecker := newFakeProofPhotoChecker()
+
+	svc, err := app.NewTaskService(taskRepo, instRepo, photoChecker)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	h := household.NewHouseholdID()
+	m := household.NewMemberID()
+	inst := seedPolicyTaskAndInstance(t, taskRepo, instRepo, h, domain.PhotoPolicyAfterOnly)
+
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); !errors.Is(err, domain.ErrAfterPhotoRequired) {
+		t.Errorf("CompleteInstance(no after photo) = %v, want ErrAfterPhotoRequired", err)
+	}
+
+	// A before photo alone (never required for after_only) still leaves the
+	// gate unsatisfied.
+	photoChecker.seed(inst.ID, "before-id", "")
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); !errors.Is(err, domain.ErrAfterPhotoRequired) {
+		t.Errorf("CompleteInstance(before only, after_only policy) = %v, want ErrAfterPhotoRequired", err)
+	}
+
+	// After photo alone is sufficient — before is never required.
+	photoChecker.seed(inst.ID, "", "after-id")
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); err != nil {
+		t.Errorf("CompleteInstance(after only) = %v, want nil", err)
+	}
+}
+
+// TestService_CompleteInstance_NonePolicy_BehavesAsToday verifies AC1: a
+// task with PhotoPolicy none (the default for every task predating NES-120)
+// completes exactly as before NES-120 — including with a nil photoChecker,
+// proving a household with no photo-policy tasks is entirely unaffected by
+// the feature.
+func TestService_CompleteInstance_NonePolicy_BehavesAsToday(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	h := household.NewHouseholdID()
+	m := household.NewMemberID()
+	inst := seedPolicyTaskAndInstance(t, taskRepo, instRepo, h, domain.PhotoPolicyNone)
+
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); err != nil {
+		t.Errorf("CompleteInstance(none policy, nil checker) = %v, want nil", err)
+	}
+}
+
+// TestService_CompleteInstance_PhotoPolicy_NilCheckerFailsClosed verifies
+// that a task requiring photos with no photoChecker configured never
+// silently allows completion — the instance must remain pending/incomplete,
+// not be marked done despite the misconfiguration.
+func TestService_CompleteInstance_PhotoPolicy_NilCheckerFailsClosed(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instRepo, nil)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	h := household.NewHouseholdID()
+	m := household.NewMemberID()
+	inst := seedPolicyTaskAndInstance(t, taskRepo, instRepo, h, domain.PhotoPolicyAfterOnly)
+
+	if err := svc.CompleteInstance(t.Context(), h, inst.ID, m, time.Now()); err == nil {
+		t.Fatal("CompleteInstance(photo policy, nil checker) = nil error, want a fail-closed error")
+	}
+	got, err := instRepo.Get(t.Context(), h, inst.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != domain.StatusPending {
+		t.Errorf("Status = %v, want pending (completion must not silently succeed)", got.Status)
 	}
 }

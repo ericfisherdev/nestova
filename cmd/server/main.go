@@ -293,13 +293,25 @@ func runServer(logger *slog.Logger) error {
 		return fmt.Errorf("create renewal scheduler: %w", err)
 	}
 
+	// NES-120: the ProofPhotoChecker adapter wraps media's own
+	// TaskInstancePhotoRepository (NES-119) so TaskService.CompleteInstance
+	// can gate completion on a recurring task's photo policy, and so the
+	// /tasks row builder can show the capture/review UI, without tasks
+	// depending on media's adapter/app layers — see
+	// tasksdomain.ProofPhotoChecker's doc. Constructed here, ahead of the
+	// rest of NES-119's media wiring further below, purely because
+	// TaskService needs it now; both consumers below share this single
+	// repository instance.
+	proofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	proofPhotoChecker := tasksadapter.NewProofPhotoChecker(proofPhotoRepo)
+
 	// NES-32: task UI wiring — TaskService + HTTP handlers for the tasks list
 	// and the three mutation actions (complete, skip, claim).
-	taskService, err := tasksapp.NewTaskService(recurringTaskRepo, taskInstanceRepo)
+	taskService, err := tasksapp.NewTaskService(recurringTaskRepo, taskInstanceRepo, proofPhotoChecker)
 	if err != nil {
 		return fmt.Errorf("create task service: %w", err)
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringTaskRepo, taskInstanceRepo, householdRepo, sm, logger)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringTaskRepo, taskInstanceRepo, householdRepo, sm, logger, proofPhotoChecker)
 
 	// NES-122: chore trade UI wiring — TradeService (web-facing instance, see
 	// choreTradeRepo's comment above) + HTTP handlers for the propose-trade
@@ -483,9 +495,11 @@ func runServer(logger *slog.Logger) error {
 	// NES-119: chore-proof (before/after) photo upload — a structurally
 	// separate table and storage class (domain.PhotoClassChoreProof) from
 	// the album path above, reusing the same PhotoStore/ExifReader.
-	choreProofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool)
+	// proofPhotoRepo is the same TaskInstancePhotoRepository instance the
+	// NES-120 ProofPhotoChecker above already wraps — constructed once and
+	// shared, not duplicated.
 	choreProofPhotoService, err := mediaapp.NewChoreProofPhotoService(
-		photoStore, mediaadapter.NewExifReader(), choreProofPhotoRepo,
+		photoStore, mediaadapter.NewExifReader(), proofPhotoRepo,
 		cfg.Media.MaxUploadBytes, cfg.Media.ChoreProofFreshnessWindow,
 	)
 	if err != nil {

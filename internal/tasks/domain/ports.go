@@ -430,6 +430,58 @@ type TaskInstanceRepository interface {
 	ListTradeableAssignedToOthers(ctx context.Context, householdID household.HouseholdID, excludeMemberID household.MemberID) ([]*TaskInstance, error)
 }
 
+// ProofPhotoChecker is the minimal, tasks-owned port (ISP) TaskService.
+// CompleteInstance and the /tasks web handlers (NES-120) use to learn which
+// chore-proof photo kinds (NES-119) exist for a task instance, without tasks
+// depending on media's full TaskInstancePhotoRepository surface or its
+// adapter/app layers directly. tasks does not own task_instance_photo — media
+// does (see that table's 00029 migration) — so this port names exactly the
+// one fact tasks needs, in tasks' own ubiquitous language.
+//
+// An implementation lives in tasks/adapter, wrapping media's own
+// domain.TaskInstancePhotoRepository, and is wired at the composition root
+// (cmd/server) — mirroring the precedent TaskService already sets by
+// depending directly on notify/domain.Enqueuer for outbox notifications: a
+// bounded context's own adapter layer may depend on another bounded
+// context's domain port directly, rather than requiring the dependency to
+// flow only through composition-root-level web routing (the narrower rule
+// that keeps tasks/adapter's WebHandlers and media/adapter's
+// ChoreProofWebHandlers from importing each other, for URL-ownership
+// reasons — see ChoreProofWebHandlers' own doc).
+type ProofPhotoChecker interface {
+	// ProofPhotos reports the identity of instanceID's most recent "before"
+	// and "after" chore-proof photo within householdID: beforeID/afterID are
+	// the string form of media's own TaskInstancePhotoID for each kind, or
+	// empty when no photo of that kind has been captured yet. Used by
+	// TaskService.CompleteInstance, where exactly one instance is in play
+	// at a time; the /tasks row builder uses the batch counterpart below
+	// instead — see its own doc for why.
+	ProofPhotos(ctx context.Context, householdID household.HouseholdID, instanceID TaskInstanceID) (beforeID, afterID string, err error)
+
+	// ProofPhotosByInstances is ProofPhotos' batch counterpart (NES-120):
+	// one round trip for every instance in instanceIDs, rather than one
+	// ProofPhotos call per instance. The /tasks list builder renders a page
+	// of potentially many photo-policy rows (bounded overdue window aside,
+	// the overdue list itself has no upper bound — see ListByHousehold's
+	// doc), so resolving each row's photos with its own query would be an
+	// N+1 the page's read cost must not scale with. Returns a map keyed by
+	// TaskInstanceID; an id absent from the map (or present with both
+	// ProofPhotoIDs fields empty) has no chore-proof photo of either kind.
+	// instanceIDs may be empty, in which case implementations return an
+	// empty map without issuing a query.
+	ProofPhotosByInstances(ctx context.Context, householdID household.HouseholdID, instanceIDs []TaskInstanceID) (map[TaskInstanceID]ProofPhotoIDs, error)
+}
+
+// ProofPhotoIDs is the before/after chore-proof photo id pair
+// ProofPhotosByInstances reports for one task instance (NES-120):
+// BeforeID/AfterID mirror ProofPhotos' own beforeID/afterID return values —
+// the string form of media's TaskInstancePhotoID for each kind, or empty
+// when that kind has not been captured yet.
+type ProofPhotoIDs struct {
+	BeforeID string
+	AfterID  string
+}
+
 // ChoreTradeRepository is the persistence port for [ChoreTrade] aggregates —
 // the 1-for-1 chore trade propose/accept workflow (NES-121). Implementations
 // live in the adapter layer and are injected into [TradeService] (application

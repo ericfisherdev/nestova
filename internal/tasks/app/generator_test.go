@@ -528,6 +528,52 @@ func (r *fakeTaskInstanceRepo) ClearClaimWarning(_ context.Context, id domain.Ta
 // Compile-time assertion.
 var _ domain.TaskInstanceRepository = (*fakeTaskInstanceRepo)(nil)
 
+// fakeProofPhotoChecker is an in-memory domain.ProofPhotoChecker (NES-120)
+// for hermetic CompleteInstance tests. seed(instanceID, beforeID, afterID)
+// records what ProofPhotos reports for that instance; an unseeded instance
+// reports empty ids for both kinds, matching a real instance with no
+// chore-proof photos captured yet.
+type fakeProofPhotoChecker struct {
+	mu  sync.Mutex
+	ids map[domain.TaskInstanceID][2]string // [0]=beforeID, [1]=afterID
+}
+
+func newFakeProofPhotoChecker() *fakeProofPhotoChecker {
+	return &fakeProofPhotoChecker{ids: make(map[domain.TaskInstanceID][2]string)}
+}
+
+// seed records instanceID's before/after photo ids; pass "" for a kind that
+// has not been captured.
+func (c *fakeProofPhotoChecker) seed(instanceID domain.TaskInstanceID, beforeID, afterID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ids[instanceID] = [2]string{beforeID, afterID}
+}
+
+func (c *fakeProofPhotoChecker) ProofPhotos(_ context.Context, _ household.HouseholdID, instanceID domain.TaskInstanceID) (string, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v := c.ids[instanceID]
+	return v[0], v[1], nil
+}
+
+// ProofPhotosByInstances is the batch counterpart of ProofPhotos (NES-120);
+// unused by this file's completion-gate tests (which act on one instance at
+// a time), implemented only to satisfy the interface.
+func (c *fakeProofPhotoChecker) ProofPhotosByInstances(_ context.Context, _ household.HouseholdID, instanceIDs []domain.TaskInstanceID) (map[domain.TaskInstanceID]domain.ProofPhotoIDs, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make(map[domain.TaskInstanceID]domain.ProofPhotoIDs, len(instanceIDs))
+	for _, id := range instanceIDs {
+		v := c.ids[id]
+		result[id] = domain.ProofPhotoIDs{BeforeID: v[0], AfterID: v[1]}
+	}
+	return result, nil
+}
+
+// Compile-time assertion.
+var _ domain.ProofPhotoChecker = (*fakeProofPhotoChecker)(nil)
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -871,7 +917,7 @@ func TestTaskService_CreateRecurringTask_InvalidCadence(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -905,7 +951,7 @@ func TestTaskService_CreateRecurringTask_FixedEmptyPool(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -939,7 +985,7 @@ func TestTaskService_CreateRecurringTask_RoundRobinEmptyPool(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -970,7 +1016,7 @@ func TestTaskService_CreateRecurringTask_Success(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1018,7 +1064,7 @@ func TestTaskService_CreateRecurringTask_ClaimableNoPool(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1076,7 +1122,7 @@ func TestTaskService_CreateRecurringTask_AsNeededRequiresClaimable(t *testing.T)
 		t.Run(policy.String(), func(t *testing.T) {
 			taskRepo := newFakeRecurringTaskRepo()
 			instanceRepo := newFakeTaskInstanceRepo()
-			svc, err := app.NewTaskService(taskRepo, instanceRepo)
+			svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 			if err != nil {
 				t.Fatalf("NewTaskService: %v", err)
 			}
@@ -1098,7 +1144,7 @@ func TestTaskService_CreateRecurringTask_AsNeededRequiresClaimable(t *testing.T)
 func TestTaskService_CreateRecurringTask_AsNeededClaimableSucceeds(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1146,7 +1192,7 @@ func TestGenerator_SkipsAsNeededTasks(t *testing.T) {
 func TestTaskService_CompleteInstance_StandingRespawns(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1216,7 +1262,7 @@ func TestTaskService_CompleteInstance_StandingRespawns(t *testing.T) {
 func TestTaskService_SkipInstance_StandingRespawns(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1277,7 +1323,7 @@ func TestTaskService_CompleteInstance_NotFound(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1297,7 +1343,7 @@ func TestTaskService_SkipInstance_NotFound(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1316,7 +1362,7 @@ func TestTaskService_ClaimInstance_NotFound(t *testing.T) {
 	taskRepo := newFakeRecurringTaskRepo()
 	instanceRepo := newFakeTaskInstanceRepo()
 
-	svc, err := app.NewTaskService(taskRepo, instanceRepo)
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1327,5 +1373,72 @@ func TestTaskService_ClaimInstance_NotFound(t *testing.T) {
 	err = svc.ClaimInstance(context.Background(), hid, domain.NewTaskInstanceID(), mid)
 	if !errors.Is(err, domain.ErrInstanceNotFound) {
 		t.Errorf("ClaimInstance(unknown) = %v, want ErrInstanceNotFound", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NES-120 photo policy preservation through the generator
+// ---------------------------------------------------------------------------
+
+// TestGenerator_PhotoPolicyPreservedForEveryGeneratedInstance verifies that
+// a recurring task's PhotoPolicy (NES-120) is honoured for every instance
+// the generator materialises. PhotoPolicy lives on recurring_task and is
+// read via a join at completion time — never copied onto task_instance
+// (see the 00030 migration's doc for the full join-vs-copy rationale) — so
+// the generator itself never touches it; this test proves the join model
+// actually holds end-to-end by completing EVERY generated instance with no
+// photos captured and confirming each one is blocked by the same policy the
+// parent task was created with, not just the first or a directly
+// constructed one.
+func TestGenerator_PhotoPolicyPreservedForEveryGeneratedInstance(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	task := newWeeklyTask(domain.RotationFixed)
+	task.PhotoPolicy = domain.PhotoPolicyBeforeAfter
+	m := household.NewMemberID()
+
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := taskRepo.SetRotationMembers(context.Background(), task.HouseholdID, task.ID, []household.MemberID{m}); err != nil {
+		t.Fatalf("SetRotationMembers: %v", err)
+	}
+
+	g := newGenerator(t, taskRepo, instanceRepo)
+	asOf := weeklyAnchor.AddDate(0, 0, 21)
+	count, err := g.GenerateDue(context.Background(), asOf)
+	if err != nil {
+		t.Fatalf("GenerateDue: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("GenerateDue inserted 0 instances, want > 0")
+	}
+	if len(instanceRepo.instances) != count {
+		t.Fatalf("instance count = %d, want %d", len(instanceRepo.instances), count)
+	}
+
+	photoChecker := newFakeProofPhotoChecker() // nothing seeded: no photos exist
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, photoChecker)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	for _, inst := range instanceRepo.instances {
+		err := svc.CompleteInstance(context.Background(), task.HouseholdID, inst.ID, m, time.Now())
+		if !errors.Is(err, domain.ErrBeforePhotoRequired) {
+			t.Errorf("instance due %s: CompleteInstance = %v, want ErrBeforePhotoRequired",
+				inst.DueOn.Format(time.DateOnly), err)
+		}
+	}
+
+	// Seeding both photos for one instance and completing it confirms the
+	// gate is genuinely policy-driven (not a blanket rejection): the SAME
+	// generated instance, from the SAME generator run, now succeeds once
+	// its policy is satisfied.
+	target := instanceRepo.instances[0]
+	photoChecker.seed(target.ID, "before-photo-id", "after-photo-id")
+	if err := svc.CompleteInstance(context.Background(), task.HouseholdID, target.ID, m, time.Now()); err != nil {
+		t.Errorf("CompleteInstance after seeding both photos = %v, want nil", err)
 	}
 }

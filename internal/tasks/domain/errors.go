@@ -91,4 +91,21 @@ var (
 	// household. Accept, Decline, and Cancel use ErrTradeNotPending instead
 	// (see its doc) — this sentinel is scoped to the read-only Get lookup.
 	ErrTradeNotFound = errors.New("tasks: trade not found")
+
+	// ErrBeforePhotoRequired is returned by TaskService.CompleteInstance
+	// (NES-120) when the instance's recurring task's PhotoPolicy is
+	// PhotoPolicyBeforeAfter and no "before" chore-proof photo (NES-119) has
+	// been captured for the instance yet. Checked before
+	// ErrAfterPhotoRequired, so a before_after task missing both photos
+	// reports the "before" gap first — the order a member would naturally
+	// resolve it in, since an "after" photo taken before any "before" photo
+	// exists is itself rejected by media's own ErrAfterPrecedesBefore
+	// ordering rule.
+	ErrBeforePhotoRequired = errors.New("tasks: a before photo is required to complete this instance")
+
+	// ErrAfterPhotoRequired is returned by TaskService.CompleteInstance
+	// (NES-120) when the instance's recurring task's PhotoPolicy is
+	// PhotoPolicyAfterOnly or PhotoPolicyBeforeAfter and no "after"
+	// chore-proof photo (NES-119) has been captured for the instance yet.
+	ErrAfterPhotoRequired = errors.New("tasks: an after photo is required to complete this instance")
 )

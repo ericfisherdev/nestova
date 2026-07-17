@@ -316,7 +316,7 @@ func buildDeepLinkFixture(t *testing.T, member *household.Member) *deepLinkFixtu
 
 	instances := newHouseholdScopedTaskInstanceRepo()
 	recurring := newSeededRecurringTaskRepo()
-	taskService, err := tasksapp.NewTaskService(recurring, instances)
+	taskService, err := tasksapp.NewTaskService(recurring, instances, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
@@ -1017,7 +1017,7 @@ func buildDeepLinkFixtureWithSharedStores(t *testing.T, member *household.Member
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 
-	taskService, err := tasksapp.NewTaskService(shared.recurring, shared.instances)
+	taskService, err := tasksapp.NewTaskService(shared.recurring, shared.instances, nil)
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}

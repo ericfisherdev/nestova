@@ -86,6 +86,11 @@ type fakeTaskInstancePhotoRepo struct {
 	// correctly PROPAGATES whatever Create decides rather than trusting its
 	// own preflight as authoritative.
 	createRejects bool
+	// getPhoto/getErr (NES-120) configure Get's result for OpenBytes tests.
+	// The zero value (both nil) reports ErrTaskInstancePhotoNotFound,
+	// matching a genuinely unknown id.
+	getPhoto *domain.TaskInstancePhoto
+	getErr   error
 }
 
 func newFakeTaskInstancePhotoRepo() *fakeTaskInstancePhotoRepo {
@@ -122,6 +127,26 @@ func (f *fakeTaskInstancePhotoRepo) LatestTakenAt(context.Context, household.Hou
 
 func (f *fakeTaskInstancePhotoRepo) ListByInstance(context.Context, household.HouseholdID, domain.TaskInstanceID) ([]*domain.TaskInstancePhoto, error) {
 	return nil, nil
+}
+
+// ListByInstances is unused by this file's Upload/OpenBytes-focused tests;
+// implemented only to satisfy the interface (NES-120 added it for the
+// /tasks list builder's batched photo lookup).
+func (f *fakeTaskInstancePhotoRepo) ListByInstances(context.Context, household.HouseholdID, []domain.TaskInstanceID) ([]*domain.TaskInstancePhoto, error) {
+	return nil, nil
+}
+
+// Get is deliberately ID-only (NES-120), mirroring PhotoRepository.Get:
+// ownership is enforced by the caller (ChoreProofPhotoService.OpenBytes's
+// ownedPhoto), not by this fake or the real repository.
+func (f *fakeTaskInstancePhotoRepo) Get(context.Context, domain.TaskInstancePhotoID) (*domain.TaskInstancePhoto, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.getPhoto != nil {
+		return f.getPhoto, nil
+	}
+	return nil, domain.ErrTaskInstancePhotoNotFound
 }
 
 // --- helpers ---
@@ -532,6 +557,77 @@ func TestChoreProofUploadScrubErrorPropagates(t *testing.T) {
 	}
 	if store.puts != 0 {
 		t.Fatal("a scrub error must not reach PhotoStore.Put")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OpenBytes (NES-120)
+// ---------------------------------------------------------------------------
+
+// TestChoreProofPhotoService_OpenBytes_Success verifies the happy path:
+// OpenBytes streams the stored bytes and returns the photo's own recorded
+// ContentType.
+func TestChoreProofPhotoService_OpenBytes_Success(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakeTaskInstancePhotoRepo()
+	hh := household.NewHouseholdID()
+	photo := &domain.TaskInstancePhoto{
+		ID:          domain.NewTaskInstancePhotoID(),
+		HouseholdID: hh,
+		StorageRef:  domain.StorageRef("hh/aa/abc.jpg"),
+		ContentType: domain.ContentTypeJPEG,
+	}
+	repo.getPhoto = photo
+	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
+
+	rc, contentType, err := svc.OpenBytes(context.Background(), hh, photo.ID)
+	if err != nil {
+		t.Fatalf("OpenBytes: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	if contentType != domain.ContentTypeJPEG {
+		t.Errorf("contentType = %q, want %q", contentType, domain.ContentTypeJPEG)
+	}
+}
+
+// TestChoreProofPhotoService_OpenBytes_CrossHouseholdRejected verifies
+// NES-120's moved ownership check: a photo belonging to a DIFFERENT
+// household than the caller's is reported as not found — the repository's
+// Get is ID-only (mirrors PhotoRepository.Get), so this is the service's
+// own enforcement (ownedPhoto), not the repository's.
+func TestChoreProofPhotoService_OpenBytes_CrossHouseholdRejected(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakeTaskInstancePhotoRepo()
+	photo := &domain.TaskInstancePhoto{
+		ID:          domain.NewTaskInstancePhotoID(),
+		HouseholdID: household.NewHouseholdID(),
+		StorageRef:  domain.StorageRef("hh/aa/abc.jpg"),
+		ContentType: domain.ContentTypeJPEG,
+	}
+	repo.getPhoto = photo
+	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
+
+	// A DIFFERENT household than photo.HouseholdID requests the same id.
+	_, _, err := svc.OpenBytes(context.Background(), household.NewHouseholdID(), photo.ID)
+	if !errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
+		t.Errorf("OpenBytes(cross-household) = %v, want ErrTaskInstancePhotoNotFound", err)
+	}
+	if store.puts != 0 {
+		t.Error("cross-household rejection must never reach PhotoStore")
+	}
+}
+
+// TestChoreProofPhotoService_OpenBytes_UnknownIDPropagates verifies that an
+// unknown id (the repository's own zero-value fallback) surfaces
+// ErrTaskInstancePhotoNotFound unchanged.
+func TestChoreProofPhotoService_OpenBytes_UnknownIDPropagates(t *testing.T) {
+	store := &fakePhotoStore{}
+	repo := newFakeTaskInstancePhotoRepo() // getPhoto unset
+	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
+
+	_, _, err := svc.OpenBytes(context.Background(), household.NewHouseholdID(), domain.NewTaskInstancePhotoID())
+	if !errors.Is(err, domain.ErrTaskInstancePhotoNotFound) {
+		t.Errorf("OpenBytes(unknown id) = %v, want ErrTaskInstancePhotoNotFound", err)
 	}
 }
 

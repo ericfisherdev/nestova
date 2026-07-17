@@ -272,6 +272,16 @@ type TaskInstancePhotoRepository interface {
 	// the full, symmetric atomicity argument.
 	Create(ctx context.Context, photo *TaskInstancePhoto) error
 
+	// Get returns the chore-proof photo identified by id, or
+	// ErrTaskInstancePhotoNotFound when id is unknown. Deliberately
+	// ID-only, matching PhotoRepository.Get's identical album-path
+	// contract: household ownership is a SERVICE-layer concern, not this
+	// repository's — see ChoreProofPhotoService.OpenBytes (mirroring
+	// PhotoService.ownedPhoto), which is Get's only caller today. Used by
+	// the raw-bytes serving route; every other read in this bounded
+	// context goes through ListByInstance or LatestTakenAt instead.
+	Get(ctx context.Context, id TaskInstancePhotoID) (*TaskInstancePhoto, error)
+
 	// InstanceExists reports whether taskInstanceID exists within
 	// householdID. See the type doc: this is a preflight convenience, not
 	// the authoritative existence check (Create's own FK violation is).
@@ -287,6 +297,19 @@ type TaskInstancePhotoRepository interface {
 	// ordered by taken_at ascending, for a future detail view (NES-120).
 	// Returns an empty slice when none exist.
 	ListByInstance(ctx context.Context, householdID household.HouseholdID, taskInstanceID TaskInstanceID) ([]*TaskInstancePhoto, error)
+
+	// ListByInstances is ListByInstance's batch counterpart (NES-120): every
+	// chore-proof photo across all of taskInstanceIDs, household-scoped, in
+	// ONE query — the N+1 avoidance behind tasks/adapter.ProofPhotoChecker.
+	// ProofPhotosByInstances, which the /tasks list builder uses to resolve
+	// a whole page of photo-policy rows without one round trip per row.
+	// Ordering is unspecified (unlike ListByInstance's taken_at ascending):
+	// the caller groups by TaskInstanceID and, within a group, by Kind — see
+	// tasks/adapter.ProofPhotoChecker.ProofPhotosByInstances, which derives
+	// "most recent of each kind" from TakenAt itself rather than relying on
+	// row order. Returns an empty slice (not an error) when taskInstanceIDs
+	// is empty or none have chore-proof photos.
+	ListByInstances(ctx context.Context, householdID household.HouseholdID, taskInstanceIDs []TaskInstanceID) ([]*TaskInstancePhoto, error)
 }
 
 // ChoreProofExif extracts the EXIF facts the chore-proof upload path needs

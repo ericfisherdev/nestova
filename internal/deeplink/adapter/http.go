@@ -448,6 +448,17 @@ func (h *WebHandlers) respondTaskMutationError(w http.ResponseWriter, r *http.Re
 		h.renderMessage(w, r, http.StatusConflict, "Already done", "This chore was already finished.")
 	case errors.Is(err, tasksdomain.ErrInstanceAlreadyClaimed):
 		h.renderMessage(w, r, http.StatusConflict, "Already claimed", "Someone else already claimed this chore.")
+	case errors.Is(err, tasksdomain.ErrBeforePhotoRequired):
+		// NES-120: this confirm flow performs the action directly (no
+		// capture UI of its own — the member takes proof photos from the
+		// /tasks chore row, not from this phone-sized confirm screen), so
+		// the friendly message points back there rather than offering a
+		// dead-end "try again" on this page.
+		h.renderMessage(w, r, http.StatusConflict, "Before photo needed",
+			"This chore needs a before photo first. Take one from the chore's card on the tasks page, then come back and confirm.")
+	case errors.Is(err, tasksdomain.ErrAfterPhotoRequired):
+		h.renderMessage(w, r, http.StatusConflict, "After photo needed",
+			"This chore needs an after photo first. Take one from the chore's card on the tasks page, then come back and confirm.")
 	default:
 		h.logger.ErrorContext(r.Context(), "deeplink: task mutation", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

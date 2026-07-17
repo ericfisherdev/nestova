@@ -213,12 +213,12 @@ func buildMealsTestHandler(fakes *mealsFakes, member *household.Member) (http.Ha
 
 	recurringRepo := fakeRecurringTaskRepo{}
 	instanceRepo := &fakeTaskInstanceRepo{}
-	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo)
+	taskService, err := tasksapp.NewTaskService(recurringRepo, instanceRepo, nil)
 	if err != nil {
 		panic("buildMealsTestHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(
-		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger,
+		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil,
 	)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)

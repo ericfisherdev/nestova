@@ -238,6 +238,42 @@ func (s *ChoreProofPhotoService) Upload(
 	return photo, nil
 }
 
+// OpenBytes streams a chore-proof photo's stored bytes after verifying
+// ownership (NES-120), returning domain.ErrTaskInstancePhotoNotFound for an
+// unknown or cross-household id — mirroring PhotoService.OpenBytes/
+// ownedPhoto exactly, one bounded context's table over: the repository's
+// own Get is ID-only, so ownership is enforced HERE, at the service layer,
+// not pushed down into the query. It also returns the stored ContentType
+// (sniffed from the bytes at upload time — see Upload's doc — never a
+// caller-supplied claim), so the web layer can serve with an explicit
+// Content-Type instead of letting the browser sniff it.
+func (s *ChoreProofPhotoService) OpenBytes(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstancePhotoID) (io.ReadCloser, string, error) {
+	photo, err := s.ownedPhoto(ctx, householdID, id)
+	if err != nil {
+		return nil, "", err
+	}
+	rc, err := s.store.Open(ctx, photo.StorageRef)
+	if err != nil {
+		return nil, "", err
+	}
+	return rc, photo.ContentType, nil
+}
+
+// ownedPhoto fetches a chore-proof photo and confirms it belongs to
+// householdID, returning domain.ErrTaskInstancePhotoNotFound otherwise so a
+// tenant cannot probe another household's photo ids — mirrors
+// PhotoService.ownedPhoto's identical album-path helper.
+func (s *ChoreProofPhotoService) ownedPhoto(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstancePhotoID) (*domain.TaskInstancePhoto, error) {
+	photo, err := s.photos.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if photo.HouseholdID != householdID {
+		return nil, domain.ErrTaskInstancePhotoNotFound
+	}
+	return photo, nil
+}
+
 // captureMetadata extracts the EXIF capture time and Orientation tag from a
 // JPEG upload's raw bytes — a plain EXIF tag read, no image decode, cheap
 // even for a large file — or returns (nil, 0) unconditionally for a

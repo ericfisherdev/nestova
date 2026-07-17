@@ -93,12 +93,12 @@ func buildCreateTaskHandler(
 	)
 
 	instanceRepo := &fakeTaskInstanceRepo{}
-	taskService, err := tasksapp.NewTaskService(taskRepo, instanceRepo)
+	taskService, err := tasksapp.NewTaskService(taskRepo, instanceRepo, nil)
 	if err != nil {
 		panic("buildCreateTaskHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(
-		taskService, taskRepo, instanceRepo, householdRepo, sm, logger,
+		taskService, taskRepo, instanceRepo, householdRepo, sm, logger, nil,
 	)
 
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)

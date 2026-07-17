@@ -52,7 +52,20 @@ func Layout(props ShellProps, nav []NavItem, content templ.Component) templ.Comp
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><script src=\"/static/js/htmx.min.js\" defer></script><!-- Claim countdown badge for claimed chores (NES-118), and the photo\n\t\t\t     album's drag-and-drop upload queue (NES-124). Extension scripts that\n\t\t\t     register Alpine.data must load and run BEFORE alpine.min.js: its\n\t\t\t     'alpine:init' listener has to be attached before Alpine dispatches the\n\t\t\t     event, and Alpine dispatches it as soon as ITS OWN deferred script\n\t\t\t     runs — not on DOMContentLoaded — so a script listed after alpine.min.js\n\t\t\t     can lose the race and never see the component registered. --><script src=\"/static/js/claim-countdown.js\" defer></script><script src=\"/static/js/upload-queue.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script><!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. --><script src=\"/static/js/gsap.min.js\" defer></script><script src=\"/static/js/dashboard-motion.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen\" x-data=\"{ open: false }\" @keydown.escape.window=\"if (open) { open = false; $refs.navToggle.focus() }\"><a href=\"#main-content\" class=\"sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white\">Skip to content</a><!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).\n\t\t\t     Opening moves focus into the drawer; closing returns it here. --><button type=\"button\" x-ref=\"navToggle\" class=\"fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden\" @click=\"open = true; $nextTick(() => $refs.navPanel.focus())\" aria-label=\"Open navigation\" aria-controls=\"sidebar\" :aria-expanded=\"open\"><span aria-hidden=\"true\">&#9776;</span></button><!-- Click-away overlay shown with the drawer on narrow screens. This is\n\t\t\t     a pointer-only convenience: it carries no accessible name and isn't\n\t\t\t     reachable by keyboard, so it's marked aria-hidden to keep assistive\n\t\t\t     tech from exposing it as an ambiguous interactive element. Keyboard\n\t\t\t     users close the drawer via the Escape handler on <body> above. --><div x-show=\"open\" x-cloak @click=\"open = false; $refs.navToggle.focus()\" class=\"fixed inset-0 z-30 bg-ink/30 md:hidden\" aria-hidden=\"true\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- htmx by default never swaps a 4xx/5xx response into the DOM (see\n\t\t\t     htmx's own QUIRKS.md, \"By Default 4xx & 5xx Responses Do Not\n\t\t\t     Swap\"). NES-120 needs 422 to swap: TaskRowItem's Complete action\n\t\t\t     re-renders the chore row itself with an inline error message\n\t\t\t     (WebHandlers.handleCompleteError) when a recurring task's photo\n\t\t\t     policy blocks completion, at HTTP 422 — the status this app\n\t\t\t     already uses elsewhere for a validation-style rejection (see\n\t\t\t     ChoreProofWebHandlers.handleUploadError). This is the exact\n\t\t\t     configuration htmx's own docs recommend for that case; every\n\t\t\t     other status keeps its default (no-swap-on-error) behavior, so\n\t\t\t     this has no effect on any other action's error handling. --><meta name=\"htmx-config\" content=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var2 string
+		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(`{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}`)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 48, Col: 195}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><script src=\"/static/js/htmx.min.js\" defer></script><!-- Claim countdown badge for claimed chores (NES-118), and the photo\n\t\t\t     album's drag-and-drop upload queue (NES-124). Extension scripts that\n\t\t\t     register Alpine.data must load and run BEFORE alpine.min.js: its\n\t\t\t     'alpine:init' listener has to be attached before Alpine dispatches the\n\t\t\t     event, and Alpine dispatches it as soon as ITS OWN deferred script\n\t\t\t     runs — not on DOMContentLoaded — so a script listed after alpine.min.js\n\t\t\t     can lose the race and never see the component registered. --><script src=\"/static/js/claim-countdown.js\" defer></script><script src=\"/static/js/upload-queue.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script><!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. --><script src=\"/static/js/gsap.min.js\" defer></script><script src=\"/static/js/dashboard-motion.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen\" x-data=\"{ open: false }\" @keydown.escape.window=\"if (open) { open = false; $refs.navToggle.focus() }\"><a href=\"#main-content\" class=\"sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white\">Skip to content</a><!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).\n\t\t\t     Opening moves focus into the drawer; closing returns it here. --><button type=\"button\" x-ref=\"navToggle\" class=\"fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden\" @click=\"open = true; $nextTick(() => $refs.navPanel.focus())\" aria-label=\"Open navigation\" aria-controls=\"sidebar\" :aria-expanded=\"open\"><span aria-hidden=\"true\">&#9776;</span></button><!-- Click-away overlay shown with the drawer on narrow screens. This is\n\t\t\t     a pointer-only convenience: it carries no accessible name and isn't\n\t\t\t     reachable by keyboard, so it's marked aria-hidden to keep assistive\n\t\t\t     tech from exposing it as an ambiguous interactive element. Keyboard\n\t\t\t     users close the drawer via the Escape handler on <body> above. --><div x-show=\"open\" x-cloak @click=\"open = false; $refs.navToggle.focus()\" class=\"fixed inset-0 z-30 bg-ink/30 md:hidden\" aria-hidden=\"true\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -60,7 +73,7 @@ func Layout(props ShellProps, nav []NavItem, content templ.Component) templ.Comp
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<!-- inert disables the main content behind the open drawer so keyboard\n\t\t\t     focus cannot escape the modal drawer (WCAG 2.4.3). --><main id=\"main-content\" class=\"bg-main min-h-screen md:ml-[264px]\" :inert=\"open\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<!-- inert disables the main content behind the open drawer so keyboard\n\t\t\t     focus cannot escape the modal drawer (WCAG 2.4.3). --><main id=\"main-content\" class=\"bg-main min-h-screen md:ml-[264px]\" :inert=\"open\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -68,7 +81,7 @@ func Layout(props ShellProps, nav []NavItem, content templ.Component) templ.Comp
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</main></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -94,12 +107,12 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var2 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var2 == nil {
-			templ_7745c5c3_Var2 = templ.NopComponent
+		templ_7745c5c3_Var3 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var3 == nil {
+			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<aside id=\"sidebar\" x-ref=\"navPanel\" tabindex=\"-1\" class=\"fixed inset-y-0 left-0 z-40 flex w-[264px] -translate-x-full flex-col gap-4 overflow-y-auto border-r border-sidebar-border bg-sidebar p-4 transition-transform outline-none md:translate-x-0\" :class=\"open ? 'translate-x-0' : ''\"><div class=\"flex items-center gap-2 px-1\"><span class=\"inline-block h-7 w-7 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span> <span class=\"text-lg font-semibold\">Nestova</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<aside id=\"sidebar\" x-ref=\"navPanel\" tabindex=\"-1\" class=\"fixed inset-y-0 left-0 z-40 flex w-[264px] -translate-x-full flex-col gap-4 overflow-y-auto border-r border-sidebar-border bg-sidebar p-4 transition-transform outline-none md:translate-x-0\" :class=\"open ? 'translate-x-0' : ''\"><div class=\"flex items-center gap-2 px-1\"><span class=\"inline-block h-7 w-7 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span> <span class=\"text-lg font-semibold\">Nestova</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -107,7 +120,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<nav class=\"flex flex-col gap-1\" aria-label=\"Primary\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<nav class=\"flex flex-col gap-1\" aria-label=\"Primary\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -117,7 +130,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</nav><hr class=\"border-sidebar-border\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</nav><hr class=\"border-sidebar-border\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -126,12 +139,12 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		if len(props.Members) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<div class=\"flex flex-col gap-2\"><h2 class=\"px-1 text-sm font-semibold text-ink-muted\">Family</h2>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<div class=\"flex flex-col gap-2\"><h2 class=\"px-1 text-sm font-semibold text-ink-muted\">Family</h2>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, m := range props.Members {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<div class=\"flex items-center gap-2 px-1\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div class=\"flex items-center gap-2 px-1\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -139,43 +152,43 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<span class=\"text-sm\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "<span class=\"text-sm\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var3 string
-				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
+				var templ_7745c5c3_Var4 string
+				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 122, Col: 36}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 137, Col: 36}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</span></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</span></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<form method=\"post\" action=\"/logout\" class=\"mt-auto\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<form method=\"post\" action=\"/logout\" class=\"mt-auto\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var4 string
-		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(props.CSRFToken)
+		var templ_7745c5c3_Var5 string
+		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(props.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 128, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 143, Col: 65}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\"> <button type=\"submit\" class=\"w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-left font-medium text-ink-secondary transition-colors hover:bg-surface-warm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage\">Log out</button></form></aside>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "\"> <button type=\"submit\" class=\"w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-left font-medium text-ink-secondary transition-colors hover:bg-surface-warm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage\">Log out</button></form></aside>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -201,35 +214,35 @@ func miniMonth() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var5 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var5 == nil {
-			templ_7745c5c3_Var5 = templ.NopComponent
+		templ_7745c5c3_Var6 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var6 == nil {
+			templ_7745c5c3_Var6 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<div class=\"rounded-card bg-surface p-3 shadow-warm\" aria-hidden=\"true\"><div class=\"mb-2 text-center text-sm font-medium text-ink-secondary\">This month</div><div class=\"grid grid-cols-7 gap-1 text-center text-xs text-ink-muted\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<div class=\"rounded-card bg-surface p-3 shadow-warm\" aria-hidden=\"true\"><div class=\"mb-2 text-center text-sm font-medium text-ink-secondary\">This month</div><div class=\"grid grid-cols-7 gap-1 text-center text-xs text-ink-muted\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		for day := 1; day <= 28; day++ {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<span class=\"py-1\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<span class=\"py-1\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var6 string
-			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(day))
+			var templ_7745c5c3_Var7 string
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(day))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 146, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 161, Col: 42}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

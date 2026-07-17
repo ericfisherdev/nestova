@@ -37,6 +37,18 @@ type RecurringTask struct {
 	Category       Category
 	Cadence        household.Cadence
 	RotationPolicy RotationPolicy
+	// PhotoPolicy governs whether completing an instance of this task
+	// requires proof photos, and which ones (NES-120). The zero Go value
+	// ("") is treated as [PhotoPolicyNone] by the adapter's insert path
+	// (mirroring how NES-116 already treats [TaskInstance.Kind]'s zero
+	// value as [KindScheduled]), so every existing caller that predates
+	// NES-120 and never sets this field keeps completing instances exactly
+	// as before. TaskService.CompleteInstance reads this field — via a
+	// fresh RecurringTaskRepository.Get at completion time, never a value
+	// cached on the instance — so an edit to a task's policy takes effect
+	// immediately for every open instance; see the 00030 migration's doc
+	// for the full join-vs-copy rationale.
+	PhotoPolicy PhotoPolicy
 	// Points awarded to the member who completes an instance of this task.
 	Points int
 	// LeadTimeDays is the number of days before due_on that an instance is

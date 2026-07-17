@@ -82,8 +82,8 @@ func NewRecurringTaskRepository(dbtx db.TX) *RecurringTaskRepository {
 const recurringTaskInsertSQL = `
 	INSERT INTO recurring_task
 		(id, household_id, title, category, cadence, rotation_policy,
-		 points, lead_time_days, active)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 points, lead_time_days, active, photo_policy)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	RETURNING created_at, updated_at`
 
 // querier abstracts QueryRow so insertRecurringTask works against both the
@@ -100,7 +100,18 @@ func insertRecurringTask(ctx context.Context, q querier, rt *domain.RecurringTas
 	if err != nil {
 		return fmt.Errorf("marshal cadence: %w", err)
 	}
-	return q.QueryRow(ctx, recurringTaskInsertSQL,
+	// The zero Go value of PhotoPolicy ("") is treated as PhotoPolicyNone
+	// here, not rejected — mirroring how TaskInstanceRepository.Insert
+	// already treats a zero-value Kind as KindScheduled for NES-116. Every
+	// caller that predates NES-120 (every existing test and production call
+	// site) constructs a RecurringTask without ever setting PhotoPolicy, so
+	// defaulting at the persistence boundary — rather than requiring every
+	// such caller to be updated — keeps their behavior unchanged.
+	photoPolicy := rt.PhotoPolicy
+	if photoPolicy == "" {
+		photoPolicy = domain.PhotoPolicyNone
+	}
+	if err := q.QueryRow(ctx, recurringTaskInsertSQL,
 		rt.ID.String(),
 		rt.HouseholdID.String(),
 		rt.Title,
@@ -110,7 +121,14 @@ func insertRecurringTask(ctx context.Context, q querier, rt *domain.RecurringTas
 		rt.Points,
 		rt.LeadTimeDays,
 		rt.Active,
-	).Scan(&rt.CreatedAt, &rt.UpdatedAt)
+		photoPolicy.String(),
+	).Scan(&rt.CreatedAt, &rt.UpdatedAt); err != nil {
+		return err
+	}
+	// Reflect the defaulted value back onto the caller's struct, mirroring
+	// TaskInstanceRepository.Insert's identical Kind-defaulting contract.
+	rt.PhotoPolicy = photoPolicy
+	return nil
 }
 
 // Create persists a new recurring task. The caller must populate ID,
@@ -202,7 +220,7 @@ func (r *RecurringTaskRepository) Get(
 ) (*domain.RecurringTask, error) {
 	const q = `
 		SELECT id, household_id, title, category, cadence, rotation_policy,
-		       points, lead_time_days, active, created_at, updated_at
+		       points, lead_time_days, active, created_at, updated_at, photo_policy
 		  FROM recurring_task
 		 WHERE id = $1
 		   AND household_id = $2`
@@ -224,7 +242,7 @@ func (r *RecurringTaskRepository) ListActive(
 ) ([]*domain.RecurringTask, error) {
 	const q = `
 		SELECT id, household_id, title, category, cadence, rotation_policy,
-		       points, lead_time_days, active, created_at, updated_at
+		       points, lead_time_days, active, created_at, updated_at, photo_policy
 		  FROM recurring_task
 		 WHERE household_id = $1
 		   AND active = true
@@ -259,7 +277,7 @@ func (r *RecurringTaskRepository) ListActive(
 func (r *RecurringTaskRepository) ListAllActive(ctx context.Context) ([]*domain.RecurringTask, error) {
 	const q = `
 		SELECT id, household_id, title, category, cadence, rotation_policy,
-		       points, lead_time_days, active, created_at, updated_at
+		       points, lead_time_days, active, created_at, updated_at, photo_policy
 		  FROM recurring_task
 		 WHERE active = true
 		 ORDER BY household_id, created_at`
@@ -396,6 +414,7 @@ func scanRecurringTask(r row) (*domain.RecurringTask, error) {
 	var (
 		rt                                              domain.RecurringTask
 		idStr, householdIDStr, category, rotationPolicy string
+		photoPolicy                                     string
 		cadenceJSON                                     []byte
 	)
 	err := r.Scan(
@@ -410,6 +429,7 @@ func scanRecurringTask(r row) (*domain.RecurringTask, error) {
 		&rt.Active,
 		&rt.CreatedAt,
 		&rt.UpdatedAt,
+		&photoPolicy,
 	)
 	if err != nil {
 		return nil, err
@@ -431,6 +451,10 @@ func scanRecurringTask(r row) (*domain.RecurringTask, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan recurring task: %w", err)
 	}
+	pp, err := domain.ParsePhotoPolicy(photoPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("scan recurring task: %w", err)
+	}
 	if err := json.Unmarshal(cadenceJSON, &rt.Cadence); err != nil {
 		return nil, fmt.Errorf("scan recurring task: unmarshal cadence: %w", err)
 	}
@@ -439,6 +463,7 @@ func scanRecurringTask(r row) (*domain.RecurringTask, error) {
 	rt.HouseholdID = householdID
 	rt.Category = cat
 	rt.RotationPolicy = policy
+	rt.PhotoPolicy = pp
 	return &rt, nil
 }
 

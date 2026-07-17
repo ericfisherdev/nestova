@@ -22,12 +22,20 @@ import (
 type TaskService struct {
 	taskRepo     domain.RecurringTaskRepository
 	instanceRepo domain.TaskInstanceRepository
+	photoChecker domain.ProofPhotoChecker
 }
 
 // NewTaskService constructs a TaskService with injected dependencies.
+// photoChecker (NES-120) may be nil: only a recurring task whose PhotoPolicy
+// is not [domain.PhotoPolicyNone] ever needs it, so most callers — every
+// task that predates NES-120's photo policy feature — are unaffected by a
+// nil value. CompleteInstance fails closed rather than silently bypassing
+// the gate if a photo-policy-requiring task is ever completed with no
+// checker configured — see its doc.
 func NewTaskService(
 	taskRepo domain.RecurringTaskRepository,
 	instanceRepo domain.TaskInstanceRepository,
+	photoChecker domain.ProofPhotoChecker,
 ) (*TaskService, error) {
 	if taskRepo == nil {
 		return nil, errors.New("app: NewTaskService requires a non-nil task repository")
@@ -38,6 +46,7 @@ func NewTaskService(
 	return &TaskService{
 		taskRepo:     taskRepo,
 		instanceRepo: instanceRepo,
+		photoChecker: photoChecker,
 	}, nil
 }
 
@@ -109,11 +118,29 @@ func (s *TaskService) CreateRecurringTask(
 // points = 0 produce no ledger row. Re-completing an already-done instance
 // returns the terminal-state sentinel without making a second award.
 //
+// NES-120 photo policy gate: when the instance's parent recurring task's
+// PhotoPolicy is not [domain.PhotoPolicyNone], completion is blocked until
+// the required chore-proof photo(s) (NES-119) have been captured. This
+// check reads the CURRENT policy (a fresh RecurringTaskRepository.Get, not
+// a value cached on the instance — see [domain.RecurringTask.PhotoPolicy]'s
+// doc) and the instance's CURRENT photo state via [s.photoChecker], and both
+// happen BEFORE — and outside the same transaction as — the CompleteAndAward
+// call below. This is a deliberate read-then-act sequence, not an atomic
+// check: nothing currently deletes a task_instance_photo row (see media's
+// TaskInstancePhotoRepository, which exposes no delete method), so a racing
+// photo removal between this check and CompleteAndAward is not a real
+// exposure today; if a delete capability is ever added, this gate would
+// need to move inside CompleteAndAward's own transaction to stay race-free.
+//
 // Error contracts:
 //   - Returns [domain.ErrInstanceNotFound] when id is unknown or belongs to
 //     another household.
 //   - Returns [domain.ErrInstanceInTerminalState] when the instance is already
-//     done or skipped.
+//     done or skipped — checked before the photo gate, so an already-finished
+//     chore reports "already done" rather than a photo requirement.
+//   - Returns [domain.ErrBeforePhotoRequired] or [domain.ErrAfterPhotoRequired]
+//     when the parent task's PhotoPolicy requires a photo that has not been
+//     captured yet.
 func (s *TaskService) CompleteInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -121,8 +148,57 @@ func (s *TaskService) CompleteInstance(
 	by household.MemberID,
 	at time.Time,
 ) error {
+	inst, err := s.instanceRepo.Get(ctx, householdID, id)
+	if err != nil {
+		return fmt.Errorf("complete instance: %w", err)
+	}
+	if inst.Status == domain.StatusDone || inst.Status == domain.StatusSkipped {
+		return fmt.Errorf("complete instance: %w", domain.ErrInstanceInTerminalState)
+	}
+
+	task, err := s.taskRepo.Get(ctx, householdID, inst.RecurringTaskID)
+	if err != nil {
+		return fmt.Errorf("complete instance: %w", err)
+	}
+	if task.PhotoPolicy.RequiresPhotos() {
+		if err := s.requirePhotos(ctx, householdID, id, task.PhotoPolicy); err != nil {
+			return err
+		}
+	}
+
 	if err := s.instanceRepo.CompleteAndAward(ctx, householdID, id, by, at); err != nil {
 		return fmt.Errorf("complete instance: %w", err)
+	}
+	return nil
+}
+
+// requirePhotos checks instanceID's captured chore-proof photos against
+// policy, returning [domain.ErrBeforePhotoRequired] or
+// [domain.ErrAfterPhotoRequired] for the first unmet requirement, or nil
+// when policy is satisfied. Callers must already have confirmed
+// policy != [domain.PhotoPolicyNone].
+func (s *TaskService) requirePhotos(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	instanceID domain.TaskInstanceID,
+	policy domain.PhotoPolicy,
+) error {
+	if s.photoChecker == nil {
+		// A recurring task requires proof photos but no checker was wired at
+		// the composition root — a misconfiguration, not a user-facing
+		// outcome. Fail closed (never silently allow completion) rather than
+		// treating the policy as satisfied.
+		return fmt.Errorf("complete instance: recurring task requires proof photos (policy %q) but no photo checker is configured", policy)
+	}
+	beforeID, afterID, err := s.photoChecker.ProofPhotos(ctx, householdID, instanceID)
+	if err != nil {
+		return fmt.Errorf("complete instance: check proof photos: %w", err)
+	}
+	if policy == domain.PhotoPolicyBeforeAfter && beforeID == "" {
+		return domain.ErrBeforePhotoRequired
+	}
+	if afterID == "" {
+		return domain.ErrAfterPhotoRequired
 	}
 	return nil
 }

@@ -237,11 +237,11 @@ func buildTestHandler() http.Handler {
 	// Stub task dependencies so the composition root builds without a database.
 	taskRecurringRepo := fakeRecurringTaskRepo{}
 	taskInstanceRepo := &fakeTaskInstanceRepo{}
-	taskService, err := tasksapp.NewTaskService(taskRecurringRepo, taskInstanceRepo)
+	taskService, err := tasksapp.NewTaskService(taskRecurringRepo, taskInstanceRepo, nil)
 	if err != nil {
 		panic("buildTestHandler: " + err.Error())
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, taskRecurringRepo, taskInstanceRepo, repo, sm, logger)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, taskRecurringRepo, taskInstanceRepo, repo, sm, logger, nil)
 	gamificationHandlers := newTestGamificationHandlers(taskInstanceRepo, repo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(repo, sm, logger)
 
