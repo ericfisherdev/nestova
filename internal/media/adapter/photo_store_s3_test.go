@@ -452,12 +452,12 @@ func (f *fakeReaperTaskInstancePhotoRepo) ListAllStorageRefs(context.Context, do
 	return f.refs, nil
 }
 
-func (f *fakeReaperTaskInstancePhotoRepo) DeleteUploadedBefore(context.Context, time.Time) (int64, error) {
+func (f *fakeReaperTaskInstancePhotoRepo) DeleteUploadedBefore(context.Context, domain.StorageBackend, time.Time) (int64, error) {
 	return 0, nil
 }
 
-func (f *fakeReaperTaskInstancePhotoRepo) CountUploadedBefore(context.Context, time.Time) (int64, error) {
-	return 0, nil
+func (f *fakeReaperTaskInstancePhotoRepo) ListStorageRefsUploadedBefore(context.Context, domain.StorageBackend, time.Time) ([]domain.StorageRef, error) {
+	return nil, nil
 }
 
 func (f *fakeReaperTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef, _ domain.StorageBackend) (bool, error) {

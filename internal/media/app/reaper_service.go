@@ -34,11 +34,18 @@ var reapedClasses = []domain.PhotoClass{domain.PhotoClassAlbum, domain.PhotoClas
 //     grace window below).
 //  2. Orphan sweep, per reapedClasses: list every stored object of the
 //     class (lister.ListObjects), compute the set of StorageRefs still
-//     referenced by a row in either table (ListAllStorageRefs), and delete
-//     any object that is BOTH unreferenced AND older than graceWindow — an
-//     object younger than the grace window might be mid-upload (Put has
-//     written bytes but Create has not yet committed the referencing row),
-//     not genuinely orphaned; see domain.ObjectInfo.LastModified's doc.
+//     referenced by ANY row in EITHER table (ListAllStorageRefs), and
+//     delete any object that is BOTH unreferenced AND older than
+//     graceWindow — an object younger than the grace window might be
+//     mid-upload (Put has written bytes but Create has not yet committed
+//     the referencing row), not genuinely orphaned; see
+//     domain.ObjectInfo.LastModified's doc. The referenced set is
+//     deliberately built from BOTH repositories regardless of which class
+//     is currently being swept: a cross-prefix row (see cmd/storage's
+//     verifier.go doc) can reference an object filed under the OTHER
+//     class's own prefix than the table it lives in, and that reference
+//     must protect the object exactly as much as an ordinarily-prefixed
+//     one would — see referencedRefs' doc.
 //
 // This design makes "restore a week-old DB backup against the same bucket"
 // safe by construction: a restored row's StorageRef reappears in
@@ -156,31 +163,44 @@ type DryRunResult struct {
 func (r *ReaperService) Run(ctx context.Context, now time.Time) (ReaperResult, error) {
 	result := ReaperResult{OrphansDeleted: make(map[domain.PhotoClass]int, len(reapedClasses))}
 
-	// KNOWN GAP (not addressed by NES-132's mixed-state fix): unlike
-	// referencedRefs/existsByStorageRef below, DeleteUploadedBefore is NOT
-	// filtered by r.backend — it deletes any sufficiently-old chore-proof
-	// ROW regardless of which backend actually stored its bytes. In a
-	// mixed-state deployment (some rows local, some s3), a reaper instance
-	// bound to ONE backend's lister/store could therefore delete a row
-	// backed by the OTHER backend, permanently orphaning that row's object
-	// with no reaper instance able to ever reclaim it (this reaper only
-	// lists/deletes ITS OWN backend's objects). Left as-is because it was
-	// not part of this review's explicit scope; NES-133 should either scope
-	// DeleteUploadedBefore by backend too, or run retention from a
-	// combined-backend context that can route the resulting orphan to the
-	// right reaper.
+	// Retention is scoped to r.backend (NES-133/149 fix — see
+	// DeleteUploadedBefore's own doc): a reaper instance bound to ONE
+	// backend must never delete a row belonging to the OTHER backend,
+	// since only a reaper instance for that row's OWN backend's
+	// lister/store could ever reclaim the now-unreferenced object
+	// afterward — an unscoped delete would permanently strand it.
+	//
+	// Operator note: in a MIXED-STATE deployment (some chore-proof rows
+	// still local, some already migrated to this reaper's backend),
+	// retention only ever considers rows on r.backend — an old LOCAL row
+	// survives a Run against the S3 reaper untouched, exactly as it
+	// should (deleting it here would orphan a local file no S3-bound
+	// reaper could ever clean up). Run NES-133's migration to completion
+	// before relying on retention to actually reduce the chore-proof
+	// table's size in a mixed-state install; see docs/storage.md.
 	if r.choreProofRetention > 0 {
 		cutoff := now.Add(-r.choreProofRetention)
-		n, err := r.choreProofPhotos.DeleteUploadedBefore(ctx, cutoff)
+		n, err := r.choreProofPhotos.DeleteUploadedBefore(ctx, r.backend, cutoff)
 		if err != nil {
 			return ReaperResult{}, fmt.Errorf("media/app: apply chore-proof retention: %w", err)
 		}
 		result.RetentionRowsDeleted = n
 	}
 
+	// referenced is computed ONCE, globally across both tables (see
+	// referencedRefs' doc), and reused for every class's candidate
+	// selection below — cheaper than one query pair per class, and (unlike
+	// the per-object recheck) there is no safety reason to re-fetch it
+	// per class: the bulk snapshot was never the final word on any
+	// individual candidate to begin with (see the type doc's TOCTOU note).
+	referenced, err := r.referencedRefs(ctx)
+	if err != nil {
+		return ReaperResult{}, fmt.Errorf("media/app: list referenced refs: %w", err)
+	}
+
 	cutoff := now.Add(-r.graceWindow)
 	for _, class := range reapedClasses {
-		candidates, err := r.orphanCandidates(ctx, class, cutoff)
+		candidates, err := r.orphanCandidates(ctx, class, cutoff, referenced)
 		if err != nil {
 			return ReaperResult{}, err
 		}
@@ -196,7 +216,7 @@ func (r *ReaperService) Run(ctx context.Context, now time.Time) (ReaperResult, e
 			// this loop is being processed must still be caught here, not
 			// missed because its own recheck already happened before that
 			// commit landed.
-			stillReferenced, err := r.existsByStorageRef(ctx, class, ref)
+			stillReferenced, err := r.existsByStorageRef(ctx, ref)
 			if err != nil {
 				return ReaperResult{}, fmt.Errorf("media/app: recheck object %s before delete: %w", ref, err)
 			}
@@ -218,63 +238,77 @@ func (r *ReaperService) Run(ctx context.Context, now time.Time) (ReaperResult, e
 // WITHOUT deleting or removing anything. It is NES-133's `storage reap
 // --dry-run` command's non-destructive preview, driven by the identical
 // candidate-selection logic Run itself uses (same cutoffs, same
-// referencedRefs/existsByStorageRef recheck), so its output is a faithful
-// preview of Run's next call, provided no row commits or object ages past
-// the grace window in between (the type doc's TOCTOU note applies here too,
-// as a staleness risk on the preview rather than a deletion race). Unlike
-// Run, DryRun rechecks each candidate exactly once, at preview time — there
-// is no delete to protect against a later commit, so a single recheck per
-// candidate (the bulk snapshot's own immediate follow-up) is the whole
-// story here.
+// referencedRefs computation), so its output is a faithful preview of
+// Run's next call, provided no row commits or object ages past the grace
+// window in between (the type doc's TOCTOU note applies here too, as a
+// staleness risk on the preview rather than a deletion race).
+//
+// Unlike Run, DryRun does NOT perform Run's per-candidate
+// existsByStorageRef recheck: that recheck exists specifically to catch a
+// row committing in the gap between the bulk snapshot and an ACTUAL
+// delete call (see the type doc's TOCTOU note) — DryRun never deletes
+// anything, so there is no such gap to protect, and calling it here would
+// actively contradict the retention-cascade modeling below (it queries
+// LIVE database state, which still shows a retention-doomed row as
+// "referencing" its object, since DryRun's own retention preview never
+// actually removes that row).
+//
+// DryRun MODELS retention's cascading effect on the orphan preview
+// (NES-133/149): unlike Run, where the retention DeleteUploadedBefore call
+// has already committed by the time the orphan sweep's referencedRefs
+// query runs (so that query naturally reflects the post-retention state),
+// DryRun never deletes anything — the chore-proof table still holds every
+// row retention WOULD remove when the orphan preview is computed. Without
+// correcting for this, DryRun would UNDER-report: a row retention would
+// delete still counts as "referencing" its object in a naive snapshot, so
+// that object would never appear as an orphan candidate in the preview
+// even though the very next Run WOULD reap it (retention, then sweep, in
+// the same call). dryRunReferencedRefs closes this gap by excluding refs
+// ListStorageRefsUploadedBefore reports as retention-doomed — see that
+// helper's doc for how it still protects a ref shared by a dedup pair (one
+// doomed row, one surviving row referencing identical content-addressed
+// bytes).
 func (r *ReaperService) DryRun(ctx context.Context, now time.Time) (DryRunResult, error) {
 	result := DryRunResult{OrphansWouldDelete: make(map[domain.PhotoClass][]domain.StorageRef, len(reapedClasses))}
 
+	var retentionRefs []domain.StorageRef
 	if r.choreProofRetention > 0 {
-		cutoff := now.Add(-r.choreProofRetention)
-		n, err := r.choreProofPhotos.CountUploadedBefore(ctx, cutoff)
+		retentionCutoff := now.Add(-r.choreProofRetention)
+		refs, err := r.choreProofPhotos.ListStorageRefsUploadedBefore(ctx, r.backend, retentionCutoff)
 		if err != nil {
 			return DryRunResult{}, fmt.Errorf("media/app: preview chore-proof retention: %w", err)
 		}
-		result.RetentionRowsWouldDelete = n
+		retentionRefs = refs
+		result.RetentionRowsWouldDelete = int64(len(refs))
+	}
+
+	referenced, err := r.dryRunReferencedRefs(ctx, retentionRefs)
+	if err != nil {
+		return DryRunResult{}, fmt.Errorf("media/app: list referenced refs: %w", err)
 	}
 
 	cutoff := now.Add(-r.graceWindow)
 	for _, class := range reapedClasses {
-		candidates, err := r.orphanCandidates(ctx, class, cutoff)
+		candidates, err := r.orphanCandidates(ctx, class, cutoff, referenced)
 		if err != nil {
 			return DryRunResult{}, err
 		}
-		confirmed := make([]domain.StorageRef, 0, len(candidates))
-		for _, ref := range candidates {
-			stillReferenced, err := r.existsByStorageRef(ctx, class, ref)
-			if err != nil {
-				return DryRunResult{}, fmt.Errorf("media/app: recheck object %s: %w", ref, err)
-			}
-			if stillReferenced {
-				continue
-			}
-			confirmed = append(confirmed, ref)
-		}
-		result.OrphansWouldDelete[class] = confirmed
+		result.OrphansWouldDelete[class] = candidates
 	}
 	return result, nil
 }
 
 // orphanCandidates computes class's orphaned-object CANDIDATES from the
 // BULK snapshot only — every stored object not referenced by any row in
-// either table (referencedRefs), and older than cutoff — WITHOUT any
+// EITHER table (the referenced set the caller supplies — see
+// referencedRefs/dryRunReferencedRefs), and older than cutoff — WITHOUT any
 // per-object recheck. This bulk list is deliberately not the final word on
 // any individual candidate (see the type doc's TOCTOU note): Run performs
 // its own recheck immediately before each Delete, in the same loop
 // iteration, so a row that commits partway through processing this list
 // still protects whichever candidate it now references; DryRun performs a
-// single recheck pass over this same list for its preview. Shared by both
-// so they always start from the identical bulk selection.
-func (r *ReaperService) orphanCandidates(ctx context.Context, class domain.PhotoClass, cutoff time.Time) ([]domain.StorageRef, error) {
-	referenced, err := r.referencedRefs(ctx, class)
-	if err != nil {
-		return nil, fmt.Errorf("media/app: list referenced refs for class %s: %w", class, err)
-	}
+// single recheck pass over this same list for its preview.
+func (r *ReaperService) orphanCandidates(ctx context.Context, class domain.PhotoClass, cutoff time.Time, referenced map[domain.StorageRef]struct{}) ([]domain.StorageRef, error) {
 	objects, err := r.lister.ListObjects(ctx, class)
 	if err != nil {
 		return nil, fmt.Errorf("media/app: list stored objects for class %s: %w", class, err)
@@ -293,49 +327,104 @@ func (r *ReaperService) orphanCandidates(ctx context.Context, class domain.Photo
 	return candidates, nil
 }
 
-// referencedRefs builds the set of StorageRefs class's rows STAMPED WITH
-// r.backend still reference, across every household — album refs come from
-// PhotoRepository, chore-proof refs from TaskInstancePhotoRepository;
-// PhotoClassRewardImage never reaches here (see reapedClasses' doc).
-// r.backend is passed explicitly (see the type doc's field comment): a
-// content-identical row stamped with a DIFFERENT backend must never shield
-// r.backend's genuine orphan. This is the bulk CANDIDATE-selection snapshot
-// orphanCandidates filters against — see existsByStorageRef for the
-// per-object recheck that has the final say.
-func (r *ReaperService) referencedRefs(ctx context.Context, class domain.PhotoClass) (map[domain.StorageRef]struct{}, error) {
-	var refs []domain.StorageRef
-	var err error
-	switch class {
-	case domain.PhotoClassAlbum:
-		refs, err = r.photos.ListAllStorageRefs(ctx, r.backend)
-	case domain.PhotoClassChoreProof:
-		refs, err = r.choreProofPhotos.ListAllStorageRefs(ctx, r.backend)
-	default:
-		return nil, fmt.Errorf("media/app: reaper does not support class %s", class)
-	}
+// referencedRefs builds the set of StorageRefs ANY row STAMPED WITH
+// r.backend still references, across BOTH tables and every household —
+// deliberately NOT scoped to whichever repository "owns" a given class:
+// a cross-prefix row (see cmd/storage's verifier.go classifyS3 doc) can
+// reference an object filed under a DIFFERENT class's own prefix than the
+// table it is persisted in, so checking only the nominally-matching
+// repository would let that reference go unseen — the sweep would then
+// treat a genuinely-referenced object as an orphan and delete it. Computed
+// ONCE per Run/DryRun call (not once per class) since it is already
+// bucket-wide and backend-scoped, not class-scoped; PhotoClassRewardImage
+// never needs its own entry here since neither repository stores rows for
+// it (see reapedClasses' doc). This is the bulk CANDIDATE-selection
+// snapshot orphanCandidates filters against — see existsByStorageRef for
+// the per-object recheck that has the final say.
+func (r *ReaperService) referencedRefs(ctx context.Context) (map[domain.StorageRef]struct{}, error) {
+	albumRefs, err := r.photos.ListAllStorageRefs(ctx, r.backend)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list album refs: %w", err)
 	}
-	set := make(map[domain.StorageRef]struct{}, len(refs))
-	for _, ref := range refs {
+	choreProofRefs, err := r.choreProofPhotos.ListAllStorageRefs(ctx, r.backend)
+	if err != nil {
+		return nil, fmt.Errorf("list chore-proof refs: %w", err)
+	}
+	set := make(map[domain.StorageRef]struct{}, len(albumRefs)+len(choreProofRefs))
+	for _, ref := range albumRefs {
+		set[ref] = struct{}{}
+	}
+	for _, ref := range choreProofRefs {
 		set[ref] = struct{}{}
 	}
 	return set, nil
 }
 
+// dryRunReferencedRefs is referencedRefs' DryRun-only variant: the SAME
+// global, both-tables referenced set, but as of the HYPOTHETICAL state
+// immediately after retention (if any) ran — see DryRun's own doc for why
+// this modeling exists. retentionRefs is
+// ListStorageRefsUploadedBefore's result: the refs of chore-proof rows
+// retention WOULD delete.
+//
+// A ref is excluded from the result only when EVERY chore-proof row
+// referencing it is retention-doomed — counted via a multiset (occurrence
+// counts), not a plain set difference, specifically to protect the
+// content-addressed dedup case: two chore-proof rows can share one
+// StorageRef (see domain.PhotoClass's dedup note), and if only ONE of a
+// pair is old enough for retention to remove while the other survives,
+// the shared ref must still count as referenced — the surviving row's
+// evidence, not the doomed one's, is what protects the object.
+func (r *ReaperService) dryRunReferencedRefs(ctx context.Context, retentionRefs []domain.StorageRef) (map[domain.StorageRef]struct{}, error) {
+	albumRefs, err := r.photos.ListAllStorageRefs(ctx, r.backend)
+	if err != nil {
+		return nil, fmt.Errorf("list album refs: %w", err)
+	}
+	choreProofRefs, err := r.choreProofPhotos.ListAllStorageRefs(ctx, r.backend)
+	if err != nil {
+		return nil, fmt.Errorf("list chore-proof refs: %w", err)
+	}
+
+	referenced := make(map[domain.StorageRef]struct{}, len(albumRefs)+len(choreProofRefs))
+	for _, ref := range albumRefs {
+		referenced[ref] = struct{}{}
+	}
+
+	doomedCounts := make(map[domain.StorageRef]int, len(retentionRefs))
+	for _, ref := range retentionRefs {
+		doomedCounts[ref]++
+	}
+	totalCounts := make(map[domain.StorageRef]int, len(choreProofRefs))
+	for _, ref := range choreProofRefs {
+		totalCounts[ref]++
+	}
+	for ref, total := range totalCounts {
+		if total > doomedCounts[ref] {
+			// At least one row referencing ref survives retention.
+			referenced[ref] = struct{}{}
+		}
+	}
+	return referenced, nil
+}
+
 // existsByStorageRef is referencedRefs' single-ref counterpart: a fresh,
 // targeted query (filtered to r.backend, for the same reason
-// referencedRefs' doc explains) against whichever repository owns class,
-// run by Run's own loop immediately before it would otherwise delete ref's
-// object — see the type doc's TOCTOU note for why this, not the bulk
-// snapshot, is authoritative at delete time.
-func (r *ReaperService) existsByStorageRef(ctx context.Context, class domain.PhotoClass, ref domain.StorageRef) (bool, error) {
-	switch class {
-	case domain.PhotoClassAlbum:
-		return r.photos.ExistsByStorageRef(ctx, ref, r.backend)
-	case domain.PhotoClassChoreProof:
-		return r.choreProofPhotos.ExistsByStorageRef(ctx, ref, r.backend)
-	default:
-		return false, fmt.Errorf("media/app: reaper does not support class %s", class)
+// referencedRefs' doc explains) against BOTH repositories — not just
+// whichever one nominally "owns" the class an object was listed under —
+// run immediately before Run's loop would otherwise delete ref's object.
+// Checking both is required for the identical cross-prefix reason
+// referencedRefs' bulk snapshot does: a row from the OTHER table can
+// legitimately reference ref, and that reference must be honored
+// regardless of which class's bucket listing surfaced ref as a candidate.
+// See the type doc's TOCTOU note for why this, not the bulk snapshot, is
+// authoritative at delete time.
+func (r *ReaperService) existsByStorageRef(ctx context.Context, ref domain.StorageRef) (bool, error) {
+	existsAlbum, err := r.photos.ExistsByStorageRef(ctx, ref, r.backend)
+	if err != nil {
+		return false, fmt.Errorf("check album reference: %w", err)
 	}
+	if existsAlbum {
+		return true, nil
+	}
+	return r.choreProofPhotos.ExistsByStorageRef(ctx, ref, r.backend)
 }

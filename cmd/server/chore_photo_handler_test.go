@@ -107,11 +107,11 @@ func (f *fakeTaskInstancePhotoRepoHandler) ListAllStorageRefs(context.Context, m
 	return nil, nil
 }
 
-func (f *fakeTaskInstancePhotoRepoHandler) CountUploadedBefore(context.Context, time.Time) (int64, error) {
-	return 0, nil
+func (f *fakeTaskInstancePhotoRepoHandler) ListStorageRefsUploadedBefore(context.Context, mediadomain.StorageBackend, time.Time) ([]mediadomain.StorageRef, error) {
+	return nil, nil
 }
 
-func (f *fakeTaskInstancePhotoRepoHandler) DeleteUploadedBefore(context.Context, time.Time) (int64, error) {
+func (f *fakeTaskInstancePhotoRepoHandler) DeleteUploadedBefore(context.Context, mediadomain.StorageBackend, time.Time) (int64, error) {
 	return 0, nil
 }
 

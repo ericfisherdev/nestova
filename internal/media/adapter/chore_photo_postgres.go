@@ -343,26 +343,42 @@ func (r *TaskInstancePhotoRepository) ListAllStorageRefs(ctx context.Context, ba
 	return refs, nil
 }
 
-// DeleteUploadedBefore deletes every chore-proof photo row uploaded strictly
-// before cutoff and reports how many rows were removed — see the domain
-// port doc for why this deletes rows only, never the underlying object.
-func (r *TaskInstancePhotoRepository) DeleteUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	tag, err := r.dbtx.Exec(ctx, `DELETE FROM task_instance_photo WHERE uploaded_at < $1`, cutoff)
+// DeleteUploadedBefore deletes every chore-proof photo row STAMPED WITH
+// backend and uploaded strictly before cutoff, and reports how many rows
+// were removed — see the domain port doc for why this deletes rows only
+// (never the underlying object) and why backend is explicit (a reaper
+// bound to one backend must never delete a row belonging to the other).
+func (r *TaskInstancePhotoRepository) DeleteUploadedBefore(ctx context.Context, backend domain.StorageBackend, cutoff time.Time) (int64, error) {
+	tag, err := r.dbtx.Exec(ctx, `DELETE FROM task_instance_photo WHERE storage_backend = $1 AND uploaded_at < $2`, backend.String(), cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("delete task instance photos uploaded before cutoff: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
 
-// CountUploadedBefore reports how many chore-proof photo rows have an
-// uploaded_at strictly earlier than cutoff, without deleting them (see the
-// domain port doc: ReaperService.DryRun's retention-pass preview).
-func (r *TaskInstancePhotoRepository) CountUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	var count int64
-	if err := r.dbtx.QueryRow(ctx, `SELECT count(*) FROM task_instance_photo WHERE uploaded_at < $1`, cutoff).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count task instance photos uploaded before cutoff: %w", err)
+// ListStorageRefsUploadedBefore returns the StorageRef of every chore-proof
+// photo row STAMPED WITH backend and uploaded strictly before cutoff,
+// without deleting anything (see the domain port doc:
+// ReaperService.DryRun's retention-pass preview, which needs the refs
+// retention would orphan, not just a count).
+func (r *TaskInstancePhotoRepository) ListStorageRefsUploadedBefore(ctx context.Context, backend domain.StorageBackend, cutoff time.Time) ([]domain.StorageRef, error) {
+	rows, err := r.dbtx.Query(ctx, `SELECT storage_ref FROM task_instance_photo WHERE storage_backend = $1 AND uploaded_at < $2`, backend.String(), cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("list task instance photo refs uploaded before cutoff: %w", err)
 	}
-	return count, nil
+	defer rows.Close()
+	refs := make([]domain.StorageRef, 0)
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, fmt.Errorf("scan task instance photo ref: %w", err)
+		}
+		refs = append(refs, domain.StorageRef(ref))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan task instance photo refs uploaded before cutoff: %w", err)
+	}
+	return refs, nil
 }
 
 // ExistsByStorageRef reports whether any chore-proof photo row STAMPED WITH

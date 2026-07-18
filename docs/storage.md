@@ -91,10 +91,26 @@ reads are resolved per-row, not per-deployment.
    A **hash mismatch** (a local file's bytes no longer match the row's
    recorded `content_sha256` — e.g. on-disk corruption) aborts THAT row's
    flip only; the row keeps serving from local, the mismatch is counted and
-   reported, and the migrator continues with every other row. Re-run
-   `storage verify` (below) to see exactly which rows need attention, and
+   reported, and the migrator continues with every other row. Investigate
+   via `storage migrate`'s OWN per-photo progress output and final summary,
+   which name exactly which refs mismatched — `storage verify` (below)
+   cannot help here: it only checks whether an object EXISTS at a row's
+   ref, never whether its CONTENT is correct, so it would report a
+   mismatched-but-still-local row as perfectly healthy (the row hasn't
+   flipped, so there is nothing on S3 yet for `verify` to even look at).
    `storage migrate`'s own exit code is nonzero whenever any class hit a
    mismatch or a hard error, so this is easy to catch in a script.
+
+   A **target integrity failure** is the same idea from the OTHER side: the
+   local bytes verified fine, but the object that landed at the canonical
+   S3 key (either just uploaded, or found already there via
+   content-addressed dedup) failed a post-upload hash re-verification —
+   missing, truncated, or otherwise corrupt. This also aborts that row's
+   flip (it keeps serving from local) and is counted/reported separately
+   from hash mismatches, since the fix is different: re-run `storage
+   migrate` once the underlying S3 object issue is resolved (e.g. the
+   object was deleted directly from the bucket by something else) rather
+   than investigating the local file.
 
 4. **Verify**: cross-check the database against the bucket's actual
    contents.
@@ -174,7 +190,24 @@ reads are resolved per-row, not per-deployment.
    `--dry-run` lists exactly what the next real run would delete — every
    orphaned object per class, and how many chore-proof rows the optional
    retention pass (`MEDIA_CHORE_PROOF_RETENTION_DAYS`) would remove — without
-   deleting or removing anything.
+   deleting or removing anything. The preview correctly accounts for
+   retention's own knock-on effect within that SAME run: a chore-proof row
+   old enough for retention to remove, whose object has also cleared the
+   grace window, shows up as an orphan candidate in the preview too (not
+   just the retention count), since a real `storage reap` run applies
+   retention THEN sweeps orphans in one pass.
+
+   **Retention is per-backend.** `storage reap` only ever applies retention
+   to chore-proof rows stamped with the SAME backend its own sweep walks
+   (S3, since `cmd/storage` requires `MEDIA_STORAGE_BACKEND=s3` — see
+   above). In a MIXED-STATE install (some chore-proof rows already
+   migrated to S3, some still local), an old LOCAL-backend row is left
+   untouched by `storage reap` — deleting it here would strand its local
+   file, since no S3-bound reaper instance could ever clean that file up.
+   Run `storage migrate` to completion (step 3) BEFORE relying on
+   `MEDIA_CHORE_PROOF_RETENTION_DAYS` to actually shrink the chore-proof
+   table in a mixed-state install; until then, retention only ever reduces
+   the ALREADY-migrated rows, not the whole table.
 
    **Operator contract:** `storage reap` (dry-run or not) must not be run
    concurrently with a database restore. A restore is expected to happen
@@ -195,7 +228,8 @@ Every subcommand loads configuration the same way `cmd/server` does
 (and the `S3_*` settings) to be set in its environment.
 
 Exit codes: `migrate` and `verify` both use `0` (clean), `1` (findings —
-a hash mismatch/hard error for migrate, a data-loss finding for verify),
-`2` (usage/configuration error). `reap` uses `0` for any successful run
-(dry-run or real) and `2` for a usage/configuration error; there is no
-separate "findings" exit state for `reap` beyond what it prints.
+a hash mismatch, a target integrity failure, or a hard error for migrate;
+a data-loss finding for verify), `2` (usage/configuration error). `reap`
+uses `0` for any successful run (dry-run or real) and `2` for a
+usage/configuration error; there is no separate "findings" exit state for
+`reap` beyond what it prints.
