@@ -20,23 +20,66 @@ import (
 // chore-proof upload path (NES-119) introduces its own service and table
 // (task_instance_photo) rather than reusing this one, so PhotoClassAlbum is
 // hardcoded here rather than accepted as a parameter.
+//
+// WRITES vs READS resolve to a PhotoStore differently (NES-132 mixed-state
+// fix — see domain.PhotoStoreResolver's doc for the full argument): Upload
+// always writes new bytes to writeBackend, the ONE backend this deployment
+// is currently configured to write new photos to; every read (OpenBytes,
+// RawServe, the EXIF-reopen inside Upload itself) resolves the STORE for
+// the SPECIFIC ROW being read, via its own persisted Photo.StorageBackend —
+// which may differ from writeBackend for a row written before an operator
+// switched MEDIA_STORAGE_BACKEND, or mid-NES-133-migration. Resolving reads
+// by the row's own backend, not a single fixed store, is what makes a
+// mixed-state deployment's existing photos remain readable after a backend
+// switch — a single `store domain.PhotoStore` field (the pre-NES-132
+// design) could only ever ask ONE backend, silently 404ing (or worse,
+// resolving a content-addressed-collision ref against the WRONG backend)
+// for every row the switch stranded.
 type PhotoService struct {
-	store  domain.PhotoStore
-	exif   domain.ExifReader
-	photos domain.PhotoRepository
+	resolver     domain.PhotoStoreResolver
+	writeBackend domain.StorageBackend
+	exif         domain.ExifReader
+	photos       domain.PhotoRepository
 }
 
-// NewPhotoService constructs the service with injected dependencies.
-func NewPhotoService(store domain.PhotoStore, exif domain.ExifReader, photos domain.PhotoRepository) (*PhotoService, error) {
+// NewPhotoService constructs the service with injected dependencies, bound
+// to writeBackend — the StorageBackend Upload writes new photos to (see the
+// type doc). Returns an error on a nil dependency or an invalid
+// writeBackend.
+func NewPhotoService(resolver domain.PhotoStoreResolver, writeBackend domain.StorageBackend, exif domain.ExifReader, photos domain.PhotoRepository) (*PhotoService, error) {
 	switch {
-	case store == nil:
-		return nil, errors.New("media/app: NewPhotoService requires a non-nil PhotoStore")
+	case resolver == nil:
+		return nil, errors.New("media/app: NewPhotoService requires a non-nil PhotoStoreResolver")
+	case !writeBackend.Valid():
+		return nil, fmt.Errorf("media/app: NewPhotoService requires a valid writeBackend, got %q", writeBackend)
 	case exif == nil:
 		return nil, errors.New("media/app: NewPhotoService requires a non-nil ExifReader")
 	case photos == nil:
 		return nil, errors.New("media/app: NewPhotoService requires a non-nil PhotoRepository")
 	}
-	return &PhotoService{store: store, exif: exif, photos: photos}, nil
+	return &PhotoService{resolver: resolver, writeBackend: writeBackend, exif: exif, photos: photos}, nil
+}
+
+// writeStore resolves the PhotoStore Upload writes new bytes to — always
+// s.writeBackend, never a row's own backend (there is no row yet at Put
+// time).
+func (s *PhotoService) writeStore() (domain.PhotoStore, error) {
+	store, err := s.resolver.Resolve(s.writeBackend)
+	if err != nil {
+		return nil, fmt.Errorf("media/app: resolve write store: %w", err)
+	}
+	return store, nil
+}
+
+// readStore resolves the PhotoStore that actually holds photo's bytes, via
+// its own persisted StorageBackend — see the type doc for why this is NOT
+// necessarily s.writeBackend.
+func (s *PhotoService) readStore(photo *domain.Photo) (domain.PhotoStore, error) {
+	store, err := s.resolver.Resolve(photo.StorageBackend)
+	if err != nil {
+		return nil, fmt.Errorf("media/app: resolve read store for photo %s (backend %q): %w", photo.ID, photo.StorageBackend, err)
+	}
+	return store, nil
 }
 
 // UploadResult is the outcome of PhotoService.Upload: the photo that now
@@ -65,7 +108,11 @@ type UploadResult struct {
 // It returns the storage layer's validation errors (ErrUnsupportedMediaType,
 // ErrPhotoTooLarge, ErrInvalidPhoto) unchanged.
 func (s *PhotoService) Upload(ctx context.Context, householdID household.HouseholdID, uploaderID household.MemberID, r io.Reader, caption string) (UploadResult, error) {
-	stored, err := s.store.Put(ctx, householdID, domain.PhotoClassAlbum, r)
+	store, err := s.writeStore()
+	if err != nil {
+		return UploadResult{}, err
+	}
+	stored, err := store.Put(ctx, householdID, domain.PhotoClassAlbum, r)
 	if err != nil {
 		return UploadResult{}, err
 	}
@@ -76,7 +123,7 @@ func (s *PhotoService) Upload(ctx context.Context, householdID household.Househo
 		return UploadResult{}, fmt.Errorf("check duplicate photo: %w", err)
 	}
 
-	taken, err := s.takenAt(ctx, stored.Ref)
+	taken, err := s.takenAt(ctx, store, stored.Ref)
 	if err != nil {
 		return UploadResult{}, err
 	}
@@ -111,12 +158,14 @@ func (s *PhotoService) Upload(ctx context.Context, householdID household.Househo
 	return UploadResult{Photo: photo}, nil
 }
 
-// takenAt reopens the just-stored bytes to extract the EXIF capture time.
+// takenAt reopens the just-stored bytes (via store — the SAME store Put
+// just wrote to; there is no Photo row yet at this point in Upload, so
+// there is no row-backend to resolve by) to extract the EXIF capture time.
 // PhotoStore.Open returns a domain.PhotoReader, which the ExifReader consumes
 // directly (via random access into the file) — no separate buffering step is
 // needed to feed it.
-func (s *PhotoService) takenAt(ctx context.Context, ref domain.StorageRef) (*time.Time, error) {
-	rc, err := s.store.Open(ctx, ref)
+func (s *PhotoService) takenAt(ctx context.Context, store domain.PhotoStore, ref domain.StorageRef) (*time.Time, error) {
+	rc, err := store.Open(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("reopen stored photo for exif: %w", err)
 	}
@@ -164,13 +213,19 @@ func (s *PhotoService) List(ctx context.Context, householdID household.Household
 // OpenBytes always streams through the Go process regardless of backend —
 // kiosk/adapter.KioskWebHandlers.Raw calls it directly (see that handler's
 // doc) and is not one of the two routes NES-132 redirects. See RawServe for
-// the backend-aware seam WebHandlers.Raw uses instead.
+// the backend-aware seam WebHandlers.Raw uses instead. The read resolves to
+// photo's OWN persisted StorageBackend (see the type doc), not
+// s.writeBackend, so a row written before a backend switch remains readable.
 func (s *PhotoService) OpenBytes(ctx context.Context, householdID household.HouseholdID, id domain.PhotoID) (io.ReadCloser, string, error) {
 	photo, err := s.ownedPhoto(ctx, householdID, id)
 	if err != nil {
 		return nil, "", err
 	}
-	rc, err := s.store.Open(ctx, photo.StorageRef)
+	store, err := s.readStore(photo)
+	if err != nil {
+		return nil, "", err
+	}
+	rc, err := store.Open(ctx, photo.StorageRef)
 	if err != nil {
 		return nil, "", err
 	}
@@ -191,26 +246,32 @@ type RawServeResult struct {
 }
 
 // RawServe is the backend-aware serving seam behind GET /photos/{id}/raw
-// (NES-132): it asks the store, via SupportsDirectURL, whether it can hand
-// back a browser-navigable presigned URL (an S3-backed store) or must be
-// Open-and-streamed through the Go process (LocalPhotoStore) — deciding
-// here, once, at the service layer, keeps WebHandlers.Raw thin (just "was a
-// URL or a body returned") rather than duplicating a backend check in the
-// handler. Returns domain.ErrPhotoNotFound for an unknown or
-// cross-household id, exactly like OpenBytes.
+// (NES-132): it resolves photo's OWN persisted StorageBackend (see the type
+// doc — not necessarily s.writeBackend) and asks THAT store, via
+// SupportsDirectURL, whether it can hand back a browser-navigable presigned
+// URL (an S3-backed store) or must be Open-and-streamed through the Go
+// process (LocalPhotoStore) — deciding here, once, at the service layer,
+// keeps WebHandlers.Raw thin (just "was a URL or a body returned") rather
+// than duplicating a backend check in the handler. Returns
+// domain.ErrPhotoNotFound for an unknown or cross-household id, exactly
+// like OpenBytes.
 func (s *PhotoService) RawServe(ctx context.Context, householdID household.HouseholdID, id domain.PhotoID) (RawServeResult, error) {
 	photo, err := s.ownedPhoto(ctx, householdID, id)
 	if err != nil {
 		return RawServeResult{}, err
 	}
-	if s.store.SupportsDirectURL() {
-		url, err := s.store.URL(ctx, photo.StorageRef, 0)
+	store, err := s.readStore(photo)
+	if err != nil {
+		return RawServeResult{}, err
+	}
+	if store.SupportsDirectURL() {
+		url, err := store.URL(ctx, photo.StorageRef, 0)
 		if err != nil {
 			return RawServeResult{}, err
 		}
 		return RawServeResult{RedirectURL: url}, nil
 	}
-	rc, err := s.store.Open(ctx, photo.StorageRef)
+	rc, err := store.Open(ctx, photo.StorageRef)
 	if err != nil {
 		return RawServeResult{}, err
 	}

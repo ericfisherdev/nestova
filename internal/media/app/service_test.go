@@ -18,6 +18,34 @@ import (
 
 // --- fakes ---
 
+// fakeStoreResolver fakes domain.PhotoStoreResolver: a fixed map of stores
+// per backend, so a test can control exactly which backends this
+// "deployment" has configured (NES-132 mixed-state support) without a real
+// composition root. newFakeStoreResolver is the common single-backend case
+// every pre-mixed-state test uses; withStore adds a second backend's store
+// for tests that specifically exercise mixed-state or missing-store
+// behavior.
+type fakeStoreResolver struct {
+	stores map[domain.StorageBackend]domain.PhotoStore
+}
+
+func newFakeStoreResolver(backend domain.StorageBackend, store domain.PhotoStore) *fakeStoreResolver {
+	return &fakeStoreResolver{stores: map[domain.StorageBackend]domain.PhotoStore{backend: store}}
+}
+
+func (f *fakeStoreResolver) withStore(backend domain.StorageBackend, store domain.PhotoStore) *fakeStoreResolver {
+	f.stores[backend] = store
+	return f
+}
+
+func (f *fakeStoreResolver) Resolve(backend domain.StorageBackend) (domain.PhotoStore, error) {
+	store, ok := f.stores[backend]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", domain.ErrStoreNotConfigured, backend)
+	}
+	return store, nil
+}
+
 type fakePhotoStore struct {
 	putErr    error
 	openErr   error
@@ -147,16 +175,23 @@ type fakePhotoRepo struct {
 	// could not have. Unset refs fall back to a live f.store lookup.
 	existsOverride map[domain.StorageRef]bool
 	existsCalls    []domain.StorageRef
+
+	// backend is the StorageBackend Create stamps onto every row it writes
+	// (mirroring the real PhotoRepository.Create — see its doc), defaulting
+	// to domain.StorageBackendLocal via newFakePhotoRepo. Tests exercising
+	// mixed-state reads set it explicitly per fakePhotoRepo instance.
+	backend domain.StorageBackend
 }
 
 func newFakePhotoRepo() *fakePhotoRepo {
-	return &fakePhotoRepo{store: map[domain.PhotoID]*domain.Photo{}}
+	return &fakePhotoRepo{store: map[domain.PhotoID]*domain.Photo{}, backend: domain.StorageBackendLocal}
 }
 
 func (f *fakePhotoRepo) Create(_ context.Context, p *domain.Photo) error {
 	if f.createErr != nil {
 		return f.createErr
 	}
+	p.StorageBackend = f.backend
 	f.store[p.ID] = p
 	f.created = append(f.created, p)
 	return nil
@@ -201,23 +236,28 @@ func (f *fakePhotoRepo) Delete(_ context.Context, id domain.PhotoID) error {
 	return nil
 }
 
-func (f *fakePhotoRepo) ListAllStorageRefs(context.Context) ([]domain.StorageRef, error) {
+// ListAllStorageRefs filters f.store to rows stamped with backend, mirroring
+// the real PhotoRepository's storage_backend filter (NES-132).
+func (f *fakePhotoRepo) ListAllStorageRefs(_ context.Context, backend domain.StorageBackend) ([]domain.StorageRef, error) {
 	refs := make([]domain.StorageRef, 0, len(f.store))
 	for _, p := range f.store {
-		refs = append(refs, p.StorageRef)
+		if p.StorageBackend == backend {
+			refs = append(refs, p.StorageRef)
+		}
 	}
 	return refs, nil
 }
 
 // ExistsByStorageRef checks existsOverride first (see its doc), otherwise
-// falls back to a live lookup against f.store.
-func (f *fakePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef) (bool, error) {
+// falls back to a live lookup against f.store filtered to backend, mirroring
+// the real PhotoRepository's storage_backend filter (NES-132).
+func (f *fakePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef, backend domain.StorageBackend) (bool, error) {
 	f.existsCalls = append(f.existsCalls, ref)
 	if v, ok := f.existsOverride[ref]; ok {
 		return v, nil
 	}
 	for _, p := range f.store {
-		if p.StorageRef == ref {
+		if p.StorageRef == ref && p.StorageBackend == backend {
 			return true, nil
 		}
 	}
@@ -295,7 +335,7 @@ func TestPhotoServiceUpload(t *testing.T) {
 	store := &fakePhotoStore{}
 	taken := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	repo := newFakePhotoRepo()
-	svc, err := app.NewPhotoService(store, fakeExif{taken: &taken}, repo)
+	svc, err := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{taken: &taken}, repo)
 	if err != nil {
 		t.Fatalf("NewPhotoService: %v", err)
 	}
@@ -333,7 +373,7 @@ func TestPhotoServiceUpload(t *testing.T) {
 func TestPhotoServiceUploadDeduplicatesByContentHash(t *testing.T) {
 	store := &fakePhotoStore{}
 	repo := newFakePhotoRepo()
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 	hh := household.NewHouseholdID()
 	uploader := household.NewMemberID()
 
@@ -380,7 +420,7 @@ func TestPhotoServiceUploadResolvesConcurrentDuplicate(t *testing.T) {
 	repo.raceHash = hash
 	repo.raceWinner = winner
 	repo.createErr = domain.ErrDuplicatePhoto
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 
 	result, err := svc.Upload(context.Background(), hh, household.NewMemberID(), bytes.NewReader([]byte("raced-bytes")), "")
 	if err != nil {
@@ -397,7 +437,7 @@ func TestPhotoServiceUploadResolvesConcurrentDuplicate(t *testing.T) {
 func TestPhotoServiceUploadStoreErrorPropagates(t *testing.T) {
 	store := &fakePhotoStore{putErr: domain.ErrUnsupportedMediaType}
 	repo := newFakePhotoRepo()
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), bytes.NewReader([]byte("x")), ""); !errors.Is(err, domain.ErrUnsupportedMediaType) {
 		t.Fatalf("Upload error = %v, want ErrUnsupportedMediaType", err)
 	}
@@ -416,7 +456,7 @@ func TestPhotoServiceUploadDoesNotCleanUpOnCreateError(t *testing.T) {
 	store := &fakePhotoStore{}
 	repo := newFakePhotoRepo()
 	repo.createErr = errors.New("db down")
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), bytes.NewReader([]byte("x")), ""); err == nil {
 		t.Fatal("Upload should fail when Create fails")
 	}
@@ -431,7 +471,7 @@ func TestPhotoServiceUploadDoesNotCleanUpOnCreateError(t *testing.T) {
 func TestPhotoServiceUploadDoesNotCleanUpOnExifReopenError(t *testing.T) {
 	store := &fakePhotoStore{openErr: errors.New("disk hiccup")}
 	repo := newFakePhotoRepo()
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 	if _, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), bytes.NewReader([]byte("x")), ""); err == nil {
 		t.Fatal("Upload should fail when the exif reopen fails")
 	}
@@ -449,7 +489,7 @@ func TestPhotoServiceDeleteRejectsOtherHousehold(t *testing.T) {
 	other := household.NewHouseholdID()
 	id := domain.NewPhotoID()
 	repo.store[id] = &domain.Photo{ID: id, HouseholdID: other, StorageRef: "x/y/z.jpg"}
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 
 	if err := svc.Delete(context.Background(), household.NewHouseholdID(), id); !errors.Is(err, domain.ErrPhotoNotFound) {
 		t.Fatalf("cross-household Delete = %v, want ErrPhotoNotFound", err)
@@ -470,7 +510,7 @@ func TestPhotoServiceDeleteIsRowsOnly(t *testing.T) {
 	hh := household.NewHouseholdID()
 	id := domain.NewPhotoID()
 	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "hh/aa/x.jpg"}
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 
 	if err := svc.Delete(context.Background(), hh, id); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -491,8 +531,8 @@ func TestPhotoServiceRawServeStreamsWhenBackendLacksDirectURL(t *testing.T) {
 	repo := newFakePhotoRepo()
 	hh := household.NewHouseholdID()
 	id := domain.NewPhotoID()
-	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "hh/aa/x.jpg"}
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "hh/aa/x.jpg", StorageBackend: domain.StorageBackendLocal}
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 
 	result, err := svc.RawServe(context.Background(), hh, id)
 	if err != nil {
@@ -518,8 +558,8 @@ func TestPhotoServiceRawServeRedirectsWhenBackendSupportsDirectURL(t *testing.T)
 	repo := newFakePhotoRepo()
 	hh := household.NewHouseholdID()
 	id := domain.NewPhotoID()
-	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "households/hh/photos/aa/x.jpg"}
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "households/hh/photos/aa/x.jpg", StorageBackend: domain.StorageBackendLocal}
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 
 	result, err := svc.RawServe(context.Background(), hh, id)
 	if err != nil {
@@ -536,6 +576,122 @@ func TestPhotoServiceRawServeRedirectsWhenBackendSupportsDirectURL(t *testing.T)
 	}
 }
 
+// TestPhotoServiceMixedStateReadsResolveByRowBackend covers NES-132's core
+// mixed-state fix directly: with BOTH a local and an s3 store registered in
+// the resolver (mirroring a deployment that switched MEDIA_STORAGE_BACKEND,
+// or an in-progress NES-133 migration), a row stamped 'local' resolves to
+// the local store and a row stamped 's3' resolves to the s3 store — in the
+// SAME service instance, regardless of which backend is currently
+// configured for new writes.
+func TestPhotoServiceMixedStateReadsResolveByRowBackend(t *testing.T) {
+	localStore := &fakePhotoStore{}
+	s3Store := &fakePhotoStore{directURL: true}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, localStore).withStore(domain.StorageBackendS3, s3Store)
+	repo := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+
+	localID := domain.NewPhotoID()
+	repo.store[localID] = &domain.Photo{ID: localID, HouseholdID: hh, StorageRef: "households/hh/photos/aa/local.jpg", StorageBackend: domain.StorageBackendLocal}
+	s3ID := domain.NewPhotoID()
+	repo.store[s3ID] = &domain.Photo{ID: s3ID, HouseholdID: hh, StorageRef: "households/hh/photos/bb/s3.jpg", StorageBackend: domain.StorageBackendS3}
+
+	// writeBackend is s3 here specifically — proving reads for the OLDER
+	// local row still work even though this "deployment" now writes new
+	// photos to s3.
+	svc, err := app.NewPhotoService(resolver, domain.StorageBackendS3, fakeExif{}, repo)
+	if err != nil {
+		t.Fatalf("NewPhotoService: %v", err)
+	}
+
+	localResult, err := svc.RawServe(context.Background(), hh, localID)
+	if err != nil {
+		t.Fatalf("RawServe(local row): %v", err)
+	}
+	if localResult.Body == nil || localResult.RedirectURL != "" {
+		t.Fatalf("RawServe(local row) = %+v, want a streamed Body (local store has no direct URL)", localResult)
+	}
+	if localStore.openCalls != 1 {
+		t.Fatalf("local store Open calls = %d, want 1", localStore.openCalls)
+	}
+	if s3Store.openCalls != 0 || s3Store.urlCalls != 0 {
+		t.Fatal("the local row's RawServe must never touch the s3 store")
+	}
+
+	s3Result, err := svc.RawServe(context.Background(), hh, s3ID)
+	if err != nil {
+		t.Fatalf("RawServe(s3 row): %v", err)
+	}
+	if s3Result.RedirectURL != "households/hh/photos/bb/s3.jpg" || s3Result.Body != nil {
+		t.Fatalf("RawServe(s3 row) = %+v, want a RedirectURL (s3 store supports direct URLs)", s3Result)
+	}
+	if s3Store.urlCalls != 1 {
+		t.Fatalf("s3 store URL calls = %d, want 1", s3Store.urlCalls)
+	}
+	if localStore.openCalls != 1 {
+		t.Fatal("the s3 row's RawServe must never touch the local store beyond the earlier call")
+	}
+}
+
+// TestPhotoServiceRawServeReturnsErrStoreNotConfiguredForMissingBackend
+// covers the missing-store error path: a row stamped with a backend this
+// deployment never constructed a store for (e.g. a local-only deployment
+// encountering an 's3'-stamped row) must fail with a wrapped
+// domain.ErrStoreNotConfigured, not panic or silently resolve to the wrong
+// store.
+func TestPhotoServiceRawServeReturnsErrStoreNotConfiguredForMissingBackend(t *testing.T) {
+	localStore := &fakePhotoStore{}
+	// Only 'local' is registered — mirrors a local-only deployment.
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, localStore)
+	repo := newFakePhotoRepo()
+	hh := household.NewHouseholdID()
+
+	id := domain.NewPhotoID()
+	repo.store[id] = &domain.Photo{ID: id, HouseholdID: hh, StorageRef: "households/hh/photos/aa/s3-only.jpg", StorageBackend: domain.StorageBackendS3}
+	svc, err := app.NewPhotoService(resolver, domain.StorageBackendLocal, fakeExif{}, repo)
+	if err != nil {
+		t.Fatalf("NewPhotoService: %v", err)
+	}
+
+	if _, err := svc.RawServe(context.Background(), hh, id); !errors.Is(err, domain.ErrStoreNotConfigured) {
+		t.Fatalf("RawServe(s3-stamped row, no s3 store configured) = %v, want ErrStoreNotConfigured", err)
+	}
+	if _, _, err := svc.OpenBytes(context.Background(), hh, id); !errors.Is(err, domain.ErrStoreNotConfigured) {
+		t.Fatalf("OpenBytes(s3-stamped row, no s3 store configured) = %v, want ErrStoreNotConfigured", err)
+	}
+}
+
+// TestPhotoServiceUploadAlwaysWritesToConfiguredBackend covers the write
+// side of the mixed-state fix: Upload writes new photos to writeBackend —
+// the CONFIGURED backend — never to some other registered store, even when
+// the resolver holds more than one.
+func TestPhotoServiceUploadAlwaysWritesToConfiguredBackend(t *testing.T) {
+	localStore := &fakePhotoStore{}
+	s3Store := &fakePhotoStore{}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, localStore).withStore(domain.StorageBackendS3, s3Store)
+	repo := newFakePhotoRepo()
+	repo.backend = domain.StorageBackendS3 // mirrors the real repo also being configured for s3
+	hh := household.NewHouseholdID()
+
+	svc, err := app.NewPhotoService(resolver, domain.StorageBackendS3, fakeExif{}, repo)
+	if err != nil {
+		t.Fatalf("NewPhotoService: %v", err)
+	}
+
+	result, err := svc.Upload(context.Background(), hh, household.NewMemberID(), bytes.NewReader([]byte("upload-bytes")), "")
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if s3Store.puts != 1 {
+		t.Fatalf("s3 store Put calls = %d, want 1", s3Store.puts)
+	}
+	if localStore.puts != 0 {
+		t.Fatal("Upload must never write to a backend other than writeBackend")
+	}
+	if result.Photo.StorageBackend != domain.StorageBackendS3 {
+		t.Fatalf("created photo StorageBackend = %q, want %q", result.Photo.StorageBackend, domain.StorageBackendS3)
+	}
+}
+
 // TestPhotoServiceRawServeRejectsOtherHousehold mirrors
 // TestPhotoServiceDeleteRejectsOtherHousehold: RawServe must enforce
 // ownership BEFORE consulting the store at all, regardless of backend.
@@ -545,7 +701,7 @@ func TestPhotoServiceRawServeRejectsOtherHousehold(t *testing.T) {
 	other := household.NewHouseholdID()
 	id := domain.NewPhotoID()
 	repo.store[id] = &domain.Photo{ID: id, HouseholdID: other, StorageRef: "x/y/z.jpg"}
-	svc, _ := app.NewPhotoService(store, fakeExif{}, repo)
+	svc, _ := app.NewPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, fakeExif{}, repo)
 
 	if _, err := svc.RawServe(context.Background(), household.NewHouseholdID(), id); !errors.Is(err, domain.ErrPhotoNotFound) {
 		t.Fatalf("cross-household RawServe = %v, want ErrPhotoNotFound", err)

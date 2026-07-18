@@ -320,14 +320,15 @@ type TaskInstancePhotoRepository interface {
 	ListByInstances(ctx context.Context, householdID household.HouseholdID, taskInstanceIDs []TaskInstanceID) ([]*TaskInstancePhoto, error)
 
 	// ListAllStorageRefs returns the StorageRef of every chore-proof photo
-	// row across every household — the storage reaper's (NES-132/133,
-	// ReaperService in media/app) source of truth for "which chore-proof
-	// class objects are still referenced." Bucket-wide, not
-	// household-scoped, mirroring ObjectLister.ListObjects' identical scope
-	// and PhotoRepository.ListAllStorageRefs' album-side counterpart.
-	// Returns an empty slice (not an error) when there are no chore-proof
-	// photos yet.
-	ListAllStorageRefs(ctx context.Context) ([]StorageRef, error)
+	// row stamped with backend, across every household — mirrors
+	// PhotoRepository.ListAllStorageRefs' album-side counterpart exactly,
+	// including why backend is explicit rather than implicitly bound to
+	// the repository's own configured write backend (see that method's
+	// doc: content-addressed keys collide across backends). Bucket-wide,
+	// not household-scoped, mirroring ObjectLister.ListObjects' identical
+	// scope. Returns an empty slice (not an error) when there are no
+	// matching chore-proof photos.
+	ListAllStorageRefs(ctx context.Context, backend StorageBackend) ([]StorageRef, error)
 
 	// DeleteUploadedBefore deletes every chore-proof photo row whose
 	// UploadedAt is strictly earlier than cutoff, and returns how many rows
@@ -342,11 +343,14 @@ type TaskInstancePhotoRepository interface {
 	// direct object delete here).
 	DeleteUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error)
 
-	// ExistsByStorageRef reports whether ANY chore-proof photo row currently
-	// references ref, across every household — mirrors
-	// PhotoRepository.ExistsByStorageRef exactly; see that method's doc for
-	// the TOCTOU-narrowing role it plays in ReaperService.sweepClass.
-	ExistsByStorageRef(ctx context.Context, ref StorageRef) (bool, error)
+	// ExistsByStorageRef reports whether any chore-proof photo row STAMPED
+	// WITH backend currently references ref, across every household —
+	// mirrors PhotoRepository.ExistsByStorageRef exactly, including the
+	// explicit backend parameter; see that method's doc for both the
+	// TOCTOU-narrowing role it plays in ReaperService.sweepClass and why
+	// backend must be explicit (content-addressed key collisions across
+	// backends).
+	ExistsByStorageRef(ctx context.Context, ref StorageRef, backend StorageBackend) (bool, error)
 }
 
 // ChoreProofExif extracts the EXIF facts the chore-proof upload path needs

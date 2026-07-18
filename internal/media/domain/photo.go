@@ -133,23 +133,33 @@ type PhotoRepository interface {
 	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]*Photo, error)
 	Delete(ctx context.Context, id PhotoID) error
 
-	// ListAllStorageRefs returns the StorageRef of every photo row across
-	// every household — the storage reaper's (NES-132/133, ReaperService in
-	// media/app) source of truth for "which album-class objects are still
-	// referenced." Bucket-wide, not household-scoped, mirroring
-	// ObjectLister.ListObjects' identical scope; returns an empty slice (not
-	// an error) when there are no photos yet.
-	ListAllStorageRefs(ctx context.Context) ([]StorageRef, error)
+	// ListAllStorageRefs returns the StorageRef of every photo row stamped
+	// with backend, across every household — the storage reaper's
+	// (NES-132/133, ReaperService in media/app) source of truth for "which
+	// album-class objects of THIS backend are still referenced." backend is
+	// explicit, not implicitly bound to the repository's own configured
+	// write backend (see the type doc): a repository instance serves READS
+	// across every backend rows may be stamped with, mid-NES-133-migration
+	// mixed state included — a query that ignored backend would let a
+	// content-identical LOCAL row shield a genuine S3 orphan forever, since
+	// StorageRef is content-addressed and therefore IDENTICAL across
+	// backends for the same bytes. Bucket-wide, not household-scoped,
+	// mirroring ObjectLister.ListObjects' identical scope; returns an empty
+	// slice (not an error) when there are no matching photos.
+	ListAllStorageRefs(ctx context.Context, backend StorageBackend) ([]StorageRef, error)
 
-	// ExistsByStorageRef reports whether ANY photo row currently references
-	// ref, across every household — a targeted, single-ref query the
-	// storage reaper (ReaperService.sweepClass) runs immediately before
-	// deleting an apparently-orphaned object, closing the bulk of the
-	// TOCTOU window between the bulk ListAllStorageRefs snapshot and the
-	// delete: a row referencing ref that commits in that window (e.g. a
-	// restore re-inserting it) is caught by THIS check even though it
-	// postdates the snapshot. See ReaperService's doc for the residual,
+	// ExistsByStorageRef reports whether any photo row STAMPED WITH backend
+	// currently references ref, across every household — a targeted,
+	// single-ref query the storage reaper (ReaperService.sweepClass) runs
+	// immediately before deleting an apparently-orphaned object, closing
+	// the bulk of the TOCTOU window between the bulk ListAllStorageRefs
+	// snapshot and the delete: a row referencing ref that commits in that
+	// window (e.g. a restore re-inserting it) is caught by THIS check even
+	// though it postdates the snapshot. backend is explicit for the same
+	// content-addressed-collision reason ListAllStorageRefs' doc explains —
+	// a local-backed row with the same ref must never protect a genuine S3
+	// orphan (or vice versa). See ReaperService's doc for the residual,
 	// deliberately-accepted window this does not close, and the operator
 	// contract that makes it acceptable.
-	ExistsByStorageRef(ctx context.Context, ref StorageRef) (bool, error)
+	ExistsByStorageRef(ctx context.Context, ref StorageRef, backend StorageBackend) (bool, error)
 }

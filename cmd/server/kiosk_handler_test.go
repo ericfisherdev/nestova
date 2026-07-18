@@ -24,6 +24,7 @@ import (
 	kioskdomain "github.com/ericfisherdev/nestova/internal/kiosk/domain"
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
+	mediadomain "github.com/ericfisherdev/nestova/internal/media/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	"github.com/ericfisherdev/nestova/internal/platform/totp"
 	subscriptionsdomain "github.com/ericfisherdev/nestova/internal/subscriptions/domain"
@@ -319,7 +320,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 	if err != nil {
 		t.Fatalf("NewAlbumService: %v", err)
 	}
-	photoSvc, err := mediaapp.NewPhotoService(&fakeMediaStore{}, fakeMediaExif{}, photoRepo)
+	photoSvc, err := mediaapp.NewPhotoService(newFakeStoreResolver(mediadomain.StorageBackendLocal, &fakeMediaStore{}), mediadomain.StorageBackendLocal, fakeMediaExif{}, photoRepo)
 	if err != nil {
 		t.Fatalf("NewPhotoService: %v", err)
 	}

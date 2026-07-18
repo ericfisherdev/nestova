@@ -65,22 +65,33 @@ var reapedClasses = []domain.PhotoClass{domain.PhotoClassAlbum, domain.PhotoClas
 // realistic operating mode for a single-operator family appliance, not a
 // multi-tenant service under continuous, uncoordinated write load.
 type ReaperService struct {
-	lister              domain.ObjectLister
-	store               domain.PhotoStore
+	lister domain.ObjectLister
+	store  domain.PhotoStore
+	// backend is which StorageBackend THIS reaper instance sweeps — lister
+	// and store are themselves backend-specific concrete adapters (e.g. the
+	// S3 store/lister), and referencedRefs/existsByStorageRef must filter
+	// the shared photo/task_instance_photo tables to ONLY this backend's
+	// rows: content-addressed keys are identical across backends, so an
+	// unfiltered query would let a content-identical row stamped with a
+	// DIFFERENT backend shield a genuine orphan of THIS backend forever.
+	backend             domain.StorageBackend
 	photos              domain.PhotoRepository
 	choreProofPhotos    domain.TaskInstancePhotoRepository
 	graceWindow         time.Duration
 	choreProofRetention time.Duration
 }
 
-// NewReaperService constructs a ReaperService, returning an error instead of
-// panicking on a nil dependency or a non-positive graceWindow.
-// choreProofRetention of zero (or less) disables the retention pass
-// entirely — "keep forever," MediaConfig.ChoreProofRetention's documented
-// default.
+// NewReaperService constructs a ReaperService bound to backend — the
+// StorageBackend lister/store actually sweep (e.g. domain.StorageBackendS3
+// for an S3-backed deployment's reaper) — returning an error instead of
+// panicking on a nil dependency, an invalid backend, or a non-positive
+// graceWindow. choreProofRetention of zero (or less) disables the retention
+// pass entirely — "keep forever," MediaConfig.ChoreProofRetention's
+// documented default.
 func NewReaperService(
 	lister domain.ObjectLister,
 	store domain.PhotoStore,
+	backend domain.StorageBackend,
 	photos domain.PhotoRepository,
 	choreProofPhotos domain.TaskInstancePhotoRepository,
 	graceWindow time.Duration,
@@ -91,6 +102,8 @@ func NewReaperService(
 		return nil, errors.New("media/app: NewReaperService requires a non-nil ObjectLister")
 	case store == nil:
 		return nil, errors.New("media/app: NewReaperService requires a non-nil PhotoStore")
+	case !backend.Valid():
+		return nil, fmt.Errorf("media/app: NewReaperService requires a valid StorageBackend, got %q", backend)
 	case photos == nil:
 		return nil, errors.New("media/app: NewReaperService requires a non-nil PhotoRepository")
 	case choreProofPhotos == nil:
@@ -99,7 +112,7 @@ func NewReaperService(
 		return nil, fmt.Errorf("media/app: NewReaperService requires a positive graceWindow, got %v", graceWindow)
 	}
 	return &ReaperService{
-		lister: lister, store: store, photos: photos, choreProofPhotos: choreProofPhotos,
+		lister: lister, store: store, backend: backend, photos: photos, choreProofPhotos: choreProofPhotos,
 		graceWindow: graceWindow, choreProofRetention: choreProofRetention,
 	}, nil
 }
@@ -129,6 +142,19 @@ type ReaperResult struct {
 func (r *ReaperService) Run(ctx context.Context, now time.Time) (ReaperResult, error) {
 	result := ReaperResult{OrphansDeleted: make(map[domain.PhotoClass]int, len(reapedClasses))}
 
+	// KNOWN GAP (not addressed by NES-132's mixed-state fix): unlike
+	// referencedRefs/existsByStorageRef below, DeleteUploadedBefore is NOT
+	// filtered by r.backend — it deletes any sufficiently-old chore-proof
+	// ROW regardless of which backend actually stored its bytes. In a
+	// mixed-state deployment (some rows local, some s3), a reaper instance
+	// bound to ONE backend's lister/store could therefore delete a row
+	// backed by the OTHER backend, permanently orphaning that row's object
+	// with no reaper instance able to ever reclaim it (this reaper only
+	// lists/deletes ITS OWN backend's objects). Left as-is because it was
+	// not part of this review's explicit scope; NES-133 should either scope
+	// DeleteUploadedBefore by backend too, or run retention from a
+	// combined-backend context that can route the resulting orphan to the
+	// right reaper.
 	if r.choreProofRetention > 0 {
 		cutoff := now.Add(-r.choreProofRetention)
 		n, err := r.choreProofPhotos.DeleteUploadedBefore(ctx, cutoff)
@@ -196,20 +222,23 @@ func (r *ReaperService) sweepClass(ctx context.Context, class domain.PhotoClass,
 	return deleted, nil
 }
 
-// referencedRefs builds the set of StorageRefs class's rows still reference,
-// across every household — album refs come from PhotoRepository, chore-proof
-// refs from TaskInstancePhotoRepository; PhotoClassRewardImage never reaches
-// here (see reapedClasses' doc). This is the bulk CANDIDATE-selection
-// snapshot sweepClass filters against — see existsByStorageRef for the
-// per-object recheck that has the final say.
+// referencedRefs builds the set of StorageRefs class's rows STAMPED WITH
+// r.backend still reference, across every household — album refs come from
+// PhotoRepository, chore-proof refs from TaskInstancePhotoRepository;
+// PhotoClassRewardImage never reaches here (see reapedClasses' doc).
+// r.backend is passed explicitly (see the type doc's field comment): a
+// content-identical row stamped with a DIFFERENT backend must never shield
+// r.backend's genuine orphan. This is the bulk CANDIDATE-selection snapshot
+// sweepClass filters against — see existsByStorageRef for the per-object
+// recheck that has the final say.
 func (r *ReaperService) referencedRefs(ctx context.Context, class domain.PhotoClass) (map[domain.StorageRef]struct{}, error) {
 	var refs []domain.StorageRef
 	var err error
 	switch class {
 	case domain.PhotoClassAlbum:
-		refs, err = r.photos.ListAllStorageRefs(ctx)
+		refs, err = r.photos.ListAllStorageRefs(ctx, r.backend)
 	case domain.PhotoClassChoreProof:
-		refs, err = r.choreProofPhotos.ListAllStorageRefs(ctx)
+		refs, err = r.choreProofPhotos.ListAllStorageRefs(ctx, r.backend)
 	default:
 		return nil, fmt.Errorf("media/app: reaper does not support class %s", class)
 	}
@@ -224,16 +253,17 @@ func (r *ReaperService) referencedRefs(ctx context.Context, class domain.PhotoCl
 }
 
 // existsByStorageRef is referencedRefs' single-ref counterpart: a fresh,
-// targeted query against whichever repository owns class, run by sweepClass
-// immediately before it would otherwise delete ref's object — see the type
-// doc's TOCTOU note for why this, not the bulk snapshot, is authoritative
-// at delete time.
+// targeted query (filtered to r.backend, for the same reason
+// referencedRefs' doc explains) against whichever repository owns class,
+// run by sweepClass immediately before it would otherwise delete ref's
+// object — see the type doc's TOCTOU note for why this, not the bulk
+// snapshot, is authoritative at delete time.
 func (r *ReaperService) existsByStorageRef(ctx context.Context, class domain.PhotoClass, ref domain.StorageRef) (bool, error) {
 	switch class {
 	case domain.PhotoClassAlbum:
-		return r.photos.ExistsByStorageRef(ctx, ref)
+		return r.photos.ExistsByStorageRef(ctx, ref, r.backend)
 	case domain.PhotoClassChoreProof:
-		return r.choreProofPhotos.ExistsByStorageRef(ctx, ref)
+		return r.choreProofPhotos.ExistsByStorageRef(ctx, ref, r.backend)
 	default:
 		return false, fmt.Errorf("media/app: reaper does not support class %s", class)
 	}

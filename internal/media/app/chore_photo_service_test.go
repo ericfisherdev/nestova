@@ -97,10 +97,16 @@ type fakeTaskInstancePhotoRepo struct {
 	// reaper's bulk snapshot but before its per-object recheck.
 	existsOverride map[domain.StorageRef]bool
 	existsCalls    []domain.StorageRef
+
+	// backend is the StorageBackend Create stamps onto every row it writes
+	// (mirroring the real TaskInstancePhotoRepository.Create — see its
+	// doc), defaulting to domain.StorageBackendLocal via
+	// newFakeTaskInstancePhotoRepo.
+	backend domain.StorageBackend
 }
 
 func newFakeTaskInstancePhotoRepo() *fakeTaskInstancePhotoRepo {
-	return &fakeTaskInstancePhotoRepo{instanceExists: true}
+	return &fakeTaskInstancePhotoRepo{instanceExists: true, backend: domain.StorageBackendLocal}
 }
 
 func (f *fakeTaskInstancePhotoRepo) Create(_ context.Context, p *domain.TaskInstancePhoto) error {
@@ -114,6 +120,7 @@ func (f *fakeTaskInstancePhotoRepo) Create(_ context.Context, p *domain.TaskInst
 		return f.createErr
 	}
 	p.UploadedAt = time.Now().UTC()
+	p.StorageBackend = f.backend
 	f.created = append(f.created, p)
 	return nil
 }
@@ -155,26 +162,31 @@ func (f *fakeTaskInstancePhotoRepo) Get(context.Context, domain.TaskInstancePhot
 	return nil, domain.ErrTaskInstancePhotoNotFound
 }
 
-// ListAllStorageRefs reflects every photo Create has recorded — unused by
-// this file's Upload/OpenBytes-focused tests, but genuinely functional
-// (rather than a stub) so reaper_service_test.go can reuse this same fake.
-func (f *fakeTaskInstancePhotoRepo) ListAllStorageRefs(context.Context) ([]domain.StorageRef, error) {
+// ListAllStorageRefs reflects every photo Create has recorded, filtered to
+// backend (mirroring the real TaskInstancePhotoRepository's storage_backend
+// filter, NES-132) — unused by this file's Upload/OpenBytes-focused tests,
+// but genuinely functional (rather than a stub) so reaper_service_test.go
+// can reuse this same fake.
+func (f *fakeTaskInstancePhotoRepo) ListAllStorageRefs(_ context.Context, backend domain.StorageBackend) ([]domain.StorageRef, error) {
 	refs := make([]domain.StorageRef, 0, len(f.created))
 	for _, p := range f.created {
-		refs = append(refs, p.StorageRef)
+		if p.StorageBackend == backend {
+			refs = append(refs, p.StorageRef)
+		}
 	}
 	return refs, nil
 }
 
 // ExistsByStorageRef mirrors fakePhotoRepo's identical method (see its
-// doc): existsOverride first, otherwise a live lookup against f.created.
-func (f *fakeTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef) (bool, error) {
+// doc): existsOverride first, otherwise a live lookup against f.created
+// filtered to backend.
+func (f *fakeTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef, backend domain.StorageBackend) (bool, error) {
 	f.existsCalls = append(f.existsCalls, ref)
 	if v, ok := f.existsOverride[ref]; ok {
 		return v, nil
 	}
 	for _, p := range f.created {
-		if p.StorageRef == ref {
+		if p.StorageRef == ref && p.StorageBackend == backend {
 			return true, nil
 		}
 	}
@@ -205,7 +217,8 @@ const testFreshnessWindow = time.Hour
 
 func newChoreProofService(t *testing.T, store *fakePhotoStore, exif *fakeChoreProofExif, repo *fakeTaskInstancePhotoRepo) *app.ChoreProofPhotoService {
 	t.Helper()
-	svc, err := app.NewChoreProofPhotoService(store, exif, repo, 10<<20, testFreshnessWindow)
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, store)
+	svc, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, exif, repo, 10<<20, testFreshnessWindow)
 	if err != nil {
 		t.Fatalf("NewChoreProofPhotoService: %v", err)
 	}
@@ -562,7 +575,7 @@ func TestChoreProofUploadRejectsInvalidKind(t *testing.T) {
 func TestChoreProofUploadRejectsOversizeUpload(t *testing.T) {
 	store := &fakePhotoStore{}
 	repo := newFakeTaskInstancePhotoRepo()
-	svc, err := app.NewChoreProofPhotoService(store, &fakeChoreProofExif{}, repo, 8, testFreshnessWindow)
+	svc, err := app.NewChoreProofPhotoService(newFakeStoreResolver(domain.StorageBackendLocal, store), domain.StorageBackendLocal, &fakeChoreProofExif{}, repo, 8, testFreshnessWindow)
 	if err != nil {
 		t.Fatalf("NewChoreProofPhotoService: %v", err)
 	}
@@ -622,10 +635,11 @@ func TestChoreProofPhotoService_OpenBytes_Success(t *testing.T) {
 	repo := newFakeTaskInstancePhotoRepo()
 	hh := household.NewHouseholdID()
 	photo := &domain.TaskInstancePhoto{
-		ID:          domain.NewTaskInstancePhotoID(),
-		HouseholdID: hh,
-		StorageRef:  domain.StorageRef("hh/aa/abc.jpg"),
-		ContentType: domain.ContentTypeJPEG,
+		ID:             domain.NewTaskInstancePhotoID(),
+		HouseholdID:    hh,
+		StorageRef:     domain.StorageRef("hh/aa/abc.jpg"),
+		ContentType:    domain.ContentTypeJPEG,
+		StorageBackend: domain.StorageBackendLocal,
 	}
 	repo.getPhoto = photo
 	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
@@ -700,6 +714,7 @@ func TestChoreProofPhotoService_RawServe_StreamsWhenBackendLacksDirectURL(t *tes
 	photo := &domain.TaskInstancePhoto{
 		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
 		StorageRef: domain.StorageRef("hh/aa/abc.jpg"), ContentType: domain.ContentTypeJPEG,
+		StorageBackend: domain.StorageBackendLocal,
 	}
 	repo.getPhoto = photo
 	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
@@ -730,6 +745,7 @@ func TestChoreProofPhotoService_RawServe_RedirectsWhenBackendSupportsDirectURL(t
 	photo := &domain.TaskInstancePhoto{
 		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
 		StorageRef: domain.StorageRef("households/hh/chore-photos/aa/abc.jpg"), ContentType: domain.ContentTypeJPEG,
+		StorageBackend: domain.StorageBackendLocal,
 	}
 	repo.getPhoto = photo
 	svc := newChoreProofService(t, store, &fakeChoreProofExif{}, repo)
@@ -746,6 +762,115 @@ func TestChoreProofPhotoService_RawServe_RedirectsWhenBackendSupportsDirectURL(t
 	}
 	if store.openCalls != 0 {
 		t.Fatalf("Open was called %d times, want 0 (redirect must never open/stream)", store.openCalls)
+	}
+}
+
+// TestChoreProofPhotoService_MixedStateReadsResolveByRowBackend mirrors
+// TestPhotoServiceMixedStateReadsResolveByRowBackend (service_test.go), one
+// table over: with BOTH a local and an s3 store registered, a row stamped
+// 'local' resolves to the local store and a row stamped 's3' resolves to
+// the s3 store, in the SAME service instance.
+func TestChoreProofPhotoService_MixedStateReadsResolveByRowBackend(t *testing.T) {
+	localStore := &fakePhotoStore{}
+	s3Store := &fakePhotoStore{directURL: true}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, localStore).withStore(domain.StorageBackendS3, s3Store)
+	repo := newFakeTaskInstancePhotoRepo()
+	hh := household.NewHouseholdID()
+
+	localPhoto := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
+		StorageRef: "households/hh/chore-photos/aa/local.jpg", ContentType: domain.ContentTypeJPEG,
+		StorageBackend: domain.StorageBackendLocal,
+	}
+	s3Photo := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
+		StorageRef: "households/hh/chore-photos/bb/s3.jpg", ContentType: domain.ContentTypeJPEG,
+		StorageBackend: domain.StorageBackendS3,
+	}
+
+	svc, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendS3, &fakeChoreProofExif{}, repo, 10<<20, testFreshnessWindow)
+	if err != nil {
+		t.Fatalf("NewChoreProofPhotoService: %v", err)
+	}
+
+	repo.getPhoto = localPhoto
+	localResult, err := svc.RawServe(context.Background(), hh, localPhoto.ID)
+	if err != nil {
+		t.Fatalf("RawServe(local row): %v", err)
+	}
+	if localResult.Body == nil || localResult.RedirectURL != "" {
+		t.Fatalf("RawServe(local row) = %+v, want a streamed Body", localResult)
+	}
+
+	repo.getPhoto = s3Photo
+	s3Result, err := svc.RawServe(context.Background(), hh, s3Photo.ID)
+	if err != nil {
+		t.Fatalf("RawServe(s3 row): %v", err)
+	}
+	if s3Result.RedirectURL != "households/hh/chore-photos/bb/s3.jpg" || s3Result.Body != nil {
+		t.Fatalf("RawServe(s3 row) = %+v, want a RedirectURL", s3Result)
+	}
+	if localStore.openCalls != 1 || s3Store.urlCalls != 1 {
+		t.Fatalf("expected exactly one local Open and one s3 URL call, got local.openCalls=%d s3.urlCalls=%d", localStore.openCalls, s3Store.urlCalls)
+	}
+}
+
+// TestChoreProofPhotoService_RawServeReturnsErrStoreNotConfiguredForMissingBackend
+// mirrors TestPhotoServiceRawServeReturnsErrStoreNotConfiguredForMissingBackend:
+// a row stamped with a backend this deployment never constructed a store
+// for must fail with a wrapped domain.ErrStoreNotConfigured.
+func TestChoreProofPhotoService_RawServeReturnsErrStoreNotConfiguredForMissingBackend(t *testing.T) {
+	localStore := &fakePhotoStore{}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, localStore)
+	repo := newFakeTaskInstancePhotoRepo()
+	hh := household.NewHouseholdID()
+
+	photo := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), HouseholdID: hh,
+		StorageRef: "households/hh/chore-photos/aa/s3-only.jpg", ContentType: domain.ContentTypeJPEG,
+		StorageBackend: domain.StorageBackendS3,
+	}
+	repo.getPhoto = photo
+	svc, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, &fakeChoreProofExif{}, repo, 10<<20, testFreshnessWindow)
+	if err != nil {
+		t.Fatalf("NewChoreProofPhotoService: %v", err)
+	}
+
+	if _, err := svc.RawServe(context.Background(), hh, photo.ID); !errors.Is(err, domain.ErrStoreNotConfigured) {
+		t.Fatalf("RawServe(s3-stamped row, no s3 store configured) = %v, want ErrStoreNotConfigured", err)
+	}
+}
+
+// TestChoreProofPhotoService_UploadAlwaysWritesToConfiguredBackend mirrors
+// TestPhotoServiceUploadAlwaysWritesToConfiguredBackend: with both stores
+// registered, Upload must write only to writeBackend, regardless of what
+// other backends the resolver knows about.
+func TestChoreProofPhotoService_UploadAlwaysWritesToConfiguredBackend(t *testing.T) {
+	localStore := &fakePhotoStore{}
+	s3Store := &fakePhotoStore{}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, localStore).withStore(domain.StorageBackendS3, s3Store)
+	repo := newFakeTaskInstancePhotoRepo()
+	repo.backend = domain.StorageBackendS3 // mirrors the real repo also being configured for s3
+	taken := time.Now().UTC().Add(-5 * time.Minute)
+	exif := &fakeChoreProofExif{taken: &taken, orientation: 1}
+
+	svc, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendS3, exif, repo, 10<<20, testFreshnessWindow)
+	if err != nil {
+		t.Fatalf("NewChoreProofPhotoService: %v", err)
+	}
+
+	photo, err := svc.Upload(context.Background(), household.NewHouseholdID(), household.NewMemberID(), freshInstanceID(t), domain.PhotoKindBefore, bytes.NewReader(jpegLikeBytes("x")), time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if s3Store.puts != 1 {
+		t.Fatalf("s3 store Put calls = %d, want 1", s3Store.puts)
+	}
+	if localStore.puts != 0 {
+		t.Fatal("Upload must never write to a backend other than writeBackend")
+	}
+	if photo.StorageBackend != domain.StorageBackendS3 {
+		t.Fatalf("created photo StorageBackend = %q, want %q", photo.StorageBackend, domain.StorageBackendS3)
 	}
 }
 
@@ -779,22 +904,26 @@ func TestChoreProofPhotoService_RawServe_CrossHouseholdRejected(t *testing.T) {
 
 func TestNewChoreProofPhotoServiceValidatesDependencies(t *testing.T) {
 	store := &fakePhotoStore{}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, store)
 	exif := &fakeChoreProofExif{}
 	repo := newFakeTaskInstancePhotoRepo()
 
-	if _, err := app.NewChoreProofPhotoService(nil, exif, repo, 10, testFreshnessWindow); err == nil {
-		t.Fatal("nil store accepted")
+	if _, err := app.NewChoreProofPhotoService(nil, domain.StorageBackendLocal, exif, repo, 10, testFreshnessWindow); err == nil {
+		t.Fatal("nil resolver accepted")
 	}
-	if _, err := app.NewChoreProofPhotoService(store, nil, repo, 10, testFreshnessWindow); err == nil {
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackend("azure-blob"), exif, repo, 10, testFreshnessWindow); err == nil {
+		t.Fatal("invalid writeBackend accepted")
+	}
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, nil, repo, 10, testFreshnessWindow); err == nil {
 		t.Fatal("nil exif accepted")
 	}
-	if _, err := app.NewChoreProofPhotoService(store, exif, nil, 10, testFreshnessWindow); err == nil {
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, exif, nil, 10, testFreshnessWindow); err == nil {
 		t.Fatal("nil repo accepted")
 	}
-	if _, err := app.NewChoreProofPhotoService(store, exif, repo, 0, testFreshnessWindow); err == nil {
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, exif, repo, 0, testFreshnessWindow); err == nil {
 		t.Fatal("non-positive maxUploadBytes accepted")
 	}
-	if _, err := app.NewChoreProofPhotoService(store, exif, repo, 10, 0); err == nil {
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, exif, repo, 10, 0); err == nil {
 		t.Fatal("non-positive freshnessWindow accepted")
 	}
 }
@@ -807,13 +936,14 @@ func TestNewChoreProofPhotoServiceValidatesDependencies(t *testing.T) {
 // that still leaves exactly enough room and must be accepted.
 func TestNewChoreProofPhotoServiceRejectsOverflowingMaxUploadBytes(t *testing.T) {
 	store := &fakePhotoStore{}
+	resolver := newFakeStoreResolver(domain.StorageBackendLocal, store)
 	exif := &fakeChoreProofExif{}
 	repo := newFakeTaskInstancePhotoRepo()
 
-	if _, err := app.NewChoreProofPhotoService(store, exif, repo, math.MaxInt64, testFreshnessWindow); err == nil {
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, exif, repo, math.MaxInt64, testFreshnessWindow); err == nil {
 		t.Fatal("maxUploadBytes = math.MaxInt64 accepted, want rejected (would overflow maxBytes+1)")
 	}
-	if _, err := app.NewChoreProofPhotoService(store, exif, repo, math.MaxInt64-1, testFreshnessWindow); err != nil {
+	if _, err := app.NewChoreProofPhotoService(resolver, domain.StorageBackendLocal, exif, repo, math.MaxInt64-1, testFreshnessWindow); err != nil {
 		t.Fatalf("maxUploadBytes = math.MaxInt64-1 rejected: %v, want accepted (leaves exactly enough room for +1)", err)
 	}
 }

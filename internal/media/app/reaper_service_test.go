@@ -30,15 +30,19 @@ const testGraceWindow = 24 * time.Hour
 
 func newTestReaper(t *testing.T, lister *fakeObjectLister, store *fakePhotoStore, photos *fakePhotoRepo, choreProofPhotos *fakeTaskInstancePhotoRepo, retention time.Duration) *app.ReaperService {
 	t.Helper()
-	r, err := app.NewReaperService(lister, store, photos, choreProofPhotos, testGraceWindow, retention)
+	// domain.StorageBackendLocal matches newFakePhotoRepo/newFakeTaskInstancePhotoRepo's
+	// own default backend, so every test's directly-constructed rows (and
+	// every row Create stamps) are visible to this reaper's backend-scoped
+	// referencedRefs/existsByStorageRef queries.
+	r, err := app.NewReaperService(lister, store, domain.StorageBackendLocal, photos, choreProofPhotos, testGraceWindow, retention)
 	if err != nil {
 		t.Fatalf("NewReaperService: %v", err)
 	}
 	return r
 }
 
-// TestNewReaperServiceValidatesDependencies covers the nil-dependency and
-// non-positive-graceWindow guards.
+// TestNewReaperServiceValidatesDependencies covers the nil-dependency,
+// invalid-backend, and non-positive-graceWindow guards.
 func TestNewReaperServiceValidatesDependencies(t *testing.T) {
 	lister := &fakeObjectLister{}
 	store := &fakePhotoStore{}
@@ -46,23 +50,25 @@ func TestNewReaperServiceValidatesDependencies(t *testing.T) {
 	choreProofPhotos := newFakeTaskInstancePhotoRepo()
 
 	cases := []struct {
-		name   string
-		lister domain.ObjectLister
-		store  domain.PhotoStore
-		photos domain.PhotoRepository
-		cpp    domain.TaskInstancePhotoRepository
-		grace  time.Duration
+		name    string
+		lister  domain.ObjectLister
+		store   domain.PhotoStore
+		backend domain.StorageBackend
+		photos  domain.PhotoRepository
+		cpp     domain.TaskInstancePhotoRepository
+		grace   time.Duration
 	}{
-		{"nil lister", nil, store, photos, choreProofPhotos, testGraceWindow},
-		{"nil store", lister, nil, photos, choreProofPhotos, testGraceWindow},
-		{"nil photos repo", lister, store, nil, choreProofPhotos, testGraceWindow},
-		{"nil chore-proof repo", lister, store, photos, nil, testGraceWindow},
-		{"zero grace window", lister, store, photos, choreProofPhotos, 0},
-		{"negative grace window", lister, store, photos, choreProofPhotos, -time.Minute},
+		{"nil lister", nil, store, domain.StorageBackendLocal, photos, choreProofPhotos, testGraceWindow},
+		{"nil store", lister, nil, domain.StorageBackendLocal, photos, choreProofPhotos, testGraceWindow},
+		{"invalid backend", lister, store, domain.StorageBackend("azure-blob"), photos, choreProofPhotos, testGraceWindow},
+		{"nil photos repo", lister, store, domain.StorageBackendLocal, nil, choreProofPhotos, testGraceWindow},
+		{"nil chore-proof repo", lister, store, domain.StorageBackendLocal, photos, nil, testGraceWindow},
+		{"zero grace window", lister, store, domain.StorageBackendLocal, photos, choreProofPhotos, 0},
+		{"negative grace window", lister, store, domain.StorageBackendLocal, photos, choreProofPhotos, -time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := app.NewReaperService(tc.lister, tc.store, tc.photos, tc.cpp, tc.grace, 0); err == nil {
+			if _, err := app.NewReaperService(tc.lister, tc.store, tc.backend, tc.photos, tc.cpp, tc.grace, 0); err == nil {
 				t.Fatal("NewReaperService should have failed")
 			}
 		})
@@ -77,7 +83,7 @@ func TestReaperDeletesUnreferencedObjectsPastGraceWindow(t *testing.T) {
 	old := now.Add(-2 * testGraceWindow)
 
 	hh := household.NewHouseholdID()
-	referenced := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: hh, StorageRef: domain.StorageRef("households/" + hh.String() + "/photos/aa/referenced.jpg")}
+	referenced := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: hh, StorageRef: domain.StorageRef("households/" + hh.String() + "/photos/aa/referenced.jpg"), StorageBackend: domain.StorageBackendLocal}
 	photos := newFakePhotoRepo()
 	photos.store[referenced.ID] = referenced
 
@@ -146,7 +152,7 @@ func TestReaperRestoreSafety(t *testing.T) {
 
 	hh := household.NewHouseholdID()
 	photos := newFakePhotoRepo()
-	restored := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: hh, StorageRef: ref}
+	restored := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: hh, StorageRef: ref, StorageBackend: domain.StorageBackendLocal}
 	photos.store[restored.ID] = restored // simulates the row re-inserted after a restore
 
 	lister := &fakeObjectLister{objects: map[domain.PhotoClass][]domain.ObjectInfo{

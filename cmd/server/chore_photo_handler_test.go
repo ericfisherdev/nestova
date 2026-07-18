@@ -54,14 +54,19 @@ type fakeTaskInstancePhotoRepoHandler struct {
 	// means every Get reports ErrTaskInstancePhotoNotFound, matching a
 	// genuinely unknown id.
 	store map[mediadomain.TaskInstancePhotoID]*mediadomain.TaskInstancePhoto
+	// backend is the StorageBackend Create stamps onto every row it writes
+	// (mirroring the real TaskInstancePhotoRepository.Create), defaulting
+	// to mediadomain.StorageBackendLocal via newFakeTaskInstancePhotoRepoHandler.
+	backend mediadomain.StorageBackend
 }
 
 func newFakeTaskInstancePhotoRepoHandler() *fakeTaskInstancePhotoRepoHandler {
-	return &fakeTaskInstancePhotoRepoHandler{instanceExists: true}
+	return &fakeTaskInstancePhotoRepoHandler{instanceExists: true, backend: mediadomain.StorageBackendLocal}
 }
 
 func (f *fakeTaskInstancePhotoRepoHandler) Create(_ context.Context, p *mediadomain.TaskInstancePhoto) error {
 	p.UploadedAt = time.Now().UTC()
+	p.StorageBackend = f.backend
 	f.created = append(f.created, p)
 	return nil
 }
@@ -98,7 +103,7 @@ func (f *fakeTaskInstancePhotoRepoHandler) Get(_ context.Context, id mediadomain
 // ListAllStorageRefs / DeleteUploadedBefore are unused by this file's
 // upload-focused tests; implemented only to satisfy the interface (NES-132
 // added them for the storage reaper).
-func (f *fakeTaskInstancePhotoRepoHandler) ListAllStorageRefs(context.Context) ([]mediadomain.StorageRef, error) {
+func (f *fakeTaskInstancePhotoRepoHandler) ListAllStorageRefs(context.Context, mediadomain.StorageBackend) ([]mediadomain.StorageRef, error) {
 	return nil, nil
 }
 
@@ -109,7 +114,7 @@ func (f *fakeTaskInstancePhotoRepoHandler) DeleteUploadedBefore(context.Context,
 // ExistsByStorageRef is unused by this file's upload-focused tests;
 // implemented only to satisfy the interface (NES-132's reaper TOCTOU
 // recheck).
-func (f *fakeTaskInstancePhotoRepoHandler) ExistsByStorageRef(context.Context, mediadomain.StorageRef) (bool, error) {
+func (f *fakeTaskInstancePhotoRepoHandler) ExistsByStorageRef(context.Context, mediadomain.StorageRef, mediadomain.StorageBackend) (bool, error) {
 	return false, nil
 }
 
@@ -124,7 +129,7 @@ func buildChoreProofTestHandler(t *testing.T, member *household.Member, store *f
 	householdRepo := authedHouseholdRepo{member: member}
 	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), logger)
 
-	svc, err := mediaapp.NewChoreProofPhotoService(store, exif, repo, choreProofTestMaxUploadBytes, choreProofTestFreshnessWindow)
+	svc, err := mediaapp.NewChoreProofPhotoService(newFakeStoreResolver(mediadomain.StorageBackendLocal, store), mediadomain.StorageBackendLocal, exif, repo, choreProofTestMaxUploadBytes, choreProofTestFreshnessWindow)
 	if err != nil {
 		t.Fatalf("NewChoreProofPhotoService: %v", err)
 	}
@@ -376,7 +381,7 @@ func TestChoreProofRawRedirectsWhenBackendSupportsDirectURL(t *testing.T) {
 
 	owned := mediadomain.NewTaskInstancePhotoID()
 	repo.store = map[mediadomain.TaskInstancePhotoID]*mediadomain.TaskInstancePhoto{
-		owned: {ID: owned, HouseholdID: member.HouseholdID, StorageRef: "households/hh/chore-photos/aa/x.jpg", ContentType: "image/jpeg"},
+		owned: {ID: owned, HouseholdID: member.HouseholdID, StorageRef: "households/hh/chore-photos/aa/x.jpg", ContentType: "image/jpeg", StorageBackend: mediadomain.StorageBackendLocal},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/tasks/photos/"+owned.String()+"/raw", nil)
 	req.Header.Set("Cookie", cookie)

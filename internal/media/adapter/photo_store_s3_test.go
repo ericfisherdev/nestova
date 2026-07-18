@@ -319,11 +319,18 @@ func (f *fakeReaperPhotoRepo) ListByHousehold(context.Context, household.Househo
 	return nil, nil
 }
 func (f *fakeReaperPhotoRepo) Delete(context.Context, domain.PhotoID) error { return nil }
-func (f *fakeReaperPhotoRepo) ListAllStorageRefs(context.Context) ([]domain.StorageRef, error) {
+
+// ListAllStorageRefs/ExistsByStorageRef ignore the backend parameter: these
+// MinIO-integration reaper tests exercise exactly one backend (S3) end to
+// end, so there is never a second backend's row to filter out here — the
+// filtering itself (NES-132) is covered by the dedicated gated Postgres
+// tests (TestPhotoRepositoryListAllStorageRefsFiltersByBackend and its
+// chore-proof counterpart) and the unit-level reaper tests.
+func (f *fakeReaperPhotoRepo) ListAllStorageRefs(context.Context, domain.StorageBackend) ([]domain.StorageRef, error) {
 	return f.refs, nil
 }
 
-func (f *fakeReaperPhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef) (bool, error) {
+func (f *fakeReaperPhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef, _ domain.StorageBackend) (bool, error) {
 	if v, ok := f.existsOverride[ref]; ok {
 		return v, nil
 	}
@@ -361,7 +368,9 @@ func (f *fakeReaperTaskInstancePhotoRepo) ListByInstances(context.Context, house
 	return nil, nil
 }
 
-func (f *fakeReaperTaskInstancePhotoRepo) ListAllStorageRefs(context.Context) ([]domain.StorageRef, error) {
+// ListAllStorageRefs/ExistsByStorageRef ignore the backend parameter — see
+// fakeReaperPhotoRepo's identical comment for why.
+func (f *fakeReaperTaskInstancePhotoRepo) ListAllStorageRefs(context.Context, domain.StorageBackend) ([]domain.StorageRef, error) {
 	return f.refs, nil
 }
 
@@ -369,7 +378,7 @@ func (f *fakeReaperTaskInstancePhotoRepo) DeleteUploadedBefore(context.Context, 
 	return 0, nil
 }
 
-func (f *fakeReaperTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef) (bool, error) {
+func (f *fakeReaperTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef, _ domain.StorageBackend) (bool, error) {
 	for _, r := range f.refs {
 		if r == ref {
 			return true, nil
@@ -422,7 +431,7 @@ func TestS3PhotoStoreReaperDeletesOrphanAfterGraceWindow(t *testing.T) {
 	const grace = time.Hour
 	photos := &fakeReaperPhotoRepo{} // no rows reference anything: simulates the row already deleted
 	choreProofPhotos := &fakeReaperTaskInstancePhotoRepo{}
-	reaper, err := app.NewReaperService(store, store, photos, choreProofPhotos, grace, 0)
+	reaper, err := app.NewReaperService(store, store, domain.StorageBackendS3, photos, choreProofPhotos, grace, 0)
 	if err != nil {
 		t.Fatalf("NewReaperService: %v", err)
 	}
@@ -477,7 +486,7 @@ func TestS3PhotoStoreReaperRestoreSafety(t *testing.T) {
 	// backup had just been restored against this same bucket.
 	photos := &fakeReaperPhotoRepo{refs: []domain.StorageRef{result.Ref}}
 	choreProofPhotos := &fakeReaperTaskInstancePhotoRepo{}
-	reaper, err := app.NewReaperService(store, store, photos, choreProofPhotos, grace, 0)
+	reaper, err := app.NewReaperService(store, store, domain.StorageBackendS3, photos, choreProofPhotos, grace, 0)
 	if err != nil {
 		t.Fatalf("NewReaperService: %v", err)
 	}
@@ -519,7 +528,7 @@ func TestS3PhotoStoreReaperRecheckCatchesRowCommittedAfterSnapshot(t *testing.T)
 	const grace = time.Hour
 	photos := &fakeReaperPhotoRepo{existsOverride: map[domain.StorageRef]bool{result.Ref: true}} // refs (snapshot) empty; recheck says referenced
 	choreProofPhotos := &fakeReaperTaskInstancePhotoRepo{}
-	reaper, err := app.NewReaperService(store, store, photos, choreProofPhotos, grace, 0)
+	reaper, err := app.NewReaperService(store, store, domain.StorageBackendS3, photos, choreProofPhotos, grace, 0)
 	if err != nil {
 		t.Fatalf("NewReaperService: %v", err)
 	}

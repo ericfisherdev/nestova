@@ -139,11 +139,15 @@ func (r *PhotoRepository) Delete(ctx context.Context, id domain.PhotoID) error {
 	return nil
 }
 
-// ListAllStorageRefs returns the StorageRef of every photo row across every
-// household (see the domain port doc: the storage reaper's source of truth
-// for referenced album-class objects), or an empty slice when there are none.
-func (r *PhotoRepository) ListAllStorageRefs(ctx context.Context) ([]domain.StorageRef, error) {
-	rows, err := r.dbtx.Query(ctx, `SELECT storage_ref FROM photo`)
+// ListAllStorageRefs returns the StorageRef of every photo row stamped with
+// backend, across every household (see the domain port doc: the storage
+// reaper's source of truth for referenced album-class objects of that
+// specific backend — content-addressed keys collide across backends, so
+// this filters storage_backend explicitly rather than returning every ref
+// regardless of which backend actually wrote it), or an empty slice when
+// there are none.
+func (r *PhotoRepository) ListAllStorageRefs(ctx context.Context, backend domain.StorageBackend) ([]domain.StorageRef, error) {
+	rows, err := r.dbtx.Query(ctx, `SELECT storage_ref FROM photo WHERE storage_backend = $1`, backend.String())
 	if err != nil {
 		return nil, fmt.Errorf("list all photo storage refs: %w", err)
 	}
@@ -162,12 +166,13 @@ func (r *PhotoRepository) ListAllStorageRefs(ctx context.Context) ([]domain.Stor
 	return refs, nil
 }
 
-// ExistsByStorageRef reports whether any photo row currently references ref
-// (see the domain port doc: the reaper's targeted, pre-delete TOCTOU-
-// narrowing recheck).
-func (r *PhotoRepository) ExistsByStorageRef(ctx context.Context, ref domain.StorageRef) (bool, error) {
+// ExistsByStorageRef reports whether any photo row STAMPED WITH backend
+// currently references ref (see the domain port doc: the reaper's targeted,
+// pre-delete TOCTOU-narrowing recheck, filtered by backend for the same
+// content-addressed-collision reason ListAllStorageRefs' doc explains).
+func (r *PhotoRepository) ExistsByStorageRef(ctx context.Context, ref domain.StorageRef, backend domain.StorageBackend) (bool, error) {
 	var exists bool
-	if err := r.dbtx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM photo WHERE storage_ref = $1)`, ref.String()).Scan(&exists); err != nil {
+	if err := r.dbtx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM photo WHERE storage_ref = $1 AND storage_backend = $2)`, ref.String(), backend.String()).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check photo storage ref exists: %w", err)
 	}
 	return exists, nil

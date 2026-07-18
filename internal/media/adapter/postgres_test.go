@@ -329,7 +329,7 @@ func TestPhotoRepositoryListAllStorageRefs(t *testing.T) {
 	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
 	ctx := testCtx(t)
 
-	if refs, err := repo.ListAllStorageRefs(ctx); err != nil || len(refs) != 0 {
+	if refs, err := repo.ListAllStorageRefs(ctx, domain.StorageBackendLocal); err != nil || len(refs) != 0 {
 		t.Fatalf("ListAllStorageRefs on an empty table = %v (err %v), want an empty slice", refs, err)
 	}
 
@@ -346,7 +346,7 @@ func TestPhotoRepositoryListAllStorageRefs(t *testing.T) {
 		t.Fatalf("Create photoB: %v", err)
 	}
 
-	refs, err := repo.ListAllStorageRefs(ctx)
+	refs, err := repo.ListAllStorageRefs(ctx, domain.StorageBackendLocal)
 	if err != nil {
 		t.Fatalf("ListAllStorageRefs: %v", err)
 	}
@@ -362,6 +362,75 @@ func TestPhotoRepositoryListAllStorageRefs(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("ListAllStorageRefs missing refs: %v", want)
+	}
+}
+
+// TestPhotoRepositoryListAllStorageRefsFiltersByBackend covers the
+// NES-132 mixed-state reaper fix directly: content-addressed keys are
+// IDENTICAL across backends for the same bytes, so two rows can
+// legitimately share one storage_ref while being stamped with DIFFERENT
+// backends. Without a backend filter, a local-backed row would shield a
+// genuine S3 orphan of the same ref forever (or vice versa) — this proves
+// ListAllStorageRefs and ExistsByStorageRef both filter on
+// storage_backend, not just storage_ref.
+func TestPhotoRepositoryListAllStorageRefsFiltersByBackend(t *testing.T) {
+	pool := newTestPool(t)
+	localRepo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
+	s3Repo := adapter.NewPhotoRepository(pool, domain.StorageBackendS3)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	sharedRef := domain.StorageRef("households/" + hh.String() + "/photos/aa/shared.jpg")
+	localPhoto := newPhoto(hh, sharedRef.String(), nil)
+	localPhoto.ContentHash = fakeHash("shared-local")
+	if err := localRepo.Create(ctx, localPhoto); err != nil {
+		t.Fatalf("Create local-backed row: %v", err)
+	}
+	s3Photo := newPhoto(hh, sharedRef.String(), nil)
+	s3Photo.ContentHash = fakeHash("shared-s3")
+	if err := s3Repo.Create(ctx, s3Photo); err != nil {
+		t.Fatalf("Create s3-backed row: %v", err)
+	}
+	// The down-migration for 00032 hard-aborts while any 's3' row lingers
+	// (NES-132 review) — clean up explicitly so the shared test harness's
+	// Reset (which rolls migrations all the way back) never trips it.
+	t.Cleanup(func() { _ = s3Repo.Delete(ctx, s3Photo.ID) })
+
+	localRefs, err := localRepo.ListAllStorageRefs(ctx, domain.StorageBackendLocal)
+	if err != nil {
+		t.Fatalf("ListAllStorageRefs(local): %v", err)
+	}
+	if len(localRefs) != 1 || localRefs[0] != sharedRef {
+		t.Fatalf("ListAllStorageRefs(local) = %v, want exactly [%s]", localRefs, sharedRef)
+	}
+
+	s3Refs, err := localRepo.ListAllStorageRefs(ctx, domain.StorageBackendS3)
+	if err != nil {
+		t.Fatalf("ListAllStorageRefs(s3): %v", err)
+	}
+	if len(s3Refs) != 1 || s3Refs[0] != sharedRef {
+		t.Fatalf("ListAllStorageRefs(s3) = %v, want exactly [%s]", s3Refs, sharedRef)
+	}
+
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendLocal); err != nil || !exists {
+		t.Fatalf("ExistsByStorageRef(ref, local) = %v, %v, want true, nil", exists, err)
+	}
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendS3); err != nil || !exists {
+		t.Fatalf("ExistsByStorageRef(ref, s3) = %v, %v, want true, nil", exists, err)
+	}
+
+	// Deleting only the s3-backed row must leave the local-backed row (same
+	// ref) fully intact and still reported for the local backend — proving
+	// a reaper sweeping s3 that deletes this ref's OBJECT never implies
+	// anything about the local row/object sharing that ref.
+	if err := s3Repo.Delete(ctx, s3Photo.ID); err != nil {
+		t.Fatalf("Delete s3-backed row: %v", err)
+	}
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendS3); err != nil || exists {
+		t.Fatalf("ExistsByStorageRef(ref, s3) after deleting the s3 row = %v, %v, want false, nil", exists, err)
+	}
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendLocal); err != nil || !exists {
+		t.Fatalf("ExistsByStorageRef(ref, local) after deleting the UNRELATED s3 row = %v, %v, want true, nil (still referenced)", exists, err)
 	}
 }
 
