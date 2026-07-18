@@ -162,4 +162,41 @@ type PhotoRepository interface {
 	// deliberately-accepted window this does not close, and the operator
 	// contract that makes it acceptable.
 	ExistsByStorageRef(ctx context.Context, ref StorageRef, backend StorageBackend) (bool, error)
+
+	// ListByBackend returns up to limit rows stamped with backend, ordered
+	// by id ascending, whose id is strictly greater than afterID — NES-133's
+	// storage migrator's keyset-paginated batch source of "every
+	// local-backend album photo still to move," so a large photo library is
+	// migrated in bounded-memory batches (the ticket's resumability
+	// requirement) rather than loading the whole table at once. Pass the
+	// zero PhotoID (ParsePhotoID never produces one) to fetch the first
+	// page; afterID for every subsequent page is the previous page's LAST
+	// row's ID. UUIDv7 ids (NewPhotoID) sort close to creation order, so
+	// paging is also roughly chronological, though callers must not rely on
+	// that. Returns an empty (not nil) slice once no more rows match — the
+	// migrator's signal to stop paging.
+	ListByBackend(ctx context.Context, backend StorageBackend, afterID PhotoID, limit int) ([]*Photo, error)
+
+	// MigrateStorageBackend flips ONE local-backend row onto newBackend —
+	// NES-133's storage migrator's only caller, today always invoked with
+	// newBackend = StorageBackendS3, since NES-133 implements only the
+	// local-to-object-store migration direction. It writes newRef as the
+	// row's new StorageRef and, ONLY when the row's content_sha256 is
+	// currently NULL (a legacy pre-NES-123 photo — see the 00023 migration's
+	// backfill comment), backfills content_sha256 with contentHash, the
+	// value the migrator verified/computed from the row's actual bytes
+	// during the move; a row that already carries a content_sha256 is left
+	// exactly as-is regardless of contentHash's value, since a mismatch
+	// there would already have aborted the migrator's flip before this is
+	// ever called (see MigratorService's doc for the full pipeline).
+	//
+	// The update is conditioned on the row's CURRENT storage_backend being
+	// 'local' — an idempotency guard, not a general-purpose backend mutator:
+	// done reports whether a row actually matched and was flipped (true) or
+	// whether no local-backend row with this id existed to flip (false,
+	// e.g. a previous run already migrated it, or a concurrent process did)
+	// — the migrator treats false as "nothing to do," not a hard failure,
+	// and this IS what makes re-running the migrator after an interruption
+	// safe (NES-133's AC1).
+	MigrateStorageBackend(ctx context.Context, id PhotoID, newRef StorageRef, newBackend StorageBackend, contentHash string) (done bool, err error)
 }

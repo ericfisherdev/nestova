@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"testing"
 	"time"
 
@@ -66,6 +67,14 @@ type fakePhotoStore struct {
 	// directURL backs SupportsDirectURL — false (LocalPhotoStore-like)
 	// unless a test opts into the S3-like redirect path.
 	directURL bool
+	// deleteHook, when set, is invoked immediately BEFORE Delete records
+	// ref as deleted — the reaper regression tests use this to inject a
+	// side effect (e.g. a row committing that now references a DIFFERENT,
+	// not-yet-processed candidate) exactly at the point in time a real
+	// concurrent commit could land mid-Run, proving the per-candidate
+	// recheck happens immediately before EACH delete rather than as one
+	// pass completed before any deletes begin.
+	deleteHook func(domain.StorageRef)
 }
 
 // Put hashes the bytes it's given and derives Ref from the hash — like the
@@ -113,6 +122,9 @@ func (f *fakePhotoStore) Open(context.Context, domain.StorageRef) (domain.PhotoR
 }
 
 func (f *fakePhotoStore) Delete(_ context.Context, ref domain.StorageRef) error {
+	if f.deleteHook != nil {
+		f.deleteHook(ref)
+	}
 	f.deleted = append(f.deleted, ref)
 	return nil
 }
@@ -262,6 +274,40 @@ func (f *fakePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.Storage
 		}
 	}
 	return false, nil
+}
+
+// ListByBackend mirrors the real PhotoRepository.ListByBackend (NES-133):
+// rows stamped with backend, ordered by id ascending, id > afterID, capped
+// at limit.
+func (f *fakePhotoRepo) ListByBackend(_ context.Context, backend domain.StorageBackend, afterID domain.PhotoID, limit int) ([]*domain.Photo, error) {
+	matches := make([]*domain.Photo, 0, len(f.store))
+	for _, p := range f.store {
+		if p.StorageBackend == backend && p.ID.String() > afterID.String() {
+			matches = append(matches, p)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].ID.String() < matches[j].ID.String() })
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
+}
+
+// MigrateStorageBackend mirrors the real PhotoRepository.MigrateStorageBackend
+// (NES-133): flips a local-backend row's ref/backend and backfills a blank
+// ContentHash, reporting done=false when the row is missing or not
+// currently local-backend.
+func (f *fakePhotoRepo) MigrateStorageBackend(_ context.Context, id domain.PhotoID, newRef domain.StorageRef, newBackend domain.StorageBackend, contentHash string) (bool, error) {
+	p, ok := f.store[id]
+	if !ok || p.StorageBackend != domain.StorageBackendLocal {
+		return false, nil
+	}
+	p.StorageRef = newRef
+	p.StorageBackend = newBackend
+	if p.ContentHash == "" {
+		p.ContentHash = contentHash
+	}
+	return true, nil
 }
 
 type fakeAlbumRepo struct {

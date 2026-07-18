@@ -354,6 +354,17 @@ func (r *TaskInstancePhotoRepository) DeleteUploadedBefore(ctx context.Context, 
 	return tag.RowsAffected(), nil
 }
 
+// CountUploadedBefore reports how many chore-proof photo rows have an
+// uploaded_at strictly earlier than cutoff, without deleting them (see the
+// domain port doc: ReaperService.DryRun's retention-pass preview).
+func (r *TaskInstancePhotoRepository) CountUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	var count int64
+	if err := r.dbtx.QueryRow(ctx, `SELECT count(*) FROM task_instance_photo WHERE uploaded_at < $1`, cutoff).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count task instance photos uploaded before cutoff: %w", err)
+	}
+	return count, nil
+}
+
 // ExistsByStorageRef reports whether any chore-proof photo row STAMPED WITH
 // backend currently references ref (see the domain port doc: the reaper's
 // targeted, pre-delete TOCTOU-narrowing recheck, filtered by backend).
@@ -363,6 +374,50 @@ func (r *TaskInstancePhotoRepository) ExistsByStorageRef(ctx context.Context, re
 		return false, fmt.Errorf("check task instance photo storage ref exists: %w", err)
 	}
 	return exists, nil
+}
+
+// ListByBackend returns up to limit chore-proof photo rows stamped with
+// backend, ordered by id ascending, whose id is strictly greater than
+// afterID (see the domain port doc: NES-133's storage migrator's
+// keyset-paginated batch source), or an empty slice once no more rows
+// match.
+func (r *TaskInstancePhotoRepository) ListByBackend(ctx context.Context, backend domain.StorageBackend, afterID domain.TaskInstancePhotoID, limit int) ([]*domain.TaskInstancePhoto, error) {
+	rows, err := r.dbtx.Query(ctx, taskInstancePhotoColumns+` WHERE storage_backend = $1 AND id > $2 ORDER BY id LIMIT $3`,
+		backend.String(), afterID.String(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list task instance photos by backend: %w", err)
+	}
+	defer rows.Close()
+	photos := make([]*domain.TaskInstancePhoto, 0)
+	for rows.Next() {
+		photo, err := scanTaskInstancePhoto(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan task instance photo: %w", err)
+		}
+		photos = append(photos, photo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan task instance photos: %w", err)
+	}
+	return photos, nil
+}
+
+// MigrateStorageBackend flips a local-backend chore-proof photo row onto
+// newBackend, writing newRef as its new storage_ref (see the domain port
+// doc: no content-hash backfill parameter, unlike PhotoRepository's
+// counterpart — content_sha256 is NOT NULL on this table from its first
+// migration). done reports whether a local-backend row with this id
+// actually matched and was updated.
+func (r *TaskInstancePhotoRepository) MigrateStorageBackend(ctx context.Context, id domain.TaskInstancePhotoID, newRef domain.StorageRef, newBackend domain.StorageBackend) (bool, error) {
+	const q = `
+		UPDATE task_instance_photo
+		   SET storage_ref = $2, storage_backend = $3
+		 WHERE id = $1 AND storage_backend = 'local'`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), newRef.String(), newBackend.String())
+	if err != nil {
+		return false, fmt.Errorf("migrate task instance photo storage backend: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func scanTaskInstancePhoto(r row) (*domain.TaskInstancePhoto, error) {

@@ -227,6 +227,53 @@ func buildStorageKey(householdID household.HouseholdID, class domain.PhotoClass,
 	return path.Join("households", householdID.String(), classPrefix, sum[:2], sum+"."+ext), nil
 }
 
+// BuildStorageKey exposes buildStorageKey's shared class-namespaced,
+// content-addressed key formula to NES-133's storage migrator/verifier,
+// which must derive the EXACT SAME key S3PhotoStore.Put would have produced
+// for a photo's household/class/content-hash/content-type, without
+// duplicating the formula or re-running Put's full upload-validation
+// pipeline a second time (the bytes were already validated once, at
+// original upload — see RawObjectWriter's doc).
+func BuildStorageKey(householdID household.HouseholdID, class domain.PhotoClass, sum, ext string) (string, error) {
+	return buildStorageKey(householdID, class, sum, ext)
+}
+
+// ExtensionForContentType returns the stored-object file extension
+// acceptedTypes maps contentType to, and ok=false when contentType is not
+// one of the three accepted image types — the same lookup Put uses
+// internally, exposed for NES-133's storage migrator, which must derive a
+// row's canonical storage key (via BuildStorageKey) from its already
+// server-verified content_type column without re-sniffing the bytes.
+func ExtensionForContentType(contentType string) (ext string, ok bool) {
+	ext, ok = acceptedTypes[contentType]
+	return ext, ok
+}
+
+// ClassOfKey parses key's class-prefix path segment
+// ("households/<household>/<class-prefix>/...") and reports which
+// domain.PhotoClass that prefix belongs to, or ok=false when key does not
+// match ANY known class prefix — e.g. a legacy bare-format ref predating the
+// class segment (see LocalPhotoStore's doc) or a key genuinely foreign to
+// this app's key scheme. It is classKeyPrefix's reverse lookup, built by
+// checking every known PhotoClass against classKeyPrefix rather than
+// duplicating the class-to-prefix string table a second time, so the two
+// can never drift apart. Used by NES-133's storage verify command to flag a
+// row whose OWN storage_ref embeds a DIFFERENT class prefix than the table
+// it is persisted in — a cross-prefix data-integrity finding.
+func ClassOfKey(key string) (class domain.PhotoClass, ok bool) {
+	parts := strings.SplitN(key, "/", 4)
+	if len(parts) < 3 || parts[0] != "households" {
+		return domain.PhotoClassUnspecified, false
+	}
+	for _, candidate := range []domain.PhotoClass{domain.PhotoClassAlbum, domain.PhotoClassChoreProof, domain.PhotoClassRewardImage} {
+		prefix, err := classKeyPrefix(candidate)
+		if err == nil && parts[2] == prefix {
+			return candidate, true
+		}
+	}
+	return domain.PhotoClassUnspecified, false
+}
+
 // canonicalType lowercases a content type and strips any parameters (e.g.
 // "image/jpeg; charset=binary" -> "image/jpeg").
 func canonicalType(contentType string) string {

@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -19,6 +21,36 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
 )
+
+// preResetSweep is a best-effort DELETE of any lingering s3-stamped photo/
+// task_instance_photo rows, run immediately before EVERY migrate.Reset call
+// in this package's test harness (both newTestPool's own setup and its
+// t.Cleanup). Migration 00032's down-migration deliberately aborts
+// (SQLSTATE P0001) while ANY row is stamped 's3' — correct, load-bearing
+// behavior for a REAL production rollback (an operator must migrate those
+// rows' bytes back to local storage and re-stamp them 'local' first) — but
+// fatal to a disposable test fixture: a test that flips a row to 's3' and
+// then fails to clean it up (or a genuinely concurrent test run against
+// the same shared database) otherwise poisons Reset for every test that
+// runs afterward, cascading a single leaked row into a whole-package
+// failure. Reset is about to drop the entire schema anyway, so deleting
+// these rows first loses nothing — it just satisfies 00032's rollback
+// guard ahead of the drop. Errors are discarded entirely: on a virgin
+// database neither table exists yet, and a connection failure here is not
+// this helper's job to report (the real migrate.Reset/migrate.Up calls
+// right after it will surface a genuine connectivity problem loudly).
+func preResetSweep(ctx context.Context, dsn string) {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	// task_instance_photo before photo: no FK relationship between the two
+	// requires this order, but it mirrors the production migrate-back
+	// guidance's own table order (see the 00032 migration's error text).
+	_, _ = conn.Exec(ctx, `DELETE FROM task_instance_photo WHERE storage_backend = 's3'`)
+	_, _ = conn.Exec(ctx, `DELETE FROM photo WHERE storage_backend = 's3'`)
+}
 
 // newTestPool returns a pool against NESTOVA_TEST_DATABASE_URL with a freshly
 // reset+migrated schema. It refuses to run unless the DSN's database name is
@@ -40,6 +72,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 
 	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	preResetSweep(setupCtx, dsn)
 	if err := migrate.Reset(setupCtx, dsn); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
@@ -49,6 +82,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(func() {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelCleanup()
+		preResetSweep(cleanupCtx, dsn)
 		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
 			t.Logf("cleanup reset failed: %v", err)
 		}
@@ -432,6 +466,177 @@ func TestPhotoRepositoryListAllStorageRefsFiltersByBackend(t *testing.T) {
 	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendLocal); err != nil || !exists {
 		t.Fatalf("ExistsByStorageRef(ref, local) after deleting the UNRELATED s3 row = %v, %v, want true, nil (still referenced)", exists, err)
 	}
+}
+
+// TestPhotoRepositoryListByBackend covers NES-133's storage migrator's
+// keyset-paginated batch source: rows stamped with the requested backend,
+// ordered by id ascending, respecting afterID and limit, and excluding rows
+// on the OTHER backend entirely.
+func TestPhotoRepositoryListByBackend(t *testing.T) {
+	pool := newTestPool(t)
+	localRepo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
+	s3Repo := adapter.NewPhotoRepository(pool, domain.StorageBackendS3)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	const n = 3
+	var local []*domain.Photo
+	for i := 0; i < n; i++ {
+		p := newPhoto(hh, "households/"+hh.String()+"/photos/aa/list-by-backend.jpg", nil)
+		p.ContentHash = fakeHash(fmt.Sprintf("list-by-backend-local-%d", i))
+		if err := localRepo.Create(ctx, p); err != nil {
+			t.Fatalf("Create local photo %d: %v", i, err)
+		}
+		local = append(local, p)
+	}
+	s3Photo := newPhoto(hh, "households/"+hh.String()+"/photos/bb/s3.jpg", nil)
+	s3Photo.ContentHash = fakeHash("list-by-backend-s3")
+	if err := s3Repo.Create(ctx, s3Photo); err != nil {
+		t.Fatalf("Create s3 photo: %v", err)
+	}
+	t.Cleanup(func() { _ = s3Repo.Delete(ctx, s3Photo.ID) })
+
+	// Page through with limit=1 to prove the cursor/limit contract, not just
+	// "everything at once."
+	var (
+		afterID domain.PhotoID
+		got     []*domain.Photo
+	)
+	for {
+		page, err := localRepo.ListByBackend(ctx, domain.StorageBackendLocal, afterID, 1)
+		if err != nil {
+			t.Fatalf("ListByBackend: %v", err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		if len(page) != 1 {
+			t.Fatalf("ListByBackend page = %d rows, want at most limit=1", len(page))
+		}
+		got = append(got, page[0])
+		afterID = page[0].ID
+	}
+	if len(got) != n {
+		t.Fatalf("ListByBackend paged %d rows total, want %d", len(got), n)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ID.String() >= got[i].ID.String() {
+			t.Fatalf("ListByBackend did not return ascending id order: %s then %s", got[i-1].ID, got[i].ID)
+		}
+	}
+	for _, p := range got {
+		if p.StorageBackend != domain.StorageBackendLocal {
+			t.Fatalf("ListByBackend(local) returned a %q-backed row", p.StorageBackend)
+		}
+	}
+
+	s3Page, err := localRepo.ListByBackend(ctx, domain.StorageBackendS3, domain.PhotoID{}, 10)
+	if err != nil {
+		t.Fatalf("ListByBackend(s3): %v", err)
+	}
+	if len(s3Page) != 1 || s3Page[0].ID != s3Photo.ID {
+		t.Fatalf("ListByBackend(s3) = %v, want exactly [%s]", s3Page, s3Photo.ID)
+	}
+	_ = local
+}
+
+// TestPhotoRepositoryMigrateStorageBackend covers NES-133's migrator's flip:
+// a local-backend row is updated to newBackend/newRef, a legacy NULL
+// content_sha256 is backfilled, an already-hashed row's hash is left
+// unchanged, and re-running against an already-migrated (or unknown) id is
+// a safe no-op reporting done=false — the migrator's resumability
+// mechanism (AC1).
+func TestPhotoRepositoryMigrateStorageBackend(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewPhotoRepository(pool, domain.StorageBackendLocal)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	t.Run("backfills a legacy NULL hash", func(t *testing.T) {
+		legacy := newPhoto(hh, "households/"+hh.String()+"/photos/aa/legacy.jpg", nil)
+		// ContentHash left blank: Create's nullableText stores this as NULL,
+		// mirroring a pre-NES-123 row.
+		if err := repo.Create(ctx, legacy); err != nil {
+			t.Fatalf("Create legacy: %v", err)
+		}
+		t.Cleanup(func() { _ = repo.Delete(ctx, legacy.ID) })
+
+		newRef := domain.StorageRef("households/" + hh.String() + "/photos/aa/legacy-migrated.jpg")
+		computedHash := fakeHash("computed-during-migration")
+		done, err := repo.MigrateStorageBackend(ctx, legacy.ID, newRef, domain.StorageBackendS3, computedHash)
+		if err != nil {
+			t.Fatalf("MigrateStorageBackend: %v", err)
+		}
+		if !done {
+			t.Fatal("MigrateStorageBackend done = false, want true")
+		}
+
+		s3Repo := adapter.NewPhotoRepository(pool, domain.StorageBackendS3)
+		got, err := s3Repo.Get(ctx, legacy.ID)
+		if err != nil {
+			t.Fatalf("Get after migrate: %v", err)
+		}
+		if got.StorageBackend != domain.StorageBackendS3 || got.StorageRef != newRef {
+			t.Fatalf("Get after migrate = backend %q ref %q, want s3 / %q", got.StorageBackend, got.StorageRef, newRef)
+		}
+		if got.ContentHash != computedHash {
+			t.Fatalf("Get after migrate ContentHash = %q, want backfilled %q", got.ContentHash, computedHash)
+		}
+
+		// Idempotent resume: re-running against the now-s3-backed row must
+		// be a no-op, not a second write.
+		doneAgain, err := repo.MigrateStorageBackend(ctx, legacy.ID, "households/should-not-apply.jpg", domain.StorageBackendS3, "ignored")
+		if err != nil {
+			t.Fatalf("second MigrateStorageBackend: %v", err)
+		}
+		if doneAgain {
+			t.Fatal("second MigrateStorageBackend done = true, want false (row is no longer local-backend)")
+		}
+		gotAgain, err := s3Repo.Get(ctx, legacy.ID)
+		if err != nil {
+			t.Fatalf("Get after second migrate attempt: %v", err)
+		}
+		if gotAgain.StorageRef != newRef {
+			t.Fatalf("StorageRef changed on the no-op second call: got %q, want unchanged %q", gotAgain.StorageRef, newRef)
+		}
+	})
+
+	t.Run("does not overwrite an existing hash", func(t *testing.T) {
+		hashed := newPhoto(hh, "households/"+hh.String()+"/photos/aa/hashed.jpg", nil)
+		hashed.ContentHash = fakeHash("already-hashed")
+		if err := repo.Create(ctx, hashed); err != nil {
+			t.Fatalf("Create hashed: %v", err)
+		}
+		t.Cleanup(func() { _ = repo.Delete(ctx, hashed.ID) })
+
+		newRef := domain.StorageRef("households/" + hh.String() + "/photos/aa/hashed-migrated.jpg")
+		done, err := repo.MigrateStorageBackend(ctx, hashed.ID, newRef, domain.StorageBackendS3, fakeHash("computed-but-should-be-ignored"))
+		if err != nil {
+			t.Fatalf("MigrateStorageBackend: %v", err)
+		}
+		if !done {
+			t.Fatal("MigrateStorageBackend done = false, want true")
+		}
+		s3Repo := adapter.NewPhotoRepository(pool, domain.StorageBackendS3)
+		got, err := s3Repo.Get(ctx, hashed.ID)
+		if err != nil {
+			t.Fatalf("Get after migrate: %v", err)
+		}
+		if got.ContentHash != fakeHash("already-hashed") {
+			t.Fatalf("ContentHash = %q, want the ORIGINAL hash preserved (COALESCE must not overwrite it)", got.ContentHash)
+		}
+	})
+
+	t.Run("unknown id is a safe no-op", func(t *testing.T) {
+		ghostID := domain.NewPhotoID()
+		done, err := repo.MigrateStorageBackend(ctx, ghostID, "households/ghost.jpg", domain.StorageBackendS3, "")
+		if err != nil {
+			t.Fatalf("MigrateStorageBackend on unknown id: %v", err)
+		}
+		if done {
+			t.Fatal("MigrateStorageBackend on unknown id: done = true, want false")
+		}
+	})
 }
 
 // TestPhotoFindByContentHash covers the repository half of AC3 (content-hash

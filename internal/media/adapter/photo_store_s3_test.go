@@ -270,6 +270,73 @@ func TestS3PhotoStoreValidatesUploadsLikeLocalPhotoStore(t *testing.T) {
 	})
 }
 
+// TestS3PhotoStoreObjectExistsAndPutAt covers NES-133's storage migrator
+// port surface (ObjectExister/RawObjectWriter) against real MinIO:
+// ObjectExists reports false before the key is written and true after,
+// PutAt writes bytes VERBATIM (no sniffing/decoding/hashing) to an EXACT
+// caller-chosen key, and the resulting object is readable back through the
+// ordinary Open path unchanged.
+func TestS3PhotoStoreObjectExistsAndPutAt(t *testing.T) {
+	store := newTestS3Store(t, 10<<20)
+	hh := household.NewHouseholdID()
+	data := jpegBytes(t)
+	ref := domain.StorageRef("households/" + hh.String() + "/photos/aa/put-at.jpg")
+
+	exists, err := store.ObjectExists(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ObjectExists before PutAt: %v", err)
+	}
+	if exists {
+		t.Fatal("ObjectExists before PutAt = true, want false")
+	}
+
+	if err := store.PutAt(context.Background(), ref, "image/jpeg", bytes.NewReader(data)); err != nil {
+		t.Fatalf("PutAt: %v", err)
+	}
+
+	exists, err = store.ObjectExists(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ObjectExists after PutAt: %v", err)
+	}
+	if !exists {
+		t.Fatal("ObjectExists after PutAt = false, want true")
+	}
+
+	rc, err := store.Open(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Open after PutAt: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read PutAt object: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("PutAt object = %d bytes, want %d matching bytes (verbatim, no re-encoding)", len(got), len(data))
+	}
+
+	// PutAt is a plain overwrite at the same key — content-addressed dedup
+	// upstream (photoMigrator) is what makes re-calling this a no-op in
+	// practice via ObjectExists, not any special behavior on PutAt itself.
+	if err := store.PutAt(context.Background(), ref, "image/jpeg", bytes.NewReader(data)); err != nil {
+		t.Fatalf("second PutAt to the same key: %v", err)
+	}
+}
+
+// TestS3PhotoStoreObjectExistsUnknownKey covers ObjectExists' false path
+// for a key that was never written at all, distinct from "written then
+// deleted" (already covered indirectly by other tests' Delete assertions).
+func TestS3PhotoStoreObjectExistsUnknownKey(t *testing.T) {
+	store := newTestS3Store(t, 10<<20)
+	exists, err := store.ObjectExists(context.Background(), domain.StorageRef("households/never/written.jpg"))
+	if err != nil {
+		t.Fatalf("ObjectExists: %v", err)
+	}
+	if exists {
+		t.Fatal("ObjectExists for an unknown key = true, want false")
+	}
+}
+
 // TestS3PhotoStoreSkipsSSEForCustomEndpoint covers a verified, deliberate
 // deviation from the ticket's original SSE assumption: a real MinIO
 // instance with no KMS configured does NOT silently ignore an SSE-S3
@@ -342,6 +409,17 @@ func (f *fakeReaperPhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.S
 	return false, nil
 }
 
+// ListByBackend / MigrateStorageBackend are unused by these reaper-focused
+// tests; implemented only to satisfy the interface (NES-133's storage
+// migrator).
+func (f *fakeReaperPhotoRepo) ListByBackend(context.Context, domain.StorageBackend, domain.PhotoID, int) ([]*domain.Photo, error) {
+	return nil, nil
+}
+
+func (f *fakeReaperPhotoRepo) MigrateStorageBackend(context.Context, domain.PhotoID, domain.StorageRef, domain.StorageBackend, string) (bool, error) {
+	return false, nil
+}
+
 type fakeReaperTaskInstancePhotoRepo struct{ refs []domain.StorageRef }
 
 func (f *fakeReaperTaskInstancePhotoRepo) Create(context.Context, *domain.TaskInstancePhoto) error {
@@ -378,12 +456,27 @@ func (f *fakeReaperTaskInstancePhotoRepo) DeleteUploadedBefore(context.Context, 
 	return 0, nil
 }
 
+func (f *fakeReaperTaskInstancePhotoRepo) CountUploadedBefore(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeReaperTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref domain.StorageRef, _ domain.StorageBackend) (bool, error) {
 	for _, r := range f.refs {
 		if r == ref {
 			return true, nil
 		}
 	}
+	return false, nil
+}
+
+// ListByBackend / MigrateStorageBackend are unused by these reaper-focused
+// tests; implemented only to satisfy the interface (NES-133's storage
+// migrator).
+func (f *fakeReaperTaskInstancePhotoRepo) ListByBackend(context.Context, domain.StorageBackend, domain.TaskInstancePhotoID, int) ([]*domain.TaskInstancePhoto, error) {
+	return nil, nil
+}
+
+func (f *fakeReaperTaskInstancePhotoRepo) MigrateStorageBackend(context.Context, domain.TaskInstancePhotoID, domain.StorageRef, domain.StorageBackend) (bool, error) {
 	return false, nil
 }
 

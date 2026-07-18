@@ -107,6 +107,10 @@ func (f *fakeTaskInstancePhotoRepoHandler) ListAllStorageRefs(context.Context, m
 	return nil, nil
 }
 
+func (f *fakeTaskInstancePhotoRepoHandler) CountUploadedBefore(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeTaskInstancePhotoRepoHandler) DeleteUploadedBefore(context.Context, time.Time) (int64, error) {
 	return 0, nil
 }
@@ -115,6 +119,17 @@ func (f *fakeTaskInstancePhotoRepoHandler) DeleteUploadedBefore(context.Context,
 // implemented only to satisfy the interface (NES-132's reaper TOCTOU
 // recheck).
 func (f *fakeTaskInstancePhotoRepoHandler) ExistsByStorageRef(context.Context, mediadomain.StorageRef, mediadomain.StorageBackend) (bool, error) {
+	return false, nil
+}
+
+// ListByBackend / MigrateStorageBackend are unused by this file's
+// upload-focused tests; implemented only to satisfy the interface (NES-133's
+// storage migrator).
+func (f *fakeTaskInstancePhotoRepoHandler) ListByBackend(context.Context, mediadomain.StorageBackend, mediadomain.TaskInstancePhotoID, int) ([]*mediadomain.TaskInstancePhoto, error) {
+	return nil, nil
+}
+
+func (f *fakeTaskInstancePhotoRepoHandler) MigrateStorageBackend(context.Context, mediadomain.TaskInstancePhotoID, mediadomain.StorageRef, mediadomain.StorageBackend) (bool, error) {
 	return false, nil
 }
 

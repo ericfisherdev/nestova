@@ -27,6 +27,7 @@ import (
 	mealsdomain "github.com/ericfisherdev/nestova/internal/meals/domain"
 	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
+	mediabootstrap "github.com/ericfisherdev/nestova/internal/media/bootstrap"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
@@ -51,7 +52,7 @@ import (
 // running up to its deadline can still finish during a graceful shutdown.
 const shutdownTimeout = 15 * time.Second
 
-// photoStoreInitTimeout bounds newPhotoStoreResolver's S3 startup
+// photoStoreInitTimeout bounds mediabootstrap.NewPhotoStoreResolver's S3 startup
 // reachability check (HeadBucket, see mediaadapter.NewS3PhotoStore's doc):
 // a network-unreachable S3 endpoint must fail the boot promptly, not hang
 // it indefinitely. Generous enough for a slow LAN MinIO/Garage instance or
@@ -312,7 +313,7 @@ func runServer(logger *slog.Logger) error {
 	// rest of NES-119's media wiring further below, purely because
 	// TaskService needs it now; both consumers below share this single
 	// repository instance.
-	proofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool, mediaStorageBackend(cfg.Media.Backend))
+	proofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool, mediabootstrap.StorageBackend(cfg.Media.Backend))
 	proofPhotoChecker := tasksadapter.NewProofPhotoChecker(proofPhotoRepo)
 
 	// NES-32: task UI wiring — TaskService + HTTP handlers for the tasks list
@@ -506,13 +507,13 @@ func runServer(logger *slog.Logger) error {
 	// for why the WRITE target is deliberately all-or-nothing within one
 	// running deployment); the resolver itself may hold MORE than one
 	// backend's store (the local store is always constructed — see
-	// newPhotoStoreResolver's doc) so reads keep working for any
+	// mediabootstrap.NewPhotoStoreResolver's doc) so reads keep working for any
 	// historical rows a backend switch would otherwise strand. The S3
 	// backend's HeadBucket reachability check is bounded by
 	// photoStoreInitTimeout so an unreachable endpoint fails the boot
 	// promptly rather than hanging it.
 	photoStoreCtx, cancelPhotoStoreCtx := context.WithTimeout(context.Background(), photoStoreInitTimeout)
-	photoStoreResolver, mediaWriteBackend, err := newPhotoStoreResolver(photoStoreCtx, cfg.Media)
+	photoStoreResolver, mediaWriteBackend, err := mediabootstrap.NewPhotoStoreResolver(photoStoreCtx, cfg.Media)
 	cancelPhotoStoreCtx()
 	if err != nil {
 		return fmt.Errorf("create photo store: %w", err)
