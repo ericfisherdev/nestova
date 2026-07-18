@@ -178,6 +178,37 @@ func (r *PhotoRepository) ExistsByStorageRef(ctx context.Context, ref domain.Sto
 	return exists, nil
 }
 
+// ListByBackend returns up to limit photo rows stamped with backend, ordered
+// by id ascending, whose id is strictly greater than afterID (see the
+// domain port doc: NES-133's storage migrator's keyset-paginated batch
+// source), or an empty slice once no more rows match.
+func (r *PhotoRepository) ListByBackend(ctx context.Context, backend domain.StorageBackend, afterID domain.PhotoID, limit int) ([]*domain.Photo, error) {
+	rows, err := r.dbtx.Query(ctx, photoColumns+` WHERE storage_backend = $1 AND id > $2 ORDER BY id LIMIT $3`,
+		backend.String(), afterID.String(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list photos by backend: %w", err)
+	}
+	defer rows.Close()
+	return scanPhotos(rows)
+}
+
+// MigrateStorageBackend flips a local-backend photo row onto newBackend,
+// writing newRef as its new storage_ref and, ONLY when the row's
+// content_sha256 is currently NULL, backfilling it with contentHash (see
+// the domain port doc for the full contract). done reports whether a
+// local-backend row with this id actually matched and was updated.
+func (r *PhotoRepository) MigrateStorageBackend(ctx context.Context, id domain.PhotoID, newRef domain.StorageRef, newBackend domain.StorageBackend, contentHash string) (bool, error) {
+	const q = `
+		UPDATE photo
+		   SET storage_ref = $2, storage_backend = $3, content_sha256 = COALESCE(content_sha256, $4)
+		 WHERE id = $1 AND storage_backend = 'local'`
+	tag, err := r.dbtx.Exec(ctx, q, id.String(), newRef.String(), newBackend.String(), nullableText(contentHash))
+	if err != nil {
+		return false, fmt.Errorf("migrate photo storage backend: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func scanPhotos(rows pgx.Rows) ([]*domain.Photo, error) {
 	photos := make([]*domain.Photo, 0)
 	for rows.Next() {

@@ -211,6 +211,57 @@ func TestReaperRecheckCatchesRowCommittedAfterSnapshot(t *testing.T) {
 	}
 }
 
+// TestReaperRecheckIsPerCandidateNotBatched is a regression test for a
+// review finding on the DryRun refactor: candidate selection used to
+// recheck EVERY candidate up front, in one pass, and ONLY THEN did a
+// separate loop delete them — which reopened exactly the TOCTOU window
+// TestReaperRecheckCatchesRowCommittedAfterSnapshot exists to close, for
+// any commit that lands WHILE an EARLIER candidate in the same Run is
+// being processed (not just before Run starts at all). Two candidates in
+// the same class: deleting the FIRST one (via fakePhotoStore.deleteHook)
+// injects a fresh reference for the SECOND — simulating a row committing
+// mid-Run, between the two candidates' turns. The second candidate must
+// survive, which only happens if its own recheck runs immediately before
+// ITS OWN delete (i.e. AFTER the first candidate has already been fully
+// processed), not in an earlier batched recheck pass completed before any
+// deletes began.
+func TestReaperRecheckIsPerCandidateNotBatched(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * testGraceWindow)
+	refA := domain.StorageRef("households/hh/photos/aa/first.jpg")
+	refB := domain.StorageRef("households/hh/photos/bb/second.jpg")
+
+	photos := newFakePhotoRepo() // both refs unreferenced in the bulk snapshot
+	lister := &fakeObjectLister{objects: map[domain.PhotoClass][]domain.ObjectInfo{
+		domain.PhotoClassAlbum: {
+			{Key: refA, LastModified: old},
+			{Key: refB, LastModified: old},
+		},
+	}}
+	store := &fakePhotoStore{}
+	// Fires exactly when refA is deleted — i.e. WHILE refA is being
+	// processed, before refB's own turn in the loop — simulating a row
+	// committing a reference to refB at that instant.
+	store.deleteHook = func(deleted domain.StorageRef) {
+		if deleted == refA {
+			photos.existsOverride = map[domain.StorageRef]bool{refB: true}
+		}
+	}
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+
+	r := newTestReaper(t, lister, store, photos, choreProofPhotos, 0)
+	result, err := r.Run(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OrphansDeleted[domain.PhotoClassAlbum] != 1 {
+		t.Fatalf("OrphansDeleted[album] = %d, want 1 (only refA — refB's mid-run commit must protect it)", result.OrphansDeleted[domain.PhotoClassAlbum])
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != refA {
+		t.Fatalf("store.deleted = %v, want exactly [refA]", store.deleted)
+	}
+}
+
 // TestReaperWalksBothClasses covers the ticket's "walking BOTH photo
 // classes under their prefixes": an unreferenced object in EACH class is
 // independently detected and deleted in one Run.
@@ -294,6 +345,70 @@ func TestReaperSkipsRetentionWhenDisabled(t *testing.T) {
 	}
 	if len(choreProofPhotos.created) != 1 {
 		t.Fatalf("retention pass ran despite being disabled: %v", choreProofPhotos.created)
+	}
+}
+
+// TestReaperDryRunPreviewsWithoutDeleting covers NES-133's `storage reap
+// --dry-run`: DryRun reports the exact same candidates Run would delete —
+// both the retention row count and each class's orphaned object refs —
+// WITHOUT deleting or removing anything.
+func TestReaperDryRunPreviewsWithoutDeleting(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * testGraceWindow)
+	retention := 30 * 24 * time.Hour
+
+	hh := household.NewHouseholdID()
+	referenced := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: hh, StorageRef: domain.StorageRef("households/" + hh.String() + "/photos/aa/referenced.jpg"), StorageBackend: domain.StorageBackendLocal}
+	photos := newFakePhotoRepo()
+	photos.store[referenced.ID] = referenced
+
+	orphanRef := domain.StorageRef("households/" + hh.String() + "/photos/bb/orphan.jpg")
+	lister := &fakeObjectLister{objects: map[domain.PhotoClass][]domain.ObjectInfo{
+		domain.PhotoClassAlbum: {
+			{Key: referenced.StorageRef, LastModified: old},
+			{Key: orphanRef, LastModified: old},
+		},
+	}}
+	store := &fakePhotoStore{}
+
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+	oldChoreProof := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour)}
+	choreProofPhotos.created = append(choreProofPhotos.created, oldChoreProof)
+
+	r, err := app.NewReaperService(lister, store, domain.StorageBackendLocal, photos, choreProofPhotos, testGraceWindow, retention)
+	if err != nil {
+		t.Fatalf("NewReaperService: %v", err)
+	}
+
+	preview, err := r.DryRun(context.Background(), now)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if preview.RetentionRowsWouldDelete != 1 {
+		t.Fatalf("RetentionRowsWouldDelete = %d, want 1", preview.RetentionRowsWouldDelete)
+	}
+	if got := preview.OrphansWouldDelete[domain.PhotoClassAlbum]; len(got) != 1 || got[0] != orphanRef {
+		t.Fatalf("OrphansWouldDelete[album] = %v, want exactly [%s]", got, orphanRef)
+	}
+
+	// Nothing was actually touched: the row survives, the object survives,
+	// and a subsequent real Run still finds exactly the same work to do.
+	if len(store.deleted) != 0 {
+		t.Fatalf("DryRun deleted objects: %v, want none", store.deleted)
+	}
+	if len(choreProofPhotos.created) != 1 {
+		t.Fatalf("DryRun removed rows: %v, want the row still present", choreProofPhotos.created)
+	}
+
+	result, err := r.Run(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Run after DryRun: %v", err)
+	}
+	if result.RetentionRowsDeleted != 1 {
+		t.Fatalf("Run RetentionRowsDeleted = %d, want 1 (matching the preview)", result.RetentionRowsDeleted)
+	}
+	if result.OrphansDeleted[domain.PhotoClassAlbum] != 1 {
+		t.Fatalf("Run OrphansDeleted[album] = %d, want 1 (matching the preview)", result.OrphansDeleted[domain.PhotoClassAlbum])
 	}
 }
 

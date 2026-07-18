@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -551,6 +552,183 @@ func TestTaskInstancePhotoRepositoryDeleteUploadedBefore(t *testing.T) {
 	}
 	if len(remaining) != 1 || remaining[0].ID != newer.ID {
 		t.Fatalf("remaining rows = %+v, want only the newer row", remaining)
+	}
+}
+
+// TestTaskInstancePhotoRepositoryCountUploadedBefore mirrors
+// TestTaskInstancePhotoRepositoryDeleteUploadedBefore's setup but asserts
+// CountUploadedBefore (NES-133's ReaperService.DryRun preview) reports the
+// SAME count DeleteUploadedBefore would remove, WITHOUT removing anything.
+func TestTaskInstancePhotoRepositoryCountUploadedBefore(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	hh := seedHousehold(t, pool)
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	older := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
+	older.ContentHash = fakeHash("count-older")
+	if err := repo.Create(ctx, older); err != nil {
+		t.Fatalf("Create older: %v", err)
+	}
+	newer := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
+	newer.ContentHash = fakeHash("count-newer")
+	if err := repo.Create(ctx, newer); err != nil {
+		t.Fatalf("Create newer: %v", err)
+	}
+	if !older.UploadedAt.Before(newer.UploadedAt) {
+		t.Fatalf("test precondition failed: older.UploadedAt (%v) is not before newer.UploadedAt (%v)", older.UploadedAt, newer.UploadedAt)
+	}
+
+	n, err := repo.CountUploadedBefore(ctx, newer.UploadedAt)
+	if err != nil {
+		t.Fatalf("CountUploadedBefore: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("CountUploadedBefore = %d, want 1", n)
+	}
+
+	// Nothing was actually deleted.
+	remaining, err := repo.ListByInstance(ctx, hh, instance)
+	if err != nil {
+		t.Fatalf("ListByInstance: %v", err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("CountUploadedBefore deleted rows: remaining = %d, want 2 (both still present)", len(remaining))
+	}
+}
+
+// TestTaskInstancePhotoRepositoryListByBackend mirrors
+// TestPhotoRepositoryListByBackend one table over: rows stamped with the
+// requested backend, ordered by id ascending, respecting afterID and limit.
+func TestTaskInstancePhotoRepositoryListByBackend(t *testing.T) {
+	pool := newTestPool(t)
+	localRepo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	s3Repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendS3)
+	hh := seedHousehold(t, pool)
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	const n = 3
+	for i := 0; i < n; i++ {
+		p := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
+		p.StorageRef = domain.StorageRef(fmt.Sprintf("households/%s/chore-photos/aa/list-by-backend-%d.jpg", hh, i))
+		p.ContentHash = fakeHash(fmt.Sprintf("list-by-backend-local-%d", i))
+		if err := localRepo.Create(ctx, p); err != nil {
+			t.Fatalf("Create local photo %d: %v", i, err)
+		}
+	}
+	s3Photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
+	s3Photo.StorageRef = domain.StorageRef("households/" + hh.String() + "/chore-photos/bb/s3.jpg")
+	s3Photo.ContentHash = fakeHash("list-by-backend-s3")
+	if err := s3Repo.Create(ctx, s3Photo); err != nil {
+		t.Fatalf("Create s3 photo: %v", err)
+	}
+	// Clean up the 's3'-tagged row explicitly: see
+	// TestTaskInstancePhotoRepositoryCreateStampsConfiguredBackend's
+	// identical comment for why a leftover 's3' row would corrupt the
+	// shared test harness's Cleanup for every test that runs after this
+	// one (also backstopped by newTestPool's own preResetSweep, but this
+	// is the correct place to prevent the leak, not just paper over it).
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM task_instance_photo WHERE id = $1`, s3Photo.ID.String()) })
+
+	var (
+		afterID domain.TaskInstancePhotoID
+		got     []*domain.TaskInstancePhoto
+	)
+	for {
+		page, err := localRepo.ListByBackend(ctx, domain.StorageBackendLocal, afterID, 1)
+		if err != nil {
+			t.Fatalf("ListByBackend: %v", err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		got = append(got, page[0])
+		afterID = page[0].ID
+	}
+	if len(got) != n {
+		t.Fatalf("ListByBackend paged %d rows total, want %d", len(got), n)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ID.String() >= got[i].ID.String() {
+			t.Fatalf("ListByBackend did not return ascending id order: %s then %s", got[i-1].ID, got[i].ID)
+		}
+	}
+
+	s3Page, err := localRepo.ListByBackend(ctx, domain.StorageBackendS3, domain.TaskInstancePhotoID{}, 10)
+	if err != nil {
+		t.Fatalf("ListByBackend(s3): %v", err)
+	}
+	if len(s3Page) != 1 || s3Page[0].ID != s3Photo.ID {
+		t.Fatalf("ListByBackend(s3) = %v, want exactly [%s]", s3Page, s3Photo.ID)
+	}
+}
+
+// TestTaskInstancePhotoRepositoryMigrateStorageBackend covers NES-133's
+// migrator's flip for the chore-proof table: a local-backend row is updated
+// to newBackend/newRef, content_sha256 is left untouched (unlike
+// PhotoRepository's counterpart, this table has no legacy-NULL case to
+// backfill), and re-running against an already-migrated (or unknown) id is
+// a safe no-op reporting done=false.
+func TestTaskInstancePhotoRepositoryMigrateStorageBackend(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	hh := seedHousehold(t, pool)
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
+	photo.StorageRef = domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/migrate-me.jpg")
+	photo.ContentHash = fakeHash("migrate-storage-backend")
+	if err := repo.Create(ctx, photo); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// This row is flipped to s3-backend below; clean it up explicitly so
+	// the shared test harness's Cleanup (which rolls migrations all the
+	// way back, including 00032's abort-while-any-s3-row-lingers guard)
+	// never trips over it — mirrors
+	// TestPhotoRepositoryCreateStampsConfiguredBackend's identical pattern.
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM task_instance_photo WHERE id = $1`, photo.ID.String())
+	})
+
+	newRef := domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/migrated.jpg")
+	done, err := repo.MigrateStorageBackend(ctx, photo.ID, newRef, domain.StorageBackendS3)
+	if err != nil {
+		t.Fatalf("MigrateStorageBackend: %v", err)
+	}
+	if !done {
+		t.Fatal("MigrateStorageBackend done = false, want true")
+	}
+
+	s3Repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendS3)
+	got, err := s3Repo.Get(ctx, photo.ID)
+	if err != nil {
+		t.Fatalf("Get after migrate: %v", err)
+	}
+	if got.StorageBackend != domain.StorageBackendS3 || got.StorageRef != newRef {
+		t.Fatalf("Get after migrate = backend %q ref %q, want s3 / %q", got.StorageBackend, got.StorageRef, newRef)
+	}
+	if got.ContentHash != fakeHash("migrate-storage-backend") {
+		t.Fatalf("ContentHash changed: got %q, want unchanged", got.ContentHash)
+	}
+
+	doneAgain, err := repo.MigrateStorageBackend(ctx, photo.ID, "households/should-not-apply.jpg", domain.StorageBackendS3)
+	if err != nil {
+		t.Fatalf("second MigrateStorageBackend: %v", err)
+	}
+	if doneAgain {
+		t.Fatal("second MigrateStorageBackend done = true, want false (row is no longer local-backend)")
+	}
+
+	ghostID := domain.NewTaskInstancePhotoID()
+	doneGhost, err := repo.MigrateStorageBackend(ctx, ghostID, "households/ghost.jpg", domain.StorageBackendS3)
+	if err != nil {
+		t.Fatalf("MigrateStorageBackend on unknown id: %v", err)
+	}
+	if doneGhost {
+		t.Fatal("MigrateStorageBackend on unknown id: done = true, want false")
 	}
 }
 

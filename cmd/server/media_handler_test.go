@@ -192,6 +192,25 @@ func (f *fakeMediaPhotoRepo) ExistsByStorageRef(_ context.Context, ref mediadoma
 	return false, nil
 }
 
+// ListByBackend / MigrateStorageBackend are unused by these handler tests;
+// implemented only to satisfy the interface (NES-133's storage migrator).
+func (f *fakeMediaPhotoRepo) ListByBackend(context.Context, mediadomain.StorageBackend, mediadomain.PhotoID, int) ([]*mediadomain.Photo, error) {
+	return nil, nil
+}
+
+func (f *fakeMediaPhotoRepo) MigrateStorageBackend(_ context.Context, id mediadomain.PhotoID, newRef mediadomain.StorageRef, newBackend mediadomain.StorageBackend, contentHash string) (bool, error) {
+	p, ok := f.store[id]
+	if !ok || p.StorageBackend != mediadomain.StorageBackendLocal {
+		return false, nil
+	}
+	p.StorageRef = newRef
+	p.StorageBackend = newBackend
+	if p.ContentHash == "" {
+		p.ContentHash = contentHash
+	}
+	return true, nil
+}
+
 type fakeMediaAlbumRepo struct {
 	store map[mediadomain.AlbumID]*mediadomain.Album
 }

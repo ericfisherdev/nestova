@@ -113,8 +113,10 @@ type S3PhotoStore struct {
 }
 
 var (
-	_ domain.PhotoStore   = (*S3PhotoStore)(nil)
-	_ domain.ObjectLister = (*S3PhotoStore)(nil)
+	_ domain.PhotoStore      = (*S3PhotoStore)(nil)
+	_ domain.ObjectLister    = (*S3PhotoStore)(nil)
+	_ domain.ObjectExister   = (*S3PhotoStore)(nil)
+	_ domain.RawObjectWriter = (*S3PhotoStore)(nil)
 )
 
 // NewS3PhotoStore builds an S3PhotoStore against params and verifies the
@@ -353,6 +355,47 @@ func (s *S3PhotoStore) ListObjects(ctx context.Context, class domain.PhotoClass)
 		}
 	}
 	return objects, nil
+}
+
+// ObjectExists reports whether ref is already stored (an S3 HeadObject,
+// verbatim) without downloading it — NES-133's storage migrator's
+// idempotency check (domain.ObjectExister) before uploading a
+// content-addressed object a different row's migration may have already
+// written at the same key (see PutAt's doc).
+func (s *S3PhotoStore) ObjectExists(ctx context.Context, ref domain.StorageRef) (bool, error) {
+	if _, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(ref.String())}); err != nil {
+		var notFound *types.NotFound
+		if errors.As(err, &notFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("media/adapter: check object exists in s3: %w", err)
+	}
+	return true, nil
+}
+
+// PutAt uploads r's bytes to ref verbatim (domain.RawObjectWriter) — no
+// content sniffing, decode-validation, or hashing, since the caller has
+// already done all of that once (see RawObjectWriter's doc for why this,
+// not Put, is what NES-133's storage migrator calls). Mirrors Put's own
+// SSE-S3/Cache-Control handling exactly (see Put's doc and the requestSSE
+// field doc for why SSE-S3 is endpoint-conditional), so an object the
+// migrator writes is indistinguishable from one a normal upload would have
+// produced at the same key.
+func (s *S3PhotoStore) PutAt(ctx context.Context, ref domain.StorageRef, contentType string, r io.Reader) error {
+	input := &s3.PutObjectInput{
+		Bucket:       aws.String(s.bucket),
+		Key:          aws.String(ref.String()),
+		Body:         r,
+		ContentType:  aws.String(contentType),
+		CacheControl: aws.String(photoBytesCacheControl),
+	}
+	if s.requestSSE {
+		input.ServerSideEncryption = types.ServerSideEncryptionAes256
+	}
+	if _, err := s.uploader.Upload(ctx, input); err != nil { //nolint:staticcheck // SA1019: see the import's doc
+		return fmt.Errorf("media/adapter: put object to s3: %w", err)
+	}
+	return nil
 }
 
 // keyBelongsToClass reports whether key's class-prefix path segment

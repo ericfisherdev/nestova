@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sort"
 	"testing"
 	"time"
 
@@ -193,6 +194,41 @@ func (f *fakeTaskInstancePhotoRepo) ExistsByStorageRef(_ context.Context, ref do
 	return false, nil
 }
 
+// ListByBackend mirrors the real TaskInstancePhotoRepository.ListByBackend
+// (NES-133): rows stamped with backend, ordered by id ascending, id >
+// afterID, capped at limit.
+func (f *fakeTaskInstancePhotoRepo) ListByBackend(_ context.Context, backend domain.StorageBackend, afterID domain.TaskInstancePhotoID, limit int) ([]*domain.TaskInstancePhoto, error) {
+	matches := make([]*domain.TaskInstancePhoto, 0, len(f.created))
+	for _, p := range f.created {
+		if p.StorageBackend == backend && p.ID.String() > afterID.String() {
+			matches = append(matches, p)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].ID.String() < matches[j].ID.String() })
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
+}
+
+// MigrateStorageBackend mirrors the real
+// TaskInstancePhotoRepository.MigrateStorageBackend (NES-133): flips a
+// local-backend row's ref/backend in place, reporting done=false when the
+// row is missing or not currently local-backend.
+func (f *fakeTaskInstancePhotoRepo) MigrateStorageBackend(_ context.Context, id domain.TaskInstancePhotoID, newRef domain.StorageRef, newBackend domain.StorageBackend) (bool, error) {
+	for _, p := range f.created {
+		if p.ID == id {
+			if p.StorageBackend != domain.StorageBackendLocal {
+				return false, nil
+			}
+			p.StorageRef = newRef
+			p.StorageBackend = newBackend
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // DeleteUploadedBefore removes every created row whose UploadedAt precedes
 // cutoff and reports how many were removed — genuinely functional (not a
 // stub) so reaper_service_test.go can reuse this same fake to exercise the
@@ -208,6 +244,20 @@ func (f *fakeTaskInstancePhotoRepo) DeleteUploadedBefore(_ context.Context, cuto
 		kept = append(kept, p)
 	}
 	f.created = kept
+	return n, nil
+}
+
+// CountUploadedBefore mirrors DeleteUploadedBefore's selection but reports
+// the count WITHOUT removing anything — genuinely functional (not a stub)
+// so reaper_service_test.go can reuse this same fake to exercise
+// ReaperService.DryRun's retention preview.
+func (f *fakeTaskInstancePhotoRepo) CountUploadedBefore(_ context.Context, cutoff time.Time) (int64, error) {
+	var n int64
+	for _, p := range f.created {
+		if p.UploadedAt.Before(cutoff) {
+			n++
+		}
+	}
 	return n, nil
 }
 

@@ -46,24 +46,27 @@ var reapedClasses = []domain.PhotoClass{domain.PhotoClassAlbum, domain.PhotoClas
 // yet reached (or already skipped once, on an earlier grace-window-bounded
 // pass) is protected again before it is ever deleted.
 //
-// TOCTOU note (deletion race): sweepClass's referenced-refs snapshot and
-// its object listing are each taken once, up front, but a row can commit —
-// e.g. a restore re-inserting it — at any point after that snapshot. To
-// narrow that window, sweepClass re-checks EACH candidate individually,
-// via a targeted ExistsByStorageRef query, immediately before deleting it
-// (not the stale bulk snapshot) — this closes the gap between the snapshot
-// and each delete down to the single instant between that final check and
-// the delete call itself. That residual instant is NOT closed by this
-// design (a true row-locking, two-phase-commit coordination between the
-// database and the object store would be needed to close it entirely, and
-// is not attempted here) — it is accepted as part of this reaper's
-// operator contract: Run is intended to be invoked by an operator (NES-133's
-// planned `nestova storage` CLI), never automatically (see Run's own doc),
-// and MUST NOT be run concurrently with a database restore. A restore is
-// expected to be performed with the application (and so the reaper) fully
-// quiesced — not serving traffic, not running a reaper pass — which is the
-// realistic operating mode for a single-operator family appliance, not a
-// multi-tenant service under continuous, uncoordinated write load.
+// TOCTOU note (deletion race): orphanCandidates' referenced-refs snapshot
+// and its object listing are each taken once, up front, but a row can
+// commit — e.g. a restore re-inserting it — at any point after that
+// snapshot. To narrow that window, Run re-checks EACH candidate
+// individually, via a targeted ExistsByStorageRef query, in the SAME loop
+// iteration immediately before deleting it (not the stale bulk snapshot,
+// and not a separate recheck pass completed before any deletes begin) —
+// this closes the gap between the snapshot and each delete down to the
+// single instant between that final check and the delete call itself. That
+// residual instant is NOT
+// closed by this design (a true row-locking, two-phase-commit coordination
+// between the database and the object store would be needed to close it
+// entirely, and is not attempted here) — it is accepted as part of this
+// reaper's operator contract: Run is intended to be invoked by an operator
+// (NES-133's `nestova storage reap` command), never automatically (see
+// Run's own doc), and MUST NOT be run concurrently with a database restore.
+// A restore is expected to be performed with the application (and so the
+// reaper) fully quiesced — not serving traffic, not running a reaper pass —
+// which is the realistic operating mode for a single-operator family
+// appliance, not a multi-tenant service under continuous, uncoordinated
+// write load.
 type ReaperService struct {
 	lister domain.ObjectLister
 	store  domain.PhotoStore
@@ -124,6 +127,17 @@ type ReaperResult struct {
 	OrphansDeleted       map[domain.PhotoClass]int
 }
 
+// DryRunResult summarizes one DryRun: how many chore-proof rows the
+// retention pass WOULD delete, and exactly which orphaned objects each
+// class's sweep WOULD delete — refs, not just a count (unlike
+// ReaperResult.OrphansDeleted), so NES-133's `storage reap --dry-run`
+// command can list them for the operator to inspect before ever running
+// the destructive Run.
+type DryRunResult struct {
+	RetentionRowsWouldDelete int64
+	OrphansWouldDelete       map[domain.PhotoClass][]domain.StorageRef
+}
+
 // Run executes one reaper pass (see the type doc for the two-pass order and
 // the restore-safety argument) against now, and returns a summary. now is
 // caller-supplied (mirroring ChoreProofPhotoService.Upload's identical
@@ -166,37 +180,107 @@ func (r *ReaperService) Run(ctx context.Context, now time.Time) (ReaperResult, e
 
 	cutoff := now.Add(-r.graceWindow)
 	for _, class := range reapedClasses {
-		deleted, err := r.sweepClass(ctx, class, cutoff)
+		candidates, err := r.orphanCandidates(ctx, class, cutoff)
 		if err != nil {
 			return ReaperResult{}, err
+		}
+		deleted := 0
+		for _, ref := range candidates {
+			// Targeted recheck, IMMEDIATELY before deleting: see the type
+			// doc's TOCTOU note for why this — not the bulk candidate list
+			// above — is what actually gates the delete. Doing this inside
+			// the SAME loop iteration as the Delete call (rather than as a
+			// separate pass over every candidate first) is what keeps the
+			// window between the check and the delete down to a single
+			// instant: a row that commits while an EARLIER candidate in
+			// this loop is being processed must still be caught here, not
+			// missed because its own recheck already happened before that
+			// commit landed.
+			stillReferenced, err := r.existsByStorageRef(ctx, class, ref)
+			if err != nil {
+				return ReaperResult{}, fmt.Errorf("media/app: recheck object %s before delete: %w", ref, err)
+			}
+			if stillReferenced {
+				continue
+			}
+			if err := r.store.Delete(ctx, ref); err != nil {
+				return ReaperResult{}, fmt.Errorf("media/app: delete orphaned object %s: %w", ref, err)
+			}
+			deleted++
 		}
 		result.OrphansDeleted[class] = deleted
 	}
 	return result, nil
 }
 
-// sweepClass reclaims class's orphaned objects: every stored object not
-// referenced by any row in either table, and older than cutoff (see Run's
-// doc for the grace-window rationale). Returns how many objects were
-// deleted.
-//
-// The bulk referencedRefs snapshot decides which objects are CANDIDATES for
-// deletion; it is deliberately NOT the final word on any individual one —
-// see the type doc's TOCTOU note. Each candidate gets its own fresh
-// existsByStorageRef check immediately before its Delete call, so a row
-// that committed after the snapshot (but before this candidate's turn in
-// the loop) still protects its object.
-func (r *ReaperService) sweepClass(ctx context.Context, class domain.PhotoClass, cutoff time.Time) (int, error) {
+// DryRun previews exactly what the next Run call would delete — the
+// retention pass's row count and each class's orphan sweep's object refs —
+// WITHOUT deleting or removing anything. It is NES-133's `storage reap
+// --dry-run` command's non-destructive preview, driven by the identical
+// candidate-selection logic Run itself uses (same cutoffs, same
+// referencedRefs/existsByStorageRef recheck), so its output is a faithful
+// preview of Run's next call, provided no row commits or object ages past
+// the grace window in between (the type doc's TOCTOU note applies here too,
+// as a staleness risk on the preview rather than a deletion race). Unlike
+// Run, DryRun rechecks each candidate exactly once, at preview time — there
+// is no delete to protect against a later commit, so a single recheck per
+// candidate (the bulk snapshot's own immediate follow-up) is the whole
+// story here.
+func (r *ReaperService) DryRun(ctx context.Context, now time.Time) (DryRunResult, error) {
+	result := DryRunResult{OrphansWouldDelete: make(map[domain.PhotoClass][]domain.StorageRef, len(reapedClasses))}
+
+	if r.choreProofRetention > 0 {
+		cutoff := now.Add(-r.choreProofRetention)
+		n, err := r.choreProofPhotos.CountUploadedBefore(ctx, cutoff)
+		if err != nil {
+			return DryRunResult{}, fmt.Errorf("media/app: preview chore-proof retention: %w", err)
+		}
+		result.RetentionRowsWouldDelete = n
+	}
+
+	cutoff := now.Add(-r.graceWindow)
+	for _, class := range reapedClasses {
+		candidates, err := r.orphanCandidates(ctx, class, cutoff)
+		if err != nil {
+			return DryRunResult{}, err
+		}
+		confirmed := make([]domain.StorageRef, 0, len(candidates))
+		for _, ref := range candidates {
+			stillReferenced, err := r.existsByStorageRef(ctx, class, ref)
+			if err != nil {
+				return DryRunResult{}, fmt.Errorf("media/app: recheck object %s: %w", ref, err)
+			}
+			if stillReferenced {
+				continue
+			}
+			confirmed = append(confirmed, ref)
+		}
+		result.OrphansWouldDelete[class] = confirmed
+	}
+	return result, nil
+}
+
+// orphanCandidates computes class's orphaned-object CANDIDATES from the
+// BULK snapshot only — every stored object not referenced by any row in
+// either table (referencedRefs), and older than cutoff — WITHOUT any
+// per-object recheck. This bulk list is deliberately not the final word on
+// any individual candidate (see the type doc's TOCTOU note): Run performs
+// its own recheck immediately before each Delete, in the same loop
+// iteration, so a row that commits partway through processing this list
+// still protects whichever candidate it now references; DryRun performs a
+// single recheck pass over this same list for its preview. Shared by both
+// so they always start from the identical bulk selection.
+func (r *ReaperService) orphanCandidates(ctx context.Context, class domain.PhotoClass, cutoff time.Time) ([]domain.StorageRef, error) {
 	referenced, err := r.referencedRefs(ctx, class)
 	if err != nil {
-		return 0, fmt.Errorf("media/app: list referenced refs for class %s: %w", class, err)
+		return nil, fmt.Errorf("media/app: list referenced refs for class %s: %w", class, err)
 	}
 	objects, err := r.lister.ListObjects(ctx, class)
 	if err != nil {
-		return 0, fmt.Errorf("media/app: list stored objects for class %s: %w", class, err)
+		return nil, fmt.Errorf("media/app: list stored objects for class %s: %w", class, err)
 	}
 
-	deleted := 0
+	candidates := make([]domain.StorageRef, 0)
 	for _, obj := range objects {
 		if _, ok := referenced[obj.Key]; ok {
 			continue
@@ -204,22 +288,9 @@ func (r *ReaperService) sweepClass(ctx context.Context, class domain.PhotoClass,
 		if obj.LastModified.After(cutoff) {
 			continue
 		}
-		// Targeted recheck, immediately before deleting: see the type doc's
-		// TOCTOU note for why this — not the bulk snapshot above — is what
-		// actually gates the delete.
-		stillReferenced, err := r.existsByStorageRef(ctx, class, obj.Key)
-		if err != nil {
-			return deleted, fmt.Errorf("media/app: recheck object %s before delete: %w", obj.Key, err)
-		}
-		if stillReferenced {
-			continue
-		}
-		if err := r.store.Delete(ctx, obj.Key); err != nil {
-			return deleted, fmt.Errorf("media/app: delete orphaned object %s: %w", obj.Key, err)
-		}
-		deleted++
+		candidates = append(candidates, obj.Key)
 	}
-	return deleted, nil
+	return candidates, nil
 }
 
 // referencedRefs builds the set of StorageRefs class's rows STAMPED WITH
@@ -229,8 +300,8 @@ func (r *ReaperService) sweepClass(ctx context.Context, class domain.PhotoClass,
 // r.backend is passed explicitly (see the type doc's field comment): a
 // content-identical row stamped with a DIFFERENT backend must never shield
 // r.backend's genuine orphan. This is the bulk CANDIDATE-selection snapshot
-// sweepClass filters against — see existsByStorageRef for the per-object
-// recheck that has the final say.
+// orphanCandidates filters against — see existsByStorageRef for the
+// per-object recheck that has the final say.
 func (r *ReaperService) referencedRefs(ctx context.Context, class domain.PhotoClass) (map[domain.StorageRef]struct{}, error) {
 	var refs []domain.StorageRef
 	var err error
@@ -255,7 +326,7 @@ func (r *ReaperService) referencedRefs(ctx context.Context, class domain.PhotoCl
 // existsByStorageRef is referencedRefs' single-ref counterpart: a fresh,
 // targeted query (filtered to r.backend, for the same reason
 // referencedRefs' doc explains) against whichever repository owns class,
-// run by sweepClass immediately before it would otherwise delete ref's
+// run by Run's own loop immediately before it would otherwise delete ref's
 // object — see the type doc's TOCTOU note for why this, not the bulk
 // snapshot, is authoritative at delete time.
 func (r *ReaperService) existsByStorageRef(ctx context.Context, class domain.PhotoClass, ref domain.StorageRef) (bool, error) {

@@ -343,6 +343,14 @@ type TaskInstancePhotoRepository interface {
 	// direct object delete here).
 	DeleteUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error)
 
+	// CountUploadedBefore reports how many chore-proof photo rows currently
+	// have an UploadedAt strictly earlier than cutoff, WITHOUT deleting them
+	// — DeleteUploadedBefore's read-only counterpart, used by
+	// ReaperService.DryRun (NES-133's `storage reap --dry-run`) to preview
+	// exactly how many rows the retention pass WOULD remove on the next
+	// real Run, without actually removing them.
+	CountUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error)
+
 	// ExistsByStorageRef reports whether any chore-proof photo row STAMPED
 	// WITH backend currently references ref, across every household —
 	// mirrors PhotoRepository.ExistsByStorageRef exactly, including the
@@ -351,6 +359,27 @@ type TaskInstancePhotoRepository interface {
 	// backend must be explicit (content-addressed key collisions across
 	// backends).
 	ExistsByStorageRef(ctx context.Context, ref StorageRef, backend StorageBackend) (bool, error)
+
+	// ListByBackend returns up to limit rows stamped with backend, ordered
+	// by id ascending, whose id is strictly greater than afterID — mirrors
+	// PhotoRepository.ListByBackend exactly (NES-133's storage migrator's
+	// keyset-paginated batch source of local-backend chore-proof photos);
+	// see that method's doc for the pagination contract and why UUIDv7 ids
+	// make id ascending a reasonable, if not guaranteed, chronological
+	// order.
+	ListByBackend(ctx context.Context, backend StorageBackend, afterID TaskInstancePhotoID, limit int) ([]*TaskInstancePhoto, error)
+
+	// MigrateStorageBackend flips ONE local-backend row onto newBackend,
+	// writing newRef as its new StorageRef — the chore-proof counterpart of
+	// PhotoRepository.MigrateStorageBackend, minus that method's
+	// content-hash backfill parameter: content_sha256 is NOT NULL on this
+	// table from its very first migration (00029; there is no legacy-NULL
+	// case to backfill here), so the migrator only ever verifies it, never
+	// rewrites it. See PhotoRepository.MigrateStorageBackend's doc for the
+	// idempotency guard (conditioned on the row's CURRENT storage_backend
+	// being 'local') and the done=false "nothing to do" contract that makes
+	// re-running the migrator after an interruption safe (NES-133's AC1).
+	MigrateStorageBackend(ctx context.Context, id TaskInstancePhotoID, newRef StorageRef, newBackend StorageBackend) (done bool, err error)
 }
 
 // ChoreProofExif extracts the EXIF facts the chore-proof upload path needs
