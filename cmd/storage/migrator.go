@@ -36,6 +36,23 @@ var migratableClasses = []mediadomain.PhotoClass{mediadomain.PhotoClassAlbum, me
 // than aborting the whole run.
 var errHashMismatch = errors.New("storage: local bytes do not match the row's recorded content hash")
 
+// errTargetIntegrityFailed is returned by migrateBytes' post-upload
+// verification (and sweepOneLeftoverLocalFile's pre-delete check) when the
+// TARGET object cannot be read back at all, or reads back with a hash that
+// does not match the bytes verified locally. This is a DIFFERENT failure
+// from errHashMismatch (which is about the LOCAL file no longer matching
+// the row's recorded hash): errTargetIntegrityFailed covers the target
+// side — a pre-existing object (content-addressed dedup: a different
+// row's earlier upload) that turns out corrupt, an upload that silently
+// truncated in transit, or an object deleted/altered directly in the
+// bucket between the existence check and this verification.
+// ObjectExister.ObjectExists only proves an object is PRESENT at a key; it
+// says nothing about whether its bytes are the bytes this migrator is
+// about to trust — this sentinel is what closes that gap. Like
+// errHashMismatch, a row hitting this keeps serving from local and the
+// migrator continues with the next photo.
+var errTargetIntegrityFailed = errors.New("storage: target object is missing or its bytes do not match the verified local hash")
+
 // migrateOutcome classifies what happened to one row during a migrate pass —
 // reported to photoMigrator's optional progress callback (see
 // migrateProgress) so `storage migrate` can print per-photo/per-batch
@@ -48,6 +65,7 @@ const (
 	migrateOutcomeMigrated migrateOutcome = iota
 	migrateOutcomeAlreadyMigrated
 	migrateOutcomeHashMismatch
+	migrateOutcomeTargetIntegrityFailed
 	migrateOutcomeError
 )
 
@@ -60,6 +78,8 @@ func (o migrateOutcome) String() string {
 		return "already migrated"
 	case migrateOutcomeHashMismatch:
 		return "hash mismatch"
+	case migrateOutcomeTargetIntegrityFailed:
+		return "target integrity failed"
 	case migrateOutcomeError:
 		return "error"
 	default:
@@ -99,8 +119,16 @@ type migrateClassResult struct {
 	Migrated       int
 	AlreadyDone    int
 	HashMismatches int
-	Errors         int
-	DeletedLocal   int
+	// TargetIntegrityFailures counts rows (from either the main migrate
+	// pass or the --delete-local leftover sweep) whose TARGET object was
+	// missing or failed the post-upload/pre-delete hash verification — see
+	// errTargetIntegrityFailed's doc. Tracked separately from
+	// HashMismatches: a hash mismatch means the LOCAL file is suspect: a
+	// target integrity failure means the TARGET copy is suspect, a
+	// meaningfully different problem for an operator to investigate.
+	TargetIntegrityFailures int
+	Errors                  int
+	DeletedLocal            int
 }
 
 // migrateResult summarizes an entire Migrate call, one result per processed
@@ -109,11 +137,12 @@ type migrateResult struct {
 	Classes []migrateClassResult
 }
 
-// HasFindings reports whether any class hit a hash mismatch or a hard
-// error — `storage migrate`'s nonzero-exit trigger.
+// HasFindings reports whether any class hit a hash mismatch, a target
+// integrity failure, or a hard error — `storage migrate`'s nonzero-exit
+// trigger.
 func (r migrateResult) HasFindings() bool {
 	for _, c := range r.Classes {
-		if c.HashMismatches > 0 || c.Errors > 0 {
+		if c.HashMismatches > 0 || c.TargetIntegrityFailures > 0 || c.Errors > 0 {
 			return true
 		}
 	}
@@ -261,11 +290,12 @@ func (m *photoMigrator) migrateAlbumClass(ctx context.Context, deleteLocal bool)
 	}
 
 	if deleteLocal {
-		n, err := m.sweepLeftoverLocalAlbumFiles(ctx)
+		n, integrityFailures, err := m.sweepLeftoverLocalAlbumFiles(ctx)
 		if err != nil {
 			return migrateClassResult{}, fmt.Errorf("sweep leftover local album files: %w", err)
 		}
 		result.DeletedLocal += n
+		result.TargetIntegrityFailures += integrityFailures
 	}
 	return result, nil
 }
@@ -287,6 +317,11 @@ func (m *photoMigrator) migrateOneAlbumPhoto(ctx context.Context, photo *mediado
 		if errors.Is(err, errHashMismatch) {
 			result.HashMismatches++
 			m.report(migrateProgress{Class: mediadomain.PhotoClassAlbum, Done: done, Total: total, Outcome: migrateOutcomeHashMismatch, Ref: originalRef})
+			return
+		}
+		if errors.Is(err, errTargetIntegrityFailed) {
+			result.TargetIntegrityFailures++
+			m.report(migrateProgress{Class: mediadomain.PhotoClassAlbum, Done: done, Total: total, Outcome: migrateOutcomeTargetIntegrityFailed, Ref: originalRef, Err: err})
 			return
 		}
 		result.Errors++
@@ -358,11 +393,12 @@ func (m *photoMigrator) migrateChoreProofClass(ctx context.Context, deleteLocal 
 	}
 
 	if deleteLocal {
-		n, err := m.sweepLeftoverLocalChoreProofFiles(ctx)
+		n, integrityFailures, err := m.sweepLeftoverLocalChoreProofFiles(ctx)
 		if err != nil {
 			return migrateClassResult{}, fmt.Errorf("sweep leftover local chore-proof files: %w", err)
 		}
 		result.DeletedLocal += n
+		result.TargetIntegrityFailures += integrityFailures
 	}
 	return result, nil
 }
@@ -378,6 +414,11 @@ func (m *photoMigrator) migrateOneChoreProofPhoto(ctx context.Context, photo *me
 		if errors.Is(err, errHashMismatch) {
 			result.HashMismatches++
 			m.report(migrateProgress{Class: mediadomain.PhotoClassChoreProof, Done: done, Total: total, Outcome: migrateOutcomeHashMismatch, Ref: originalRef})
+			return
+		}
+		if errors.Is(err, errTargetIntegrityFailed) {
+			result.TargetIntegrityFailures++
+			m.report(migrateProgress{Class: mediadomain.PhotoClassChoreProof, Done: done, Total: total, Outcome: migrateOutcomeTargetIntegrityFailed, Ref: originalRef, Err: err})
 			return
 		}
 		result.Errors++
@@ -472,6 +513,17 @@ type migratedRef struct {
 // row — TaskInstancePhoto.ContentHash is NOT NULL from its first migration)
 // skips the mismatch check entirely; the caller backfills content_sha256
 // with the returned migratedRef.hash.
+//
+// Whether the object was JUST uploaded or found via the dedup skip above,
+// migrateBytes downloads it back and re-hashes it before returning success
+// (verifyTargetObject) — ObjectExister.ObjectExists only proves an object
+// is PRESENT at the key, never that its bytes are trustworthy. Skipping
+// this check would let a corrupt pre-existing object (e.g. a prior failed
+// upload, or one damaged directly in the bucket) be silently accepted as
+// "already migrated" — the row would flip to the target backend, and a
+// later --delete-local could then remove the last INTACT copy, since
+// nothing else would ever notice the target was bad. A missing or
+// mismatched target returns errTargetIntegrityFailed instead.
 func (m *photoMigrator) migrateBytes(ctx context.Context, householdID household.HouseholdID, class mediadomain.PhotoClass, ref mediadomain.StorageRef, contentType, expectedHash string) (migratedRef, error) {
 	reader, err := m.localStore.Open(ctx, ref)
 	if err != nil {
@@ -518,7 +570,42 @@ func (m *photoMigrator) migrateBytes(ctx context.Context, householdID household.
 			return migratedRef{}, fmt.Errorf("upload %s to %s: %w", ref, canonicalRef, err)
 		}
 	}
+	if err := m.verifyTargetObject(ctx, canonicalRef, hash); err != nil {
+		return migratedRef{}, err
+	}
 	return migratedRef{ref: canonicalRef, hash: hash}, nil
+}
+
+// verifyTargetObject downloads ref from the TARGET backend and confirms its
+// bytes hash to expectedHash — see migrateBytes' doc for why this runs
+// unconditionally after every upload-or-dedup-skip, and
+// sweepOneLeftoverLocalFile's doc for the second call site (immediately
+// before that pass would otherwise delete a local file). Wraps
+// errTargetIntegrityFailed on ANY failure — the object is missing/
+// unreadable (Open error) or its bytes don't match (hash mismatch) — since
+// both mean the same thing to a caller: the target copy cannot be trusted
+// yet, keep the local copy. Bounded by maxUploadBytes, mirroring
+// migrateBytes' own local-read cap, so a corrupt/oversized object cannot
+// cause unbounded memory use here either.
+func (m *photoMigrator) verifyTargetObject(ctx context.Context, ref mediadomain.StorageRef, expectedHash string) error {
+	reader, err := m.targetStore.Open(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("%w: open target object %s: %v", errTargetIntegrityFailed, ref, err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	hasher := sha256.New()
+	written, err := io.Copy(hasher, io.LimitReader(reader, m.maxUploadBytes+1))
+	if err != nil {
+		return fmt.Errorf("%w: read target object %s: %v", errTargetIntegrityFailed, ref, err)
+	}
+	if written > m.maxUploadBytes {
+		return fmt.Errorf("%w: target object %s exceeds the configured size limit", errTargetIntegrityFailed, ref)
+	}
+	if got := hex.EncodeToString(hasher.Sum(nil)); got != expectedHash {
+		return fmt.Errorf("%w: target object %s hash does not match the verified local hash", errTargetIntegrityFailed, ref)
+	}
+	return nil
 }
 
 // deleteLocalIfUnreferenced deletes ref's local file, but ONLY when no OTHER
@@ -577,95 +664,116 @@ func (m *photoMigrator) deleteLocalIfUnreferenced(ctx context.Context, ref media
 // future ticket could close it by recording the original ref before the
 // flip, or by having `storage verify`/`storage reap` walk MEDIA_ROOT
 // directly.
-func (m *photoMigrator) sweepLeftoverLocalAlbumFiles(ctx context.Context) (int, error) {
-	var (
-		afterID mediadomain.PhotoID
-		deleted int
-	)
+func (m *photoMigrator) sweepLeftoverLocalAlbumFiles(ctx context.Context) (deleted, targetIntegrityFailures int, err error) {
+	var afterID mediadomain.PhotoID
 	for {
 		rows, err := m.photos.ListByBackend(ctx, m.targetBackend, afterID, migrateBatchSize)
 		if err != nil {
-			return deleted, fmt.Errorf("list target-backend album photos: %w", err)
+			return deleted, targetIntegrityFailures, fmt.Errorf("list target-backend album photos: %w", err)
 		}
 		if len(rows) == 0 {
 			break
 		}
 		for _, photo := range rows {
 			afterID = photo.ID
-			ok, err := m.sweepOneLeftoverLocalFile(ctx, photo.StorageRef, photo.ContentHash)
+			ok, integrityFailed, err := m.sweepOneLeftoverLocalFile(ctx, photo.StorageRef, photo.ContentHash)
 			if err != nil {
-				return deleted, err
+				return deleted, targetIntegrityFailures, err
 			}
 			if ok {
 				deleted++
 			}
+			if integrityFailed {
+				targetIntegrityFailures++
+			}
 		}
 	}
-	return deleted, nil
+	return deleted, targetIntegrityFailures, nil
 }
 
 // sweepLeftoverLocalChoreProofFiles is sweepLeftoverLocalAlbumFiles' chore-
 // proof counterpart.
-func (m *photoMigrator) sweepLeftoverLocalChoreProofFiles(ctx context.Context) (int, error) {
-	var (
-		afterID mediadomain.TaskInstancePhotoID
-		deleted int
-	)
+func (m *photoMigrator) sweepLeftoverLocalChoreProofFiles(ctx context.Context) (deleted, targetIntegrityFailures int, err error) {
+	var afterID mediadomain.TaskInstancePhotoID
 	for {
 		rows, err := m.choreProofPhotos.ListByBackend(ctx, m.targetBackend, afterID, migrateBatchSize)
 		if err != nil {
-			return deleted, fmt.Errorf("list target-backend chore-proof photos: %w", err)
+			return deleted, targetIntegrityFailures, fmt.Errorf("list target-backend chore-proof photos: %w", err)
 		}
 		if len(rows) == 0 {
 			break
 		}
 		for _, photo := range rows {
 			afterID = photo.ID
-			ok, err := m.sweepOneLeftoverLocalFile(ctx, photo.StorageRef, photo.ContentHash)
+			ok, integrityFailed, err := m.sweepOneLeftoverLocalFile(ctx, photo.StorageRef, photo.ContentHash)
 			if err != nil {
-				return deleted, err
+				return deleted, targetIntegrityFailures, err
 			}
 			if ok {
 				deleted++
 			}
+			if integrityFailed {
+				targetIntegrityFailures++
+			}
 		}
 	}
-	return deleted, nil
+	return deleted, targetIntegrityFailures, nil
 }
 
 // sweepOneLeftoverLocalFile is the per-row body shared by
 // sweepLeftoverLocalAlbumFiles/sweepLeftoverLocalChoreProofFiles: opens
 // ref's local file (a missing file is simply "nothing to sweep here," not
 // an error — most target-backend rows will never have had a local file to
-// begin with, or already had one cleaned up), re-hashes it, and deletes it
-// only when the hash matches the row's own recorded content hash AND
-// deleteLocalIfUnreferenced's dedup check clears it.
-func (m *photoMigrator) sweepOneLeftoverLocalFile(ctx context.Context, ref mediadomain.StorageRef, expectedHash string) (bool, error) {
+// begin with, or already had one cleaned up), re-hashes it, and — ONLY when
+// that hash matches the row's own recorded content hash — verifies the
+// TARGET object ALSO exists and hashes correctly (verifyTargetObject)
+// before ever deleting the local copy. Skipping this target check would let
+// the sweep remove the last INTACT copy of a photo whose S3 object had
+// gone missing or corrupt out-of-band (deleted directly from the bucket,
+// object-store bit rot, etc.) — the local file is this sweep's ONLY
+// evidence anything is wrong, so it must never be destroyed before that
+// evidence is examined. Returns deleted=false, targetIntegrityFailed=true
+// (not an error) on a missing/mismatched target, so the migrator continues
+// sweeping other rows and simply counts the finding for the operator.
+func (m *photoMigrator) sweepOneLeftoverLocalFile(ctx context.Context, ref mediadomain.StorageRef, expectedHash string) (deleted, targetIntegrityFailed bool, err error) {
 	reader, err := m.localStore.Open(ctx, ref)
 	if err != nil {
 		if errors.Is(err, mediadomain.ErrPhotoNotFound) {
-			return false, nil
+			return false, false, nil
 		}
-		return false, fmt.Errorf("open local file %s for sweep: %w", ref, err)
+		return false, false, fmt.Errorf("open local file %s for sweep: %w", ref, err)
 	}
 	hasher := sha256.New()
 	_, copyErr := io.Copy(hasher, reader)
 	closeErr := reader.Close()
 	if copyErr != nil {
-		return false, fmt.Errorf("hash local file %s for sweep: %w", ref, copyErr)
+		return false, false, fmt.Errorf("hash local file %s for sweep: %w", ref, copyErr)
 	}
 	if closeErr != nil {
-		return false, fmt.Errorf("close local file %s after sweep hash: %w", ref, closeErr)
+		return false, false, fmt.Errorf("close local file %s after sweep hash: %w", ref, closeErr)
 	}
 	hash := hex.EncodeToString(hasher.Sum(nil))
 	if expectedHash == "" || hash != expectedHash {
-		// Never delete on an unverifiable or mismatched hash — a legacy
-		// photo.Photo row that was never backfilled (should not happen post-
-		// migration, since MigrateStorageBackend always backfills, but this
-		// is a defensive floor) or genuine corruption is left in place for
-		// an operator to investigate, exactly like the main loop's inline
-		// hash-mismatch handling.
-		return false, nil
+		// Never delete on an unverifiable or mismatched LOCAL hash — a
+		// legacy photo.Photo row that was never backfilled (should not
+		// happen post-migration, since MigrateStorageBackend always
+		// backfills, but this is a defensive floor) or genuine local
+		// corruption is left in place for an operator to investigate,
+		// exactly like the main loop's inline hash-mismatch handling.
+		return false, false, nil
 	}
-	return m.deleteLocalIfUnreferenced(ctx, ref)
+
+	// The local copy is verified; now confirm the TARGET copy is ALSO
+	// intact before deleting the only other one — see this function's own
+	// doc for why ObjectExists alone (which the earlier migrate pass relied
+	// on before this fix) is not enough here either.
+	if err := m.verifyTargetObject(ctx, ref, hash); err != nil {
+		if errors.Is(err, errTargetIntegrityFailed) {
+			return false, true, nil
+		}
+		return false, false, err
+	}
+
+	deletedLocal, err := m.deleteLocalIfUnreferenced(ctx, ref)
+	return deletedLocal, false, err
 }

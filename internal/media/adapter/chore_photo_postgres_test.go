@@ -155,7 +155,7 @@ func TestTaskInstancePhotoRepositoryCreateStampsConfiguredBackend(t *testing.T) 
 			// test harness's cleanup. TaskInstancePhotoRepository has no
 			// plain Delete-by-id; DeleteUploadedBefore with a cutoff just
 			// past this row's UploadedAt removes exactly it.
-			if _, err := repo.DeleteUploadedBefore(ctx, photo.UploadedAt.Add(time.Second)); err != nil {
+			if _, err := repo.DeleteUploadedBefore(ctx, tc.backend, photo.UploadedAt.Add(time.Second)); err != nil {
 				t.Fatalf("cleanup DeleteUploadedBefore: %v", err)
 			}
 		})
@@ -434,38 +434,25 @@ func TestTaskInstancePhotoRepositoryListAllStorageRefsFiltersByBackend(t *testin
 	sharedRef := domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/shared.jpg")
 	now := time.Now().UTC()
 
-	// DeleteUploadedBefore is NOT backend-scoped (documented KNOWN GAP on
-	// ReaperService.Run's retention pass — it deletes by uploaded_at across
-	// ALL backends), so it can only be used below to remove exactly the
-	// s3-backed row if that row is guaranteed to have the EARLIER
-	// uploaded_at of the two. Insert order therefore controls
-	// uploaded_at ordering here, while taken_at is set explicitly
-	// (backdating the local/"before" row, per the same principle CodeRabbit
-	// asked for on the sibling DeleteUploadedBefore test below) so the
-	// s3-inserted-first "after" row still satisfies the
-	// before-precedes-after domain invariant against the local row
-	// inserted second.
-	s3Photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, now, nil)
-	s3Photo.StorageRef = sharedRef
-	s3Photo.ContentHash = fakeHash("shared-s3-chore")
-	if err := s3Repo.Create(ctx, s3Photo); err != nil {
-		t.Fatalf("Create s3-backed row: %v", err)
-	}
 	localPhoto := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, now.Add(-time.Hour), nil)
 	localPhoto.StorageRef = sharedRef
 	localPhoto.ContentHash = fakeHash("shared-local-chore")
 	if err := localRepo.Create(ctx, localPhoto); err != nil {
 		t.Fatalf("Create local-backed row: %v", err)
 	}
-	if !s3Photo.UploadedAt.Before(localPhoto.UploadedAt) {
-		t.Fatalf("test precondition failed: s3Photo.UploadedAt (%v) is not before localPhoto.UploadedAt (%v)", s3Photo.UploadedAt, localPhoto.UploadedAt)
+	s3Photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, now, nil)
+	s3Photo.StorageRef = sharedRef
+	s3Photo.ContentHash = fakeHash("shared-s3-chore")
+	if err := s3Repo.Create(ctx, s3Photo); err != nil {
+		t.Fatalf("Create s3-backed row: %v", err)
 	}
 	// The down-migration for 00032 hard-aborts while any 's3' row lingers
-	// (NES-132 review) — clean up explicitly (no plain Delete-by-id exists
-	// on this repository; DeleteUploadedBefore with a cutoff of the local
-	// row's own (later) UploadedAt removes exactly the s3 row) so the
-	// shared test harness's Reset never trips it.
-	t.Cleanup(func() { _, _ = s3Repo.DeleteUploadedBefore(ctx, localPhoto.UploadedAt) })
+	// (NES-132 review) — clean up explicitly. DeleteUploadedBefore is now
+	// backend-scoped (NES-133/149), so a cutoff comfortably after both
+	// rows' UploadedAt reliably removes ONLY the s3-backed row, with no
+	// need to depend on upload-time ordering between the two rows the way
+	// an earlier, unscoped version of this method required.
+	t.Cleanup(func() { _, _ = s3Repo.DeleteUploadedBefore(ctx, domain.StorageBackendS3, now.Add(time.Hour)) })
 
 	localRefs, err := localRepo.ListAllStorageRefs(ctx, domain.StorageBackendLocal)
 	if err != nil {
@@ -492,7 +479,7 @@ func TestTaskInstancePhotoRepositoryListAllStorageRefsFiltersByBackend(t *testin
 
 	// Removing only the s3-backed row must leave the local-backed row (same
 	// ref) fully intact and still reported for the local backend.
-	if _, err := s3Repo.DeleteUploadedBefore(ctx, localPhoto.UploadedAt); err != nil {
+	if _, err := s3Repo.DeleteUploadedBefore(ctx, domain.StorageBackendS3, now.Add(time.Hour)); err != nil {
 		t.Fatalf("DeleteUploadedBefore (remove s3-backed row): %v", err)
 	}
 	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendS3); err != nil || exists {
@@ -504,27 +491,46 @@ func TestTaskInstancePhotoRepositoryListAllStorageRefsFiltersByBackend(t *testin
 }
 
 // TestTaskInstancePhotoRepositoryDeleteUploadedBefore covers the optional
-// per-class retention pass (NES-132, ReaperService): a row uploaded before
-// cutoff is removed and counted; a row uploaded on/after cutoff survives.
-// uploaded_at is server-assigned (DEFAULT now()) by Create, so this seeds
-// two rows, captures the second's actual uploaded_at as the cutoff, and
-// asserts only the first (necessarily earlier) row is deleted.
+// per-class retention pass (NES-132, ReaperService): a LOCAL-backend row
+// uploaded before cutoff is removed and counted; a LOCAL-backend row
+// uploaded on/after cutoff survives; and — the NES-133/149 backend-scoping
+// fix — an S3-backend row that is ALSO old enough survives a
+// StorageBackendLocal-scoped call untouched, since retention must never
+// delete a row belonging to a DIFFERENT backend than the one it was asked
+// to scope to (doing so would strand that row's object with no
+// same-backend reaper instance able to ever reclaim it). uploaded_at is
+// server-assigned (DEFAULT now()) by Create, so this seeds three rows,
+// captures the newest local row's actual uploaded_at as the cutoff, and
+// asserts only the older LOCAL row is deleted.
 func TestTaskInstancePhotoRepositoryDeleteUploadedBefore(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	localRepo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	s3Repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendS3)
 	hh := seedHousehold(t, pool)
 	instance := seedTaskInstance(t, pool, hh)
 	ctx := testCtx(t)
 
 	older := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
 	older.ContentHash = fakeHash("retention-older")
-	if err := repo.Create(ctx, older); err != nil {
+	if err := localRepo.Create(ctx, older); err != nil {
 		t.Fatalf("Create older: %v", err)
 	}
 
+	// An S3-backend row, also old, seeded between the two local rows so its
+	// UploadedAt necessarily falls before the cutoff below too — it must
+	// survive a StorageBackendLocal-scoped DeleteUploadedBefore regardless.
+	oldS3 := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
+	oldS3.ContentHash = fakeHash("retention-old-s3")
+	if err := s3Repo.Create(ctx, oldS3); err != nil {
+		t.Fatalf("Create old s3-backed row: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s3Repo.DeleteUploadedBefore(ctx, domain.StorageBackendS3, time.Now().UTC().Add(time.Hour))
+	})
+
 	newer := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
 	newer.ContentHash = fakeHash("retention-newer")
-	if err := repo.Create(ctx, newer); err != nil {
+	if err := localRepo.Create(ctx, newer); err != nil {
 		t.Fatalf("Create newer: %v", err)
 	}
 
@@ -533,12 +539,15 @@ func TestTaskInstancePhotoRepositoryDeleteUploadedBefore(t *testing.T) {
 	// bracketed by sleeps: this is deterministic and CI-pause-proof, and
 	// only relies on the ordering guarantee Postgres itself already gives —
 	// each Create runs in its own implicit (autocommit) transaction, so
-	// newer's now() genuinely postdates older's.
+	// newer's now() genuinely postdates older's (and oldS3's).
 	if !older.UploadedAt.Before(newer.UploadedAt) {
 		t.Fatalf("test precondition failed: older.UploadedAt (%v) is not before newer.UploadedAt (%v)", older.UploadedAt, newer.UploadedAt)
 	}
+	if !oldS3.UploadedAt.Before(newer.UploadedAt) {
+		t.Fatalf("test precondition failed: oldS3.UploadedAt (%v) is not before newer.UploadedAt (%v)", oldS3.UploadedAt, newer.UploadedAt)
+	}
 
-	n, err := repo.DeleteUploadedBefore(ctx, newer.UploadedAt)
+	n, err := localRepo.DeleteUploadedBefore(ctx, domain.StorageBackendLocal, newer.UploadedAt)
 	if err != nil {
 		t.Fatalf("DeleteUploadedBefore: %v", err)
 	}
@@ -546,55 +555,88 @@ func TestTaskInstancePhotoRepositoryDeleteUploadedBefore(t *testing.T) {
 		t.Fatalf("DeleteUploadedBefore deleted %d rows, want 1", n)
 	}
 
-	remaining, err := repo.ListByInstance(ctx, hh, instance)
+	remaining, err := localRepo.ListByInstance(ctx, hh, instance)
 	if err != nil {
 		t.Fatalf("ListByInstance: %v", err)
 	}
-	if len(remaining) != 1 || remaining[0].ID != newer.ID {
-		t.Fatalf("remaining rows = %+v, want only the newer row", remaining)
+	if len(remaining) != 2 {
+		t.Fatalf("remaining rows = %+v, want 2 (newer local row + the untouched s3 row)", remaining)
+	}
+	foundNewer, foundOldS3 := false, false
+	for _, p := range remaining {
+		switch p.ID {
+		case newer.ID:
+			foundNewer = true
+		case oldS3.ID:
+			foundOldS3 = true
+		}
+	}
+	if !foundNewer {
+		t.Fatal("the newer local row should have survived (not old enough for the cutoff)")
+	}
+	if !foundOldS3 {
+		t.Fatal("the old s3-backed row should have survived: DeleteUploadedBefore(local, ...) must not delete an s3-backend row")
 	}
 }
 
-// TestTaskInstancePhotoRepositoryCountUploadedBefore mirrors
+// TestTaskInstancePhotoRepositoryListStorageRefsUploadedBefore mirrors
 // TestTaskInstancePhotoRepositoryDeleteUploadedBefore's setup but asserts
-// CountUploadedBefore (NES-133's ReaperService.DryRun preview) reports the
-// SAME count DeleteUploadedBefore would remove, WITHOUT removing anything.
-func TestTaskInstancePhotoRepositoryCountUploadedBefore(t *testing.T) {
+// ListStorageRefsUploadedBefore (NES-133/149's ReaperService.DryRun
+// retention preview) reports exactly the REFS DeleteUploadedBefore would
+// remove for the SAME backend, WITHOUT removing anything — including the
+// identical backend-scoping guarantee (an s3-backend row's ref is never
+// reported by a StorageBackendLocal-scoped call, even when it is old
+// enough).
+func TestTaskInstancePhotoRepositoryListStorageRefsUploadedBefore(t *testing.T) {
 	pool := newTestPool(t)
-	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	localRepo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	s3Repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendS3)
 	hh := seedHousehold(t, pool)
 	instance := seedTaskInstance(t, pool, hh)
 	ctx := testCtx(t)
 
 	older := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, time.Now().UTC(), nil)
-	older.ContentHash = fakeHash("count-older")
-	if err := repo.Create(ctx, older); err != nil {
+	older.StorageRef = domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/older.jpg")
+	older.ContentHash = fakeHash("list-refs-older")
+	if err := localRepo.Create(ctx, older); err != nil {
 		t.Fatalf("Create older: %v", err)
 	}
+	oldS3 := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
+	oldS3.StorageRef = domain.StorageRef("households/" + hh.String() + "/chore-photos/bb/old-s3.jpg")
+	oldS3.ContentHash = fakeHash("list-refs-old-s3")
+	if err := s3Repo.Create(ctx, oldS3); err != nil {
+		t.Fatalf("Create old s3-backed row: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s3Repo.DeleteUploadedBefore(ctx, domain.StorageBackendS3, time.Now().UTC().Add(time.Hour))
+	})
+
 	newer := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, time.Now().UTC(), nil)
-	newer.ContentHash = fakeHash("count-newer")
-	if err := repo.Create(ctx, newer); err != nil {
+	newer.ContentHash = fakeHash("list-refs-newer")
+	if err := localRepo.Create(ctx, newer); err != nil {
 		t.Fatalf("Create newer: %v", err)
 	}
-	if !older.UploadedAt.Before(newer.UploadedAt) {
-		t.Fatalf("test precondition failed: older.UploadedAt (%v) is not before newer.UploadedAt (%v)", older.UploadedAt, newer.UploadedAt)
+	if !older.UploadedAt.Before(newer.UploadedAt) || !oldS3.UploadedAt.Before(newer.UploadedAt) {
+		t.Fatalf("test precondition failed: older/oldS3 UploadedAt must both precede newer.UploadedAt")
 	}
 
-	n, err := repo.CountUploadedBefore(ctx, newer.UploadedAt)
+	refs, err := localRepo.ListStorageRefsUploadedBefore(ctx, domain.StorageBackendLocal, newer.UploadedAt)
 	if err != nil {
-		t.Fatalf("CountUploadedBefore: %v", err)
+		t.Fatalf("ListStorageRefsUploadedBefore: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("CountUploadedBefore = %d, want 1", n)
+	if len(refs) != 1 || refs[0] != older.StorageRef {
+		t.Fatalf("ListStorageRefsUploadedBefore(local) = %v, want exactly [%s]", refs, older.StorageRef)
 	}
 
-	// Nothing was actually deleted.
-	remaining, err := repo.ListByInstance(ctx, hh, instance)
+	// Nothing was actually deleted: all three rows (older + newer local,
+	// plus the untouched s3 row — ListByInstance is not backend-filtered)
+	// are still present.
+	remaining, err := localRepo.ListByInstance(ctx, hh, instance)
 	if err != nil {
 		t.Fatalf("ListByInstance: %v", err)
 	}
-	if len(remaining) != 2 {
-		t.Fatalf("CountUploadedBefore deleted rows: remaining = %d, want 2 (both still present)", len(remaining))
+	if len(remaining) != 3 {
+		t.Fatalf("ListStorageRefsUploadedBefore deleted rows: remaining = %d, want 3", len(remaining))
 	}
 }
 

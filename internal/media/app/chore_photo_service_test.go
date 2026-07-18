@@ -229,15 +229,17 @@ func (f *fakeTaskInstancePhotoRepo) MigrateStorageBackend(_ context.Context, id 
 	return false, nil
 }
 
-// DeleteUploadedBefore removes every created row whose UploadedAt precedes
-// cutoff and reports how many were removed — genuinely functional (not a
-// stub) so reaper_service_test.go can reuse this same fake to exercise the
-// retention pass.
-func (f *fakeTaskInstancePhotoRepo) DeleteUploadedBefore(_ context.Context, cutoff time.Time) (int64, error) {
+// DeleteUploadedBefore removes every created row STAMPED WITH backend whose
+// UploadedAt precedes cutoff and reports how many were removed —
+// genuinely functional (not a stub) so reaper_service_test.go can reuse
+// this same fake to exercise the retention pass and its backend scoping
+// (NES-133/149: a reaper bound to one backend must never delete a row
+// belonging to the other).
+func (f *fakeTaskInstancePhotoRepo) DeleteUploadedBefore(_ context.Context, backend domain.StorageBackend, cutoff time.Time) (int64, error) {
 	kept := f.created[:0:0]
 	var n int64
 	for _, p := range f.created {
-		if p.UploadedAt.Before(cutoff) {
+		if p.StorageBackend == backend && p.UploadedAt.Before(cutoff) {
 			n++
 			continue
 		}
@@ -247,18 +249,18 @@ func (f *fakeTaskInstancePhotoRepo) DeleteUploadedBefore(_ context.Context, cuto
 	return n, nil
 }
 
-// CountUploadedBefore mirrors DeleteUploadedBefore's selection but reports
-// the count WITHOUT removing anything — genuinely functional (not a stub)
-// so reaper_service_test.go can reuse this same fake to exercise
-// ReaperService.DryRun's retention preview.
-func (f *fakeTaskInstancePhotoRepo) CountUploadedBefore(_ context.Context, cutoff time.Time) (int64, error) {
-	var n int64
+// ListStorageRefsUploadedBefore mirrors DeleteUploadedBefore's backend-
+// scoped selection but reports the REFS WITHOUT removing anything —
+// genuinely functional (not a stub) so reaper_service_test.go can reuse
+// this same fake to exercise ReaperService.DryRun's retention preview.
+func (f *fakeTaskInstancePhotoRepo) ListStorageRefsUploadedBefore(_ context.Context, backend domain.StorageBackend, cutoff time.Time) ([]domain.StorageRef, error) {
+	refs := make([]domain.StorageRef, 0)
 	for _, p := range f.created {
-		if p.UploadedAt.Before(cutoff) {
-			n++
+		if p.StorageBackend == backend && p.UploadedAt.Before(cutoff) {
+			refs = append(refs, p.StorageRef)
 		}
 	}
-	return n, nil
+	return refs, nil
 }
 
 // --- helpers ---

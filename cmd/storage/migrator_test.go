@@ -492,3 +492,120 @@ func TestPhotoMigratorPropagatesPutAtError(t *testing.T) {
 		t.Fatal("expected an error progress event")
 	}
 }
+
+// TestPhotoMigratorRejectsCorruptPreExistingTargetObject is a CRITICAL
+// regression test: ObjectExists proves an object is PRESENT at the
+// canonical key, never that its bytes are trustworthy. Here a DIFFERENT
+// row already migrated identical-content bytes (the dedup path), but the
+// object that landed at the target is corrupt (simulating a prior failed
+// upload, bit rot, or direct tampering) — migrateBytes' ObjectExists check
+// alone would accept it and flip the row. The post-upload-or-dedup
+// verification (verifyTargetObject) must catch this: the row must stay
+// local-backend, the finding must be counted as a TargetIntegrityFailure
+// (NOT a HashMismatch — the LOCAL bytes are fine; the TARGET copy is the
+// problem), and the migrator must continue past it.
+func TestPhotoMigratorRejectsCorruptPreExistingTargetObject(t *testing.T) {
+	local := newFakeLocalStore()
+	target := newFakeTargetStore()
+	photos := newFakePhotoRepo()
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+
+	hh := household.NewHouseholdID()
+	data := []byte("this photo's bytes are fine locally")
+	ref := canonicalRef(t, hh, mediadomain.PhotoClassAlbum, data)
+	local.seed(ref, data, "image/jpeg")
+	photo := &mediadomain.Photo{
+		ID: mediadomain.NewPhotoID(), HouseholdID: hh, StorageRef: ref,
+		ContentHash: sha256Hex(data), SizeBytes: int64(len(data)), ContentType: "image/jpeg",
+		StorageBackend: mediadomain.StorageBackendLocal,
+	}
+	photos.seed(photo)
+
+	// A DIFFERENT row's earlier upload already put something at the exact
+	// canonical key this row's bytes hash to — but it's corrupt (different
+	// bytes than what the hash promises), simulating a prior failed
+	// upload or an object damaged directly in the bucket.
+	target.seed(ref, []byte("CORRUPT — not the bytes this key's hash promises"), "image/jpeg", time.Now())
+
+	m, events := newTestMigrator(t, local, target, photos, choreProofPhotos)
+	result, err := m.Migrate(context.Background(), migrateOptions{Classes: []mediadomain.PhotoClass{mediadomain.PhotoClassAlbum}})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if photo.StorageBackend != mediadomain.StorageBackendLocal {
+		t.Fatal("row must not be flipped when the pre-existing target object is corrupt")
+	}
+	if result.Classes[0].TargetIntegrityFailures != 1 {
+		t.Fatalf("TargetIntegrityFailures = %d, want 1", result.Classes[0].TargetIntegrityFailures)
+	}
+	if result.Classes[0].HashMismatches != 0 {
+		t.Fatalf("HashMismatches = %d, want 0: the LOCAL bytes are fine, only the target copy is corrupt", result.Classes[0].HashMismatches)
+	}
+	if !result.HasFindings() {
+		t.Fatal("HasFindings() should be true on a target integrity failure")
+	}
+	// PutAt must never have been called: the object already existed
+	// (dedup), so migrateBytes' ObjectExists check correctly skipped
+	// re-uploading — the bug this test guards against is trusting that
+	// skip without verifying what's actually there.
+	if target.putAtCalls != 0 {
+		t.Fatalf("putAtCalls = %d, want 0 (dedup should have skipped upload)", target.putAtCalls)
+	}
+	foundTargetIntegrityFailure := false
+	for _, e := range *events {
+		if e.Outcome == migrateOutcomeTargetIntegrityFailed && e.Ref == ref {
+			foundTargetIntegrityFailure = true
+		}
+	}
+	if !foundTargetIntegrityFailure {
+		t.Fatal("expected a target-integrity-failed progress event")
+	}
+}
+
+// TestPhotoMigratorSweepKeepsLocalFileWhenTargetObjectIsMissing is a
+// CRITICAL regression test for the --delete-local leftover sweep: the
+// sweep pass used to verify only the LOCAL file's hash before deleting it,
+// never confirming the TARGET object it's supposedly redundant with still
+// exists. Here a row is already flipped to the target backend (as if a
+// prior run migrated it), but its target object is missing (deleted
+// out-of-band, or never actually landed due to some earlier bug) while its
+// local file is still present and hash-valid. A --delete-local sweep must
+// NOT delete the only remaining intact copy.
+func TestPhotoMigratorSweepKeepsLocalFileWhenTargetObjectIsMissing(t *testing.T) {
+	local := newFakeLocalStore()
+	target := newFakeTargetStore()
+	photos := newFakePhotoRepo()
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+
+	hh := household.NewHouseholdID()
+	data := []byte("already flipped to s3, but the s3 object vanished")
+	ref := canonicalRef(t, hh, mediadomain.PhotoClassAlbum, data)
+	local.seed(ref, data, "image/jpeg")
+	// Deliberately NOT seeded into target: simulates the object having
+	// been deleted directly from the bucket (or never truly landed)
+	// despite the row already being stamped s3-backend.
+	photo := &mediadomain.Photo{
+		ID: mediadomain.NewPhotoID(), HouseholdID: hh, StorageRef: ref,
+		ContentHash: sha256Hex(data), SizeBytes: int64(len(data)), ContentType: "image/jpeg",
+		StorageBackend: mediadomain.StorageBackendS3,
+	}
+	photos.seed(photo)
+
+	m, _ := newTestMigrator(t, local, target, photos, choreProofPhotos)
+	result, err := m.Migrate(context.Background(), migrateOptions{
+		Classes:     []mediadomain.PhotoClass{mediadomain.PhotoClassAlbum},
+		DeleteLocal: true,
+	})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if result.Classes[0].DeletedLocal != 0 {
+		t.Fatalf("DeletedLocal = %d, want 0: the sweep must never delete the only remaining copy", result.Classes[0].DeletedLocal)
+	}
+	if result.Classes[0].TargetIntegrityFailures != 1 {
+		t.Fatalf("TargetIntegrityFailures = %d, want 1", result.Classes[0].TargetIntegrityFailures)
+	}
+	if _, ok := local.objects[ref]; !ok {
+		t.Fatal("local file must survive: the sweep must not delete it when the target object is missing")
+	}
+}

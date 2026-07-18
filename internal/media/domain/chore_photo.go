@@ -330,9 +330,9 @@ type TaskInstancePhotoRepository interface {
 	// matching chore-proof photos.
 	ListAllStorageRefs(ctx context.Context, backend StorageBackend) ([]StorageRef, error)
 
-	// DeleteUploadedBefore deletes every chore-proof photo row whose
-	// UploadedAt is strictly earlier than cutoff, and returns how many rows
-	// were removed — the optional per-class retention pass
+	// DeleteUploadedBefore deletes every chore-proof photo row STAMPED WITH
+	// backend whose UploadedAt is strictly earlier than cutoff, and returns
+	// how many rows were removed — the optional per-class retention pass
 	// (MediaConfig.ChoreProofRetention, consumed by ReaperService): a
 	// chore-proof photo is transient documentation of a completed chore, not
 	// the family's photo library, so an operator may opt into expiring old
@@ -340,23 +340,33 @@ type TaskInstancePhotoRepository interface {
 	// object is reclaimed by the reaper's ordinary orphan sweep after its
 	// own grace window elapses (see ReaperService's doc for why row deletion
 	// and object deletion are deliberately two separate steps, never a
-	// direct object delete here).
-	DeleteUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// direct object delete here). backend is explicit, for the same reason
+	// ListAllStorageRefs' backend parameter is: a reaper instance bound to
+	// ONE backend must never delete rows belonging to the OTHER backend —
+	// doing so would permanently strand that row's object, since only a
+	// reaper instance for its OWN backend's lister/store can ever reclaim
+	// it (see ReaperService's type doc for the full argument).
+	DeleteUploadedBefore(ctx context.Context, backend StorageBackend, cutoff time.Time) (int64, error)
 
-	// CountUploadedBefore reports how many chore-proof photo rows currently
-	// have an UploadedAt strictly earlier than cutoff, WITHOUT deleting them
-	// — DeleteUploadedBefore's read-only counterpart, used by
+	// ListStorageRefsUploadedBefore returns the StorageRef of every
+	// chore-proof photo row STAMPED WITH backend whose UploadedAt is
+	// strictly earlier than cutoff, WITHOUT deleting anything —
+	// DeleteUploadedBefore's read-only, ref-returning counterpart, used by
 	// ReaperService.DryRun (NES-133's `storage reap --dry-run`) to preview
-	// exactly how many rows the retention pass WOULD remove on the next
-	// real Run, without actually removing them.
-	CountUploadedBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// retention's cascading effect on the SAME Run call's orphan sweep: the
+	// caller needs to know WHICH refs retention would orphan, not merely
+	// how many rows it would remove, so it can model "what would the
+	// orphan sweep see immediately after retention ran" without actually
+	// running either pass. Returns an empty slice (not an error) when none
+	// match.
+	ListStorageRefsUploadedBefore(ctx context.Context, backend StorageBackend, cutoff time.Time) ([]StorageRef, error)
 
 	// ExistsByStorageRef reports whether any chore-proof photo row STAMPED
 	// WITH backend currently references ref, across every household —
 	// mirrors PhotoRepository.ExistsByStorageRef exactly, including the
 	// explicit backend parameter; see that method's doc for both the
-	// TOCTOU-narrowing role it plays in ReaperService.sweepClass and why
-	// backend must be explicit (content-addressed key collisions across
+	// TOCTOU-narrowing role it plays in ReaperService.Run's delete loop and
+	// why backend must be explicit (content-addressed key collisions across
 	// backends).
 	ExistsByStorageRef(ctx context.Context, ref StorageRef, backend StorageBackend) (bool, error)
 

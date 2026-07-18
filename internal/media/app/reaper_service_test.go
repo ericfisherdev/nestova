@@ -301,8 +301,8 @@ func TestReaperAppliesChoreProofRetention(t *testing.T) {
 	retention := 30 * 24 * time.Hour
 
 	choreProofPhotos := newFakeTaskInstancePhotoRepo()
-	old := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour)}
-	fresh := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/bb/fresh.jpg", UploadedAt: now.Add(-5 * 24 * time.Hour)}
+	old := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
+	fresh := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/bb/fresh.jpg", UploadedAt: now.Add(-5 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
 	choreProofPhotos.created = append(choreProofPhotos.created, old, fresh)
 
 	photos := newFakePhotoRepo()
@@ -328,7 +328,7 @@ func TestReaperSkipsRetentionWhenDisabled(t *testing.T) {
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 	choreProofPhotos := newFakeTaskInstancePhotoRepo()
-	old := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-400 * 24 * time.Hour)}
+	old := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-400 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
 	choreProofPhotos.created = append(choreProofPhotos.created, old)
 
 	photos := newFakePhotoRepo()
@@ -372,7 +372,7 @@ func TestReaperDryRunPreviewsWithoutDeleting(t *testing.T) {
 	store := &fakePhotoStore{}
 
 	choreProofPhotos := newFakeTaskInstancePhotoRepo()
-	oldChoreProof := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour)}
+	oldChoreProof := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
 	choreProofPhotos.created = append(choreProofPhotos.created, oldChoreProof)
 
 	r, err := app.NewReaperService(lister, store, domain.StorageBackendLocal, photos, choreProofPhotos, testGraceWindow, retention)
@@ -409,6 +409,177 @@ func TestReaperDryRunPreviewsWithoutDeleting(t *testing.T) {
 	}
 	if result.OrphansDeleted[domain.PhotoClassAlbum] != 1 {
 		t.Fatalf("Run OrphansDeleted[album] = %d, want 1 (matching the preview)", result.OrphansDeleted[domain.PhotoClassAlbum])
+	}
+}
+
+// TestReaperProtectsCrossPrefixReference is a CRITICAL regression test: an
+// object physically filed under the CHORE-PROOF prefix, but referenced
+// only by an ALBUM row (a cross-prefix row — see cmd/storage's verifier.go
+// classifyS3 doc for the identical scenario on the verify side), must
+// survive the orphan sweep. Before this fix, referencedRefs/
+// existsByStorageRef only consulted the repository matching the CLASS the
+// object was listed under (chore-proof here, via lister.ListObjects), so
+// the album row's genuine reference was never seen — the sweep would
+// treat a live reference as an orphan and delete it.
+func TestReaperProtectsCrossPrefixReference(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * testGraceWindow)
+
+	hh := household.NewHouseholdID()
+	// An object physically listed under the CHORE-PROOF prefix...
+	crossPrefixRef := domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/cross-prefix.jpg")
+	lister := &fakeObjectLister{objects: map[domain.PhotoClass][]domain.ObjectInfo{
+		domain.PhotoClassChoreProof: {{Key: crossPrefixRef, LastModified: old}},
+	}}
+	store := &fakePhotoStore{}
+
+	// ...but referenced ONLY by an ALBUM row (the row's own ref embeds the
+	// WRONG class's key prefix for the table it's actually persisted in —
+	// exactly the cross-prefix scenario `storage verify` also flags).
+	photos := newFakePhotoRepo()
+	albumRow := &domain.Photo{ID: domain.NewPhotoID(), HouseholdID: hh, StorageRef: crossPrefixRef, StorageBackend: domain.StorageBackendLocal}
+	photos.store[albumRow.ID] = albumRow
+	choreProofPhotos := newFakeTaskInstancePhotoRepo() // no chore-proof row references it
+
+	r := newTestReaper(t, lister, store, photos, choreProofPhotos, 0)
+	result, err := r.Run(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OrphansDeleted[domain.PhotoClassChoreProof] != 0 {
+		t.Fatalf("OrphansDeleted[chore-proof] = %d, want 0 — the album row's cross-prefix reference must protect the object", result.OrphansDeleted[domain.PhotoClassChoreProof])
+	}
+	if len(store.deleted) != 0 {
+		t.Fatalf("store.deleted = %v, want none", store.deleted)
+	}
+}
+
+// TestReaperRetentionIsScopedToBackend covers the NES-133/149 fix directly:
+// a reaper instance bound to ONE backend (StorageBackendLocal, via
+// newTestReaper) must only apply retention to chore-proof rows STAMPED
+// WITH that backend — an equally-old row stamped with a DIFFERENT backend
+// must survive, since deleting it here would strand its object with no
+// same-backend reaper instance able to ever reclaim it.
+func TestReaperRetentionIsScopedToBackend(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	retention := 30 * 24 * time.Hour
+
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+	oldLocal := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/aa/old-local.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
+	oldS3 := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: "households/hh/chore-photos/bb/old-s3.jpg", UploadedAt: now.Add(-40 * 24 * time.Hour), StorageBackend: domain.StorageBackendS3}
+	choreProofPhotos.created = append(choreProofPhotos.created, oldLocal, oldS3)
+
+	photos := newFakePhotoRepo()
+	lister := &fakeObjectLister{}
+	store := &fakePhotoStore{}
+
+	// newTestReaper binds the reaper to StorageBackendLocal.
+	r := newTestReaper(t, lister, store, photos, choreProofPhotos, retention)
+	result, err := r.Run(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.RetentionRowsDeleted != 1 {
+		t.Fatalf("RetentionRowsDeleted = %d, want 1 (only the local-backend row)", result.RetentionRowsDeleted)
+	}
+	if len(choreProofPhotos.created) != 1 || choreProofPhotos.created[0] != oldS3 {
+		t.Fatalf("retention pass did not leave exactly the untouched s3-backend row: %v", choreProofPhotos.created)
+	}
+}
+
+// TestReaperDryRunModelsRetentionCascadeIntoOrphanPreview covers the
+// NES-133/149 DryRun fidelity fix: a chore-proof row old enough for
+// retention to remove, whose object is ALSO past the grace window, must
+// appear in the SAME preview's orphan-would-delete list — a naive preview
+// built from the CURRENT (pre-retention) referenced set would still see
+// the row "referencing" its object and never report it, even though the
+// very next real Run (retention, then the orphan sweep observing the row
+// genuinely gone) would reap it in that one call.
+func TestReaperDryRunModelsRetentionCascadeIntoOrphanPreview(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * testGraceWindow)
+	retention := 30 * 24 * time.Hour
+
+	hh := household.NewHouseholdID()
+	doomedRef := domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/doomed.jpg")
+	doomedRow := &domain.TaskInstancePhoto{
+		ID: domain.NewTaskInstancePhotoID(), StorageRef: doomedRef,
+		UploadedAt: now.Add(-40 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal,
+	}
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+	choreProofPhotos.created = append(choreProofPhotos.created, doomedRow)
+
+	lister := &fakeObjectLister{objects: map[domain.PhotoClass][]domain.ObjectInfo{
+		domain.PhotoClassChoreProof: {{Key: doomedRef, LastModified: old}},
+	}}
+	store := &fakePhotoStore{}
+	photos := newFakePhotoRepo()
+
+	r := newTestReaper(t, lister, store, photos, choreProofPhotos, retention)
+	preview, err := r.DryRun(context.Background(), now)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if preview.RetentionRowsWouldDelete != 1 {
+		t.Fatalf("RetentionRowsWouldDelete = %d, want 1", preview.RetentionRowsWouldDelete)
+	}
+	got := preview.OrphansWouldDelete[domain.PhotoClassChoreProof]
+	if len(got) != 1 || got[0] != doomedRef {
+		t.Fatalf("OrphansWouldDelete[chore-proof] = %v, want exactly [%s] — the preview must model retention's cascading effect on the SAME Run call's orphan sweep", got, doomedRef)
+	}
+
+	// A subsequent real Run finds exactly the same work the preview
+	// promised: retention deletes the row, then the orphan sweep — now
+	// seeing the row genuinely gone — reaps the object.
+	result, err := r.Run(context.Background(), now)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.RetentionRowsDeleted != 1 {
+		t.Fatalf("Run RetentionRowsDeleted = %d, want 1 (matching the preview)", result.RetentionRowsDeleted)
+	}
+	if result.OrphansDeleted[domain.PhotoClassChoreProof] != 1 {
+		t.Fatalf("Run OrphansDeleted[chore-proof] = %d, want 1 (matching the preview)", result.OrphansDeleted[domain.PhotoClassChoreProof])
+	}
+}
+
+// TestReaperDryRunRetentionDoesNotOrphanSharedRefWithSurvivingRow covers
+// dryRunReferencedRefs' dedup-safety nuance: two chore-proof rows can
+// share one StorageRef (content-addressed dedup — see domain.PhotoClass's
+// dedup note). When only ONE of the pair is old enough for retention to
+// remove while the OTHER survives, the shared ref must still count as
+// referenced in the preview — a plain set-subtraction (rather than the
+// occurrence-counted subtraction this fix implements) would wrongly report
+// the object as an orphan candidate even though the surviving row still
+// needs it.
+func TestReaperDryRunRetentionDoesNotOrphanSharedRefWithSurvivingRow(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * testGraceWindow)
+	retention := 30 * 24 * time.Hour
+
+	hh := household.NewHouseholdID()
+	sharedRef := domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/shared.jpg")
+	doomed := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: sharedRef, UploadedAt: now.Add(-40 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
+	surviving := &domain.TaskInstancePhoto{ID: domain.NewTaskInstancePhotoID(), StorageRef: sharedRef, UploadedAt: now.Add(-5 * 24 * time.Hour), StorageBackend: domain.StorageBackendLocal}
+	choreProofPhotos := newFakeTaskInstancePhotoRepo()
+	choreProofPhotos.created = append(choreProofPhotos.created, doomed, surviving)
+
+	lister := &fakeObjectLister{objects: map[domain.PhotoClass][]domain.ObjectInfo{
+		domain.PhotoClassChoreProof: {{Key: sharedRef, LastModified: old}},
+	}}
+	store := &fakePhotoStore{}
+	photos := newFakePhotoRepo()
+
+	r := newTestReaper(t, lister, store, photos, choreProofPhotos, retention)
+	preview, err := r.DryRun(context.Background(), now)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if preview.RetentionRowsWouldDelete != 1 {
+		t.Fatalf("RetentionRowsWouldDelete = %d, want 1 (only the doomed row)", preview.RetentionRowsWouldDelete)
+	}
+	if got := preview.OrphansWouldDelete[domain.PhotoClassChoreProof]; len(got) != 0 {
+		t.Fatalf("OrphansWouldDelete[chore-proof] = %v, want none: the surviving row still references the shared object", got)
 	}
 }
 

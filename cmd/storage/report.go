@@ -23,6 +23,8 @@ func printMigrateProgress(p migrateProgress) {
 		fmt.Printf("[%s] %d/%d already migrated (resumed): %s\n", p.Class, p.Done, p.Total, p.Ref)
 	case migrateOutcomeHashMismatch:
 		fmt.Printf("[%s] %d/%d HASH MISMATCH, row kept on local: %s\n", p.Class, p.Done, p.Total, p.Ref)
+	case migrateOutcomeTargetIntegrityFailed:
+		fmt.Printf("[%s] %d/%d TARGET INTEGRITY FAILED, row kept on local: %s: %v\n", p.Class, p.Done, p.Total, p.Ref, p.Err)
 	case migrateOutcomeError:
 		fmt.Printf("[%s] %d/%d ERROR on %s: %v\n", p.Class, p.Done, p.Total, p.Ref, p.Err)
 	}
@@ -33,8 +35,8 @@ func printMigrateProgress(p migrateProgress) {
 func printMigrateSummary(result migrateResult) {
 	fmt.Println("\nmigrate summary:")
 	for _, c := range result.Classes {
-		fmt.Printf("  %s: migrated=%d already_done=%d hash_mismatches=%d errors=%d deleted_local=%d\n",
-			c.Class, c.Migrated, c.AlreadyDone, c.HashMismatches, c.Errors, c.DeletedLocal)
+		fmt.Printf("  %s: migrated=%d already_done=%d hash_mismatches=%d target_integrity_failures=%d errors=%d deleted_local=%d\n",
+			c.Class, c.Migrated, c.AlreadyDone, c.HashMismatches, c.TargetIntegrityFailures, c.Errors, c.DeletedLocal)
 	}
 }
 
