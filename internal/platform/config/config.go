@@ -491,10 +491,31 @@ func Load() (Config, error) {
 	collect(err)
 	choreProofFreshnessWindow, err := getduration("MEDIA_CHORE_PROOF_FRESHNESS_WINDOW", defaultChoreProofFreshnessWindow)
 	collect(err)
-	s3PresignTTL, err := getduration("S3_PRESIGN_TTL", defaultS3PresignTTL)
-	collect(err)
-	s3UsePathStyle, err := getbool("S3_USE_PATH_STYLE", false)
-	collect(err)
+
+	// Resolve the media storage backend BEFORE any S3-specific parsing —
+	// every S3_* setting below is parsed/validated ONLY when this
+	// deployment actually selected the s3 backend (NES-132 review): a
+	// local-backend deployment (the default) must never fail startup on a
+	// malformed or partial S3_* value it will never use, e.g. a stray
+	// S3_PRESIGN_TTL left over from a copy-pasted .env. Normalized so
+	// casing/whitespace in the environment does not defeat the enum
+	// validation below, mirroring DB.Provider's identical pattern.
+	mediaBackend := MediaStorageBackend(strings.ToLower(strings.TrimSpace(getenv("MEDIA_STORAGE_BACKEND", string(MediaStorageBackendLocal)))))
+
+	// S3_PRESIGN_TTL/S3_USE_PATH_STYLE are only PARSED (and their parse
+	// errors only collected) when mediaBackend is s3; otherwise the plain
+	// defaults apply unconditionally, without even attempting to read the
+	// raw environment value, so a local deployment's Config always ends up
+	// with the same S3Config it would if S3_* were unset entirely.
+	s3PresignTTL := defaultS3PresignTTL
+	s3UsePathStyle := false
+	if mediaBackend == MediaStorageBackendS3 {
+		s3PresignTTL, err = getduration("S3_PRESIGN_TTL", defaultS3PresignTTL)
+		collect(err)
+		s3UsePathStyle, err = getbool("S3_USE_PATH_STYLE", false)
+		collect(err)
+	}
+
 	choreProofRetentionDays, err := getint64("MEDIA_CHORE_PROOF_RETENTION_DAYS", defaultChoreProofRetentionDays)
 	collect(err)
 	choreProofRetention, err := choreProofRetentionDuration(choreProofRetentionDays)
@@ -607,9 +628,7 @@ func Load() (Config, error) {
 			Root:                      strings.TrimSpace(getenv("MEDIA_ROOT", devMediaRoot)),
 			MaxUploadBytes:            maxUploadBytes,
 			ChoreProofFreshnessWindow: choreProofFreshnessWindow,
-			// Normalized so casing/whitespace in the environment does not defeat
-			// the enum validation below, mirroring DB.Provider's identical pattern.
-			Backend: MediaStorageBackend(strings.ToLower(strings.TrimSpace(getenv("MEDIA_STORAGE_BACKEND", string(MediaStorageBackendLocal))))),
+			Backend:                   mediaBackend,
 			S3: S3Config{
 				Endpoint:        strings.TrimSpace(os.Getenv("S3_ENDPOINT")),
 				Region:          strings.TrimSpace(os.Getenv("S3_REGION")),
@@ -739,10 +758,14 @@ func (c Config) validate() []error {
 		errs = append(errs, fmt.Errorf("MEDIA_STORAGE_BACKEND must be one of %s|%s, got %q",
 			MediaStorageBackendLocal, MediaStorageBackendS3, c.Media.Backend))
 	}
-	// The S3 knobs are only required when the S3 backend is actually
-	// selected — a local-backend deployment (the default) never has to set
-	// any of them, mirroring RECIPES_EXTERNAL_ENABLED's identical
-	// enabled-gates-required-fields pattern below.
+	// EVERY S3_* setting below — required fields, PresignTTL's positivity,
+	// and the credential both-or-neither pairing — is validated ONLY when
+	// the S3 backend is actually selected (NES-132 review, reversing an
+	// earlier "check credentials unconditionally" design): a local-backend
+	// deployment (the default) must never fail startup on a stray or
+	// partial S3_* value it will never use, mirroring
+	// RECIPES_EXTERNAL_ENABLED's identical enabled-gates-required-fields
+	// pattern below.
 	if c.Media.Backend == MediaStorageBackendS3 {
 		if c.Media.S3.Bucket == "" {
 			errs = append(errs, errors.New("S3_BUCKET is required when MEDIA_STORAGE_BACKEND=s3"))
@@ -753,14 +776,12 @@ func (c Config) validate() []error {
 		if c.Media.S3.PresignTTL <= 0 {
 			errs = append(errs, fmt.Errorf("S3_PRESIGN_TTL must be positive, got %v", c.Media.S3.PresignTTL))
 		}
-	}
-	// Static S3 credentials are both-or-neither (mirroring TLS_CERT_FILE/
-	// TLS_KEY_FILE above): a lone access key or secret is always a
-	// misconfiguration, never a valid partial state, regardless of backend —
-	// checked unconditionally so it is caught even before an operator flips
-	// MEDIA_STORAGE_BACKEND to s3.
-	if (c.Media.S3.AccessKeyID == "") != (c.Media.S3.SecretAccessKey == "") {
-		errs = append(errs, errors.New("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
+		// Static S3 credentials are both-or-neither (mirroring
+		// TLS_CERT_FILE/TLS_KEY_FILE above): a lone access key or secret is
+		// always a misconfiguration, never a valid partial state.
+		if (c.Media.S3.AccessKeyID == "") != (c.Media.S3.SecretAccessKey == "") {
+			errs = append(errs, errors.New("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
+		}
 	}
 
 	// PUBLIC_BASE_URL is optional (empty means "derive from the request"), but

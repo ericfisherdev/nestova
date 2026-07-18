@@ -51,6 +51,15 @@ import (
 // running up to its deadline can still finish during a graceful shutdown.
 const shutdownTimeout = 15 * time.Second
 
+// photoStoreInitTimeout bounds newPhotoStoreResolver's S3 startup
+// reachability check (HeadBucket, see mediaadapter.NewS3PhotoStore's doc):
+// a network-unreachable S3 endpoint must fail the boot promptly, not hang
+// it indefinitely. Generous enough for a slow LAN MinIO/Garage instance or
+// real AWS S3 over a home internet connection, short enough that a genuinely
+// unreachable endpoint is reported quickly. Unused when backend=local (the
+// local store has no network call to bound).
+const photoStoreInitTimeout = 10 * time.Second
+
 // Notification dispatcher tuning (NES-24).
 const (
 	// dispatchBatchSize caps how many due notifications one poll cycle claims.
@@ -492,19 +501,26 @@ func runServer(logger *slog.Logger) error {
 	calendarViewHandlers := calendaradapter.NewViewHandlers(unifiedCalendarService, calendarAccountRepo, householdRepo, sm, logger)
 
 	// NES-7/NES-132: media (rotating photo album) — storage, services, and
-	// the /photos UI. photoStore is selected ONCE, app-wide, from
-	// cfg.Media.Backend (see MediaConfig.Backend's doc for why local/S3 are
-	// deliberately all-or-nothing within one running deployment); nothing
-	// downstream of this point knows or cares which concrete backend it got,
-	// since both satisfy domain.PhotoStore identically.
-	photoStore, err := newPhotoStore(context.Background(), cfg.Media)
+	// the /photos UI. photoStoreResolver/mediaWriteBackend are selected
+	// ONCE, app-wide, from cfg.Media.Backend (see MediaConfig.Backend's doc
+	// for why the WRITE target is deliberately all-or-nothing within one
+	// running deployment); the resolver itself may hold MORE than one
+	// backend's store (the local store is always constructed — see
+	// newPhotoStoreResolver's doc) so reads keep working for any
+	// historical rows a backend switch would otherwise strand. The S3
+	// backend's HeadBucket reachability check is bounded by
+	// photoStoreInitTimeout so an unreachable endpoint fails the boot
+	// promptly rather than hanging it.
+	photoStoreCtx, cancelPhotoStoreCtx := context.WithTimeout(context.Background(), photoStoreInitTimeout)
+	photoStoreResolver, mediaWriteBackend, err := newPhotoStoreResolver(photoStoreCtx, cfg.Media)
+	cancelPhotoStoreCtx()
 	if err != nil {
 		return fmt.Errorf("create photo store: %w", err)
 	}
 	albumRepo := mediaadapter.NewAlbumRepository(pool)
-	photoRepo := mediaadapter.NewPhotoRepository(pool, mediaStorageBackend(cfg.Media.Backend))
+	photoRepo := mediaadapter.NewPhotoRepository(pool, mediaWriteBackend)
 	albumPhotoRepo := mediaadapter.NewAlbumPhotoRepository(pool)
-	photoService, err := mediaapp.NewPhotoService(photoStore, mediaadapter.NewExifReader(), photoRepo)
+	photoService, err := mediaapp.NewPhotoService(photoStoreResolver, mediaWriteBackend, mediaadapter.NewExifReader(), photoRepo)
 	if err != nil {
 		return fmt.Errorf("create photo service: %w", err)
 	}
@@ -516,12 +532,12 @@ func runServer(logger *slog.Logger) error {
 
 	// NES-119: chore-proof (before/after) photo upload — a structurally
 	// separate table and storage class (domain.PhotoClassChoreProof) from
-	// the album path above, reusing the same PhotoStore/ExifReader.
+	// the album path above, reusing the same PhotoStoreResolver/ExifReader.
 	// proofPhotoRepo is the same TaskInstancePhotoRepository instance the
 	// NES-120 ProofPhotoChecker above already wraps — constructed once and
 	// shared, not duplicated.
 	choreProofPhotoService, err := mediaapp.NewChoreProofPhotoService(
-		photoStore, mediaadapter.NewExifReader(), proofPhotoRepo,
+		photoStoreResolver, mediaWriteBackend, mediaadapter.NewExifReader(), proofPhotoRepo,
 		cfg.Media.MaxUploadBytes, cfg.Media.ChoreProofFreshnessWindow,
 	)
 	if err != nil {

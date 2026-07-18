@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -30,6 +31,27 @@ import (
 const mediaTestMaxUploadBytes = 10 << 20
 
 // --- media fakes ---
+
+// fakeStoreResolver fakes mediadomain.PhotoStoreResolver: a fixed map of
+// stores per backend (NES-132 mixed-state support), shared by
+// media_handler_test.go/chore_photo_handler_test.go/kiosk_handler_test.go
+// (all package main). newFakeStoreResolver is the common single-backend
+// case every one of these handler tests uses.
+type fakeStoreResolver struct {
+	stores map[mediadomain.StorageBackend]mediadomain.PhotoStore
+}
+
+func newFakeStoreResolver(backend mediadomain.StorageBackend, store mediadomain.PhotoStore) *fakeStoreResolver {
+	return &fakeStoreResolver{stores: map[mediadomain.StorageBackend]mediadomain.PhotoStore{backend: store}}
+}
+
+func (f *fakeStoreResolver) Resolve(backend mediadomain.StorageBackend) (mediadomain.PhotoStore, error) {
+	store, ok := f.stores[backend]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", mediadomain.ErrStoreNotConfigured, backend)
+	}
+	return store, nil
+}
 
 type fakeMediaStore struct {
 	puts         int
@@ -91,13 +113,18 @@ func (fakeMediaExif) TakenAt(mediadomain.RandomAccessReader) *time.Time { return
 type fakeMediaPhotoRepo struct {
 	created []*mediadomain.Photo
 	store   map[mediadomain.PhotoID]*mediadomain.Photo
+	// backend is the StorageBackend Create stamps onto every row it writes
+	// (mirroring the real PhotoRepository.Create), defaulting to
+	// mediadomain.StorageBackendLocal via newFakeMediaPhotoRepo.
+	backend mediadomain.StorageBackend
 }
 
 func newFakeMediaPhotoRepo() *fakeMediaPhotoRepo {
-	return &fakeMediaPhotoRepo{store: map[mediadomain.PhotoID]*mediadomain.Photo{}}
+	return &fakeMediaPhotoRepo{store: map[mediadomain.PhotoID]*mediadomain.Photo{}, backend: mediadomain.StorageBackendLocal}
 }
 
 func (f *fakeMediaPhotoRepo) Create(_ context.Context, p *mediadomain.Photo) error {
+	p.StorageBackend = f.backend
 	f.store[p.ID] = p
 	f.created = append(f.created, p)
 	return nil
@@ -144,19 +171,21 @@ func (f *fakeMediaPhotoRepo) Delete(_ context.Context, id mediadomain.PhotoID) e
 
 // ListAllStorageRefs is unused by these handler tests; implemented only to
 // satisfy the interface (NES-132 added it for the storage reaper).
-func (f *fakeMediaPhotoRepo) ListAllStorageRefs(context.Context) ([]mediadomain.StorageRef, error) {
+func (f *fakeMediaPhotoRepo) ListAllStorageRefs(_ context.Context, backend mediadomain.StorageBackend) ([]mediadomain.StorageRef, error) {
 	refs := make([]mediadomain.StorageRef, 0, len(f.store))
 	for _, p := range f.store {
-		refs = append(refs, p.StorageRef)
+		if p.StorageBackend == backend {
+			refs = append(refs, p.StorageRef)
+		}
 	}
 	return refs, nil
 }
 
 // ExistsByStorageRef is unused by these handler tests; implemented only to
 // satisfy the interface (NES-132's reaper TOCTOU recheck).
-func (f *fakeMediaPhotoRepo) ExistsByStorageRef(_ context.Context, ref mediadomain.StorageRef) (bool, error) {
+func (f *fakeMediaPhotoRepo) ExistsByStorageRef(_ context.Context, ref mediadomain.StorageRef, backend mediadomain.StorageBackend) (bool, error) {
 	for _, p := range f.store {
-		if p.StorageRef == ref {
+		if p.StorageRef == ref && p.StorageBackend == backend {
 			return true, nil
 		}
 	}
@@ -239,7 +268,7 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 
 	albumRepo := newFakeMediaAlbumRepo()
 	albumPhotoRepo := &fakeMediaAlbumPhotoRepo{}
-	photoService, err := mediaapp.NewPhotoService(store, fakeMediaExif{}, photoRepo)
+	photoService, err := mediaapp.NewPhotoService(newFakeStoreResolver(mediadomain.StorageBackendLocal, store), mediadomain.StorageBackendLocal, fakeMediaExif{}, photoRepo)
 	if err != nil {
 		t.Fatalf("NewPhotoService: %v", err)
 	}
@@ -563,7 +592,7 @@ func TestMediaRawStreamsToOwnerAndRejectsOthers(t *testing.T) {
 
 	// Owned photo: streams the bytes.
 	owned := mediadomain.NewPhotoID()
-	repo.store[owned] = &mediadomain.Photo{ID: owned, HouseholdID: member.HouseholdID, StorageRef: "hh/aa/x.jpg"}
+	repo.store[owned] = &mediadomain.Photo{ID: owned, HouseholdID: member.HouseholdID, StorageRef: "hh/aa/x.jpg", StorageBackend: mediadomain.StorageBackendLocal}
 	req := httptest.NewRequest(http.MethodGet, "/photos/"+owned.String()+"/raw", nil)
 	req.Header.Set("Cookie", cookie)
 	rec := httptest.NewRecorder()
@@ -605,7 +634,7 @@ func TestMediaRawRedirectsWhenBackendSupportsDirectURL(t *testing.T) {
 	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
 
 	owned := mediadomain.NewPhotoID()
-	repo.store[owned] = &mediadomain.Photo{ID: owned, HouseholdID: member.HouseholdID, StorageRef: "households/hh/photos/aa/x.jpg"}
+	repo.store[owned] = &mediadomain.Photo{ID: owned, HouseholdID: member.HouseholdID, StorageRef: "households/hh/photos/aa/x.jpg", StorageBackend: mediadomain.StorageBackendLocal}
 	req := httptest.NewRequest(http.MethodGet, "/photos/"+owned.String()+"/raw", nil)
 	req.Header.Set("Cookie", cookie)
 	rec := httptest.NewRecorder()

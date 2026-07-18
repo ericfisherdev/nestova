@@ -27,15 +27,35 @@ ALTER TABLE task_instance_photo
         CHECK (storage_backend IN ('local', 's3'));
 
 -- +goose Down
--- Rolling back to a local-only schema: any 's3'-stamped rows are re-marked
--- 'local' before the CHECK narrows — the pre-NES-132 application can only
--- serve local refs, and leaving 's3' values in place would make this Down
--- fail outright (constraint violation), the same down-path failure class
--- migration 00018 hit. Operators rolling back an S3 deployment must run
--- the NES-133 storage migration back to local storage FIRST; this
--- re-stamp only keeps the schema rollback itself executable.
-UPDATE photo SET storage_backend = 'local' WHERE storage_backend = 's3';
-UPDATE task_instance_photo SET storage_backend = 'local' WHERE storage_backend = 's3';
+-- Rolling back to a local-only schema requires that NO row is currently
+-- stamped 's3'. An earlier version of this migration silently re-stamped
+-- any 's3' row 'local' here so the narrowed CHECK below would never fail —
+-- deliberately REJECTED in favor of the executable precondition below,
+-- because that re-stamp erases the only record of where an s3-backed
+-- row's bytes actually live: the pre-NES-132 application reading a
+-- "local" ref for an object that only ever existed in S3 would find
+-- nothing there — every one of those photos silently breaks, with no
+-- error and no trace of what happened. Aborting loudly here, before any
+-- damage, is the only option that keeps this Down honest about what it can
+-- and cannot safely do; the alternative failure mode this replaces (a bare
+-- CHECK-constraint violation, the same down-path failure class migration
+-- 00018 hit) at least does not corrupt data, but gives no guidance either.
+--
+-- Operators rolling back an S3 deployment must run NES-133's planned
+-- storage migrate-back procedure FIRST — copying every 's3'-stamped row's
+-- bytes to local storage and re-stamping the row 'local' THROUGH THE
+-- APPLICATION, where the object copy actually happens — before running
+-- this Down.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM photo WHERE storage_backend = 's3')
+        OR EXISTS (SELECT 1 FROM task_instance_photo WHERE storage_backend = 's3')
+    THEN
+        RAISE EXCEPTION 'cannot roll back migration 00032: photo and/or task_instance_photo rows are still stamped ''s3''. Run NES-133''s storage migrate-back procedure to move those rows'' bytes to local storage and re-stamp them ''local'' BEFORE rolling back this migration.';
+    END IF;
+END $$;
+-- +goose StatementEnd
 
 ALTER TABLE photo DROP CONSTRAINT photo_storage_backend_check;
 ALTER TABLE photo

@@ -320,11 +320,11 @@ func (r *TaskInstancePhotoRepository) ListByInstances(ctx context.Context, house
 }
 
 // ListAllStorageRefs returns the StorageRef of every chore-proof photo row
-// across every household (see the domain port doc: the storage reaper's
-// source of truth for referenced chore-proof-class objects), or an empty
-// slice when there are none.
-func (r *TaskInstancePhotoRepository) ListAllStorageRefs(ctx context.Context) ([]domain.StorageRef, error) {
-	rows, err := r.dbtx.Query(ctx, `SELECT storage_ref FROM task_instance_photo`)
+// stamped with backend, across every household (see the domain port doc:
+// the storage reaper's source of truth for referenced chore-proof-class
+// objects of that specific backend), or an empty slice when there are none.
+func (r *TaskInstancePhotoRepository) ListAllStorageRefs(ctx context.Context, backend domain.StorageBackend) ([]domain.StorageRef, error) {
+	rows, err := r.dbtx.Query(ctx, `SELECT storage_ref FROM task_instance_photo WHERE storage_backend = $1`, backend.String())
 	if err != nil {
 		return nil, fmt.Errorf("list all task instance photo storage refs: %w", err)
 	}
@@ -354,12 +354,12 @@ func (r *TaskInstancePhotoRepository) DeleteUploadedBefore(ctx context.Context, 
 	return tag.RowsAffected(), nil
 }
 
-// ExistsByStorageRef reports whether any chore-proof photo row currently
-// references ref (see the domain port doc: the reaper's targeted, pre-delete
-// TOCTOU-narrowing recheck).
-func (r *TaskInstancePhotoRepository) ExistsByStorageRef(ctx context.Context, ref domain.StorageRef) (bool, error) {
+// ExistsByStorageRef reports whether any chore-proof photo row STAMPED WITH
+// backend currently references ref (see the domain port doc: the reaper's
+// targeted, pre-delete TOCTOU-narrowing recheck, filtered by backend).
+func (r *TaskInstancePhotoRepository) ExistsByStorageRef(ctx context.Context, ref domain.StorageRef, backend domain.StorageBackend) (bool, error) {
 	var exists bool
-	if err := r.dbtx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM task_instance_photo WHERE storage_ref = $1)`, ref.String()).Scan(&exists); err != nil {
+	if err := r.dbtx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM task_instance_photo WHERE storage_ref = $1 AND storage_backend = $2)`, ref.String(), backend.String()).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check task instance photo storage ref exists: %w", err)
 	}
 	return exists, nil

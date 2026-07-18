@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -97,6 +98,47 @@ type PhotoStore interface {
 	// backend" flag through every consumer, means the two can never drift
 	// out of sync.
 	SupportsDirectURL() bool
+}
+
+// ErrStoreNotConfigured is returned by PhotoStoreResolver.Resolve when this
+// deployment never constructed a PhotoStore for the requested
+// StorageBackend — a genuine misconfiguration (e.g. a local-only
+// deployment holding a row stamped 's3', or vice versa), never a
+// per-request condition a caller can route around, so it propagates as an
+// opaque 500 rather than being mapped to any user-facing 4xx. See
+// PhotoStoreResolver's doc for when this can legitimately happen.
+var ErrStoreNotConfigured = errors.New("media: no PhotoStore configured for this backend")
+
+// PhotoStoreResolver resolves READS to the PhotoStore that actually holds a
+// given row's bytes, keyed by the row's own PERSISTED StorageBackend
+// (Photo.StorageBackend / TaskInstancePhoto.StorageBackend) — NOT by
+// whichever backend is currently configured for NEW writes. This
+// distinction exists because NES-132's "one backend, app-wide" write
+// selection does not retroactively migrate already-stored rows: a
+// deployment that switches MEDIA_STORAGE_BACKEND from local to s3 (or an
+// in-progress NES-133 migration) can genuinely hold BOTH local-backed and
+// s3-backed rows at once, and every read (OpenBytes, RawServe, the
+// EXIF-reopen in PhotoService.Upload) must reach whichever store actually
+// wrote that SPECIFIC row's bytes — resolving by the row's own backend,
+// not the deployment's current write target, is what makes that possible.
+//
+// A PhotoService/ChoreProofPhotoService is constructed with a resolver PLUS
+// a separate write-target StorageBackend (see NewPhotoService's doc):
+// Put/Upload always resolve the WRITE-TARGET backend (new bytes go to
+// wherever this deployment currently writes); every other PhotoStore method
+// resolves the ROW's own backend.
+type PhotoStoreResolver interface {
+	// Resolve returns the PhotoStore constructed for backend, or
+	// ErrStoreNotConfigured when this deployment never constructed one for
+	// it — e.g. a local-only deployment (MEDIA_STORAGE_BACKEND=local, no S3
+	// store built) encountering a row stamped 's3'. The composition root
+	// always constructs a local store (it has a safe zero-config default —
+	// see LocalPhotoStore's doc) regardless of the configured write target,
+	// specifically so historical local-backed rows remain readable after an
+	// operator switches to s3; it constructs an S3 store only when S3 is
+	// actually configured, since that requires real credentials/bucket
+	// config a local-only deployment should never be forced to provide.
+	Resolve(backend StorageBackend) (PhotoStore, error)
 }
 
 // ExifReader extracts the EXIF capture time from a photo's bytes. TakenAt

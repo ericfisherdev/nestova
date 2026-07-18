@@ -62,8 +62,12 @@ var jpegSOIPrefix = []byte{0xFF, 0xD8}
 // catch (e.g. the instance is removed in the narrow window between the
 // preflight and Create, a race Create's own FK violation is the true
 // backstop for).
+// WRITES vs READS resolve to a PhotoStore differently (NES-132 mixed-state
+// fix) — mirrors PhotoService's identical resolver design exactly; see that
+// type's doc for the full argument.
 type ChoreProofPhotoService struct {
-	store           domain.PhotoStore
+	resolver        domain.PhotoStoreResolver
+	writeBackend    domain.StorageBackend
 	exif            domain.ChoreProofExif
 	photos          domain.TaskInstancePhotoRepository
 	maxUploadBytes  int64
@@ -71,8 +75,10 @@ type ChoreProofPhotoService struct {
 }
 
 // NewChoreProofPhotoService constructs the service with injected
-// dependencies, panicking-free — it returns an error instead — on a nil
-// dependency or a non-positive maxUploadBytes/freshnessWindow.
+// dependencies, bound to writeBackend — the StorageBackend Upload writes
+// new chore-proof photos to (mirrors PhotoService's identical contract) —
+// panicking-free: it returns an error instead, on a nil dependency, an
+// invalid writeBackend, or a non-positive maxUploadBytes/freshnessWindow.
 //
 // maxUploadBytes must also leave room for readBounded's own +1
 // overflow-detection byte (see its doc): a maxUploadBytes within 1 of
@@ -82,15 +88,18 @@ type ChoreProofPhotoService struct {
 // defaults to 25 MiB), so this only ever rejects a pathological
 // misconfiguration, not a legitimate large limit.
 func NewChoreProofPhotoService(
-	store domain.PhotoStore,
+	resolver domain.PhotoStoreResolver,
+	writeBackend domain.StorageBackend,
 	exif domain.ChoreProofExif,
 	photos domain.TaskInstancePhotoRepository,
 	maxUploadBytes int64,
 	freshnessWindow time.Duration,
 ) (*ChoreProofPhotoService, error) {
 	switch {
-	case store == nil:
-		return nil, errors.New("media/app: NewChoreProofPhotoService requires a non-nil PhotoStore")
+	case resolver == nil:
+		return nil, errors.New("media/app: NewChoreProofPhotoService requires a non-nil PhotoStoreResolver")
+	case !writeBackend.Valid():
+		return nil, fmt.Errorf("media/app: NewChoreProofPhotoService requires a valid writeBackend, got %q", writeBackend)
 	case exif == nil:
 		return nil, errors.New("media/app: NewChoreProofPhotoService requires a non-nil ChoreProofExif")
 	case photos == nil:
@@ -103,9 +112,19 @@ func NewChoreProofPhotoService(
 		return nil, fmt.Errorf("media/app: NewChoreProofPhotoService requires a positive freshnessWindow, got %v", freshnessWindow)
 	}
 	return &ChoreProofPhotoService{
-		store: store, exif: exif, photos: photos,
+		resolver: resolver, writeBackend: writeBackend, exif: exif, photos: photos,
 		maxUploadBytes: maxUploadBytes, freshnessWindow: freshnessWindow,
 	}, nil
+}
+
+// readStore resolves the PhotoStore that actually holds photo's bytes, via
+// its own persisted StorageBackend — mirrors PhotoService.readStore exactly.
+func (s *ChoreProofPhotoService) readStore(photo *domain.TaskInstancePhoto) (domain.PhotoStore, error) {
+	store, err := s.resolver.Resolve(photo.StorageBackend)
+	if err != nil {
+		return nil, fmt.Errorf("media/app: resolve read store for task instance photo %s (backend %q): %w", photo.ID, photo.StorageBackend, err)
+	}
+	return store, nil
 }
 
 // Upload runs a household-scoped preflight to confirm taskInstanceID exists
@@ -211,7 +230,11 @@ func (s *ChoreProofPhotoService) Upload(
 		return nil, err
 	}
 
-	stored, err := s.store.Put(ctx, householdID, domain.PhotoClassChoreProof, bytes.NewReader(finalBytes))
+	store, err := s.resolver.Resolve(s.writeBackend)
+	if err != nil {
+		return nil, fmt.Errorf("media/app: resolve write store: %w", err)
+	}
+	stored, err := store.Put(ctx, householdID, domain.PhotoClassChoreProof, bytes.NewReader(finalBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +275,11 @@ func (s *ChoreProofPhotoService) OpenBytes(ctx context.Context, householdID hous
 	if err != nil {
 		return nil, "", err
 	}
-	rc, err := s.store.Open(ctx, photo.StorageRef)
+	store, err := s.readStore(photo)
+	if err != nil {
+		return nil, "", err
+	}
+	rc, err := store.Open(ctx, photo.StorageRef)
 	if err != nil {
 		return nil, "", err
 	}
@@ -261,22 +288,27 @@ func (s *ChoreProofPhotoService) OpenBytes(ctx context.Context, householdID hous
 
 // RawServe is ChoreProofPhotoService's mirror of PhotoService.RawServe — see
 // that method's doc for the full rationale (the backend-aware
-// redirect-or-stream seam behind GET /tasks/photos/{id}/raw, NES-132).
-// Returns domain.ErrTaskInstancePhotoNotFound for an unknown or
-// cross-household id, exactly like OpenBytes.
+// redirect-or-stream seam behind GET /tasks/photos/{id}/raw, NES-132, and
+// the read-resolves-by-the-row's-own-backend design). Returns
+// domain.ErrTaskInstancePhotoNotFound for an unknown or cross-household id,
+// exactly like OpenBytes.
 func (s *ChoreProofPhotoService) RawServe(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstancePhotoID) (RawServeResult, error) {
 	photo, err := s.ownedPhoto(ctx, householdID, id)
 	if err != nil {
 		return RawServeResult{}, err
 	}
-	if s.store.SupportsDirectURL() {
-		url, err := s.store.URL(ctx, photo.StorageRef, 0)
+	store, err := s.readStore(photo)
+	if err != nil {
+		return RawServeResult{}, err
+	}
+	if store.SupportsDirectURL() {
+		url, err := store.URL(ctx, photo.StorageRef, 0)
 		if err != nil {
 			return RawServeResult{}, err
 		}
 		return RawServeResult{RedirectURL: url}, nil
 	}
-	rc, err := s.store.Open(ctx, photo.StorageRef)
+	rc, err := store.Open(ctx, photo.StorageRef)
 	if err != nil {
 		return RawServeResult{}, err
 	}

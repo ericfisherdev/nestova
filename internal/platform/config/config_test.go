@@ -440,6 +440,35 @@ func TestLoadValid(t *testing.T) {
 				},
 			},
 		},
+		{
+			// Regression test (NES-132 review): a local-backend deployment
+			// (the default, MEDIA_STORAGE_BACKEND unset) must load
+			// successfully even with a malformed S3_PRESIGN_TTL, an
+			// unparseable S3_USE_PATH_STYLE, and a lone S3_ACCESS_KEY_ID
+			// with no matching secret — every one of those would fail
+			// Load() outright if S3_* parsing/validation were not gated on
+			// the s3 backend actually being selected. The resulting
+			// S3Config carries only the plain defaults/raw strings, never
+			// attempting to interpret the malformed values.
+			name: "local backend ignores malformed and partial s3 settings entirely",
+			env: map[string]string{
+				"S3_PRESIGN_TTL":    "not-a-duration",
+				"S3_USE_PATH_STYLE": "not-a-bool",
+				"S3_ACCESS_KEY_ID":  "minioadmin",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media: config.MediaConfig{
+					Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute,
+					Backend: config.MediaStorageBackendLocal,
+					S3:      config.S3Config{AccessKeyID: "minioadmin", PresignTTL: 15 * time.Minute},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -709,13 +738,23 @@ func TestLoadInvalid(t *testing.T) {
 			wantContains: []string{"S3_PRESIGN_TTL", "positive"},
 		},
 		{
-			name:         "s3 access key without secret",
-			env:          map[string]string{"S3_ACCESS_KEY_ID": "minioadmin"},
+			// S3 credential validation (like every other S3_* check) is gated
+			// on the s3 backend actually being selected (NES-132 review) —
+			// MEDIA_STORAGE_BACKEND=s3 plus the otherwise-required bucket/
+			// region isolate this case to JUST the credential-pairing error.
+			name: "s3 access key without secret",
+			env: map[string]string{
+				"MEDIA_STORAGE_BACKEND": "s3", "S3_BUCKET": "photos", "S3_REGION": "us-east-1",
+				"S3_ACCESS_KEY_ID": "minioadmin",
+			},
 			wantContains: []string{"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"},
 		},
 		{
-			name:         "s3 secret without access key",
-			env:          map[string]string{"S3_SECRET_ACCESS_KEY": "minioadmin"},
+			name: "s3 secret without access key",
+			env: map[string]string{
+				"MEDIA_STORAGE_BACKEND": "s3", "S3_BUCKET": "photos", "S3_REGION": "us-east-1",
+				"S3_SECRET_ACCESS_KEY": "minioadmin",
+			},
 			wantContains: []string{"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"},
 		},
 		{

@@ -375,7 +375,7 @@ func TestTaskInstancePhotoRepositoryListAllStorageRefs(t *testing.T) {
 	repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
 	ctx := testCtx(t)
 
-	if refs, err := repo.ListAllStorageRefs(ctx); err != nil || len(refs) != 0 {
+	if refs, err := repo.ListAllStorageRefs(ctx, domain.StorageBackendLocal); err != nil || len(refs) != 0 {
 		t.Fatalf("ListAllStorageRefs on an empty table = %v (err %v), want an empty slice", refs, err)
 	}
 
@@ -397,7 +397,7 @@ func TestTaskInstancePhotoRepositoryListAllStorageRefs(t *testing.T) {
 		t.Fatalf("Create photoB: %v", err)
 	}
 
-	refs, err := repo.ListAllStorageRefs(ctx)
+	refs, err := repo.ListAllStorageRefs(ctx, domain.StorageBackendLocal)
 	if err != nil {
 		t.Fatalf("ListAllStorageRefs: %v", err)
 	}
@@ -413,6 +413,92 @@ func TestTaskInstancePhotoRepositoryListAllStorageRefs(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("ListAllStorageRefs missing refs: %v", want)
+	}
+}
+
+// TestTaskInstancePhotoRepositoryListAllStorageRefsFiltersByBackend mirrors
+// TestPhotoRepositoryListAllStorageRefsFiltersByBackend (postgres_test.go)
+// one table over: content-addressed keys are identical across backends, so
+// two rows can legitimately share one storage_ref while stamped with
+// DIFFERENT backends — this proves ListAllStorageRefs and
+// ExistsByStorageRef both filter on storage_backend, not just storage_ref.
+func TestTaskInstancePhotoRepositoryListAllStorageRefsFiltersByBackend(t *testing.T) {
+	pool := newTestPool(t)
+	localRepo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendLocal)
+	s3Repo := adapter.NewTaskInstancePhotoRepository(pool, domain.StorageBackendS3)
+	hh := seedHousehold(t, pool)
+	instance := seedTaskInstance(t, pool, hh)
+	ctx := testCtx(t)
+
+	sharedRef := domain.StorageRef("households/" + hh.String() + "/chore-photos/aa/shared.jpg")
+	now := time.Now().UTC()
+
+	// DeleteUploadedBefore is NOT backend-scoped (documented KNOWN GAP on
+	// ReaperService.Run's retention pass — it deletes by uploaded_at across
+	// ALL backends), so it can only be used below to remove exactly the
+	// s3-backed row if that row is guaranteed to have the EARLIER
+	// uploaded_at of the two. Insert order therefore controls
+	// uploaded_at ordering here, while taken_at is set explicitly
+	// (backdating the local/"before" row, per the same principle CodeRabbit
+	// asked for on the sibling DeleteUploadedBefore test below) so the
+	// s3-inserted-first "after" row still satisfies the
+	// before-precedes-after domain invariant against the local row
+	// inserted second.
+	s3Photo := newTaskInstancePhoto(hh, instance, domain.PhotoKindAfter, now, nil)
+	s3Photo.StorageRef = sharedRef
+	s3Photo.ContentHash = fakeHash("shared-s3-chore")
+	if err := s3Repo.Create(ctx, s3Photo); err != nil {
+		t.Fatalf("Create s3-backed row: %v", err)
+	}
+	localPhoto := newTaskInstancePhoto(hh, instance, domain.PhotoKindBefore, now.Add(-time.Hour), nil)
+	localPhoto.StorageRef = sharedRef
+	localPhoto.ContentHash = fakeHash("shared-local-chore")
+	if err := localRepo.Create(ctx, localPhoto); err != nil {
+		t.Fatalf("Create local-backed row: %v", err)
+	}
+	if !s3Photo.UploadedAt.Before(localPhoto.UploadedAt) {
+		t.Fatalf("test precondition failed: s3Photo.UploadedAt (%v) is not before localPhoto.UploadedAt (%v)", s3Photo.UploadedAt, localPhoto.UploadedAt)
+	}
+	// The down-migration for 00032 hard-aborts while any 's3' row lingers
+	// (NES-132 review) — clean up explicitly (no plain Delete-by-id exists
+	// on this repository; DeleteUploadedBefore with a cutoff of the local
+	// row's own (later) UploadedAt removes exactly the s3 row) so the
+	// shared test harness's Reset never trips it.
+	t.Cleanup(func() { _, _ = s3Repo.DeleteUploadedBefore(ctx, localPhoto.UploadedAt) })
+
+	localRefs, err := localRepo.ListAllStorageRefs(ctx, domain.StorageBackendLocal)
+	if err != nil {
+		t.Fatalf("ListAllStorageRefs(local): %v", err)
+	}
+	if len(localRefs) != 1 || localRefs[0] != sharedRef {
+		t.Fatalf("ListAllStorageRefs(local) = %v, want exactly [%s]", localRefs, sharedRef)
+	}
+
+	s3Refs, err := localRepo.ListAllStorageRefs(ctx, domain.StorageBackendS3)
+	if err != nil {
+		t.Fatalf("ListAllStorageRefs(s3): %v", err)
+	}
+	if len(s3Refs) != 1 || s3Refs[0] != sharedRef {
+		t.Fatalf("ListAllStorageRefs(s3) = %v, want exactly [%s]", s3Refs, sharedRef)
+	}
+
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendLocal); err != nil || !exists {
+		t.Fatalf("ExistsByStorageRef(ref, local) = %v, %v, want true, nil", exists, err)
+	}
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendS3); err != nil || !exists {
+		t.Fatalf("ExistsByStorageRef(ref, s3) = %v, %v, want true, nil", exists, err)
+	}
+
+	// Removing only the s3-backed row must leave the local-backed row (same
+	// ref) fully intact and still reported for the local backend.
+	if _, err := s3Repo.DeleteUploadedBefore(ctx, localPhoto.UploadedAt); err != nil {
+		t.Fatalf("DeleteUploadedBefore (remove s3-backed row): %v", err)
+	}
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendS3); err != nil || exists {
+		t.Fatalf("ExistsByStorageRef(ref, s3) after deleting the s3 row = %v, %v, want false, nil", exists, err)
+	}
+	if exists, err := localRepo.ExistsByStorageRef(ctx, sharedRef, domain.StorageBackendLocal); err != nil || !exists {
+		t.Fatalf("ExistsByStorageRef(ref, local) after deleting the UNRELATED s3 row = %v, %v, want true, nil (still referenced)", exists, err)
 	}
 }
 
