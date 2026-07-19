@@ -95,7 +95,17 @@ document.addEventListener('alpine:init', () => {
         // web/components/webauthn_settings.templ's own rendering.
         window.location.reload();
       } catch (err) {
+        // The pending credential's challenge is single-use and is cleared
+        // server-side on EVERY finish attempt, win or lose (see
+        // WebAuthnWebHandlers.RegisterFinish's own doc) — so a failed
+        // finish() can never be retried with the same pendingCredentialJSON.
+        // Reset to the pre-ceremony state so "Add a passkey" reappears and
+        // startRegistration() can run a fresh ceremony, instead of leaving
+        // the member stuck on a nickname field whose "Save" button would
+        // just fail again until they reload the page themselves.
         this.error = describeWebAuthnError(err);
+        this.awaitingNickname = false;
+        this.pendingCredentialJSON = null;
         this.busy = false;
       }
     },

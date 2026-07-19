@@ -253,14 +253,14 @@ func webauthnDeviceRow(d WebAuthnDeviceView, csrfToken string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-2 py-1 text-sm font-medium text-ink\"> <button type=\"submit\" class=\"text-xs font-medium text-sage hover:text-sage-dark\">Save</button></form><p class=\"mt-1 text-xs text-ink-muted\">Added ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" aria-label=\"Rename passkey\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-2 py-1 text-sm font-medium text-ink\"> <button type=\"submit\" class=\"text-xs font-medium text-sage hover:text-sage-dark\">Save</button></form><p class=\"mt-1 text-xs text-ink-muted\">Added ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(d.CreatedAtLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 133, Col: 28}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 134, Col: 28}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -278,7 +278,7 @@ func webauthnDeviceRow(d WebAuthnDeviceView, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(d.LastUsedAtLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 135, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 136, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -297,7 +297,7 @@ func webauthnDeviceRow(d WebAuthnDeviceView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var13 templ.SafeURL
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/settings/webauthn/" + d.ID + "/revoke"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 141, Col: 86}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 142, Col: 86}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -310,7 +310,7 @@ func webauthnDeviceRow(d WebAuthnDeviceView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 142, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/webauthn_settings.templ`, Line: 143, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
