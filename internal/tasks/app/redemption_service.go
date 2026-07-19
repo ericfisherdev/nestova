@@ -190,6 +190,7 @@ func (s *RedemptionService) notifyResolved(ctx context.Context, at time.Time, re
 		Status:       notifydomain.StatusPending,
 		SourceType:   "reward_redemption",
 		SourceID:     &redemptionUUID,
+		EventType:    notifydomain.EventTypeRewardRedemptionResolved,
 	}
 	if err := s.enqueuer.Enqueue(ctx, n); err != nil {
 		s.logger.Error("redemptions: resolution notification enqueue failed",

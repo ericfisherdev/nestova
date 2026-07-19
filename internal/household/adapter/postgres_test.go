@@ -208,3 +208,91 @@ func TestHasAnyHousehold(t *testing.T) {
 		t.Error("HasAnyHousehold (after create) = false, want true")
 	}
 }
+
+// TestSetAndGetQuietHours verifies the NES-139 quiet-hours round trip
+// through the real pgtype.Time codec: a freshly created household has
+// quiet hours disabled, SetQuietHours persists both bounds, and passing
+// nil for both disables them again.
+func TestSetAndGetQuietHours(t *testing.T) {
+	repo := newTestRepo(t)
+	h := seedHousehold(t, repo)
+
+	got, err := repo.GetHousehold(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("GetHousehold (fresh): %v", err)
+	}
+	if got.QuietHoursStart != nil || got.QuietHoursEnd != nil {
+		t.Errorf("fresh household quiet hours = (%v, %v), want (nil, nil)", got.QuietHoursStart, got.QuietHoursEnd)
+	}
+
+	start, end := 22*time.Hour, 7*time.Hour
+	if err := repo.SetQuietHours(testCtx(t), h.ID, &start, &end); err != nil {
+		t.Fatalf("SetQuietHours: %v", err)
+	}
+	got, err = repo.GetHousehold(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("GetHousehold (after set): %v", err)
+	}
+	if got.QuietHoursStart == nil || *got.QuietHoursStart != start {
+		t.Errorf("QuietHoursStart = %v, want %v", got.QuietHoursStart, start)
+	}
+	if got.QuietHoursEnd == nil || *got.QuietHoursEnd != end {
+		t.Errorf("QuietHoursEnd = %v, want %v", got.QuietHoursEnd, end)
+	}
+
+	if err := repo.SetQuietHours(testCtx(t), h.ID, nil, nil); err != nil {
+		t.Fatalf("SetQuietHours (disable): %v", err)
+	}
+	got, err = repo.GetHousehold(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("GetHousehold (after disable): %v", err)
+	}
+	if got.QuietHoursStart != nil || got.QuietHoursEnd != nil {
+		t.Errorf("disabled quiet hours = (%v, %v), want (nil, nil)", got.QuietHoursStart, got.QuietHoursEnd)
+	}
+}
+
+func TestSetQuietHours_UnknownHousehold_ReturnsNotFound(t *testing.T) {
+	repo := newTestRepo(t)
+	start, end := 22*time.Hour, 7*time.Hour
+	err := repo.SetQuietHours(testCtx(t), domain.NewHouseholdID(), &start, &end)
+	if !errors.Is(err, domain.ErrHouseholdNotFound) {
+		t.Errorf("SetQuietHours(unknown household) error = %v, want ErrHouseholdNotFound", err)
+	}
+}
+
+// TestSetQuietHours_OnlyOneBoundSet_Rejected is the regression test for
+// CodeRabbit round 2 (minor finding #3): the repository is the last line
+// of defense against a half-set quiet-hours pair — domain.Household's own
+// doc states both nil means disabled, so exactly one bound set has no
+// defined meaning. Also confirms a rejected call never reaches the
+// database: the household's quiet hours stay exactly as they were before.
+func TestSetQuietHours_OnlyOneBoundSet_Rejected(t *testing.T) {
+	repo := newTestRepo(t)
+	h := seedHousehold(t, repo)
+
+	start := 22 * time.Hour
+	end := 7 * time.Hour
+
+	tests := []struct {
+		name       string
+		start, end *time.Duration
+	}{
+		{"start set, end nil", &start, nil},
+		{"start nil, end set", nil, &end},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := repo.SetQuietHours(testCtx(t), h.ID, tt.start, tt.end); err == nil {
+				t.Fatal("SetQuietHours(exactly one bound set) error = nil, want non-nil")
+			}
+			got, err := repo.GetHousehold(testCtx(t), h.ID)
+			if err != nil {
+				t.Fatalf("GetHousehold: %v", err)
+			}
+			if got.QuietHoursStart != nil || got.QuietHoursEnd != nil {
+				t.Errorf("a rejected SetQuietHours call must not persist anything, got (%v, %v)", got.QuietHoursStart, got.QuietHoursEnd)
+			}
+		})
+	}
+}

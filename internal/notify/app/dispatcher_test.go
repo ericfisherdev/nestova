@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/notify/app"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
@@ -157,6 +159,103 @@ func TestRunOnce_SendFailure_CallsMarkFailed(t *testing.T) {
 	}
 	if len(outbox.sentIDs) != 0 {
 		t.Errorf("outbox.sentIDs = %v, want empty", outbox.sentIDs)
+	}
+}
+
+// newSMSNotification mirrors newInAppNotification but on the SMS channel,
+// with a member and a source reference set — the shape a real
+// RoutingEnqueuer-routed SMS notification would have.
+func newSMSNotification() *domain.Notification {
+	memberID := household.NewMemberID()
+	sourceID := uuid.New()
+	return &domain.Notification{
+		ID:           domain.NewNotificationID(),
+		HouseholdID:  household.NewHouseholdID(),
+		MemberID:     &memberID,
+		Channel:      domain.ChannelSMS,
+		Title:        "Claim expiring soon",
+		Body:         "Complete it soon.",
+		ScheduledFor: time.Now().Add(-time.Second),
+		Status:       domain.StatusPending,
+		SourceType:   "task_instance",
+		SourceID:     &sourceID,
+	}
+}
+
+func TestRunOnce_SMSSendFailure_FallsBackToInApp(t *testing.T) {
+	outbox := &fakeOutbox{}
+	n := newSMSNotification()
+	outbox.due = []*domain.Notification{n}
+
+	sender := &toggleFakeSender{
+		ch:     domain.ChannelSMS,
+		sendFn: func(_ *domain.Notification) error { return domain.ErrMemberNotSMSReady },
+	}
+	d := newDispatcher(t, outbox, []domain.Sender{sender})
+
+	count, err := d.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce error = %v", err)
+	}
+	if count != 1 {
+		t.Errorf("RunOnce count = %d, want 1", count)
+	}
+	// The original SMS notification is marked failed — nothing here
+	// pretends the SMS itself was delivered.
+	if len(outbox.failedIDs) != 1 || outbox.failedIDs[0] != n.ID {
+		t.Fatalf("outbox.failedIDs = %v, want [%v]", outbox.failedIDs, n.ID)
+	}
+	// NES-139 AC: "nothing silently lost" — a NEW in-app notification was
+	// enqueued carrying the same content.
+	if len(outbox.due) != 1 {
+		t.Fatalf("outbox.due len = %d, want 1 (the fallback notification)", len(outbox.due))
+	}
+	fallback := outbox.due[0]
+	if fallback.ID == n.ID {
+		t.Error("fallback notification reuses the original ID; want a fresh one")
+	}
+	if fallback.Channel != domain.ChannelInApp {
+		t.Errorf("fallback.Channel = %v, want ChannelInApp", fallback.Channel)
+	}
+	if fallback.Title != n.Title || fallback.Body != n.Body {
+		t.Errorf("fallback content = (%q, %q), want (%q, %q)", fallback.Title, fallback.Body, n.Title, n.Body)
+	}
+	if fallback.HouseholdID != n.HouseholdID {
+		t.Error("fallback.HouseholdID does not match the original notification")
+	}
+	if fallback.MemberID == nil || n.MemberID == nil || *fallback.MemberID != *n.MemberID {
+		t.Error("fallback.MemberID does not match the original notification")
+	}
+	if fallback.SourceType != n.SourceType {
+		t.Errorf("fallback.SourceType = %q, want %q", fallback.SourceType, n.SourceType)
+	}
+	if fallback.Status != domain.StatusPending {
+		t.Errorf("fallback.Status = %v, want StatusPending", fallback.Status)
+	}
+}
+
+func TestRunOnce_NonSMSSendFailure_NoFallback(t *testing.T) {
+	// A non-SMS channel's send failure must NOT trigger the in-app
+	// fallback — only SMS has real-world preconditions that can go stale
+	// between enqueue and delivery (see deliver's own doc).
+	outbox := &fakeOutbox{}
+	n := newInAppNotification()
+	outbox.due = []*domain.Notification{n}
+
+	sender := &toggleFakeSender{
+		ch:     domain.ChannelInApp,
+		sendFn: func(_ *domain.Notification) error { return errors.New("boom") },
+	}
+	d := newDispatcher(t, outbox, []domain.Sender{sender})
+
+	if _, err := d.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce error = %v", err)
+	}
+	if len(outbox.failedIDs) != 1 {
+		t.Fatalf("outbox.failedIDs len = %d, want 1", len(outbox.failedIDs))
+	}
+	if len(outbox.due) != 0 {
+		t.Errorf("outbox.due len = %d, want 0 (no fallback for a non-SMS channel)", len(outbox.due))
 	}
 }
 

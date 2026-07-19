@@ -289,6 +289,7 @@ func (s *RewardService) notifyParentsOfRedemption(
 			Status:       notifydomain.StatusPending,
 			SourceType:   "reward_redemption",
 			SourceID:     &redemptionUUID,
+			EventType:    notifydomain.EventTypeRewardRedemptionRequested,
 		}
 		if err := s.enqueuer.Enqueue(ctx, n); err != nil {
 			s.logger.Error("redeem: parent notification enqueue failed",

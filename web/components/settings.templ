@@ -72,6 +72,16 @@ type SettingsView struct {
 	// composition root does not wire the feature at all in that case.
 	ShowWebAuthnSection bool
 	WebAuthn            WebAuthnSettingsView
+	// Notify is the SMS notification section (NES-139): phone entry,
+	// opt-in consent, and per-event-type channel preferences. Rendered
+	// for every member regardless of role, like MFA.
+	Notify NotifySettingsView
+	// ShowQuietHoursSection gates the household quiet-hours section,
+	// true only for the household owner (NES-139) — stricter than
+	// ShowKioskSection's parent (owner-or-adult) gate, since quiet hours
+	// affect every member's SMS delivery timing household-wide.
+	ShowQuietHoursSection bool
+	QuietHours            QuietHoursSettingsView
 	// CSRFToken is shared by every form on the page (kiosk and MFA alike).
 	CSRFToken string
 }
@@ -89,6 +99,10 @@ templ SettingsPage(view SettingsView) {
 		@mfaSection(view.MFA)
 		if view.ShowWebAuthnSection {
 			@webauthnSection(view.WebAuthn)
+		}
+		@notifySection(view.Notify)
+		if view.ShowQuietHoursSection {
+			@quietHoursSection(view.QuietHours)
 		}
 		if view.ShowKioskSection {
 			@kioskSection(view.Kiosk, view.CSRFToken)
