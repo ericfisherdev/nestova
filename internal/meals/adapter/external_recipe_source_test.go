@@ -423,20 +423,61 @@ type findResult struct {
 	err     error
 }
 
+// signalingGetCache wraps a real MemoryCache and sends on getCalled just
+// before delegating to the real Get — a deterministic signal for "this
+// caller has just performed its pre-singleflight cache lookup and is
+// about to call sf.Do next" (the last synchronous, non-blocking checkpoint
+// before that call), used in place of a fixed sleep to prove ordering in
+// TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters.
+type signalingGetCache struct {
+	*cache.MemoryCache
+	getCalled chan struct{}
+}
+
+func (c *signalingGetCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	c.getCalled <- struct{}{}
+	return c.MemoryCache.Get(ctx, key)
+}
+
 // TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters is
 // the PR #110 review regression test: singleflight.Do runs the shared fetch
 // on whichever caller happens to become the "leader" for a key, so without
 // detaching that fetch from the leader's own ctx, the leader canceling
 // (e.g. its own request timing out client-side) would cancel the in-flight
 // HTTP call and hand that SAME cancellation error to every coalesced
-// waiter too — even a waiter whose own context was never canceled. This
-// drives a leader and a waiter through the same in-flight call, cancels
-// only the leader's context mid-flight, and confirms the waiter still gets
-// a real result.
+// waiter too — even a waiter whose own context was never canceled.
+//
+// Synchronization is entirely signal-driven, not sleep-based, so the test
+// cannot pass "by accident" on lucky timing:
+//
+//  1. handlerReached closes the FIRST time the provider handler is
+//     entered — proof the leader's fn is actually executing inside
+//     sf.Do (meaning, per singleflight's own source, its call is already
+//     registered in the group's map: Do adds the map entry BEFORE
+//     invoking fn, always).
+//  2. Once that is confirmed, any subsequent Do call for the same key is
+//     STRUCTURALLY guaranteed to find the registered entry and join
+//     rather than start a second fetch, for as long as the leader's fn
+//     has not yet returned (it is still blocked on <-release at this
+//     point) — this is a guarantee from Do's own locking order, not a
+//     timing assumption.
+//  3. The waiter's own signalingGetCache.Get call confirms its goroutine
+//     has actually started and reached the point immediately before its
+//     own sf.Do call (a couple of non-blocking, non-yielding lines away)
+//     before the leader is canceled.
+//  4. handlerHits (incremented on every request, not just the first)
+//     gives a final, authoritative check: if the waiter had somehow NOT
+//     joined and instead started its own upstream request, the handler
+//     would show 2 hits, not 1.
 func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *testing.T) {
 	flour := tracking.NewIngredientID()
 	release := make(chan struct{})
+	handlerReached := make(chan struct{})
+	var handlerHits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if handlerHits.Add(1) == 1 {
+			close(handlerReached)
+		}
 		<-release
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"id":42,"title":"Discovered Pasta",
@@ -448,7 +489,9 @@ func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *t
 	repo := &capturingRecipeRepo{}
 	ensurer := newFakeEnsurer()
 	namer := fakeNamer{names: map[tracking.IngredientID]string{flour: "flour"}}
-	src, err := adapter.NewExternalRecipeSource(&http.Client{Timeout: 5 * time.Second}, server.URL, "test-key", repo, ensurer, namer, cache.NewMemoryCache(), discardLogger())
+	getCalled := make(chan struct{}, 2) // one send expected from the leader, one from the waiter
+	instrumentedCache := &signalingGetCache{MemoryCache: cache.NewMemoryCache(), getCalled: getCalled}
+	src, err := adapter.NewExternalRecipeSource(&http.Client{Timeout: 5 * time.Second}, server.URL, "test-key", repo, ensurer, namer, instrumentedCache, discardLogger())
 	if err != nil {
 		t.Fatalf("NewExternalRecipeSource: %v", err)
 	}
@@ -460,9 +503,21 @@ func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *t
 		leaderDone <- findResult{matches, err}
 	}()
 
-	// Let the leader reach the (blocked) provider call and become the
-	// singleflight leader for this key before the waiter joins.
-	time.Sleep(50 * time.Millisecond)
+	// Drain the leader's own Get signal first, so the LATER receive below
+	// (after starting the waiter) cannot be mistaken for it.
+	select {
+	case <-getCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader never reached its cache lookup")
+	}
+	// Deterministic proof the leader's singleflight call is registered and
+	// genuinely in flight (see the doc above for why this, specifically,
+	// is the guarantee that matters).
+	select {
+	case <-handlerReached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader never reached the provider handler")
+	}
 
 	waiterCtx := context.Background() // deliberately separate, never canceled
 	waiterDone := make(chan findResult, 1)
@@ -471,14 +526,15 @@ func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *t
 		waiterDone <- findResult{matches, err}
 	}()
 
-	// Let the waiter join the in-flight singleflight call before canceling
-	// the leader.
-	time.Sleep(50 * time.Millisecond)
-	cancelLeader()
+	// Deterministic proof the waiter's goroutine has started and reached
+	// the point immediately before its own sf.Do call.
+	select {
+	case <-getCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter never reached its cache lookup")
+	}
 
-	// Give the cancellation a moment to (not) propagate before letting the
-	// blocked response through.
-	time.Sleep(50 * time.Millisecond)
+	cancelLeader()
 	close(release)
 
 	select {
@@ -504,5 +560,9 @@ func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *t
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("leader FindByIngredients did not return in time")
+	}
+
+	if got := handlerHits.Load(); got != 1 {
+		t.Errorf("provider handler was hit %d times, want exactly 1 (the waiter must have joined the leader's in-flight call, not started a second upstream request)", got)
 	}
 }
