@@ -415,3 +415,94 @@ func TestExternalRecipeSourceGetCacheErrorIsLoggedAndTreatedAsMiss(t *testing.T)
 		t.Errorf("log output = %q, want it to mention the cache Get error", logBuf.String())
 	}
 }
+
+// findResult bundles FindByIngredients' two return values so a goroutine can
+// hand both back over a single channel.
+type findResult struct {
+	matches []domain.RecipeMatch
+	err     error
+}
+
+// TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters is
+// the PR #110 review regression test: singleflight.Do runs the shared fetch
+// on whichever caller happens to become the "leader" for a key, so without
+// detaching that fetch from the leader's own ctx, the leader canceling
+// (e.g. its own request timing out client-side) would cancel the in-flight
+// HTTP call and hand that SAME cancellation error to every coalesced
+// waiter too — even a waiter whose own context was never canceled. This
+// drives a leader and a waiter through the same in-flight call, cancels
+// only the leader's context mid-flight, and confirms the waiter still gets
+// a real result.
+func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *testing.T) {
+	flour := tracking.NewIngredientID()
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":42,"title":"Discovered Pasta",
+			"usedIngredients":[{"name":"flour"}],
+			"missedIngredients":[{"name":"eggs"}]}]`))
+	}))
+	defer server.Close()
+
+	repo := &capturingRecipeRepo{}
+	ensurer := newFakeEnsurer()
+	namer := fakeNamer{names: map[tracking.IngredientID]string{flour: "flour"}}
+	src, err := adapter.NewExternalRecipeSource(&http.Client{Timeout: 5 * time.Second}, server.URL, "test-key", repo, ensurer, namer, cache.NewMemoryCache(), discardLogger())
+	if err != nil {
+		t.Fatalf("NewExternalRecipeSource: %v", err)
+	}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan findResult, 1)
+	go func() {
+		matches, err := src.FindByIngredients(leaderCtx, household.NewHouseholdID(), []tracking.IngredientID{flour})
+		leaderDone <- findResult{matches, err}
+	}()
+
+	// Let the leader reach the (blocked) provider call and become the
+	// singleflight leader for this key before the waiter joins.
+	time.Sleep(50 * time.Millisecond)
+
+	waiterCtx := context.Background() // deliberately separate, never canceled
+	waiterDone := make(chan findResult, 1)
+	go func() {
+		matches, err := src.FindByIngredients(waiterCtx, household.NewHouseholdID(), []tracking.IngredientID{flour})
+		waiterDone <- findResult{matches, err}
+	}()
+
+	// Let the waiter join the in-flight singleflight call before canceling
+	// the leader.
+	time.Sleep(50 * time.Millisecond)
+	cancelLeader()
+
+	// Give the cancellation a moment to (not) propagate before letting the
+	// blocked response through.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	select {
+	case res := <-waiterDone:
+		if res.err != nil {
+			t.Fatalf("waiter FindByIngredients = %v, want nil (a canceled LEADER context must not cancel the shared fetch a waiter with its own valid context is waiting on)", res.err)
+		}
+		if len(res.matches) != 1 {
+			t.Errorf("waiter matches = %d, want 1", len(res.matches))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter FindByIngredients did not return in time")
+	}
+
+	select {
+	case res := <-leaderDone:
+		// The shared fetch is detached from the leader's own ctx too, so
+		// it completes the same way for the leader — canceling only stops
+		// the leader from waiting on ITS OWN, now-irrelevant Done channel,
+		// not the fetch it kicked off.
+		if res.err != nil {
+			t.Errorf("leader FindByIngredients = %v, want nil (the detached fetch completes regardless of the leader's own canceled context)", res.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("leader FindByIngredients did not return in time")
+	}
+}
