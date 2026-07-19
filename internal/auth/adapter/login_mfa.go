@@ -283,6 +283,12 @@ func (h *LoginMFAHandlers) PasskeyBegin(w http.ResponseWriter, r *http.Request) 
 // exists to skip a FUTURE login's MFA prompt entirely, a concept specific
 // to Handlers.Login's own hand-off, not to re-proving freshness mid-session.
 func (h *LoginMFAHandlers) PasskeyFinish(w http.ResponseWriter, r *http.Request) {
+	// A real assertion response is at most a few KB; bounding the body
+	// BEFORE anything reads it caps an attacker-supplied body to a fixed,
+	// small cost instead of an unbounded one (see
+	// maxWebAuthnResponseBodyBytes's own doc, webauthn_web.go).
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebAuthnResponseBodyBytes)
+
 	memberID, ok := h.pendingMember(r)
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -306,6 +312,11 @@ func (h *LoginMFAHandlers) PasskeyFinish(w http.ResponseWriter, r *http.Request)
 
 	parsed, err := protocol.ParseCredentialRequestResponseBody(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, webauthnLoginErrorMessage, http.StatusBadRequest)
 		return
 	}

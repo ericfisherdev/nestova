@@ -454,6 +454,39 @@ func TestLoginPasskey_WrongRPID_Rejected(t *testing.T) {
 	}
 }
 
+// TestLoginPasskey_OversizedBody_Rejected covers the http.MaxBytesReader
+// cap (round 3 review, security): a real assertion response is at most a
+// few KB, so an oversized body — well past what any genuine
+// PublicKeyCredential.toJSON() payload could be — must be rejected outright
+// rather than parsed, bounding the cost of an attacker-supplied body to a
+// fixed size. Pre-auth and unauthenticated, so this is the highest-value
+// target for the cap among the three handlers it was applied to.
+func TestLoginPasskey_OversizedBody_Rejected(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	credRepo := newLoginTestCredRepo()
+	handler, _, _, webauthnRepo, handles := buildLoginPasskeyTestHandler(t, hhRepo, credRepo, &recordingEnqueuer{})
+	seedPasskeyCredential(t, webauthnRepo, handles, member, 0)
+
+	flow := newLoginFlow(t, handler)
+	flow.do(http.MethodGet, "/login/passkey/begin", "")
+
+	// A valid JSON shape with an oversized string field: the body must be
+	// syntactically plausible enough for the decoder to keep reading PAST
+	// maxWebAuthnResponseBodyBytes, or it fails on a syntax error before
+	// ever exercising the size cap this test means to prove.
+	huge := `{"id":"` + strings.Repeat("a", 128*1024) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/login/passkey/finish", strings.NewReader(huge))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", flow.csrf)
+	req.Header.Set("Cookie", flow.cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST /login/passkey/finish (oversized body): status = %d, want 413; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // AC: "Password login continues to work for members without passkeys."
 // ---------------------------------------------------------------------------
