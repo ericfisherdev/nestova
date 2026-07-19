@@ -82,6 +82,22 @@ func seedMember(t *testing.T, repo *householdadapter.PostgresRepository) househo
 	return m.ID
 }
 
+// seedHousehold creates a bare household with no member and returns its ID —
+// for cross-household tenant-isolation tests that need a second, GENUINELY
+// EXISTING household distinct from a victim member's own (as opposed to a
+// fabricated, nonexistent household.NewHouseholdID(), which would trip the
+// table's plain household_id FK before ever reaching the composite tenant
+// FK the test means to exercise). Mirrors media/adapter's own seedHousehold
+// helper.
+func seedHousehold(t *testing.T, repo *householdadapter.PostgresRepository) household.HouseholdID {
+	t.Helper()
+	h := &household.Household{ID: household.NewHouseholdID(), Name: "Attacker Household"}
+	if err := repo.CreateHousehold(testCtx(t), h); err != nil {
+		t.Fatalf("CreateHousehold: %v", err)
+	}
+	return h.ID
+}
+
 func TestSetPasswordAndFindByEmail(t *testing.T) {
 	credRepo, hhRepo, _ := newTestRepos(t)
 	memberID := seedMember(t, hhRepo)

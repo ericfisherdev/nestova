@@ -171,6 +171,18 @@ type ServerConfig struct {
 	// override that (e.g. a reverse proxy that changes the Host header, or a
 	// deployment reachable at a name the kiosk's own request Host does not
 	// carry).
+	//
+	// WebAuthn passkey registration (NES-136) additionally REQUIRES this to
+	// be set: unlike a deep link, a WebAuthn Relying Party ID must be a
+	// single fixed value pinned once at server startup — a per-request
+	// derived origin cannot work, since the RP ID is baked into every
+	// credential an authenticator ever registers against it. A deployment
+	// with PublicBaseURL empty simply does not offer passkey registration at
+	// all (cmd/server/main.go only constructs the WebAuthn Relying Party when
+	// this is set). Changing PublicBaseURL's HOST after passkeys have been
+	// registered orphans every one of them — the browser will never present
+	// a stored passkey to a Relying Party ID it was not registered under; see
+	// docs/webauthn.md.
 	PublicBaseURL string
 }
 
@@ -785,20 +797,29 @@ func (c Config) validate() []error {
 	}
 
 	// PUBLIC_BASE_URL is optional (empty means "derive from the request"), but
-	// when set it must be an origin ONLY — scheme + host(:port), nothing else
-	// — so it can be concatenated directly with a deep-link path with no
-	// further validation, normalization, or path-joining logic at request
-	// time. Userinfo, a path, a query, or a fragment would all either be
-	// silently discarded (surprising) or double up with the deep-link path
-	// (broken); rejecting them at startup catches an operator's copy-paste
-	// mistake (e.g. pasting a full activation link) before it ever reaches a
-	// kiosk-rendered QR code.
+	// when set it must be an origin ONLY — scheme + host(:port), nothing else,
+	// not even a bare trailing slash — so it can be concatenated directly
+	// with a deep-link path with no further validation, normalization, or
+	// path-joining logic at request time. Userinfo, a path (including "/"),
+	// a query, or a fragment would all either be silently discarded
+	// (surprising) or double up with the deep-link path (broken); rejecting
+	// them at startup catches an operator's copy-paste mistake (e.g. pasting
+	// a full activation link) before it ever reaches a kiosk-rendered QR
+	// code.
+	//
+	// The bare-"/" exemption a prior version of this check made was removed
+	// (NES-136): PublicBaseURL now also feeds WebAuthn's RPOrigins directly
+	// (cmd/server/main.go), which go-webauthn matches against the browser's
+	// reported origin via EXACT string comparison — an origin never has a
+	// trailing slash, so "https://example.org/" would silently never match
+	// "https://example.org" and break every passkey registration, despite
+	// looking like a harmless, valid-enough origin.
 	if c.Server.PublicBaseURL != "" {
 		u, err := url.Parse(c.Server.PublicBaseURL)
 		switch {
 		case err != nil, u.Scheme != "http" && u.Scheme != "https", u.Host == "":
 			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an absolute http(s) URL, got %q", c.Server.PublicBaseURL))
-		case u.User != nil, u.Path != "" && u.Path != "/", u.RawQuery != "", u.Fragment != "":
+		case u.User != nil, u.Path != "", u.RawQuery != "", u.Fragment != "":
 			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an origin only (scheme + host, no user/path/query/fragment), got %q", c.Server.PublicBaseURL))
 		}
 	}

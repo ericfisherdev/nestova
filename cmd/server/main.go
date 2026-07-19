@@ -8,10 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
@@ -132,6 +136,21 @@ const deepLinkSignerPurpose = "nestova:deeplink:v1"
 // other consumer of cfg.Session.Secret, per the same reasoning as
 // deepLinkSignerPurpose above.
 const rememberDeviceSignerPurpose = "nestova:auth:remember-device:v1"
+
+// webauthnUserHandleSignerPurpose is the derivation label passed to
+// authapp.NewWebAuthnUserHandleDeriverFromSecret (NES-136), keeping the
+// per-member WebAuthn user handle's derivation key cryptographically
+// distinct from every other consumer of cfg.Session.Secret, per the same
+// reasoning as deepLinkSignerPurpose above.
+const webauthnUserHandleSignerPurpose = "nestova:auth:webauthn-user-handle:v1"
+
+// webauthnRegistrationTimeout bounds how long a member has to complete a
+// passkey registration ceremony (present the authenticator prompt and
+// confirm) before the server-side challenge expires — enforced by
+// webauthn.TimeoutConfig.Enforce (NES-136 AC: "challenges ... expire").
+// Sixty seconds matches this library's own documented example default and
+// is ample for a biometric prompt.
+const webauthnRegistrationTimeout = 60 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -485,6 +504,56 @@ func runServer(logger *slog.Logger) error {
 	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, outboxRepo, cfg.Session.Secure, logger)
 
+	// NES-136: WebAuthn passkey registration. wa (the third-party Relying
+	// Party instance) is constructed ONLY when Server.PublicBaseURL is
+	// configured: WebAuthn requires a fixed, stable origin (the Relying
+	// Party ID), which a per-request-derived origin (this codebase's
+	// fallback when PublicBaseURL is unset, e.g. for kiosk deep links)
+	// cannot provide — the RP ID must be pinned once, at startup, for the
+	// entire lifetime of every credential ever registered against it (see
+	// docs/webauthn.md: changing it later orphans every existing passkey).
+	// A deployment with no PublicBaseURL simply does not offer passkey
+	// registration at all — webauthnHandlers stays nil, and
+	// registerSettingsPage never wires its routes or renders its section
+	// (ShowWebAuthnSection).
+	var webauthnHandlers *authadapter.WebAuthnWebHandlers
+	if cfg.Server.PublicBaseURL != "" {
+		rpID, err := webauthnRPID(cfg.Server.PublicBaseURL)
+		if err != nil {
+			return fmt.Errorf("derive webauthn relying party id: %w", err)
+		}
+		wa, err := webauthn.New(&webauthn.Config{
+			RPID:          rpID,
+			RPDisplayName: "Nestova",
+			RPOrigins:     []string{cfg.Server.PublicBaseURL},
+			// Required (not merely preferred) user verification: a
+			// registered passkey must always be gated by the device's own
+			// biometric/PIN prompt, not just its mere physical presence.
+			AuthenticatorSelection: protocol.AuthenticatorSelection{
+				UserVerification: protocol.VerificationRequired,
+			},
+			Timeouts: webauthn.TimeoutsConfig{
+				Registration: webauthn.TimeoutConfig{
+					Enforce: true,
+					Timeout: webauthnRegistrationTimeout,
+				},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create webauthn relying party: %w", err)
+		}
+		webauthnUserHandles, err := authapp.NewWebAuthnUserHandleDeriverFromSecret([]byte(cfg.Session.Secret), webauthnUserHandleSignerPurpose)
+		if err != nil {
+			return fmt.Errorf("create webauthn user handle deriver: %w", err)
+		}
+		webauthnRepo := authadapter.NewWebAuthnCredentialRepository(pool)
+		webauthnService, err := authapp.NewWebAuthnService(webauthnRepo, wa, webauthnUserHandles, logger)
+		if err != nil {
+			return fmt.Errorf("create webauthn service: %w", err)
+		}
+		webauthnHandlers = authadapter.NewWebAuthnWebHandlers(webauthnService, sm, logger)
+	}
+
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {
 		return fmt.Errorf("create oauth state signer: %w", err)
@@ -630,7 +699,7 @@ func runServer(logger *slog.Logger) error {
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},
@@ -729,4 +798,23 @@ func runServer(logger *slog.Logger) error {
 		return errors.Join(runErr, shutdownErr)
 	}
 	return runErr
+}
+
+// webauthnRPID derives the WebAuthn Relying Party ID from publicBaseURL:
+// the effective domain only — no scheme, no port (see
+// webauthn.Config.RPID's own doc: "should generally be the origin without a
+// scheme and port"). publicBaseURL has already been validated at config
+// load (config.go's own validate(), called before runServer ever runs) to
+// be an origin-only http(s) URL with a non-empty host, so a failure here
+// would mean that validation itself has a gap — this is a defensive check,
+// not an expected runtime failure mode.
+func webauthnRPID(publicBaseURL string) (string, error) {
+	u, err := url.Parse(publicBaseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse PUBLIC_BASE_URL: %w", err)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("PUBLIC_BASE_URL %q has no host", publicBaseURL)
+	}
+	return u.Hostname(), nil
 }

@@ -256,6 +256,117 @@ func TestVerifyCSRF_Empty(t *testing.T) {
 	}
 }
 
+// TestVerifyCSRF_HeaderMatch confirms VerifyCSRF returns true when the
+// X-CSRF-Token HEADER matches the session token, with no form field at all
+// (NES-136: JSON endpoints like WebAuthnWebHandlers' registration ceremony
+// have no form to carry the token in — see VerifyCSRF's own doc).
+func TestVerifyCSRF_HeaderMatch(t *testing.T) {
+	sm := newOnboardingSessionManager()
+
+	var capturedToken string
+	seedHandler := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedToken = adapter.GetCSRFToken(r.Context(), sm)
+		w.WriteHeader(http.StatusOK)
+	}))
+	seedReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	seedRec := httptest.NewRecorder()
+	seedHandler.ServeHTTP(seedRec, seedReq)
+	cookies := seedRec.Result().Cookies()
+
+	verifyReq := httptest.NewRequest(http.MethodPost, "/", nil)
+	verifyReq.Header.Set("X-CSRF-Token", capturedToken)
+	for _, c := range cookies {
+		verifyReq.AddCookie(c)
+	}
+
+	var got bool
+	verifyHandler := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = adapter.VerifyCSRF(r, sm)
+		w.WriteHeader(http.StatusOK)
+	}))
+	verifyHandler.ServeHTTP(httptest.NewRecorder(), verifyReq)
+
+	if !got {
+		t.Error("VerifyCSRF returned false, want true on a matching X-CSRF-Token header with no form field present")
+	}
+}
+
+// TestVerifyCSRF_HeaderMismatch confirms VerifyCSRF returns false when the
+// X-CSRF-Token header is present but wrong.
+func TestVerifyCSRF_HeaderMismatch(t *testing.T) {
+	sm := newOnboardingSessionManager()
+
+	seedHandler := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adapter.GetCSRFToken(r.Context(), sm)
+		w.WriteHeader(http.StatusOK)
+	}))
+	seedReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	seedRec := httptest.NewRecorder()
+	seedHandler.ServeHTTP(seedRec, seedReq)
+	cookies := seedRec.Result().Cookies()
+
+	verifyReq := httptest.NewRequest(http.MethodPost, "/", nil)
+	verifyReq.Header.Set("X-CSRF-Token", "wrong-token-value")
+	for _, c := range cookies {
+		verifyReq.AddCookie(c)
+	}
+
+	var got bool
+	verifyHandler := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = adapter.VerifyCSRF(r, sm)
+		w.WriteHeader(http.StatusOK)
+	}))
+	verifyHandler.ServeHTTP(httptest.NewRecorder(), verifyReq)
+
+	if got {
+		t.Error("VerifyCSRF returned true, want false on a mismatched X-CSRF-Token header")
+	}
+}
+
+// TestVerifyCSRF_HeaderTakesPrecedenceOverForm confirms that a PRESENT
+// X-CSRF-Token header is used directly (and, if wrong, fails the check)
+// rather than silently falling back to a correct form field when the
+// header is merely wrong rather than absent — the fallback in VerifyCSRF's
+// implementation is conditioned on the header being EMPTY, not on the
+// header failing to match.
+func TestVerifyCSRF_HeaderTakesPrecedenceOverForm(t *testing.T) {
+	sm := newOnboardingSessionManager()
+
+	var capturedToken string
+	seedHandler := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedToken = adapter.GetCSRFToken(r.Context(), sm)
+		w.WriteHeader(http.StatusOK)
+	}))
+	seedReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	seedRec := httptest.NewRecorder()
+	seedHandler.ServeHTTP(seedRec, seedReq)
+	cookies := seedRec.Result().Cookies()
+
+	// The FORM field carries the correct token, but the HEADER carries a
+	// wrong one — the header must win (and therefore fail the check).
+	form := url.Values{"csrf_token": {capturedToken}}
+	verifyReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	verifyReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	verifyReq.Header.Set("X-CSRF-Token", "wrong-token-value")
+	for _, c := range cookies {
+		verifyReq.AddCookie(c)
+	}
+
+	var got bool
+	verifyHandler := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		got = adapter.VerifyCSRF(r, sm)
+		w.WriteHeader(http.StatusOK)
+	}))
+	verifyHandler.ServeHTTP(httptest.NewRecorder(), verifyReq)
+
+	if got {
+		t.Error("VerifyCSRF returned true, want false: a present-but-wrong header must not fall back to a correct form field")
+	}
+}
+
 // TestOnboardingGET_RendersFormWhenNoHousehold confirms that GET /onboarding
 // returns 200 with the form when no household exists yet.
 func TestOnboardingGET_RendersFormWhenNoHousehold(t *testing.T) {

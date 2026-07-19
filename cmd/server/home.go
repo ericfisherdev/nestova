@@ -480,6 +480,7 @@ func registerSettingsPage(
 	settingsHandlers *kioskadapter.SettingsWebHandlers,
 	mfaHandlers *authadapter.MFAWebHandlers,
 	mfaService *authapp.MFAService,
+	webauthnHandlers *authadapter.WebAuthnWebHandlers,
 ) {
 	const settingsPath = "/settings"
 	requireMember := authadapter.RequireMember(sm)
@@ -574,6 +575,24 @@ func registerSettingsPage(
 			Kiosk:            kioskView,
 			MFA:              mfaView,
 			CSRFToken:        authadapter.GetCSRFToken(r.Context(), sm),
+		}
+		// NES-136: the "Your devices" passkey section is entirely absent
+		// (not just hidden) when webauthnHandlers is nil — the composition
+		// root only wires it when Server.PublicBaseURL is configured, since
+		// WebAuthn requires a fixed, stable RP ID (see docs/webauthn.md).
+		if webauthnHandlers != nil {
+			webauthnView, err := webauthnHandlers.SectionView(r.Context(), member)
+			if err != nil {
+				logger.ErrorContext(r.Context(), "settings: build webauthn section", "error", err)
+				if hasReveal {
+					renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+					return
+				}
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			view.ShowWebAuthnSection = true
+			view.WebAuthn = webauthnView
 		}
 		if err := render.Render(r.Context(), w, status, layoutFor(r)(member)(components.SettingsPage(view))); err != nil {
 			logger.ErrorContext(r.Context(), "settings: render page", "error", err)
@@ -676,6 +695,50 @@ func registerSettingsPage(
 		}
 		composePage(w, r, member, status, nil, nil, nil, errMsg)
 	})))
+
+	// NES-136: "Your devices" passkey routes — registered only when the
+	// composition root wired the feature at all (see ShowWebAuthnSection's
+	// doc above). Registering begin/finish/rename/revoke behind a routes
+	// closure a caller never invokes would be dead code; NOT registering
+	// them at all when unwired means a client that somehow still requests
+	// one gets Go's own 404, which is exactly correct — the feature
+	// genuinely does not exist on this deployment.
+	if webauthnHandlers != nil {
+		// Registering a passkey mints a durable credential — the same
+		// security-sensitivity kiosk token provisioning has (NES-135's
+		// requireStepUp, already constructed above) — so both begin and
+		// finish require a FRESH login MFA verification, not just an
+		// authenticated session (NES-136 AC: "registration without fresh
+		// step-up is rejected"). Rename/revoke are not step-up-gated,
+		// mirroring the kiosk section's own asymmetry (only provisioning a
+		// NEW credential is gated; revoking an existing one is not).
+		mux.Handle("POST /settings/webauthn/register/begin", requireMember(requireStepUp(http.HandlerFunc(webauthnHandlers.RegisterBegin))))
+		mux.Handle("POST /settings/webauthn/register/finish", requireMember(requireStepUp(http.HandlerFunc(webauthnHandlers.RegisterFinish))))
+		mux.Handle("POST /settings/webauthn/{id}/rename", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, ok := webauthnHandlers.Rename(w, r)
+			if !ok {
+				return
+			}
+			if render.IsHTMX(r) {
+				w.Header().Set("HX-Redirect", settingsPath)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.Redirect(w, r, settingsPath, http.StatusSeeOther)
+		})))
+		mux.Handle("POST /settings/webauthn/{id}/revoke", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, ok := webauthnHandlers.Revoke(w, r)
+			if !ok {
+				return
+			}
+			if render.IsHTMX(r) {
+				w.Header().Set("HX-Redirect", settingsPath)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.Redirect(w, r, settingsPath, http.StatusSeeOther)
+		})))
+	}
 }
 
 // registerKioskPages wires the /kiosk/* touch-first kiosk shell (NES-128).
