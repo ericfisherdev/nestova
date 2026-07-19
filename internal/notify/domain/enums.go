@@ -14,12 +14,17 @@ const (
 	ChannelEmail Channel = "email"
 	// ChannelInApp delivers as an in-app notification.
 	ChannelInApp Channel = "inapp"
+	// ChannelSMS delivers via SMS text message (NES-138). The schema and
+	// domain.SMSSender port both exist as of NES-138; no code enqueues a
+	// ChannelSMS notification yet — routing a notification to it (member
+	// phone numbers, delivery preferences) is NES-139.
+	ChannelSMS Channel = "sms"
 )
 
 // Valid reports whether c is a known channel.
 func (c Channel) Valid() bool {
 	switch c {
-	case ChannelPush, ChannelEmail, ChannelInApp:
+	case ChannelPush, ChannelEmail, ChannelInApp, ChannelSMS:
 		return true
 	default:
 		return false

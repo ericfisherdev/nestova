@@ -28,6 +28,8 @@ var allKeys = []string{
 	"MEDIA_STORAGE_BACKEND", "S3_ENDPOINT", "S3_REGION", "S3_BUCKET",
 	"S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_USE_PATH_STYLE", "S3_PRESIGN_TTL",
 	"MEDIA_CHORE_PROOF_RETENTION_DAYS",
+	"NOTIFY_SMS_ENABLED", "SMS_ORIGINATION_IDENTITY", "SMS_REGION",
+	"SMS_ACCESS_KEY_ID", "SMS_SECRET_ACCESS_KEY", "SMS_RETRY_MAX_ATTEMPTS",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -42,6 +44,12 @@ const devSecret = "dev-only-insecure-session-secret-change-me"
 
 // devEncKey mirrors the package's dev default encryption key (64 hex chars).
 const devEncKey = "00000000000000000000000000000000000000000000000000000000deadbeef"
+
+// defaultSMSRetryMaxAttempts mirrors the package's own private default
+// (SMS_RETRY_MAX_ATTEMPTS's default), applied unconditionally regardless of
+// NOTIFY_SMS_ENABLED — see config.go's own comment on why the SMS-disabled
+// case still carries this value rather than a zero RetryMaxAttempts.
+const defaultSMSRetryMaxAttempts = 3
 
 // validSecret is a 32-byte secret distinct from the dev default, used by the
 // prod happy-path case.
@@ -78,6 +86,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -93,6 +102,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -105,6 +115,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -117,6 +128,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -131,6 +143,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 48 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -150,6 +163,7 @@ func TestLoadValid(t *testing.T) {
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -166,6 +180,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 				Recipes: config.RecipesConfig{ExternalEnabled: true, APIKey: "spoon-key", BaseURL: "https://api.spoonacular.com"},
 			},
 		},
@@ -179,6 +194,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -198,6 +214,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -213,6 +230,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -233,6 +251,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -252,6 +271,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -266,6 +286,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -278,6 +299,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -294,6 +316,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -307,6 +330,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: true, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -330,6 +354,7 @@ func TestLoadValid(t *testing.T) {
 				OAuth:   config.OAuthConfig{GoogleClientID: "id", GoogleClientSecret: "secret", GoogleRedirectURL: "https://app/callback"},
 				Crypto:  config.CryptoConfig{EncryptionKey: validEncryptionKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -346,6 +371,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 				TLS:     config.TLSConfig{CertFile: "/etc/nestova/tls/cert.pem", KeyFile: "/etc/nestova/tls/key.pem"},
 			},
 		},
@@ -367,6 +393,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 				HSTS:    config.HSTSConfig{Enabled: true, MaxAge: 8760 * time.Hour, MaxAgeSet: true, IncludeSubdomains: true, Preload: true},
 			},
 		},
@@ -382,6 +409,7 @@ func TestLoadValid(t *testing.T) {
 				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
 				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
 				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 				HSTS:    config.HSTSConfig{Enabled: true, MaxAge: 0, MaxAgeSet: true},
 			},
 		},
@@ -414,6 +442,7 @@ func TestLoadValid(t *testing.T) {
 						PresignTTL: 5 * time.Minute,
 					},
 				},
+				SMS: config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -438,6 +467,7 @@ func TestLoadValid(t *testing.T) {
 					S3:                  config.S3Config{Region: "us-east-1", Bucket: "nestova-photos", PresignTTL: 15 * time.Minute},
 					ChoreProofRetention: 30 * 24 * time.Hour,
 				},
+				SMS: config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
 			},
 		},
 		{
@@ -466,6 +496,57 @@ func TestLoadValid(t *testing.T) {
 					Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute,
 					Backend: config.MediaStorageBackendLocal,
 					S3:      config.S3Config{AccessKeyID: "minioadmin", PresignTTL: 15 * time.Minute},
+				},
+				SMS: config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+			},
+		},
+		{
+			// SMS enabled with static credentials and an explicit retry cap
+			// (NES-138) — mirrors the "s3 backend with custom endpoint and
+			// static credentials" case's shape for the SMS channel.
+			name: "sms enabled with static credentials and an explicit retry cap",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED":       "true",
+				"SMS_ORIGINATION_IDENTITY": "+18005550100",
+				"SMS_REGION":               "us-east-1",
+				"SMS_ACCESS_KEY_ID":        "AKIAEXAMPLE",
+				"SMS_SECRET_ACCESS_KEY":    "secret",
+				"SMS_RETRY_MAX_ATTEMPTS":   "5",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS: config.SMSConfig{
+					Enabled: true, OriginationIdentity: "+18005550100", Region: "us-east-1",
+					AccessKeyID: "AKIAEXAMPLE", SecretAccessKey: "secret", RetryMaxAttempts: 5,
+				},
+			},
+		},
+		{
+			// SMS enabled without static credentials falls back to the AWS
+			// SDK's default credential chain (NES-138) — mirrors how a blank
+			// S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY pair is likewise valid
+			// for the S3 backend.
+			name: "sms enabled without static credentials uses the default retry cap",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED":       "true",
+				"SMS_ORIGINATION_IDENTITY": "+18005550100",
+				"SMS_REGION":               "us-east-1",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS: config.SMSConfig{
+					Enabled: true, OriginationIdentity: "+18005550100", Region: "us-east-1",
+					RetryMaxAttempts: defaultSMSRetryMaxAttempts,
 				},
 			},
 		},
@@ -769,6 +850,58 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "oversized chore-proof retention overflows a raw duration conversion",
 			env:          map[string]string{"MEDIA_CHORE_PROOF_RETENTION_DAYS": "999999999999"},
 			wantContains: []string{"MEDIA_CHORE_PROOF_RETENTION_DAYS"},
+		},
+		{
+			name:         "sms enabled without origination identity or region",
+			env:          map[string]string{"NOTIFY_SMS_ENABLED": "true"},
+			wantContains: []string{"SMS_ORIGINATION_IDENTITY", "SMS_REGION"},
+		},
+		{
+			name: "sms enabled without region",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED": "true", "SMS_ORIGINATION_IDENTITY": "+18005550100",
+			},
+			wantContains: []string{"SMS_REGION"},
+		},
+		{
+			name: "sms enabled with a non-positive retry max attempts",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED": "true", "SMS_ORIGINATION_IDENTITY": "+18005550100",
+				"SMS_REGION": "us-east-1", "SMS_RETRY_MAX_ATTEMPTS": "0",
+			},
+			wantContains: []string{"SMS_RETRY_MAX_ATTEMPTS", "positive"},
+		},
+		{
+			// SMS credential validation (like every other SMS_* check) is
+			// gated on NOTIFY_SMS_ENABLED actually being true, mirroring
+			// S3's identical credential-pairing checks above.
+			name: "sms access key without secret",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED": "true", "SMS_ORIGINATION_IDENTITY": "+18005550100",
+				"SMS_REGION": "us-east-1", "SMS_ACCESS_KEY_ID": "AKIAEXAMPLE",
+			},
+			wantContains: []string{"SMS_ACCESS_KEY_ID", "SMS_SECRET_ACCESS_KEY"},
+		},
+		{
+			name: "sms secret without access key",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED": "true", "SMS_ORIGINATION_IDENTITY": "+18005550100",
+				"SMS_REGION": "us-east-1", "SMS_SECRET_ACCESS_KEY": "secret",
+			},
+			wantContains: []string{"SMS_ACCESS_KEY_ID", "SMS_SECRET_ACCESS_KEY"},
+		},
+		{
+			name:         "non-boolean NOTIFY_SMS_ENABLED",
+			env:          map[string]string{"NOTIFY_SMS_ENABLED": "maybe"},
+			wantContains: []string{"NOTIFY_SMS_ENABLED"},
+		},
+		{
+			name: "sms enabled with a non-integer retry max attempts",
+			env: map[string]string{
+				"NOTIFY_SMS_ENABLED": "true", "SMS_ORIGINATION_IDENTITY": "+18005550100",
+				"SMS_REGION": "us-east-1", "SMS_RETRY_MAX_ATTEMPTS": "abc",
+			},
+			wantContains: []string{"SMS_RETRY_MAX_ATTEMPTS"},
 		},
 	}
 

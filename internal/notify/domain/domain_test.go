@@ -14,6 +14,7 @@ func TestChannelParseAndValid(t *testing.T) {
 		{"push", domain.ChannelPush},
 		{"email", domain.ChannelEmail},
 		{"inapp", domain.ChannelInApp},
+		{"sms", domain.ChannelSMS},
 	}
 	for _, tc := range cases {
 		got, err := domain.ParseChannel(tc.input)
@@ -33,15 +34,15 @@ func TestChannelParseAndValid(t *testing.T) {
 }
 
 func TestChannelParseUnknown(t *testing.T) {
-	_, err := domain.ParseChannel("sms")
+	_, err := domain.ParseChannel("carrier_pigeon")
 	if err == nil {
 		t.Error("ParseChannel(unknown) error = nil, want non-nil")
 	}
 }
 
 func TestChannelValid(t *testing.T) {
-	if domain.Channel("sms").Valid() {
-		t.Error("Channel(sms).Valid() = true, want false")
+	if domain.Channel("carrier_pigeon").Valid() {
+		t.Error("Channel(carrier_pigeon).Valid() = true, want false")
 	}
 }
 

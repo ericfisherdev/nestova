@@ -80,6 +80,7 @@ type Config struct {
 	Crypto  CryptoConfig
 	Recipes RecipesConfig
 	Media   MediaConfig
+	SMS     SMSConfig
 	TLS     TLSConfig
 	HSTS    HSTSConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
@@ -405,6 +406,35 @@ type MediaConfig struct {
 	ChoreProofRetention time.Duration
 }
 
+// SMSConfig configures the optional SMS notification channel (NES-138), an
+// AWS End User Messaging-backed domain.SMSSender. It is only consulted
+// when Enabled is true; every other field is otherwise ignored (and
+// unvalidated), mirroring S3Config's own
+// enabled-gates-required-fields pattern — a deployment with SMS disabled
+// (the default) never has to set any of it, and runs with the Noop sender
+// and zero AWS dependency (NES-138 AC).
+type SMSConfig struct {
+	// Enabled turns the SMS channel on.
+	Enabled bool
+	// OriginationIdentity is the verified toll-free number (or its ARN, or
+	// a pool id/ARN) SendTextMessage sends from. Required when Enabled.
+	OriginationIdentity string
+	// Region is passed to every SMS API request. Required when Enabled.
+	Region string
+	// AccessKeyID / SecretAccessKey are optional static credentials. When
+	// BOTH are blank, the AWS SDK's default credential chain (environment,
+	// shared config/credentials file, EC2/ECS instance role, etc.)
+	// supplies credentials instead — mirrors S3Config's identical field
+	// pair and its own doc.
+	AccessKeyID     string
+	SecretAccessKey string
+	// RetryMaxAttempts caps the AWS SDK's own built-in retryer. SMS is
+	// billed per attempt handed to the carrier, so this is kept tight by
+	// default — see AWSEndUserMessagingSMSParams.RetryMaxAttempts's own
+	// doc for why no backoff is hand-rolled on top of it.
+	RetryMaxAttempts int
+}
+
 // devMediaRoot is the default photo-storage directory when MEDIA_ROOT is unset.
 const devMediaRoot = "./.localdata/media"
 
@@ -427,6 +457,13 @@ const defaultS3PresignTTL = 15 * time.Minute
 // (NES-132): 0 means "keep forever" — retention is opt-in, not a surprise
 // data-loss default.
 const defaultChoreProofRetentionDays = 0
+
+// defaultSMSRetryMaxAttempts is SMS_RETRY_MAX_ATTEMPTS's default (NES-138):
+// tight deliberately — SMS is billed per attempt handed to the carrier, so
+// a generous retry budget (the AWS SDK's own STANDARD retry mode default
+// is much higher) is a real spend risk against a persistently failing
+// destination, not just a latency one.
+const defaultSMSRetryMaxAttempts = 3
 
 // maxChoreProofRetentionDays bounds MEDIA_CHORE_PROOF_RETENTION_DAYS so
 // choreProofRetentionDuration's days*24*time.Hour conversion can never
@@ -532,6 +569,23 @@ func Load() (Config, error) {
 	collect(err)
 	choreProofRetention, err := choreProofRetentionDuration(choreProofRetentionDays)
 	collect(err)
+
+	// NOTIFY_SMS_ENABLED gates every SMS_* setting below (NES-138),
+	// mirroring MEDIA_STORAGE_BACKEND's own S3-gating pattern above: a
+	// deployment with SMS disabled (the default) must never fail startup
+	// on a stray or malformed SMS_* value it will never use, and must run
+	// with zero AWS dependency (NES-138 AC) — the NoopSMSSender the
+	// composition root wires when smsEnabled is false imports nothing
+	// from aws-sdk-go-v2 at all.
+	smsEnabled, err := getbool("NOTIFY_SMS_ENABLED", false)
+	collect(err)
+	smsRetryMaxAttempts := defaultSMSRetryMaxAttempts
+	if smsEnabled {
+		var smsRetryMaxAttempts32 int32
+		smsRetryMaxAttempts32, err = getint32("SMS_RETRY_MAX_ATTEMPTS", defaultSMSRetryMaxAttempts)
+		collect(err)
+		smsRetryMaxAttempts = int(smsRetryMaxAttempts32)
+	}
 	hstsEnabled, err := getbool("HSTS_ENABLED", false)
 	collect(err)
 	// Track whether HSTS_MAX_AGE was set explicitly so an explicit 0 (clear HSTS)
@@ -651,6 +705,14 @@ func Load() (Config, error) {
 				PresignTTL:      s3PresignTTL,
 			},
 			ChoreProofRetention: choreProofRetention,
+		},
+		SMS: SMSConfig{
+			Enabled:             smsEnabled,
+			OriginationIdentity: strings.TrimSpace(os.Getenv("SMS_ORIGINATION_IDENTITY")),
+			Region:              strings.TrimSpace(os.Getenv("SMS_REGION")),
+			AccessKeyID:         strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY_ID")),
+			SecretAccessKey:     strings.TrimSpace(os.Getenv("SMS_SECRET_ACCESS_KEY")),
+			RetryMaxAttempts:    smsRetryMaxAttempts,
 		},
 		TLS: TLSConfig{
 			CertFile: strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
@@ -793,6 +855,28 @@ func (c Config) validate() []error {
 		// always a misconfiguration, never a valid partial state.
 		if (c.Media.S3.AccessKeyID == "") != (c.Media.S3.SecretAccessKey == "") {
 			errs = append(errs, errors.New("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
+		}
+	}
+
+	// EVERY SMS_* setting below is validated ONLY when NOTIFY_SMS_ENABLED is
+	// true (NES-138), mirroring S3's identical enabled-gates-required-fields
+	// pattern immediately above: a deployment with SMS disabled (the
+	// default) must never fail startup on a stray or partial SMS_* value it
+	// will never use.
+	if c.SMS.Enabled {
+		if c.SMS.OriginationIdentity == "" {
+			errs = append(errs, errors.New("SMS_ORIGINATION_IDENTITY is required when NOTIFY_SMS_ENABLED=true"))
+		}
+		if c.SMS.Region == "" {
+			errs = append(errs, errors.New("SMS_REGION is required when NOTIFY_SMS_ENABLED=true"))
+		}
+		if c.SMS.RetryMaxAttempts <= 0 {
+			errs = append(errs, fmt.Errorf("SMS_RETRY_MAX_ATTEMPTS must be positive, got %d", c.SMS.RetryMaxAttempts))
+		}
+		// Static SMS credentials are both-or-neither, mirroring S3's
+		// identical pairing check.
+		if (c.SMS.AccessKeyID == "") != (c.SMS.SecretAccessKey == "") {
+			errs = append(errs, errors.New("SMS_ACCESS_KEY_ID and SMS_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
 		}
 	}
 
