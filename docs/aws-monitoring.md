@@ -90,7 +90,7 @@ export AWS_PAGER=""
 
 # The active credentials must belong to THE appliance's account — a
 # topic and alarms created in some other account would never see the
-# metrics the Pi publishes to 768962091675, and the dead-man alarm
+# metrics the Pi publishes to $AWS_ACCOUNT_ID, and the dead-man alarm
 # would sit in ALARM forever while looking "provisioned".
 CALLER_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 if [ "$CALLER_ACCOUNT_ID" != "$AWS_ACCOUNT_ID" ]; then
