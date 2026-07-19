@@ -85,7 +85,18 @@ One-time, from an operator credential:
 set -euo pipefail
 : "${MONITOR_REGION:?set MONITOR_REGION}"
 : "${ALERT_EMAIL_1:?set ALERT_EMAIL_1}"
+: "${AWS_ACCOUNT_ID:?set AWS_ACCOUNT_ID}"
 export AWS_PAGER=""
+
+# The active credentials must belong to THE appliance's account — a
+# topic and alarms created in some other account would never see the
+# metrics the Pi publishes to 768962091675, and the dead-man alarm
+# would sit in ALARM forever while looking "provisioned".
+CALLER_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+if [ "$CALLER_ACCOUNT_ID" != "$AWS_ACCOUNT_ID" ]; then
+  echo "wrong AWS account: expected $AWS_ACCOUNT_ID, got $CALLER_ACCOUNT_ID" >&2
+  exit 1
+fi
 
 TOPIC_ARN="$(aws sns create-topic --name nestova-appliance-alerts \
   --region "$MONITOR_REGION" --query TopicArn --output text)"
@@ -111,6 +122,10 @@ notifications, so verify both show `Confirmed` before trusting the
 alarm path:
 
 ```bash
+# A later shell has no $TOPIC_ARN — recover it from the env file the
+# provisioning script wrote (parsed, not sourced).
+TOPIC_ARN="$(grep -m1 '^TOPIC_ARN=' ./nestova-monitoring-topic.env | cut -d= -f2-)"
+: "${TOPIC_ARN:?missing TOPIC_ARN — run provision-monitoring-sns.sh in this directory first}"
 aws sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" \
   --region "$MONITOR_REGION" \
   --query 'Subscriptions[].{Endpoint:Endpoint,Arn:SubscriptionArn}' --output table
@@ -218,6 +233,10 @@ credentials (or rely on the default credential chain) — `chmod 600`,
 owned by the service user.
 
 ```sh
+# install (not cp) so the script lands executable and root-owned — a
+# pasted 0644 copy makes the timer fail with Permission denied and,
+# by design, no heartbeat.
+sudo install -m 0755 -o root -g root nestova-heartbeat.sh /usr/local/bin/nestova-heartbeat.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now nestova-heartbeat.timer
 systemctl list-timers nestova-heartbeat.timer
@@ -242,10 +261,23 @@ if [ -z "${TOPIC_ARN:-}" ] && [ -f ./nestova-monitoring-topic.env ]; then
   TOPIC_ARN="$(grep -m1 '^TOPIC_ARN=' ./nestova-monitoring-topic.env | cut -d= -f2-)"
 fi
 : "${TOPIC_ARN:?set TOPIC_ARN (or run provision-monitoring-sns.sh in this directory first)}"
-case "$TOPIC_ARN" in
-  arn:aws:sns:*) ;;
-  *) echo "refusing TOPIC_ARN that is not an SNS ARN: '$TOPIC_ARN'" >&2; exit 1 ;;
-esac
+# Exact-match validation, not just ARN shape: the env file is plain
+# text on disk, and a tampered ARN would silently redirect every alarm
+# notification to a topic an attacker controls. The expected value is
+# fully determined by region + account + the provisioned topic name.
+: "${AWS_ACCOUNT_ID:?set AWS_ACCOUNT_ID}"
+EXPECTED_ARN="arn:aws:sns:${MONITOR_REGION}:${AWS_ACCOUNT_ID}:nestova-appliance-alerts"
+if [ "$TOPIC_ARN" != "$EXPECTED_ARN" ]; then
+  echo "refusing TOPIC_ARN '$TOPIC_ARN' — expected '$EXPECTED_ARN'" >&2
+  exit 1
+fi
+# Same wrong-account guard as the SNS script: alarms in another
+# account would never see the appliance's metrics.
+CALLER_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+if [ "$CALLER_ACCOUNT_ID" != "$AWS_ACCOUNT_ID" ]; then
+  echo "wrong AWS account: expected $AWS_ACCOUNT_ID, got $CALLER_ACCOUNT_ID" >&2
+  exit 1
+fi
 export AWS_PAGER=""
 
 # 1. Dead-man heartbeat: healthy = one sample per 5-minute period.
