@@ -166,7 +166,11 @@ func (s *ExternalRecipeSource) FindByIngredients(ctx context.Context, _ househol
 // Concurrent identical misses are collapsed into one upstream call via
 // s.sf, keyed on the same cache key: the provider is a metered, paid API,
 // so N goroutines racing on the same just-expired or never-cached query
-// must not turn into N upstream requests.
+// must not turn into N upstream requests. The shared fetch runs on a ctx
+// DETACHED from whichever caller happened to become the singleflight
+// leader (see the context.WithoutCancel comment inside the Do callback):
+// the leader's own request canceling must not cancel a result every other
+// coalesced waiter — with their own, still-valid contexts — is waiting on.
 func (s *ExternalRecipeSource) findResults(ctx context.Context, query []string) ([]providerRecipe, error) {
 	key := externalFindCacheKey(query)
 	if cached, ok, err := s.cache.Get(ctx, key); err != nil {
@@ -182,12 +186,24 @@ func (s *ExternalRecipeSource) findResults(ctx context.Context, query []string) 
 	}
 
 	v, err, _ := s.sf.Do(key, func() (any, error) {
-		results, err := s.queryProvider(ctx, query)
+		// context.WithoutCancel keeps whichever request-scoped VALUES ctx
+		// carries (e.g. tracing) but drops its cancellation — ctx belongs
+		// to a single caller (the singleflight leader), and this fetch's
+		// result is shared with every coalesced waiter, so it must not be
+		// torn down just because the leader's own request happened to be
+		// canceled. ExternalRequestTimeout re-bounds it (the same timeout
+		// the injected http.Client's own Timeout already applies to the
+		// underlying round trip — reusing it here rather than picking a
+		// new number keeps the two bounds from silently drifting apart).
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ExternalRequestTimeout)
+		defer cancel()
+
+		results, err := s.queryProvider(fetchCtx, query)
 		if err != nil {
 			return nil, err
 		}
 		if payload, err := json.Marshal(results); err == nil {
-			if err := s.cache.Set(ctx, key, payload, externalFindCacheTTL); err != nil {
+			if err := s.cache.Set(fetchCtx, key, payload, externalFindCacheTTL); err != nil {
 				s.logger.Warn("external recipe source: failed to cache find-by-ingredients results",
 					"error", err)
 			}
