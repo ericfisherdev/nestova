@@ -508,7 +508,9 @@ cardinality stays bounded even against misuse.
 | `nestova_calendar_sync_events_total` | counter | — | External calendar events applied to the cache (upserts and deletes) across all accounts |
 | `nestova_calendar_sync_account_errors_total` | counter | — | Per-account sync failures (one increment per failed account per pass) |
 
-**SMS send metrics** (recorded around every `SMSSender.Send` call, NES-138):
+**SMS send metrics** (recorded around every `Send` call through the AWS
+End User Messaging sender specifically — `NoopSMSSender` is never
+instrumented, and no code sends an SMS at all until NES-139, NES-138):
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |

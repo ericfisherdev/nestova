@@ -550,6 +550,35 @@ func TestLoadValid(t *testing.T) {
 				},
 			},
 		},
+		{
+			// Regression test (mirrors "local backend ignores malformed and
+			// partial s3 settings entirely" above): a disabled deployment
+			// (NOTIFY_SMS_ENABLED=false, the default) must load
+			// successfully even with a malformed SMS_RETRY_MAX_ATTEMPTS and
+			// a lone SMS_ACCESS_KEY_ID with no matching secret — every one
+			// of those would fail Load() outright if SMS_* parsing/
+			// validation were not gated on NOTIFY_SMS_ENABLED actually
+			// being true. The resulting SMSConfig carries only the plain
+			// default/raw string, never attempting to interpret the
+			// malformed value.
+			name: "sms disabled ignores malformed and partial sms settings entirely",
+			env: map[string]string{
+				"SMS_RETRY_MAX_ATTEMPTS": "not-a-number",
+				"SMS_ACCESS_KEY_ID":      "AKIAEXAMPLE",
+			},
+			want: config.Config{
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS: config.SMSConfig{
+					AccessKeyID:      "AKIAEXAMPLE",
+					RetryMaxAttempts: defaultSMSRetryMaxAttempts,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
