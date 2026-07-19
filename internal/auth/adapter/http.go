@@ -11,11 +11,13 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/alexedwards/scs/v2"
 
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
+	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	"github.com/ericfisherdev/nestova/web/components"
 )
@@ -25,6 +27,20 @@ const (
 	sessionKeyMemberID = "member_id"
 	// sessionKeyCSRF is the session key storing the per-session CSRF token.
 	sessionKeyCSRF = "csrf_token"
+	// sessionKeyMFAPendingMemberID stores the MemberID awaiting a login MFA
+	// step (NES-135): set by Login when a confirmed enrollment requires a
+	// second factor and no valid remembered-device cookie was presented, and
+	// by RequireStepUp (session.go) when a stale session needs to re-prove
+	// freshness. Cleared by finishLogin on success. It lives on the SAME
+	// (possibly anonymous, pre-login) session sm.LoadAndSave already wraps
+	// the whole mux with (cmd/server/main.go) — never a separate store.
+	sessionKeyMFAPendingMemberID = "mfa_pending_member_id"
+	// sessionKeyMFAVerifiedAt stores WHEN the current session last completed
+	// a login MFA verification — or, for a password-only member (nothing to
+	// step up from), when the session was established at all. See
+	// finishLogin's doc for exactly when it is (and is not) stamped, and
+	// RequireStepUp (session.go) for how it is consumed.
+	sessionKeyMFAVerifiedAt = "mfa_verified_at"
 	// csrfTokenLen is the length of the generated CSRF token in bytes (produces
 	// a 64-character hex string).
 	csrfTokenLen = 32
@@ -33,13 +49,28 @@ const (
 // Handlers holds the HTTP handler methods for the auth context (login page,
 // login form submission, logout).
 type Handlers struct {
-	sm     *scs.SessionManager
-	authn  *authapp.Authenticator
-	logger *slog.Logger
+	sm       *scs.SessionManager
+	authn    *authapp.Authenticator
+	mfa      *authapp.MFAService
+	remember *authapp.RememberDeviceSigner
+	logger   *slog.Logger
 }
 
-// NewHandlers constructs auth Handlers. All three dependencies are required.
-func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, logger *slog.Logger) *Handlers {
+// NewHandlers constructs auth Handlers. sm, authn, and logger are required
+// and panic when nil, matching this codebase's usual "every dependency is
+// required, fail fast at construction" DI convention.
+//
+// mfa and remember (NES-135) are a DELIBERATE exception to that convention:
+// they MAY be nil. A nil mfa disables login MFA gating entirely, so Login
+// behaves exactly as it did before NES-135. This exists purely to bound the
+// blast radius of adding these two params: Handlers is constructed in ~20
+// otherwise-unrelated cmd/server test files that have no need to wire the
+// MFA context, and making mfa/remember required would force every one of
+// them to build a full MFAService (repo/cipher/totp/cred/household fakes)
+// just to compile. The real server composition root (cmd/server/main.go)
+// always supplies both together — nil is a test-harness accommodation, not
+// a supported production configuration.
+func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceSigner, logger *slog.Logger) *Handlers {
 	if sm == nil {
 		panic("adapter: NewHandlers requires a non-nil session manager")
 	}
@@ -49,7 +80,7 @@ func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, logger *s
 	if logger == nil {
 		panic("adapter: NewHandlers requires a non-nil logger")
 	}
-	return &Handlers{sm: sm, authn: authn, logger: logger}
+	return &Handlers{sm: sm, authn: authn, mfa: mfa, remember: remember, logger: logger}
 }
 
 // GetCSRFToken returns the per-session CSRF token stored in the session,
@@ -87,9 +118,19 @@ func (h *Handlers) LoginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // Login handles POST /login — it verifies the CSRF token, reads credentials,
-// authenticates via the Authenticator, and on success issues a renewed session
-// and redirects to the `next` URL. On failure it re-renders the login page
-// with a generic error message (no enumeration).
+// authenticates via the Authenticator, and on success either promotes the
+// session directly or (NES-135) hands off to the login MFA step. On a
+// password failure it re-renders the login page with a generic error
+// message (no enumeration).
+//
+// NES-135 MFA gate: a member with a CONFIRMED enrollment must complete a
+// second factor before the session is promoted, UNLESS a valid
+// remembered-device cookie naming THIS member is presented — in which case
+// the prompt is skipped, but the session is NOT marked as freshly
+// MFA-verified (see finishLogin's doc), so RequireStepUp still demands the
+// prompt again for a security-sensitive action. A member with no confirmed
+// enrollment (or when h.mfa is nil — see NewHandlers's doc) logs in
+// unchanged.
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -122,15 +163,101 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Renew the session token on privilege escalation to prevent session fixation.
-	if err := h.sm.RenewToken(r.Context()); err != nil {
+	if h.mfa != nil {
+		confirmed, err := h.hasConfirmedMFA(r.Context(), memberID)
+		if err != nil {
+			h.logger.ErrorContext(r.Context(), "mfa status check", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if confirmed {
+			if h.hasRememberedDevice(r, memberID) {
+				if err := finishLogin(r.Context(), h.sm, memberID, false); err != nil {
+					h.logger.ErrorContext(r.Context(), "renew session token", "error", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				http.Redirect(w, r, next, http.StatusSeeOther)
+				return
+			}
+			// Renew the session token before parking the pending-MFA state:
+			// password verification is itself a privilege escalation (from
+			// fully anonymous to "password proven"), so it gets the same
+			// session-fixation defense as a completed login.
+			if err := h.sm.RenewToken(r.Context()); err != nil {
+				h.logger.ErrorContext(r.Context(), "renew session token", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			h.sm.Put(r.Context(), sessionKeyMFAPendingMemberID, memberID.String())
+			http.Redirect(w, r, "/login/mfa?next="+url.QueryEscape(next), http.StatusSeeOther)
+			return
+		}
+	}
+
+	if err := finishLogin(r.Context(), h.sm, memberID, true); err != nil {
 		h.logger.ErrorContext(r.Context(), "renew session token", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-
-	h.sm.Put(r.Context(), sessionKeyMemberID, memberID.String())
 	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+// hasConfirmedMFA reports whether memberID has a CONFIRMED MFA enrollment.
+func (h *Handlers) hasConfirmedMFA(ctx context.Context, memberID household.MemberID) (bool, error) {
+	enrollment, err := h.mfa.Status(ctx, memberID)
+	if err != nil {
+		return false, err
+	}
+	return enrollment.Confirmed(), nil
+}
+
+// hasRememberedDevice reports whether r carries a valid, unexpired
+// remember-device cookie naming memberID specifically — a cookie belonging
+// to a DIFFERENT member (e.g. a shared household device where someone else
+// last checked "remember this device") must not skip THIS member's MFA
+// step.
+func (h *Handlers) hasRememberedDevice(r *http.Request, memberID household.MemberID) bool {
+	if h.remember == nil {
+		return false
+	}
+	cookie, err := r.Cookie(RememberDeviceCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	rememberedID, err := h.remember.Verify(cookie.Value, time.Now())
+	return err == nil && rememberedID == memberID
+}
+
+// finishLogin promotes the session to authenticated by memberID: renews the
+// session token (session-fixation defense on this privilege escalation),
+// stores member_id, and clears any pending login-MFA state. It is a
+// package-level function (not a Handlers method) so both Handlers.Login and
+// LoginMFAHandlers.Verify can share it without either type needing a
+// reference to the other.
+//
+// When verified is true, it also stamps mfa_verified_at = now, marking the
+// session fresh for RequireStepUp — true for a password-only member
+// (nothing to step up FROM, so every future action is already at that
+// member's security ceiling) and for a member who just completed the login
+// MFA step THIS session. When verified is false (a member admitted via a
+// remembered-device cookie, who skipped the login prompt), any existing
+// mfa_verified_at is cleared instead, so RequireStepUp still demands the
+// prompt when a step-up-gated action is reached — the NES-135 acceptance
+// criterion that a remembered device "still gets prompted for step-up
+// actions".
+func finishLogin(ctx context.Context, sm *scs.SessionManager, memberID household.MemberID, verified bool) error {
+	if err := sm.RenewToken(ctx); err != nil {
+		return err
+	}
+	sm.Put(ctx, sessionKeyMemberID, memberID.String())
+	if verified {
+		sm.Put(ctx, sessionKeyMFAVerifiedAt, time.Now())
+	} else {
+		sm.Remove(ctx, sessionKeyMFAVerifiedAt)
+	}
+	sm.Remove(ctx, sessionKeyMFAPendingMemberID)
+	return nil
 }
 
 // Logout handles POST /logout — it verifies the CSRF token, destroys the

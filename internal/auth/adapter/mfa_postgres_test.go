@@ -490,6 +490,159 @@ func TestMFAMarkRecoveryCodeUsed_ExcludesFromUnusedList(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// RecordLoginStep (NES-135): the durable login-MFA replay guard.
+// ---------------------------------------------------------------------------
+
+func TestMFAGetEnrollment_LastTOTPStepNilBeforeAnyLogin(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
+	}
+
+	enrollment, err := repo.GetEnrollment(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.LastTOTPStep != nil {
+		t.Errorf("LastTOTPStep = %v, want nil before any login MFA verification", *enrollment.LastTOTPStep)
+	}
+}
+
+func TestMFARecordLoginStep_PersistsAndIsReadableViaGetEnrollment(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
+	}
+
+	if err := repo.RecordLoginStep(testCtx(t), memberID, 1000); err != nil {
+		t.Fatalf("RecordLoginStep: %v", err)
+	}
+
+	enrollment, err := repo.GetEnrollment(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.LastTOTPStep == nil || *enrollment.LastTOTPStep != 1000 {
+		t.Errorf("LastTOTPStep = %v, want 1000", enrollment.LastTOTPStep)
+	}
+}
+
+// TestMFARecordLoginStep_RejectsEqualOrLowerStep is the direct replay-guard
+// check: a step that is <= the already-stored value must be rejected
+// (ErrInvalidTOTPCode), and the stored value must be unchanged.
+func TestMFARecordLoginStep_RejectsEqualOrLowerStep(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
+	}
+	if err := repo.RecordLoginStep(testCtx(t), memberID, 1000); err != nil {
+		t.Fatalf("seed RecordLoginStep: %v", err)
+	}
+
+	for _, replay := range []int64{999, 1000} {
+		if err := repo.RecordLoginStep(testCtx(t), memberID, replay); !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+			t.Errorf("RecordLoginStep(%d) after 1000: err = %v, want ErrInvalidTOTPCode", replay, err)
+		}
+	}
+
+	enrollment, err := repo.GetEnrollment(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.LastTOTPStep == nil || *enrollment.LastTOTPStep != 1000 {
+		t.Errorf("LastTOTPStep after rejected replays = %v, want unchanged 1000", enrollment.LastTOTPStep)
+	}
+}
+
+func TestMFARecordLoginStep_AcceptsStrictlyIncreasingSteps(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
+	}
+
+	if err := repo.RecordLoginStep(testCtx(t), memberID, 1000); err != nil {
+		t.Fatalf("RecordLoginStep(1000): %v", err)
+	}
+	if err := repo.RecordLoginStep(testCtx(t), memberID, 1001); err != nil {
+		t.Fatalf("RecordLoginStep(1001): %v", err)
+	}
+
+	enrollment, err := repo.GetEnrollment(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.LastTOTPStep == nil || *enrollment.LastTOTPStep != 1001 {
+		t.Errorf("LastTOTPStep = %v, want 1001", enrollment.LastTOTPStep)
+	}
+}
+
+// TestMFARecordLoginStep_ConcurrentRace_OnlyTheHigherStepWins is the gated
+// concurrency check mirroring ConfirmEnrollmentWithCodes's own race test:
+// two callers racing to record DIFFERENT steps for the same member must
+// resolve so that only the strictly-increasing write can ever win, whichever
+// order they are attempted in — the guard is a property of the STORED
+// value, not of arrival order.
+func TestMFARecordLoginStep_ConcurrentRace_OnlyTheHigherStepWins(t *testing.T) {
+	repo, householdID, memberID := newTestMFARepo(t)
+	if err := repo.BeginEnrollment(testCtx(t), memberID, householdID, []byte("secret")); err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	if err := repo.ConfirmEnrollmentWithCodes(testCtx(t), memberID, nil); err != nil {
+		t.Fatalf("ConfirmEnrollmentWithCodes: %v", err)
+	}
+	ctx := testCtx(t)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errs[0] = repo.RecordLoginStep(ctx, memberID, 2000)
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = repo.RecordLoginStep(ctx, memberID, 2001)
+	}()
+	wg.Wait()
+
+	// Regardless of execution order, the final stored value must be 2001
+	// (the higher step): either 2000 lands first and 2001 still succeeds
+	// (2000 < 2001), or 2001 lands first and 2000 is then rejected as a
+	// replay (2000 <= 2001).
+	enrollment, err := repo.GetEnrollment(ctx, memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.LastTOTPStep == nil || *enrollment.LastTOTPStep != 2001 {
+		t.Errorf("LastTOTPStep after racing RecordLoginStep calls = %v, want 2001", enrollment.LastTOTPStep)
+	}
+	for i, err := range errs {
+		if err != nil && !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+			t.Errorf("RecordLoginStep call %d: unexpected error %v", i, err)
+		}
+	}
+}
+
+func TestMFARecordLoginStep_UnenrolledMemberRejected(t *testing.T) {
+	repo, _, memberID := newTestMFARepo(t)
+	if err := repo.RecordLoginStep(testCtx(t), memberID, 1000); !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+		t.Errorf("RecordLoginStep for an unenrolled member: err = %v, want ErrInvalidTOTPCode", err)
+	}
+}
+
 func TestMFAListUnusedRecoveryCodes_EmptyForNoEnrollment(t *testing.T) {
 	repo, _, memberID := newTestMFARepo(t)
 	codes, err := repo.ListUnusedRecoveryCodes(testCtx(t), memberID)

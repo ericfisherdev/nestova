@@ -7,9 +7,20 @@
 package totp
 
 import (
+	"crypto/subtle"
 	"fmt"
+	"time"
 
 	pquernatotp "github.com/pquerna/otp/totp"
+)
+
+// period and skew mirror Validate's own Google-Authenticator-compatible
+// tolerance (pquerna/otp's 30-second default period, ±1 period skew) —
+// MatchStep must apply the IDENTICAL window Validate does, just with
+// visibility into WHICH step matched.
+const (
+	period = 30
+	skew   = 1
 )
 
 // Provider generates and validates RFC 6238 TOTP secrets using the standard
@@ -42,4 +53,35 @@ func (Provider) GenerateSecret(issuer, accountName string) (secret, otpauthURL s
 // Validate reports whether code is currently valid for secret.
 func (Provider) Validate(code, secret string) bool {
 	return pquernatotp.Validate(code, secret)
+}
+
+// MatchStep reports whether code is valid for secret at any RFC 6238 step
+// (the counter, floor(unix/period)) within the ±1-period skew window of now
+// — the SAME tolerance Validate applies — and, when it is, which step
+// matched. Unlike Validate's plain bool, the matched step lets a caller
+// enforce a durable replay guard across steps (NES-135's login verification:
+// the same code must never be accepted twice, even across the skew window,
+// which requires knowing WHICH of the up to three candidate steps a
+// submitted code actually corresponds to).
+//
+// When more than one candidate step matches — an astronomically unlikely
+// coincidence for a 6-digit code, but not provably impossible — the HIGHEST
+// step is returned, so a caller's replay guard stays maximally restrictive
+// rather than accidentally permissive.
+func (Provider) MatchStep(code, secret string) (step int64, ok bool) {
+	current := time.Now().UTC().Unix() / period
+	for i := -skew; i <= skew; i++ {
+		candidate := current + int64(i)
+		want, err := pquernatotp.GenerateCodeCustom(secret, time.Unix(candidate*period, 0).UTC(), pquernatotp.ValidateOpts{
+			Period: period,
+		})
+		if err != nil {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 && (!ok || candidate > step) {
+			step = candidate
+			ok = true
+		}
+	}
+	return step, ok
 }

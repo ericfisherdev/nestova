@@ -41,7 +41,7 @@ func NewMFARepository(dbtx db.TX) *MFARepository {
 // authdomain.ErrMFANotEnrolled when no row exists.
 func (r *MFARepository) GetEnrollment(ctx context.Context, memberID household.MemberID) (*authdomain.MFAEnrollment, error) {
 	const q = `
-		SELECT household_id, totp_secret_enc, confirmed_at, created_at, updated_at
+		SELECT household_id, totp_secret_enc, confirmed_at, last_totp_step, created_at, updated_at
 		  FROM member_mfa
 		 WHERE member_id = $1`
 
@@ -50,7 +50,7 @@ func (r *MFARepository) GetEnrollment(ctx context.Context, memberID household.Me
 		enrollment     = &authdomain.MFAEnrollment{MemberID: memberID}
 	)
 	err := r.dbtx.QueryRow(ctx, q, memberID.String()).Scan(
-		&householdIDStr, &enrollment.TOTPSecretEnc, &enrollment.ConfirmedAt,
+		&householdIDStr, &enrollment.TOTPSecretEnc, &enrollment.ConfirmedAt, &enrollment.LastTOTPStep,
 		&enrollment.CreatedAt, &enrollment.UpdatedAt,
 	)
 	if err != nil {
@@ -304,6 +304,31 @@ func (r *MFARepository) MarkRecoveryCodeUsed(ctx context.Context, codeID authdom
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("mark recovery code used: %s: %w", codeID.String(), authdomain.ErrRecoveryCodeInvalid)
+	}
+	return nil
+}
+
+// RecordLoginStep durably persists step as memberID's last-accepted login
+// TOTP step (NES-135), guarded by a single conditional UPDATE so the
+// check-and-set is atomic against a concurrent racing call: the WHERE
+// clause only matches a row whose last_totp_step is still NULL or strictly
+// less than step, closing the same race BeginEnrollment's own doc discusses
+// (two concurrent login attempts must never both "win" and accept the same
+// or an out-of-order step).
+func (r *MFARepository) RecordLoginStep(ctx context.Context, memberID household.MemberID, step int64) error {
+	const q = `
+		UPDATE member_mfa
+		   SET last_totp_step = $2,
+		       updated_at     = now()
+		 WHERE member_id = $1
+		   AND (last_totp_step IS NULL OR last_totp_step < $2)`
+
+	tag, err := r.dbtx.Exec(ctx, q, memberID.String(), step)
+	if err != nil {
+		return fmt.Errorf("record mfa login step: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return authdomain.ErrInvalidTOTPCode
 	}
 	return nil
 }

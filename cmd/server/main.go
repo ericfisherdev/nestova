@@ -126,6 +126,13 @@ const (
 // raw secret directly) even though both trace back to the same root secret.
 const deepLinkSignerPurpose = "nestova:deeplink:v1"
 
+// rememberDeviceSignerPurpose is the derivation label passed to
+// authapp.NewRememberDeviceSignerFromSecret (NES-135), keeping the "remember
+// this device" cookie's signing key cryptographically distinct from every
+// other consumer of cfg.Session.Secret, per the same reasoning as
+// deepLinkSignerPurpose above.
+const rememberDeviceSignerPurpose = "nestova:auth:remember-device:v1"
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	// run() returns outcomeRestart once first-run setup completes, so the boot is
@@ -210,11 +217,12 @@ func runServer(logger *slog.Logger) error {
 	// NES-23: session manager backed by Postgres (scs + pgxstore).
 	sm := authadapter.NewSessionManager(pool, cfg.Session)
 
-	// NES-23: auth bounded context wiring.
+	// NES-23: auth bounded context wiring. authHandlers itself is
+	// constructed further below (NES-135), once the MFA service and the
+	// remember-device signer it now depends on both exist.
 	credRepo := authadapter.NewCredentialRepository(pool)
 	authn := authapp.New(credRepo)
 	householdRepo := householdadapter.NewPostgresRepository(pool)
-	authHandlers := authadapter.NewHandlers(sm, authn, logger)
 
 	// NES-26: onboarding + member provisioning handlers. The provisioner runs the
 	// multi-table writes (household + member + credentials) atomically in one
@@ -460,6 +468,23 @@ func runServer(logger *slog.Logger) error {
 	}
 	mfaWebHandlers := authadapter.NewMFAWebHandlers(mfaService, householdRepo, sm, logger)
 
+	// NES-135: login MFA enforcement. rememberDeviceSigner is keyed the
+	// same way deepLinkSigner below is (a purpose-scoped derivation from
+	// cfg.Session.Secret) so its key stays cryptographically independent of
+	// every other consumer despite tracing back to the same root secret.
+	// authHandlers is constructed here — rather than alongside credRepo/
+	// authn/householdRepo above — because Login now depends on mfaService
+	// and rememberDeviceSigner, both of which must exist first. outboxRepo
+	// (constructed above for the NES-24 notification outbox) satisfies
+	// LoginMFAHandlers' notify.Enqueuer dependency: a lockout notification
+	// rides the same outbox every other Nestova notification does.
+	rememberDeviceSigner, err := authapp.NewRememberDeviceSignerFromSecret([]byte(cfg.Session.Secret), rememberDeviceSignerPurpose)
+	if err != nil {
+		return fmt.Errorf("create remember-device signer: %w", err)
+	}
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, logger)
+	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, outboxRepo, cfg.Session.Secure, logger)
+
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {
 		return fmt.Errorf("create oauth state signer: %w", err)
@@ -601,11 +626,11 @@ func runServer(logger *slog.Logger) error {
 			kioskadapter.AuthenticateDevice(kioskService, logger),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},

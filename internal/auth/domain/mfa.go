@@ -56,8 +56,13 @@ type MFAEnrollment struct {
 	HouseholdID   household.HouseholdID
 	TOTPSecretEnc []byte
 	ConfirmedAt   *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// LastTOTPStep is the RFC 6238 step of the most recently accepted LOGIN
+	// TOTP code (NES-135), or nil when the member has never completed login
+	// MFA verification. It is the durable replay guard MFARepository's
+	// RecordLoginStep maintains — see that method's doc.
+	LastTOTPStep *int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Confirmed reports whether e represents an active enrollment — i.e. the
@@ -142,6 +147,16 @@ func (c RecoveryCode) Used() bool {
 //     memberID (never used ones), for verifying a submitted code against.
 //   - MarkRecoveryCodeUsed sets used_at = now on the given code id. It is the
 //     caller's responsibility to have already matched the code's hash.
+//   - RecordLoginStep (NES-135) durably persists step as memberID's
+//     last-accepted login TOTP step, IF AND ONLY IF the stored value is
+//     still nil or strictly less than step — an atomic, race-safe replay
+//     guard (implementations must apply this as a single conditional
+//     UPDATE, not a read-then-write). Returns ErrInvalidTOTPCode when the
+//     guard fails: either because step has already been used or superseded
+//     (a replay, including one that lost a race to a concurrent call for a
+//     later step) or because memberID has no member_mfa row — both reported
+//     identically, since the caller has always already confirmed enrollment
+//     via GetEnrollment before calling this.
 type MFARepository interface {
 	GetEnrollment(ctx context.Context, memberID household.MemberID) (*MFAEnrollment, error)
 	BeginEnrollment(ctx context.Context, memberID household.MemberID, householdID household.HouseholdID, secretEnc []byte) error
@@ -150,4 +165,5 @@ type MFARepository interface {
 	ReplaceRecoveryCodes(ctx context.Context, memberID household.MemberID, hashes []string) error
 	ListUnusedRecoveryCodes(ctx context.Context, memberID household.MemberID) ([]RecoveryCode, error)
 	MarkRecoveryCodeUsed(ctx context.Context, codeID RecoveryCodeID) error
+	RecordLoginStep(ctx context.Context, memberID household.MemberID, step int64) error
 }

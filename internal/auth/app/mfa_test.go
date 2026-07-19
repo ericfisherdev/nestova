@@ -133,6 +133,21 @@ func (f *fakeMFARepo) MarkRecoveryCodeUsed(_ context.Context, codeID authdomain.
 	return errors.New("recovery code not found")
 }
 
+// RecordLoginStep mirrors the real repository's atomic replay guard: it
+// only accepts step when the stored LastTOTPStep is nil or strictly less
+// than step (NES-135).
+func (f *fakeMFARepo) RecordLoginStep(_ context.Context, memberID household.MemberID, step int64) error {
+	e, ok := f.enrollments[memberID]
+	if !ok {
+		return authdomain.ErrInvalidTOTPCode
+	}
+	if e.LastTOTPStep != nil && step <= *e.LastTOTPStep {
+		return authdomain.ErrInvalidTOTPCode
+	}
+	e.LastTOTPStep = &step
+	return nil
+}
+
 var _ authdomain.MFARepository = (*fakeMFARepo)(nil)
 
 // recoveryCodeIDFromInt derives a deterministic RecoveryCodeID from a small
@@ -149,7 +164,9 @@ func recoveryCodeIDFromInt(n int) authdomain.RecoveryCodeID {
 // called with), and Validate reports true only for the configured validCode
 // against the configured expectedSecret — so tests can simulate "member
 // enters the right code" or "member enters the wrong code" without any real
-// clock-synchronized TOTP math.
+// clock-synchronized TOTP math. MatchStep is separately controllable via
+// loginCode/loginStep (NES-135): tests configure which code maps to which
+// RFC 6238 step without needing real clock-synchronized math either.
 type fakeTOTPProvider struct {
 	secret         string
 	otpauthURL     string
@@ -157,6 +174,13 @@ type fakeTOTPProvider struct {
 	lastIssuer     string
 	lastAccount    string
 	lastValidateAt string // last secret Validate was called with
+
+	// loginCode/loginStep configure MatchStep: it reports (loginStep, true)
+	// when code == loginCode and secret == the fixture's secret; otherwise
+	// (0, false). Both zero by default, so a test that never sets them gets
+	// a clean "wrong code" baseline (mirroring validCode's own convention).
+	loginCode string
+	loginStep int64
 }
 
 func (f *fakeTOTPProvider) GenerateSecret(issuer, accountName string) (string, string, error) {
@@ -168,6 +192,13 @@ func (f *fakeTOTPProvider) GenerateSecret(issuer, accountName string) (string, s
 func (f *fakeTOTPProvider) Validate(code, secret string) bool {
 	f.lastValidateAt = secret
 	return code == f.validCode && secret == f.secret
+}
+
+func (f *fakeTOTPProvider) MatchStep(code, secret string) (int64, bool) {
+	if code == f.loginCode && secret == f.secret {
+		return f.loginStep, true
+	}
+	return 0, false
 }
 
 // fakePasswordVerifier is a controllable passwordVerifier fake for the owner
@@ -791,6 +822,220 @@ func TestDisenroll_UnconfirmedEnrollment_NotEnrolled(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// NES-135: VerifyLoginCode — login-time TOTP/recovery verification with a
+// durable replay guard.
+// ---------------------------------------------------------------------------
+
+func TestVerifyLoginCode_ValidTOTP_RecordsStep(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+	f.totp.loginCode = "654321"
+	f.totp.loginStep = 42
+
+	if err := f.svc.VerifyLoginCode(context.Background(), memberID, "654321", ""); err != nil {
+		t.Fatalf("VerifyLoginCode: %v", err)
+	}
+
+	enrollment, err := f.repo.GetEnrollment(context.Background(), memberID)
+	if err != nil {
+		t.Fatalf("GetEnrollment: %v", err)
+	}
+	if enrollment.LastTOTPStep == nil || *enrollment.LastTOTPStep != 42 {
+		t.Errorf("LastTOTPStep = %v, want 42", enrollment.LastTOTPStep)
+	}
+}
+
+func TestVerifyLoginCode_WrongTOTPRejected(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+	f.totp.loginCode = "654321"
+	f.totp.loginStep = 42
+
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "000000", "")
+	if !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+		t.Errorf("VerifyLoginCode(wrong code): err = %v, want ErrInvalidTOTPCode", err)
+	}
+}
+
+// TestVerifyLoginCode_ReplayedStepRejected is the direct AC coverage for "a
+// TOTP code cannot be used twice": the SAME code (and therefore the SAME
+// step) accepted once must be rejected on a second submission, even though
+// totpProvider.MatchStep would report a match again — the replay guard is
+// enforced by VerifyLoginCode comparing against LastTOTPStep, not by the
+// TOTP math itself.
+func TestVerifyLoginCode_ReplayedStepRejected(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+	f.totp.loginCode = "654321"
+	f.totp.loginStep = 42
+
+	if err := f.svc.VerifyLoginCode(context.Background(), memberID, "654321", ""); err != nil {
+		t.Fatalf("first VerifyLoginCode: %v", err)
+	}
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "654321", "")
+	if !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+		t.Errorf("replayed VerifyLoginCode: err = %v, want ErrInvalidTOTPCode", err)
+	}
+}
+
+// TestVerifyLoginCode_LowerStepRejectedAfterHigherAccepted covers the
+// "codes outside the skew window fail" AC from the other direction: once a
+// LATER step has been accepted, an EARLIER step's code (still otherwise
+// "valid" from MatchStep's perspective) must never be accepted afterward.
+func TestVerifyLoginCode_LowerStepRejectedAfterHigherAccepted(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+
+	f.totp.loginCode = "222222"
+	f.totp.loginStep = 100
+	if err := f.svc.VerifyLoginCode(context.Background(), memberID, "222222", ""); err != nil {
+		t.Fatalf("VerifyLoginCode at step 100: %v", err)
+	}
+
+	f.totp.loginCode = "111111"
+	f.totp.loginStep = 99
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "111111", "")
+	if !errors.Is(err, authdomain.ErrInvalidTOTPCode) {
+		t.Errorf("VerifyLoginCode at an earlier step than already accepted: err = %v, want ErrInvalidTOTPCode", err)
+	}
+}
+
+func TestVerifyLoginCode_RecoveryCode_ConsumesIt(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
+
+	if err := f.svc.VerifyLoginCode(context.Background(), memberID, "", codes[2]); err != nil {
+		t.Fatalf("VerifyLoginCode with a recovery code: %v", err)
+	}
+
+	// The same recovery code must not verify again.
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "", codes[2])
+	if !errors.Is(err, authdomain.ErrRecoveryCodeInvalid) {
+		t.Errorf("reusing a login recovery code: err = %v, want ErrRecoveryCodeInvalid", err)
+	}
+}
+
+// TestVerifyLoginCode_WrongTOTPFallsBackToRecoveryCode covers the
+// either/or precedence: when BOTH a wrong TOTP code and a valid recovery
+// code are supplied, the recovery code still verifies (mirrors Disenroll's
+// verifyTOTPOrRecovery precedence).
+func TestVerifyLoginCode_WrongTOTPFallsBackToRecoveryCode(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
+
+	if err := f.svc.VerifyLoginCode(context.Background(), memberID, "000000", codes[5]); err != nil {
+		t.Fatalf("VerifyLoginCode(wrong totp + valid recovery): %v", err)
+	}
+}
+
+// TestVerifyLoginCode_HardTOTPErrorPropagates covers the OTHER branch of
+// VerifyLoginCode's error handling: verifyLoginTOTP can fail for a reason
+// that is NOT authdomain.ErrInvalidTOTPCode — here, cipher.Decrypt failing
+// on a corrupted stored secret (crypto.ErrMalformedCiphertext, wrapped) —
+// and that hard, non-sentinel error must propagate to the caller as-is
+// rather than being silently treated as "wrong code".
+func TestVerifyLoginCode_HardTOTPErrorPropagates(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+	corruptStoredSecret(t, f.repo, memberID)
+
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "654321", "")
+	if err == nil {
+		t.Fatal("VerifyLoginCode must propagate a hard decrypt error, not silently succeed")
+	}
+	if errors.Is(err, authdomain.ErrInvalidTOTPCode) || errors.Is(err, authdomain.ErrRecoveryCodeInvalid) || errors.Is(err, authdomain.ErrMFAVerificationRequired) {
+		t.Errorf("VerifyLoginCode masked a hard decrypt failure as a well-known sentinel: %v", err)
+	}
+	if !errors.Is(err, crypto.ErrMalformedCiphertext) {
+		t.Errorf("VerifyLoginCode error = %v, want it to wrap crypto.ErrMalformedCiphertext", err)
+	}
+}
+
+// TestVerifyLoginCode_HardTOTPErrorDoesNotFallBackToRecoveryCode pins down
+// the intended behavior alongside
+// TestVerifyLoginCode_WrongTOTPFallsBackToRecoveryCode's happy path: the
+// fallback to a supplied recovery code is conditioned on the TOTP failure
+// specifically being authdomain.ErrInvalidTOTPCode (VerifyLoginCode's
+// `!errors.Is(err, authdomain.ErrInvalidTOTPCode) || recoveryCode == ""`
+// check) — a HARD error (e.g. a decrypt failure) must be returned
+// immediately instead, even when a perfectly valid recovery code was also
+// supplied, because a decrypt failure is an infrastructure problem the
+// caller needs to see (and log/500) rather than a "wrong code" the member
+// can just retry with their recovery code.
+func TestVerifyLoginCode_HardTOTPErrorDoesNotFallBackToRecoveryCode(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
+	corruptStoredSecret(t, f.repo, memberID)
+
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "654321", codes[0])
+	if err == nil {
+		t.Fatal("VerifyLoginCode must propagate the hard decrypt error, not silently succeed via the recovery code")
+	}
+	if errors.Is(err, authdomain.ErrInvalidTOTPCode) || errors.Is(err, authdomain.ErrRecoveryCodeInvalid) {
+		t.Errorf("a hard (non-ErrInvalidTOTPCode) TOTP error must be returned as-is, not masked as a wrong-code or recovery-code sentinel: %v", err)
+	}
+	if !errors.Is(err, crypto.ErrMalformedCiphertext) {
+		t.Errorf("VerifyLoginCode error = %v, want it to wrap crypto.ErrMalformedCiphertext", err)
+	}
+
+	// The recovery code must NOT have been consumed — proof VerifyLoginCode
+	// never reached matchRecoveryCode for it.
+	stillUnused, err := f.repo.ListUnusedRecoveryCodes(context.Background(), memberID)
+	if err != nil {
+		t.Fatalf("ListUnusedRecoveryCodes: %v", err)
+	}
+	if len(stillUnused) != 10 {
+		t.Errorf("unused recovery codes after a hard TOTP error = %d, want still 10 (the recovery code must not have been attempted)", len(stillUnused))
+	}
+}
+
+func TestVerifyLoginCode_NoCredentialSupplied(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+
+	err := f.svc.VerifyLoginCode(context.Background(), memberID, "", "")
+	if !errors.Is(err, authdomain.ErrMFAVerificationRequired) {
+		t.Errorf("VerifyLoginCode with neither code: err = %v, want ErrMFAVerificationRequired", err)
+	}
+}
+
+func TestVerifyLoginCode_UnenrolledMemberRejected(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	err := f.svc.VerifyLoginCode(context.Background(), household.NewMemberID(), "123456", "")
+	if !errors.Is(err, authdomain.ErrMFANotEnrolled) {
+		t.Errorf("VerifyLoginCode for an unenrolled member: err = %v, want ErrMFANotEnrolled", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -807,6 +1052,23 @@ func confirmEnrollment(t *testing.T, svc *app.MFAService, memberID household.Mem
 		t.Fatalf("ConfirmEnrollment: %v", err)
 	}
 	return codes
+}
+
+// corruptStoredSecret flips a byte in memberID's stored TOTPSecretEnc
+// directly in repo (bypassing the service entirely), so a SUBSEQUENT
+// cipher.Decrypt against it fails with crypto.ErrMalformedCiphertext — the
+// GCM authentication tag no longer matches. Used to force a hard,
+// non-authdomain.ErrInvalidTOTPCode error out of verifyLoginTOTP for tests
+// that need to distinguish "wrong code" from "infrastructure failure".
+func corruptStoredSecret(t *testing.T, repo *fakeMFARepo, memberID household.MemberID) {
+	t.Helper()
+	e, ok := repo.enrollments[memberID]
+	if !ok {
+		t.Fatalf("corruptStoredSecret: no enrollment on file for %s", memberID)
+	}
+	corrupted := append([]byte(nil), e.TOTPSecretEnc...)
+	corrupted[0] ^= 0xFF
+	e.TOTPSecretEnc = corrupted
 }
 
 func seedOwnerPassword(t *testing.T, passwords *fakePasswordVerifier, ownerID household.MemberID, password string) {

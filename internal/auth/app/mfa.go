@@ -33,10 +33,15 @@ type secretCipher interface {
 // totpProvider is the minimal seam over RFC 6238 TOTP generation/validation
 // MFAService depends on (ISP + DIP), satisfied by
 // internal/platform/totp.Provider and faked in tests so they never need a
-// real clock-synchronized authenticator.
+// real clock-synchronized authenticator. MatchStep (NES-135) is a separate
+// method from Validate rather than an additional return value on it: every
+// OTHER caller (ConfirmEnrollment, RegenerateRecoveryCodes,
+// verifyTOTPOrRecovery) has no use for a replay-comparable step number and
+// keeps using the simpler Validate.
 type totpProvider interface {
 	GenerateSecret(issuer, accountName string) (secret, otpauthURL string, err error)
 	Validate(code, secret string) bool
+	MatchStep(code, secret string) (step int64, ok bool)
 }
 
 // passwordVerifier is the minimal seam over the credential store MFAService
@@ -344,6 +349,89 @@ func (s *MFAService) verifyTOTPOrRecovery(ctx context.Context, memberID househol
 	if err := s.repo.MarkRecoveryCodeUsed(ctx, codeID); err != nil {
 		return fmt.Errorf("mfa: mark recovery code used: %w", err)
 	}
+	return nil
+}
+
+// VerifyLoginCode verifies memberID's pre-auth login MFA step (NES-135):
+// EITHER a current TOTP code OR an unused recovery code (consumed on
+// match), mirroring Disenroll's verifyTOTPOrRecovery either/or precedence —
+// the TOTP code is tried first when both are supplied, falling back to the
+// recovery code only if the TOTP code was WRONG (not merely absent). Unlike
+// Disenroll, a matched TOTP code's step is durably recorded
+// (MFARepository.RecordLoginStep) so the SAME code can never be replayed
+// for a second login — even from a different device or session, which a
+// per-session guard could not prevent.
+//
+// Returns authdomain.ErrMFAVerificationRequired when neither is supplied,
+// authdomain.ErrMFANotEnrolled when no confirmed enrollment exists, and
+// authdomain.ErrInvalidTOTPCode / ErrRecoveryCodeInvalid when the supplied
+// credential does not verify — a replayed TOTP code is reported identically
+// to a never-valid one (no oracle distinguishing "used before" from "wrong
+// code").
+func (s *MFAService) VerifyLoginCode(ctx context.Context, memberID household.MemberID, totpCode, recoveryCode string) error {
+	totpCode = strings.TrimSpace(totpCode)
+	recoveryCode = strings.TrimSpace(recoveryCode)
+	if totpCode == "" && recoveryCode == "" {
+		return authdomain.ErrMFAVerificationRequired
+	}
+
+	enrollment, err := s.requireConfirmedEnrollment(ctx, memberID)
+	if err != nil {
+		return err
+	}
+
+	if totpCode != "" {
+		err := s.verifyLoginTOTP(ctx, memberID, enrollment, totpCode)
+		switch {
+		case err == nil:
+			return nil
+		case !errors.Is(err, authdomain.ErrInvalidTOTPCode) || recoveryCode == "":
+			return err
+		}
+		// Fell through: the TOTP code was wrong (not a hard error) AND a
+		// recovery code was ALSO supplied — try it next.
+	}
+
+	codeID, ok, err := s.matchRecoveryCode(ctx, memberID, recoveryCode)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return authdomain.ErrRecoveryCodeInvalid
+	}
+	if err := s.repo.MarkRecoveryCodeUsed(ctx, codeID); err != nil {
+		return fmt.Errorf("mfa: mark recovery code used: %w", err)
+	}
+	s.logger.InfoContext(ctx, "mfa login verified via recovery code", "member_id", memberID.String())
+	return nil
+}
+
+// verifyLoginTOTP decrypts enrollment's secret and checks code against it
+// WITH replay protection: totpProvider.MatchStep reports WHICH RFC 6238
+// step (if any) matched, and that step must be strictly greater than the
+// member's last-accepted login step (enrollment.LastTOTPStep) or the code
+// is rejected as though it never matched at all — closing the replay
+// window totp.Provider.Validate's plain bool result cannot (it cannot
+// distinguish "valid code, never used" from "valid code, already used this
+// login"). A successful match is persisted via RecordLoginStep, whose own
+// atomic guard closes the remaining race between two concurrent login
+// attempts (see that method's doc).
+func (s *MFAService) verifyLoginTOTP(ctx context.Context, memberID household.MemberID, enrollment *authdomain.MFAEnrollment, code string) error {
+	secret, err := s.cipher.Decrypt(enrollment.TOTPSecretEnc)
+	if err != nil {
+		return fmt.Errorf("mfa: decrypt secret: %w", err)
+	}
+	step, matched := s.totp.MatchStep(code, string(secret))
+	if !matched {
+		return authdomain.ErrInvalidTOTPCode
+	}
+	if enrollment.LastTOTPStep != nil && step <= *enrollment.LastTOTPStep {
+		return authdomain.ErrInvalidTOTPCode
+	}
+	if err := s.repo.RecordLoginStep(ctx, memberID, step); err != nil {
+		return fmt.Errorf("mfa: record login step: %w", err)
+	}
+	s.logger.InfoContext(ctx, "mfa login verified via totp", "member_id", memberID.String())
 	return nil
 }
 

@@ -132,7 +132,7 @@ func buildCalendarTestHandler(t *testing.T, member *household.Member, repo calen
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 	authn := authapp.New(testCredRepo{})
-	authHandlers := authadapter.NewHandlers(sm, authn, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	recurringRepo := fakeRecurringTaskRepo{}
@@ -148,7 +148,7 @@ func buildCalendarTestHandler(t *testing.T, member *household.Member, repo calen
 	calendarHandlers := calendaradapter.NewWebHandlers(buildCalendarTestService(t, repo, exchanger, logger), sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), calendarHandlers)
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), calendarHandlers)
 	return sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux)), sm
 }
 
