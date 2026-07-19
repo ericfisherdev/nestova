@@ -99,11 +99,12 @@ aws s3api get-public-access-block --bucket "$BACKUP_BUCKET" \
 ```
 
 SSE-S3 encryption at rest needs no configuration: S3 has applied it by
-default to every new object in every bucket since January 2023. Verify
-it at the object level after the first backup lands — bucket-level
-`get-bucket-encryption` only reports an *explicitly configured* policy
-and can come back empty on a bucket relying on the default, so ask a
-real object instead:
+default to every new object in every bucket since January 2023, and
+`get-bucket-encryption` reports that default SSE-S3 (AES256)
+configuration even when nothing was configured explicitly. Still verify
+at the object level after the first backup lands — a bucket-level
+default is a policy statement, while `head-object` proves what actually
+happened to the uploaded object's bytes:
 
 ```bash
 # <key-from-backup-ok-log> = the exact key printed by that upload's own
