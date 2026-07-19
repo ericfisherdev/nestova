@@ -5,9 +5,12 @@ CloudWatch) runs unattended safely. Two mechanisms with different jobs:
 
 - **AWS Budgets** — email alerts. Lag up to ~24h; they warn, they never stop
   anything.
-- **End User Messaging SMS spend quota** — the hard stop. SMS is the only
-  usage-priced service here that a dispatch bug can run away with; past the
-  quota, sends fail.
+- **End User Messaging SMS spend quota** — the hard stop, but a DELAYED one:
+  AWS enforces it within minutes of the threshold being crossed, not
+  instantly, so a fast-enough runaway loop can send a handful of messages
+  slightly past the cap during that propagation window before sends start
+  failing. SMS is the only usage-priced service here that a dispatch bug
+  can run away with.
 
 Every command below targets account `768962091675`. The `create-*` Budgets
 APIs are NOT idempotent — budget names are unique and re-running a create
@@ -54,6 +57,17 @@ services, there is no separate `budgets:CreateBudget` /
 "Budget Actions" auto-remediation feature, which this runbook does not
 use.)
 
+`aws-portal:ViewBilling` is also required: per AWS's own
+`AWSBudgetsReadOnlyAccess` managed policy, Billing/Cost Management view
+access is a dependency of `budgets:ViewBudget`/`budgets:ModifyBudget`, not
+something those actions imply on their own. It is a separate,
+account-wide (never resource-scoped) action, hence its own statement below
+with `Resource: "*"`. `aws-portal:ModifyBilling` is a broader, DIFFERENT
+action (it also covers Consolidated Billing and payment methods) and is
+NOT needed — every mutation this runbook makes goes through
+`budgets:ModifyBudget`, not the legacy Billing console's own modify
+permission.
+
 ```json
 {
   "Version": "2012-10-17",
@@ -63,6 +77,12 @@ use.)
       "Effect": "Allow",
       "Action": ["budgets:ViewBudget", "budgets:ModifyBudget"],
       "Resource": "arn:aws:budgets::768962091675:budget/*"
+    },
+    {
+      "Sid": "BillingViewDependency",
+      "Effect": "Allow",
+      "Action": ["aws-portal:ViewBilling"],
+      "Resource": "*"
     },
     {
       "Sid": "SMSSpendQuota",

@@ -14,6 +14,16 @@ around it. It does **not** wire routing or preferences: no code enqueues a
 and delivery routing (NES-139). Flipping `NOTIFY_SMS_ENABLED=true` today
 builds a working sender that nothing calls.
 
+> **Do not send production SMS until NES-139 ships.** AWS requires express
+> written consent from each recipient before a toll-free number may send
+> them SMS, and evaluates the application's actual opt-in flow as part of
+> toll-free registration — not just a policy statement about consent. This
+> codebase has no opt-in flow, no consent record, and no per-recipient
+> routing preference until NES-139 persists them. Enabling real sends
+> before then would send SMS to a phone number with no recorded consent at
+> all, which is both an AWS toll-free program violation and a real-world
+> TCPA-adjacent risk, not just a configuration inconvenience.
+
 ## Provisioning the origination number
 
 Create a **toll-free number** in AWS End User Messaging and complete its
@@ -109,11 +119,16 @@ phone numbers, rather than redoing it here.
 
 ## Metrics
 
-Every send attempt increments the `nestova_sms_sends_total` Prometheus
-counter, labeled `result` (`sent`, `failed`, `opted_out`) — see
-`internal/platform/metrics/sms.go`. This is the fastest way to confirm the
-sender is behaving as expected after a configuration change, without
-waiting on a real phone.
+Every send attempt through the AWS End User Messaging sender increments
+the `nestova_sms_sends_total` Prometheus counter, labeled `result`
+(`sent`, `failed`, `opted_out`) — see `internal/platform/metrics/sms.go`.
+This is scoped to `NOTIFY_SMS_ENABLED=true` deployments specifically:
+`NoopSMSSender` is never instrumented (see that type's own doc), and in
+any case no code sends an SMS at all until NES-139 exists to route one.
+The metric does not substitute for step 4 below (confirming the boot log)
+or a real end-to-end send — it only tells you a send was ATTEMPTED and how
+it resolved, not that configuration is otherwise correct before any send
+has happened.
 
 ## The runbook
 
