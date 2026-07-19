@@ -25,6 +25,24 @@ func TestEmailNotificationHTML_RendersTitleAndBody(t *testing.T) {
 	}
 }
 
+// TestEmailNotificationHTML_EscapesTitleAndBody is the HTML-escaping
+// regression test: notification Title/Body are member-influenced strings,
+// and templ's expression escaping is what keeps them from becoming live
+// markup in a mail client.
+func TestEmailNotificationHTML_EscapesTitleAndBody(t *testing.T) {
+	out := renderString(t, components.EmailNotificationHTML(components.EmailNotificationView{
+		Title: `<script>alert("x")</script>`,
+		Body:  `<img src=x onerror=alert("x")>`,
+	}))
+
+	if strings.Contains(out, "<script>") || strings.Contains(out, "<img") {
+		t.Fatalf("notification values must be escaped: %q", out)
+	}
+	if !strings.Contains(out, "&lt;script&gt;") {
+		t.Errorf("escaped title should still be present as text: %q", out)
+	}
+}
+
 // TestEmailNotificationHTML_EmptyBody_OmitsBodyParagraph confirms an
 // empty Body renders no body paragraph at all, rather than an empty one —
 // mirrors SMSNotificationSender's own "no trailing colon for an empty
