@@ -271,6 +271,30 @@ func TestWebAuthnCredentialRename_WrongMemberRejected(t *testing.T) {
 	}
 }
 
+func TestWebAuthnCredentialRename_WrongHouseholdRejected(t *testing.T) {
+	// The other scoping axis for Rename (mirrors
+	// TestWebAuthnCredentialDelete_WrongHouseholdRejected): a household id
+	// that does not match the credential's own must fail, even though
+	// memberID and id are both correct.
+	repo, householdID, memberID := newTestWebAuthnCredentialRepo(t)
+	cred := testWebAuthnCredential(memberID, []byte("credential-id-rename-wrong-household"), "Victim device")
+	if err := repo.Create(testCtx(t), householdID, cred); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := repo.Rename(testCtx(t), household.NewHouseholdID(), memberID, cred.ID, "Hijacked")
+	if !errors.Is(err, authdomain.ErrWebAuthnCredentialNotFound) {
+		t.Errorf("Rename with a mismatched household: err = %v, want ErrWebAuthnCredentialNotFound", err)
+	}
+	creds, err := repo.ListByMember(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("ListByMember: %v", err)
+	}
+	if len(creds) != 1 || creds[0].Nickname != "Victim device" {
+		t.Error("a rejected mismatched-household rename must not change the victim's nickname")
+	}
+}
+
 func TestWebAuthnCredentialRename_NotFound(t *testing.T) {
 	repo, householdID, memberID := newTestWebAuthnCredentialRepo(t)
 	err := repo.Rename(testCtx(t), householdID, memberID, authdomain.NewWebAuthnCredentialID(), "x")
@@ -295,6 +319,30 @@ func TestWebAuthnCredentialDelete_RemovesImmediately(t *testing.T) {
 	}
 	if len(creds) != 0 {
 		t.Errorf("credentials after delete = %d, want 0", len(creds))
+	}
+}
+
+func TestWebAuthnCredentialDelete_WrongMemberRejected(t *testing.T) {
+	// The other scoping axis for Delete (mirrors
+	// TestWebAuthnCredentialRename_WrongMemberRejected): a member id that
+	// does not own the credential must fail, even though householdID and id
+	// are both correct.
+	repo, householdID, memberID := newTestWebAuthnCredentialRepo(t)
+	cred := testWebAuthnCredential(memberID, []byte("credential-id-delete-wrong-member"), "Victim device")
+	if err := repo.Create(testCtx(t), householdID, cred); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := repo.Delete(testCtx(t), householdID, household.NewMemberID(), cred.ID)
+	if !errors.Is(err, authdomain.ErrWebAuthnCredentialNotFound) {
+		t.Errorf("Delete with a mismatched member: err = %v, want ErrWebAuthnCredentialNotFound", err)
+	}
+	creds, err := repo.ListByMember(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("ListByMember: %v", err)
+	}
+	if len(creds) != 1 {
+		t.Error("the credential must survive a mismatched-member delete attempt")
 	}
 }
 

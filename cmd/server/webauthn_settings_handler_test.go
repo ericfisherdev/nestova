@@ -440,6 +440,44 @@ func TestWebAuthnSettings_RegisterBegin_WithoutFreshStepUp_Redirects(t *testing.
 	}
 }
 
+func TestWebAuthnSettings_RegisterFinish_WithoutFreshStepUp_Redirects(t *testing.T) {
+	// Mirrors TestWebAuthnSettings_RegisterBegin_WithoutFreshStepUp_Redirects:
+	// RegisterFinish is the endpoint that actually persists the durable
+	// credential (Begin only returns creation options), so its own
+	// requireStepUp gate (cmd/server/home.go) needs its own coverage, not
+	// just an inference from Begin's.
+	handler, sm, _, hhRepo, mfaService := buildWebAuthnSettingsTestHandler(t)
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo.members[member.ID] = member
+
+	secret, _, err := mfaService.BeginEnrollment(context.Background(), member.ID, member.HouseholdID, member.DisplayName)
+	if err != nil {
+		t.Fatalf("BeginEnrollment: %v", err)
+	}
+	if _, err := mfaService.ConfirmEnrollment(context.Background(), member.ID, computeTOTPCode(t, secret)); err != nil {
+		t.Fatalf("ConfirmEnrollment: %v", err)
+	}
+
+	// seedAuthedSession stamps member_id directly (bypassing real login), so
+	// mfa_verified_at is never set — the same "never completed a fresh
+	// login MFA verification" case RequireStepUp must reject.
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	body, _, _ := webauthnSpecTestVectorNoneES256(t)
+	req := httptest.NewRequest(http.MethodPost, "/settings/webauthn/register/finish", strings.NewReader(string(withNickname(t, body, "My Phone"))))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /settings/webauthn/register/finish (stale/no step-up, MFA enrolled): status = %d, want 303 (redirect to /login/mfa); body: %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/login/mfa") {
+		t.Errorf("Location = %q, want a /login/mfa redirect", loc)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Rename / Revoke
 // ---------------------------------------------------------------------------

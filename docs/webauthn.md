@@ -81,5 +81,11 @@ deliberately **deterministic** — `HMAC(key, memberID)`, not a stored random
 value — rather than the WebAuthn spec's usual recommendation of a random
 handle: it lets the server recompute a member's handle from their id alone
 (no extra lookup table to keep in sync), and it gives NES-137's login
-ceremony a value to search `member_credential.user_handle` by without ever
-storing anything that maps directly back to a member's real database id.
+ceremony a value to search `member_credential.user_handle` by. The handle is
+**pseudonymous, not anonymous**: it is opaque to the authenticator and to
+anyone without the deriver's key (a raw `member_credential` row alone does
+not reveal which member it belongs to), but the server itself — which holds
+that key — can always recompute the mapping back to a real member id. It is
+not a substitute for encrypting or otherwise protecting the
+`member_credential` table; it only keeps the member's real id off the wire
+during a usernameless login.

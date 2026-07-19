@@ -125,6 +125,7 @@ templ webauthnDeviceRow(d WebAuthnDeviceView, csrfToken string) {
 					type="text"
 					name="nickname"
 					value={ d.Nickname }
+					aria-label="Rename passkey"
 					class="rounded-control border border-sidebar-border bg-surface-warm px-2 py-1 text-sm font-medium text-ink"
 				/>
 				<button type="submit" class="text-xs font-medium text-sage hover:text-sage-dark">Save</button>
