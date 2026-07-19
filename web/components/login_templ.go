@@ -20,6 +20,13 @@ type LoginForm struct {
 	// Error is a generic error message shown below the form on failed login.
 	// Empty string means no error is shown.
 	Error string
+	// ShowPasskeyLogin shows the "Sign in with passkey" option (NES-137)
+	// above the password form when true — the composition root sets this
+	// only when WebAuthn is wired at all (Server.PublicBaseURL configured;
+	// see cmd/server/main.go), mirroring ShowWebAuthnSection's own
+	// settings-page convention: a deployment with no fixed RP ID simply
+	// does not offer passkey login, not even the button.
+	ShowPasskeyLogin bool
 }
 
 // LoginPage renders the A · Hearth login screen. It is a self-contained HTML
@@ -46,64 +53,81 @@ func LoginPage(form LoginForm) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Sign in – Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-sm\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Sign in to your household</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><form method=\"POST\" action=\"/login\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Sign in – Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- login-passkey.js registers Alpine.data('passkeyAssertion', ...)\n\t\t\t     (NES-137, shared with login_mfa.templ's own step-up button)\n\t\t\t     and must load and run BEFORE alpine.min.js — see layout.templ's\n\t\t\t     identical note on why script order matters here. --><script src=\"/static/js/login-passkey.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-sm\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Sign in to your household</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><!-- Passkey sign-in leads (kid-friendliest: one biometric\n\t\t\t\t\t     gesture, no typed identifier); the password form is the\n\t\t\t\t\t     fallback below it, always available regardless of\n\t\t\t\t\t     whether a member has registered a passkey (NES-137 AC:\n\t\t\t\t\t     \"password login continues to work for members without\n\t\t\t\t\t     passkeys\"). -->")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.ShowPasskeyLogin {
+			templ_7745c5c3_Err = passkeyButton(passkeyButtonProps{
+				BeginURL:  "/login/passkey/begin",
+				FinishURL: "/login/passkey/finish",
+				CSRFToken: form.CSRFToken,
+				Next:      form.Next,
+				IdleLabel: "Sign in with passkey",
+				BusyLabel: "Signing in…",
+			}).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<form method=\"POST\" action=\"/login\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 39, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 68, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"> <input type=\"hidden\" name=\"next\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"> <input type=\"hidden\" name=\"next\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(form.Next)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 40, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 69, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><div class=\"flex flex-col gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"email\" class=\"text-sm font-medium text-ink-secondary\">Email</label> <input id=\"email\" type=\"email\" name=\"email\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"><div class=\"flex flex-col gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"email\" class=\"text-sm font-medium text-ink-secondary\">Email</label> <input id=\"email\" type=\"email\" name=\"email\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Email)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 48, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 77, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" autocomplete=\"email\" required class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"you@example.com\"></div><div class=\"flex flex-col gap-1\"><label for=\"password\" class=\"text-sm font-medium text-ink-secondary\">Password</label> <input id=\"password\" type=\"password\" name=\"password\" autocomplete=\"current-password\" required class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"••••••••\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\" autocomplete=\"email\" required class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"you@example.com\"></div><div class=\"flex flex-col gap-1\"><label for=\"password\" class=\"text-sm font-medium text-ink-secondary\">Password</label> <input id=\"password\" type=\"password\" name=\"password\" autocomplete=\"current-password\" required class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none\" placeholder=\"••••••••\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if form.Error != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<p role=\"alert\" class=\"text-sm text-red-600\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<p role=\"alert\" class=\"text-sm text-red-600\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 68, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login.templ`, Line: 97, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -112,7 +136,7 @@ func LoginPage(form LoginForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</div></form></div><p class=\"mt-6 text-center text-sm text-ink-muted\">First time? <a href=\"/onboarding\" class=\"font-medium text-sage hover:text-sage-dark\">Set up your household</a></p></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</div></form></div><p class=\"mt-6 text-center text-sm text-ink-muted\">First time? <a href=\"/onboarding\" class=\"font-medium text-sage hover:text-sage-dark\">Set up your household</a></p></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

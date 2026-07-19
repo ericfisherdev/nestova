@@ -152,6 +152,12 @@ const webauthnUserHandleSignerPurpose = "nestova:auth:webauthn-user-handle:v1"
 // is ample for a biometric prompt.
 const webauthnRegistrationTimeout = 60 * time.Second
 
+// webauthnLoginTimeout is registration's own analogue for a login or
+// step-up assertion ceremony (NES-137): the same reasoning and the same
+// duration — a biometric prompt takes no longer to confirm at login than
+// at registration.
+const webauthnLoginTimeout = 60 * time.Second
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	// run() returns outcomeRestart once first-run setup completes, so the boot is
@@ -487,6 +493,84 @@ func runServer(logger *slog.Logger) error {
 	}
 	mfaWebHandlers := authadapter.NewMFAWebHandlers(mfaService, householdRepo, sm, logger)
 
+	// NES-136: WebAuthn passkey registration, and (NES-137) passkey login
+	// and step-up. wa (the third-party Relying Party instance) is
+	// constructed ONLY when Server.PublicBaseURL is configured: WebAuthn
+	// requires a fixed, stable origin (the Relying Party ID), which a
+	// per-request-derived origin (this codebase's fallback when
+	// PublicBaseURL is unset, e.g. for kiosk deep links) cannot provide —
+	// the RP ID must be pinned once, at startup, for the entire lifetime of
+	// every credential ever registered against it (see docs/webauthn.md:
+	// changing it later orphans every existing passkey). A deployment with
+	// no PublicBaseURL simply does not offer passkey registration OR login
+	// at all — webauthnHandlers/webauthnService/loginPasskeyHandlers all
+	// stay nil, registerSettingsPage never wires the settings-page routes
+	// or renders its section (ShowWebAuthnSection), LoginForm never shows
+	// the passkey button (ShowPasskeyLogin), and the /login/passkey/... and
+	// /login/mfa/passkey/... routes are never registered at all.
+	//
+	// Constructed here — BEFORE authHandlers/loginMFAHandlers below — since
+	// NES-137 makes both depend on webauthnService (possibly nil) too:
+	// authHandlers needs to know whether to show the passkey login button
+	// at all, and loginMFAHandlers needs the service itself to offer
+	// passkey step-up.
+	var (
+		webauthnHandlers     *authadapter.WebAuthnWebHandlers
+		webauthnService      *authapp.WebAuthnService
+		loginPasskeyHandlers *authadapter.LoginPasskeyHandlers
+	)
+	if cfg.Server.PublicBaseURL != "" {
+		rpID, err := webauthnRPID(cfg.Server.PublicBaseURL)
+		if err != nil {
+			return fmt.Errorf("derive webauthn relying party id: %w", err)
+		}
+		wa, err := webauthn.New(&webauthn.Config{
+			RPID:          rpID,
+			RPDisplayName: "Nestova",
+			RPOrigins:     []string{cfg.Server.PublicBaseURL},
+			// Required (not merely preferred) user verification: a
+			// registered passkey must always be gated by the device's own
+			// biometric/PIN prompt, not just its mere physical presence.
+			// This SAME config value is also what a login/step-up
+			// assertion's UV requirement defaults from (go-webauthn's
+			// beginLogin reads webauthn.Config.AuthenticatorSelection.
+			// UserVerification when no LoginOption overrides it — verified
+			// via go doc against the installed go-webauthn version), so
+			// NES-137 needs no separate, second UV configuration for login.
+			AuthenticatorSelection: protocol.AuthenticatorSelection{
+				UserVerification: protocol.VerificationRequired,
+			},
+			Timeouts: webauthn.TimeoutsConfig{
+				Registration: webauthn.TimeoutConfig{
+					Enforce: true,
+					Timeout: webauthnRegistrationTimeout,
+				},
+				Login: webauthn.TimeoutConfig{
+					Enforce: true,
+					Timeout: webauthnLoginTimeout,
+				},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create webauthn relying party: %w", err)
+		}
+		webauthnUserHandles, err := authapp.NewWebAuthnUserHandleDeriverFromSecret([]byte(cfg.Session.Secret), webauthnUserHandleSignerPurpose)
+		if err != nil {
+			return fmt.Errorf("create webauthn user handle deriver: %w", err)
+		}
+		webauthnRepo := authadapter.NewWebAuthnCredentialRepository(pool)
+		// outboxRepo (constructed above for the NES-24 notification
+		// outbox) satisfies WebAuthnService's notify.Enqueuer dependency: a
+		// suspicious sign-count-decrease notification (NES-137) rides the
+		// same outbox every other Nestova notification does.
+		webauthnService, err = authapp.NewWebAuthnService(webauthnRepo, wa, webauthnUserHandles, outboxRepo, logger)
+		if err != nil {
+			return fmt.Errorf("create webauthn service: %w", err)
+		}
+		webauthnHandlers = authadapter.NewWebAuthnWebHandlers(webauthnService, sm, logger)
+		loginPasskeyHandlers = authadapter.NewLoginPasskeyHandlers(sm, webauthnService, logger)
+	}
+
 	// NES-135: login MFA enforcement. rememberDeviceSigner is keyed the
 	// same way deepLinkSigner below is (a purpose-scoped derivation from
 	// cfg.Session.Secret) so its key stays cryptographically independent of
@@ -501,58 +585,8 @@ func runServer(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("create remember-device signer: %w", err)
 	}
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, logger)
-	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, outboxRepo, cfg.Session.Secure, logger)
-
-	// NES-136: WebAuthn passkey registration. wa (the third-party Relying
-	// Party instance) is constructed ONLY when Server.PublicBaseURL is
-	// configured: WebAuthn requires a fixed, stable origin (the Relying
-	// Party ID), which a per-request-derived origin (this codebase's
-	// fallback when PublicBaseURL is unset, e.g. for kiosk deep links)
-	// cannot provide — the RP ID must be pinned once, at startup, for the
-	// entire lifetime of every credential ever registered against it (see
-	// docs/webauthn.md: changing it later orphans every existing passkey).
-	// A deployment with no PublicBaseURL simply does not offer passkey
-	// registration at all — webauthnHandlers stays nil, and
-	// registerSettingsPage never wires its routes or renders its section
-	// (ShowWebAuthnSection).
-	var webauthnHandlers *authadapter.WebAuthnWebHandlers
-	if cfg.Server.PublicBaseURL != "" {
-		rpID, err := webauthnRPID(cfg.Server.PublicBaseURL)
-		if err != nil {
-			return fmt.Errorf("derive webauthn relying party id: %w", err)
-		}
-		wa, err := webauthn.New(&webauthn.Config{
-			RPID:          rpID,
-			RPDisplayName: "Nestova",
-			RPOrigins:     []string{cfg.Server.PublicBaseURL},
-			// Required (not merely preferred) user verification: a
-			// registered passkey must always be gated by the device's own
-			// biometric/PIN prompt, not just its mere physical presence.
-			AuthenticatorSelection: protocol.AuthenticatorSelection{
-				UserVerification: protocol.VerificationRequired,
-			},
-			Timeouts: webauthn.TimeoutsConfig{
-				Registration: webauthn.TimeoutConfig{
-					Enforce: true,
-					Timeout: webauthnRegistrationTimeout,
-				},
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("create webauthn relying party: %w", err)
-		}
-		webauthnUserHandles, err := authapp.NewWebAuthnUserHandleDeriverFromSecret([]byte(cfg.Session.Secret), webauthnUserHandleSignerPurpose)
-		if err != nil {
-			return fmt.Errorf("create webauthn user handle deriver: %w", err)
-		}
-		webauthnRepo := authadapter.NewWebAuthnCredentialRepository(pool)
-		webauthnService, err := authapp.NewWebAuthnService(webauthnRepo, wa, webauthnUserHandles, logger)
-		if err != nil {
-			return fmt.Errorf("create webauthn service: %w", err)
-		}
-		webauthnHandlers = authadapter.NewWebAuthnWebHandlers(webauthnService, sm, logger)
-	}
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, webauthnService, logger)
+	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, webauthnService, outboxRepo, cfg.Session.Secure, logger)
 
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {
@@ -695,11 +729,11 @@ func runServer(logger *slog.Logger) error {
 			kioskadapter.AuthenticateDevice(kioskService, logger),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, loginPasskeyHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers, webauthnService)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},

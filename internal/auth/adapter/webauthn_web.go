@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-webauthn/webauthn/protocol"
@@ -170,6 +171,19 @@ type webauthnFinishPayload struct {
 // CSRF is verified via the X-CSRF-Token header (see VerifyCSRF's own doc) —
 // the request body is JSON, not a form-urlencoded body, so there is no form
 // field to carry it in.
+//
+// On success this ALSO stamps sessionKeyMFAVerifiedAt (NES-137) — the same
+// key finishLogin/LoginMFAHandlers.Verify stamp on a completed TOTP/
+// recovery-code/passkey step-up: a freshly registered passkey is itself a
+// UV-gated proof of possession, at least as strong as a TOTP code, so it
+// satisfies RequireStepUp's freshness window for the rest of THIS session
+// exactly like completing an explicit step-up prompt would. Without this,
+// a member with no OTHER second factor who registers their very FIRST
+// passkey would immediately trip RequireStepUp's OWN gate on their very
+// next step-up-gated request (RequireStepUp now treats "has a registered
+// passkey" as something to step up FROM — see session.go's
+// webAuthnDeviceLister) — including, self-referentially, a second call to
+// this same route.
 func (h *WebAuthnWebHandlers) RegisterFinish(w http.ResponseWriter, r *http.Request) {
 	member, ok := h.requireMember(w, r)
 	if !ok {
@@ -219,6 +233,8 @@ func (h *WebAuthnWebHandlers) RegisterFinish(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	h.sm.Put(r.Context(), sessionKeyMFAVerifiedAt, time.Now())
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))

@@ -283,7 +283,7 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, nil, logger)
 
 	albumRepo := newFakeMediaAlbumRepo()
 	albumPhotoRepo := &fakeMediaAlbumPhotoRepo{}

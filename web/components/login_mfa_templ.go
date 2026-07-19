@@ -19,6 +19,11 @@ type LoginMFAForm struct {
 	// Error is a generic error message shown below the form on a failed or
 	// locked-out verification attempt. Empty string means no error is shown.
 	Error string
+	// HasPasskey shows the "use your passkey" option (NES-137) when true —
+	// set only when the pending member has at least one registered
+	// passkey, so a member with none never sees an option that could only
+	// fail (LoginMFAHandlers.hasPasskey).
+	HasPasskey bool
 }
 
 // LoginMFAPage renders the pre-auth login MFA step: a member whose password
@@ -48,51 +53,68 @@ func LoginMFAPage(form LoginMFAForm) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Verify it's you – Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-sm\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Enter your two-factor code</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><form method=\"POST\" action=\"/login/mfa\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Verify it's you – Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- login-passkey.js registers Alpine.data('passkeyAssertion', ...)\n\t\t\t     (NES-137, shared with login.templ's own passkey button) and\n\t\t\t     must load and run BEFORE alpine.min.js — see layout.templ's\n\t\t\t     identical note on why script order matters here. --><script src=\"/static/js/login-passkey.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-sm\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Verify it's you</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if form.HasPasskey {
+			templ_7745c5c3_Err = passkeyButton(passkeyButtonProps{
+				BeginURL:  "/login/mfa/passkey/begin",
+				FinishURL: "/login/mfa/passkey/finish",
+				CSRFToken: form.CSRFToken,
+				Next:      form.Next,
+				IdleLabel: "Use your passkey",
+				BusyLabel: "Verifying…",
+			}).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<form method=\"POST\" action=\"/login/mfa\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login_mfa.templ`, Line: 41, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login_mfa.templ`, Line: 62, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"> <input type=\"hidden\" name=\"next\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"> <input type=\"hidden\" name=\"next\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(form.Next)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login_mfa.templ`, Line: 42, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login_mfa.templ`, Line: 63, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><div class=\"flex flex-col gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"mfa-login-code\" class=\"text-sm font-medium text-ink-secondary\">Authenticator app code</label> <input id=\"mfa-login-code\" type=\"text\" name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" autofocus class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none font-mono\" placeholder=\"123456\"></div><div class=\"flex flex-col gap-1\"><label for=\"mfa-login-recovery\" class=\"text-sm font-medium text-ink-secondary\">Or a recovery code</label> <input id=\"mfa-login-recovery\" type=\"text\" name=\"recovery_code\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none font-mono\" placeholder=\"xxxx-xxxx-xxxx\"></div><label class=\"flex items-center gap-2 text-sm text-ink-secondary\"><input type=\"checkbox\" name=\"remember_device\" value=\"1\"> Remember this device for 30 days</label> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"><div class=\"flex flex-col gap-4\"><div class=\"flex flex-col gap-1\"><label for=\"mfa-login-code\" class=\"text-sm font-medium text-ink-secondary\">Authenticator app code</label> <input id=\"mfa-login-code\" type=\"text\" name=\"code\" inputmode=\"numeric\" autocomplete=\"one-time-code\" autofocus class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none font-mono\" placeholder=\"123456\"></div><div class=\"flex flex-col gap-1\"><label for=\"mfa-login-recovery\" class=\"text-sm font-medium text-ink-secondary\">Or a recovery code</label> <input id=\"mfa-login-recovery\" type=\"text\" name=\"recovery_code\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none font-mono\" placeholder=\"xxxx-xxxx-xxxx\"></div><label class=\"flex items-center gap-2 text-sm text-ink-secondary\"><input type=\"checkbox\" name=\"remember_device\" value=\"1\"> Remember this device for 30 days</label> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if form.Error != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<p role=\"alert\" class=\"text-sm text-red-600\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<p role=\"alert\" class=\"text-sm text-red-600\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login_mfa.templ`, Line: 76, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/login_mfa.templ`, Line: 97, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -101,7 +123,7 @@ func LoginMFAPage(form LoginMFAForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</div></form></div></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</div></form></div></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

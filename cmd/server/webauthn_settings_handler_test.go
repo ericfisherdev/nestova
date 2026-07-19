@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-webauthn/webauthn/protocol"
@@ -86,6 +88,32 @@ func (f *fakeWebAuthnCredentialRepo) Delete(_ context.Context, _ household.House
 	return authdomain.ErrWebAuthnCredentialNotFound
 }
 
+func (f *fakeWebAuthnCredentialRepo) FindByUserHandle(_ context.Context, handle []byte) (household.MemberID, []authdomain.WebAuthnCredential, error) {
+	for memberID, creds := range f.byMember {
+		for _, c := range creds {
+			if bytes.Equal(c.UserHandle, handle) {
+				out := make([]authdomain.WebAuthnCredential, len(creds))
+				copy(out, creds)
+				return memberID, out, nil
+			}
+		}
+	}
+	return household.MemberID{}, nil, household.ErrMemberNotFound
+}
+
+func (f *fakeWebAuthnCredentialRepo) UpdateAfterAssertion(_ context.Context, credentialID []byte, signCount uint32, usedAt time.Time) error {
+	for memberID, creds := range f.byMember {
+		for i := range creds {
+			if bytes.Equal(creds[i].CredentialID, credentialID) {
+				f.byMember[memberID][i].SignCount = signCount
+				f.byMember[memberID][i].LastUsedAt = &usedAt
+				return nil
+			}
+		}
+	}
+	return authdomain.ErrWebAuthnCredentialNotFound
+}
+
 var _ authdomain.WebAuthnCredentialRepository = (*fakeWebAuthnCredentialRepo)(nil)
 
 // buildWebAuthnSettingsTestHandler wires the /settings route surface with
@@ -133,13 +161,13 @@ func buildWebAuthnSettingsTestHandler(t *testing.T) (http.Handler, *scs.SessionM
 	if err != nil {
 		t.Fatalf("NewWebAuthnUserHandleDeriver: %v", err)
 	}
-	webauthnService, err := authapp.NewWebAuthnService(webauthnRepo, wa, handles, logger)
+	webauthnService, err := authapp.NewWebAuthnService(webauthnRepo, wa, handles, &recordingEnqueuer{}, logger)
 	if err != nil {
 		t.Fatalf("NewWebAuthnService: %v", err)
 	}
 	webauthnHandlers := authadapter.NewWebAuthnWebHandlers(webauthnService, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), nil, nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -147,7 +175,7 @@ func buildWebAuthnSettingsTestHandler(t *testing.T) (http.Handler, *scs.SessionM
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("login mfa page"))
 	})
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, webauthnHandlers)
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, webauthnHandlers, webauthnService)
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm, webauthnRepo, hhRepo, mfaService

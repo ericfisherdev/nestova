@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -174,6 +175,120 @@ func (r *WebAuthnCredentialRepository) Delete(ctx context.Context, householdID h
 		return fmt.Errorf("delete webauthn credential: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		return authdomain.ErrWebAuthnCredentialNotFound
+	}
+	return nil
+}
+
+// FindByUserHandle resolves handle to its owning member and every one of
+// that member's registered credentials — the usernameless login lookup
+// (NES-137), driven by member_credential_user_handle_idx. Returns
+// household.ErrMemberNotFound when handle matches no row.
+func (r *WebAuthnCredentialRepository) FindByUserHandle(ctx context.Context, handle []byte) (household.MemberID, []authdomain.WebAuthnCredential, error) {
+	const q = `
+		SELECT id, household_id, member_id, credential_id, public_key, sign_count, transports,
+		       aaguid, nickname, user_handle, created_at, last_used_at
+		  FROM member_credential
+		 WHERE user_handle = $1
+		 ORDER BY created_at, id`
+
+	rows, err := r.dbtx.Query(ctx, q, handle)
+	if err != nil {
+		return household.MemberID{}, nil, fmt.Errorf("find webauthn credentials by user handle: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		memberID household.MemberID
+		creds    []authdomain.WebAuthnCredential
+	)
+	for rows.Next() {
+		var (
+			idStr          string
+			householdIDStr string
+			memberIDStr    string
+			aaguid         *uuid.UUID
+			cred           authdomain.WebAuthnCredential
+		)
+		if err := rows.Scan(
+			&idStr, &householdIDStr, &memberIDStr, &cred.CredentialID, &cred.PublicKey, &cred.SignCount, &cred.Transports,
+			&aaguid, &cred.Nickname, &cred.UserHandle, &cred.CreatedAt, &cred.LastUsedAt,
+		); err != nil {
+			return household.MemberID{}, nil, fmt.Errorf("find webauthn credentials by user handle: scan: %w", err)
+		}
+		id, err := authdomain.ParseWebAuthnCredentialID(idStr)
+		if err != nil {
+			return household.MemberID{}, nil, fmt.Errorf("find webauthn credentials by user handle: parse id: %w", err)
+		}
+		householdID, err := household.ParseHouseholdID(householdIDStr)
+		if err != nil {
+			return household.MemberID{}, nil, fmt.Errorf("find webauthn credentials by user handle: parse household id: %w", err)
+		}
+		parsedMemberID, err := household.ParseMemberID(memberIDStr)
+		if err != nil {
+			return household.MemberID{}, nil, fmt.Errorf("find webauthn credentials by user handle: parse member id: %w", err)
+		}
+		cred.ID = id
+		cred.HouseholdID = householdID
+		cred.MemberID = parsedMemberID
+		cred.AAGUID = aaguid
+		memberID = parsedMemberID
+		creds = append(creds, cred)
+	}
+	if err := rows.Err(); err != nil {
+		return household.MemberID{}, nil, fmt.Errorf("find webauthn credentials by user handle: %w", err)
+	}
+	if len(creds) == 0 {
+		return household.MemberID{}, nil, household.ErrMemberNotFound
+	}
+	return memberID, creds, nil
+}
+
+// UpdateAfterAssertion persists the authenticator's new signature counter
+// and last-used timestamp for the credential identified by its raw
+// WebAuthn credential id (credential_id, globally unique — not this row's
+// own WebAuthnCredentialID) — but ONLY when usedAt is not older than
+// whatever last_used_at is already on file (NULL, on a credential's first
+// assertion, always qualifies). This is a monotonic guard against a race
+// between two concurrently successful assertions on the SAME credential
+// (e.g. two devices asserting near-simultaneously, or a retried request
+// racing its own original): without it, a later-completing but
+// OLDER-in-real-time assertion could overwrite a newer sign_count/
+// last_used_at pair a faster concurrent assertion already recorded,
+// silently regressing state clone-detection depends on — mirroring
+// MFARepository.RecordLoginStep's own last_totp_step guard, though the
+// caller contract differs (see below).
+//
+// Returns authdomain.ErrWebAuthnCredentialNotFound only when credentialID
+// matches no row AT ALL. When the row exists but the guard skipped the
+// write (a newer assertion already won the race), this returns nil, NOT an
+// error: unlike RecordLoginStep (where losing an equivalent race means the
+// TOTP code itself is rejected as a replay), the assertion that reaches
+// this method has ALREADY been cryptographically verified by
+// WebAuthnService before this call — losing the bookkeeping race here must
+// never fail an otherwise-valid login or step-up, only skip a write that
+// would have regressed stored state backward in time.
+func (r *WebAuthnCredentialRepository) UpdateAfterAssertion(ctx context.Context, credentialID []byte, signCount uint32, usedAt time.Time) error {
+	const q = `
+		UPDATE member_credential
+		   SET sign_count = $2, last_used_at = $3
+		 WHERE credential_id = $1
+		   AND (last_used_at IS NULL OR last_used_at <= $3)`
+
+	tag, err := r.dbtx.Exec(ctx, q, credentialID, signCount, usedAt)
+	if err != nil {
+		return fmt.Errorf("update webauthn credential after assertion: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+
+	const existsQ = `SELECT EXISTS (SELECT 1 FROM member_credential WHERE credential_id = $1)`
+	var exists bool
+	if err := r.dbtx.QueryRow(ctx, existsQ, credentialID).Scan(&exists); err != nil {
+		return fmt.Errorf("update webauthn credential after assertion: check existence: %w", err)
+	}
+	if !exists {
 		return authdomain.ErrWebAuthnCredentialNotFound
 	}
 	return nil

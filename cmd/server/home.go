@@ -76,6 +76,7 @@ func registerWebRoutes(
 	sm *scs.SessionManager,
 	authHandlers *authadapter.Handlers,
 	loginMFAHandlers *authadapter.LoginMFAHandlers,
+	loginPasskeyHandlers *authadapter.LoginPasskeyHandlers,
 	onboardingHandlers *authadapter.OnboardingHandlers,
 	households household.HouseholdRepository,
 	taskHandlers *tasksadapter.WebHandlers,
@@ -93,8 +94,43 @@ func registerWebRoutes(
 	// RequireMember gate applies — access is instead controlled by the
 	// pending-member session state Handlers.Login (or RequireStepUp) sets;
 	// with no pending state, LoginMFAHandlers redirects to /login.
-	mux.HandleFunc("GET /login/mfa", loginMFAHandlers.Page)
-	mux.HandleFunc("POST /login/mfa", loginMFAHandlers.Verify)
+	//
+	// Nil-guarded: the real composition root (main.go) always supplies a
+	// non-nil loginMFAHandlers, but ~20 otherwise-unrelated cmd/server test
+	// files call registerWebRoutes with nil here (they only need the OTHER
+	// routes this function wires) — without this guard, registering a
+	// method value bound to a nil receiver compiles fine but panics the
+	// moment any request actually reaches it, a latent trap for whichever
+	// test happens to be the first to exercise /login/mfa through one of
+	// those harnesses. NES-137's passkey step-up routes share the exact
+	// same reasoning and are guarded the same way.
+	if loginMFAHandlers != nil {
+		mux.HandleFunc("GET /login/mfa", loginMFAHandlers.Page)
+		mux.HandleFunc("POST /login/mfa", loginMFAHandlers.Verify)
+		// NES-137: passkey step-up — offered on the SAME /login/mfa page
+		// (LoginMFAHandlers.hasPasskey), gated by the SAME pending-member
+		// session state as Verify above, so no separate RequireMember/
+		// RequireStepUp wrapping is needed here either. Registered
+		// alongside /login/mfa (not guarded by loginPasskeyHandlers != nil,
+		// unlike the routes below): when WebAuthn is not wired at all,
+		// loginMFAHandlers itself was constructed with a nil webauthn
+		// service (main.go), and PasskeyBegin/PasskeyFinish both
+		// defensively 404 in that case (their own doc explains why) —
+		// mirroring how /login/mfa itself is always registered regardless
+		// of MFA being enrolled.
+		mux.HandleFunc("GET /login/mfa/passkey/begin", loginMFAHandlers.PasskeyBegin)
+		mux.HandleFunc("POST /login/mfa/passkey/finish", loginMFAHandlers.PasskeyFinish)
+	}
+	// NES-137: usernameless "Sign in with passkey" — registered ONLY when
+	// the composition root wired WebAuthn at all (loginPasskeyHandlers is
+	// only non-nil then, main.go), mirroring registerSettingsPage's own
+	// webauthnHandlers-nil convention: a deployment with no fixed RP ID
+	// genuinely does not have this feature, and a client that somehow still
+	// requests one of these routes gets Go's own 404.
+	if loginPasskeyHandlers != nil {
+		mux.HandleFunc("GET /login/passkey/begin", loginPasskeyHandlers.Begin)
+		mux.HandleFunc("POST /login/passkey/finish", loginPasskeyHandlers.Finish)
+	}
 
 	// Onboarding routes — public (first-run guard enforced inside the handlers).
 	mux.HandleFunc("GET /onboarding", onboardingHandlers.OnboardingPage)
@@ -481,6 +517,7 @@ func registerSettingsPage(
 	mfaHandlers *authadapter.MFAWebHandlers,
 	mfaService *authapp.MFAService,
 	webauthnHandlers *authadapter.WebAuthnWebHandlers,
+	webauthnService *authapp.WebAuthnService,
 ) {
 	const settingsPath = "/settings"
 	requireMember := authadapter.RequireMember(sm)
@@ -488,8 +525,18 @@ func registerSettingsPage(
 	// long-lived device credential), so it additionally requires a FRESH
 	// login MFA verification, not just an authenticated session — see
 	// RequireStepUp's doc for why landingPath is settingsPath rather than
-	// an attempt to replay the original POST.
-	requireStepUp := authadapter.RequireStepUp(sm, mfaService, settingsPath, logger)
+	// an attempt to replay the original POST. NES-137: RequireStepUp also
+	// treats a registered passkey as something to step up FROM, not just a
+	// confirmed TOTP enrollment — webauthnService is assigned into the
+	// interface-typed passkeys variable ONLY when non-nil (never a bare
+	// *authapp.WebAuthnService converted straight into the parameter — see
+	// RequireStepUp's own doc on why a typed-nil pointer wrapped in a
+	// non-nil interface would panic on first use).
+	var passkeys authadapter.WebAuthnDeviceLister
+	if webauthnService != nil {
+		passkeys = webauthnService
+	}
+	requireStepUp := authadapter.RequireStepUp(sm, mfaService, passkeys, settingsPath, logger)
 	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {

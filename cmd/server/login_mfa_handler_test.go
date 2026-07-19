@@ -130,11 +130,11 @@ func buildLoginMFATestHandler(t *testing.T, hhRepo household.HouseholdRepository
 		t.Fatalf("NewRememberDeviceSigner: %v", err)
 	}
 	authn := authapp.New(credRepo)
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberSigner, logger)
-	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberSigner, notify, false, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberSigner, nil, logger)
+	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberSigner, nil, notify, false, logger)
 
 	requireMember := authadapter.RequireMember(sm)
-	requireStepUp := authadapter.RequireStepUp(sm, mfaService, "/settings", logger)
+	requireStepUp := authadapter.RequireStepUp(sm, mfaService, nil, "/settings", logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

@@ -1,0 +1,49 @@
+package components
+
+// passkeyButtonProps configures the shared passkey ceremony button
+// (NES-137): login.templ's "Sign in with passkey" (usernameless login) and
+// login_mfa.templ's "use your passkey" (targeted step-up) are the exact
+// same Alpine component (login-passkey.js's passkeyAssertion) driven
+// against different begin/finish endpoint pairs — the markup is extracted
+// here once rather than duplicated across both pages.
+type passkeyButtonProps struct {
+	BeginURL  string
+	FinishURL string
+	CSRFToken string
+	Next      string
+	// IdleLabel/BusyLabel are the button's own text in its two states
+	// (e.g. "Sign in with passkey"/"Signing in…" for login,
+	// "Use your passkey"/"Verifying…" for step-up).
+	IdleLabel string
+	BusyLabel string
+}
+
+// passkeyButton renders the ceremony button plus the "or" divider that
+// separates it from the fallback form below (password, or TOTP/recovery
+// code) — always rendered together, since the divider only makes sense
+// directly under a visible button.
+templ passkeyButton(props passkeyButtonProps) {
+	<div
+		x-data="passkeyAssertion"
+		data-begin-url={ props.BeginURL }
+		data-finish-url={ props.FinishURL }
+		data-csrf-token={ props.CSRFToken }
+		data-next={ props.Next }
+	>
+		<button
+			type="button"
+			x-on:click="start()"
+			x-bind:disabled="busy"
+			class="min-h-[48px] w-full rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark disabled:opacity-50"
+		>
+			<span x-show="!busy">{ props.IdleLabel }</span>
+			<span x-show="busy" x-cloak>{ props.BusyLabel }</span>
+		</button>
+		<p x-show="error" x-text="error" x-cloak role="alert" class="mt-2 text-sm text-red-600"></p>
+	</div>
+	<div class="my-4 flex items-center gap-3 text-xs text-ink-muted" aria-hidden="true">
+		<span class="h-px flex-1 bg-sidebar-border"></span>
+		or
+		<span class="h-px flex-1 bg-sidebar-border"></span>
+	</div>
+}

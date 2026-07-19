@@ -12,6 +12,13 @@ type LoginForm struct {
 	// Error is a generic error message shown below the form on failed login.
 	// Empty string means no error is shown.
 	Error string
+	// ShowPasskeyLogin shows the "Sign in with passkey" option (NES-137)
+	// above the password form when true — the composition root sets this
+	// only when WebAuthn is wired at all (Server.PublicBaseURL configured;
+	// see cmd/server/main.go), mirroring ShowWebAuthnSection's own
+	// settings-page convention: a deployment with no fixed RP ID simply
+	// does not offer passkey login, not even the button.
+	ShowPasskeyLogin bool
 }
 
 // LoginPage renders the A · Hearth login screen. It is a self-contained HTML
@@ -26,6 +33,12 @@ templ LoginPage(form LoginForm) {
 			<title>Sign in – Nestova</title>
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
+			<!-- login-passkey.js registers Alpine.data('passkeyAssertion', ...)
+			     (NES-137, shared with login_mfa.templ's own step-up button)
+			     and must load and run BEFORE alpine.min.js — see layout.templ's
+			     identical note on why script order matters here. -->
+			<script src="/static/js/login-passkey.js" defer></script>
+			<script src="/static/js/alpine.min.js" defer></script>
 		</head>
 		<body class="bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4">
 			<div class="w-full max-w-sm">
@@ -35,6 +48,22 @@ templ LoginPage(form LoginForm) {
 					<p class="mt-1 text-sm text-ink-muted">Sign in to your household</p>
 				</div>
 				<div class="rounded-card bg-surface p-6 shadow-warm">
+					<!-- Passkey sign-in leads (kid-friendliest: one biometric
+					     gesture, no typed identifier); the password form is the
+					     fallback below it, always available regardless of
+					     whether a member has registered a passkey (NES-137 AC:
+					     "password login continues to work for members without
+					     passkeys"). -->
+					if form.ShowPasskeyLogin {
+						@passkeyButton(passkeyButtonProps{
+							BeginURL:  "/login/passkey/begin",
+							FinishURL: "/login/passkey/finish",
+							CSRFToken: form.CSRFToken,
+							Next:      form.Next,
+							IdleLabel: "Sign in with passkey",
+							BusyLabel: "Signing in…",
+						})
+					}
 					<form method="POST" action="/login" novalidate>
 						<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
 						<input type="hidden" name="next" value={ form.Next }/>
