@@ -321,6 +321,7 @@ func runServer(logger *slog.Logger) error {
 		[]domain.Sender{inAppSender, smsNotificationSender},
 		logger,
 		tickRecorder,
+		smsMetrics,
 		dispatchBatchSize,
 		dispatchPollInterval,
 	)

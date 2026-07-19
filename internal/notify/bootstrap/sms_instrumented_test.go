@@ -33,12 +33,13 @@ func (f *fakeSMSSender) Send(context.Context, domain.E164Phone, string) (string,
 // method's invocations, so a decorator test can assert exactly one outcome
 // was recorded per Send call.
 type fakeSMSRecorder struct {
-	sent, failed, optedOut int
+	sent, failed, optedOut, fallback int
 }
 
 func (f *fakeSMSRecorder) IncSent()     { f.sent++ }
 func (f *fakeSMSRecorder) IncFailed()   { f.failed++ }
 func (f *fakeSMSRecorder) IncOptedOut() { f.optedOut++ }
+func (f *fakeSMSRecorder) IncFallback() { f.fallback++ }
 
 // testE164Phone builds a valid E164Phone for use as an arbitrary Send
 // destination; the exact value is never asserted on by these tests.

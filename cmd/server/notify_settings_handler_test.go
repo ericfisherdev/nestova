@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -301,6 +302,34 @@ func TestNotifySettings_SetPreference_SMSWithOptIn_Succeeds(t *testing.T) {
 	got, err := prefs.Get(context.Background(), member.ID, notifydomain.EventTypeClaimExpiring)
 	if err != nil || got != notifydomain.ChannelSMS {
 		t.Errorf("stored preference = (%v, %v), want (sms, nil)", got, err)
+	}
+}
+
+// TestNotifySettings_SetPreference_UndeliverableChannel_Rejected is the
+// end-to-end regression test for CodeRabbit round 3 (major finding #2): a
+// crafted POST choosing channel=email or channel=push — never offered by
+// the settings UI's own <select>, which only has in-app and SMS options —
+// must be rejected server-side, and persist nothing.
+func TestNotifySettings_SetPreference_UndeliverableChannel_Rejected(t *testing.T) {
+	for _, channel := range []string{"email", "push"} {
+		t.Run(channel, func(t *testing.T) {
+			member := settingsTestAdultInHousehold(household.NewHouseholdID())
+			hhRepo := newMultiMemberHouseholdRepo(member)
+			handler, sm, _, prefs := buildNotifySettingsTestHandler(t, hhRepo)
+			cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+			rec := doForm(t, handler, http.MethodPost, "/settings/notify/preferences", cookie,
+				"csrf_token="+csrfToken+"&pref_"+notifydomain.EventTypeClaimExpiring.String()+"="+channel)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("POST /settings/notify/preferences (%s): status = %d, want 400; body: %s", channel, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "available yet") {
+				t.Errorf("response missing inline validation message: %s", rec.Body.String())
+			}
+			if _, err := prefs.Get(context.Background(), member.ID, notifydomain.EventTypeClaimExpiring); !errors.Is(err, notifydomain.ErrPreferenceNotFound) {
+				t.Errorf("a rejected %s preference must not be persisted", channel)
+			}
+		})
 	}
 }
 

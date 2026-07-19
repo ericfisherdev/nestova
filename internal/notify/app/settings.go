@@ -19,6 +19,18 @@ type quietHoursStore interface {
 	household.QuietHoursWriter
 }
 
+// deliverablePreferenceChannels is the set of channels
+// SettingsService.SetPreferences accepts for a member preference write —
+// narrower than domain.Channel.Valid(), which also accepts push and
+// email (valid domain.Channel values reserved for a future ticket's own
+// Sender). See domain.ErrChannelNotDeliverable's own doc for why
+// accepting an undeliverable channel here would be a silent-notification-
+// loss risk, not just a cosmetic UI mismatch.
+var deliverablePreferenceChannels = map[domain.Channel]bool{
+	domain.ChannelInApp: true,
+	domain.ChannelSMS:   true,
+}
+
 // SettingsService implements the member-facing business rules behind the
 // settings page's SMS notification section (NES-139): phone number entry
 // and opt-in consent, per-event-type channel preferences, and
@@ -125,6 +137,18 @@ func (s *SettingsService) SetPreference(
 // cross-reference the member table's own opt-in state, so this guard is
 // the only place that rule is enforced (NES-139 plan step 8: "reject
 // channel=sms preference writes when the member has no sms_opted_in_at").
+//
+// Every channel is also checked against deliverablePreferenceChannels
+// (domain.ErrChannelNotDeliverable otherwise): domain.Channel.Valid()
+// alone accepts push and email too, since those remain valid domain
+// values for a future ticket's own Sender, but persisting a preference
+// for one TODAY — before any Sender for it exists — would let
+// routing.RoutingEnqueuer route a future notification straight into a
+// dispatcher failure with no fallback (Dispatcher.fallbackToInApp only
+// covers SMS). Rejecting it here, at the write boundary, is the
+// intentional defense-in-depth for a crafted POST that bypasses the
+// settings UI's own two-option (in-app/SMS) <select> — CodeRabbit PR #109
+// round 3.
 func (s *SettingsService) SetPreferences(
 	ctx context.Context,
 	householdID household.HouseholdID,
@@ -135,6 +159,9 @@ func (s *SettingsService) SetPreferences(
 	for _, channel := range updates {
 		if !channel.Valid() {
 			return fmt.Errorf("notify: invalid channel %q", channel)
+		}
+		if !deliverablePreferenceChannels[channel] {
+			return domain.ErrChannelNotDeliverable
 		}
 		if channel == domain.ChannelSMS {
 			needsSMSCheck = true

@@ -53,6 +53,7 @@ type Dispatcher struct {
 	senders      senderRegistry
 	logger       *slog.Logger
 	ticks        metrics.TickRecorder
+	smsRecorder  metrics.SMSRecorder
 	batchSize    int
 	pollInterval time.Duration
 }
@@ -60,15 +61,20 @@ type Dispatcher struct {
 // NewDispatcher constructs a Dispatcher with injected dependencies.
 // ticks records each poll cycle's duration and outcome (NES-115); pass
 // [metrics.NopTickRecorder] when tick instrumentation is irrelevant.
+// smsRecorder records terminal SMS failures the dispatcher falls back to
+// in-app (NES-139, IncFallback — see fallbackToInApp's own doc); pass
+// [metrics.NopSMSRecorder] when that instrumentation is irrelevant.
 // batchSize caps the number of notifications claimed per RunOnce call.
 // pollInterval controls how often Run polls the outbox.
-// Returns an error when outbox, logger, or ticks is nil, when batchSize or
-// pollInterval is not positive, or when the sender set is empty or invalid.
+// Returns an error when outbox, logger, ticks, or smsRecorder is nil,
+// when batchSize or pollInterval is not positive, or when the sender set
+// is empty or invalid.
 func NewDispatcher(
 	outbox domain.Outbox,
 	senders []domain.Sender,
 	logger *slog.Logger,
 	ticks metrics.TickRecorder,
+	smsRecorder metrics.SMSRecorder,
 	batchSize int,
 	pollInterval time.Duration,
 ) (*Dispatcher, error) {
@@ -80,6 +86,9 @@ func NewDispatcher(
 	}
 	if ticks == nil {
 		return nil, errors.New("app: NewDispatcher requires a non-nil tick recorder")
+	}
+	if smsRecorder == nil {
+		return nil, errors.New("app: NewDispatcher requires a non-nil sms recorder")
 	}
 	if batchSize <= 0 {
 		return nil, fmt.Errorf("app: NewDispatcher batchSize must be positive, got %d", batchSize)
@@ -96,6 +105,7 @@ func NewDispatcher(
 		senders:      reg,
 		logger:       logger,
 		ticks:        ticks,
+		smsRecorder:  smsRecorder,
 		batchSize:    batchSize,
 		pollInterval: pollInterval,
 	}, nil
@@ -196,6 +206,14 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 // notification's failure is always recorded even when this best-effort
 // fallback also fails.
 func (d *Dispatcher) fallbackToInApp(n *domain.Notification) {
+	// Recorded unconditionally, before the enqueue attempt below: the
+	// metric represents "a terminal SMS failure occurred and a fallback
+	// was attempted," the same way IncSent/IncFailed record the SMS send
+	// OUTCOME itself, not a downstream effect. A failure enqueueing the
+	// fallback (logged separately below) is a distinct, rarer condition
+	// this counter is not meant to capture.
+	d.smsRecorder.IncFallback()
+
 	fallback := &domain.Notification{
 		ID:           domain.NewNotificationID(),
 		HouseholdID:  n.HouseholdID,

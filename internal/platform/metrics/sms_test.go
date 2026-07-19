@@ -42,8 +42,8 @@ func TestNewSMSMetricsNilRegistererPanics(t *testing.T) {
 }
 
 // TestSMSMetrics_IncrementsAreIndependentPerResult verifies each of
-// IncSent/IncFailed/IncOptedOut increments its OWN "result" label series
-// without affecting the other two.
+// IncSent/IncFailed/IncOptedOut/IncFallback increments its OWN "result"
+// label series without affecting the others.
 func TestSMSMetrics_IncrementsAreIndependentPerResult(t *testing.T) {
 	m := metrics.NewSMSMetrics(metrics.NewRegistry())
 
@@ -53,6 +53,10 @@ func TestSMSMetrics_IncrementsAreIndependentPerResult(t *testing.T) {
 	m.IncOptedOut()
 	m.IncOptedOut()
 	m.IncOptedOut()
+	m.IncFallback()
+	m.IncFallback()
+	m.IncFallback()
+	m.IncFallback()
 
 	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("sent")); got != 2 {
 		t.Errorf("sent = %v, want 2", got)
@@ -62,6 +66,9 @@ func TestSMSMetrics_IncrementsAreIndependentPerResult(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("opted_out")); got != 3 {
 		t.Errorf("opted_out = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("fallback")); got != 4 {
+		t.Errorf("fallback = %v, want 4", got)
 	}
 }
 
@@ -73,4 +80,5 @@ func TestNopSMSRecorder_DoesNotPanic(_ *testing.T) {
 	r.IncSent()
 	r.IncFailed()
 	r.IncOptedOut()
+	r.IncFallback()
 }

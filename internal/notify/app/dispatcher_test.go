@@ -96,7 +96,7 @@ func newInAppNotification() *domain.Notification {
 
 func newDispatcher(t *testing.T, outbox domain.Outbox, senders []domain.Sender) *app.Dispatcher {
 	t.Helper()
-	d, err := app.NewDispatcher(outbox, senders, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
+	d, err := app.NewDispatcher(outbox, senders, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err != nil {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
@@ -259,6 +259,71 @@ func TestRunOnce_NonSMSSendFailure_NoFallback(t *testing.T) {
 	}
 }
 
+// spySMSRecorder records IncFallback call counts, for asserting
+// Dispatcher's own metrics behavior (CodeRabbit PR #109 round 3, trivial
+// finding #3) without depending on a real Prometheus registry — the other
+// three SMSRecorder methods are inert since the dispatcher itself only
+// ever calls IncFallback (IncSent/IncFailed/IncOptedOut are recorded
+// deeper, inside the instrumented SMS sender NES-138 built — see
+// notify/bootstrap.instrumentedSMSSender).
+type spySMSRecorder struct {
+	sent, failed, optedOut, fallback int
+}
+
+func (s *spySMSRecorder) IncSent()     { s.sent++ }
+func (s *spySMSRecorder) IncFailed()   { s.failed++ }
+func (s *spySMSRecorder) IncOptedOut() { s.optedOut++ }
+func (s *spySMSRecorder) IncFallback() { s.fallback++ }
+
+func TestRunOnce_SMSSendFailure_RecordsFallbackMetric(t *testing.T) {
+	outbox := &fakeOutbox{}
+	n := newSMSNotification()
+	outbox.due = []*domain.Notification{n}
+
+	sender := &toggleFakeSender{
+		ch:     domain.ChannelSMS,
+		sendFn: func(_ *domain.Notification) error { return domain.ErrMemberNotSMSReady },
+	}
+	spy := &spySMSRecorder{}
+	d, err := app.NewDispatcher(outbox, []domain.Sender{sender}, silentLogger(), metrics.NopTickRecorder{}, spy, 10, time.Minute)
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	if _, err := d.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce error = %v", err)
+	}
+	if spy.fallback != 1 {
+		t.Errorf("IncFallback calls = %d, want 1", spy.fallback)
+	}
+	if spy.sent != 0 || spy.failed != 0 || spy.optedOut != 0 {
+		t.Errorf("unexpected recorder calls: sent=%d failed=%d optedOut=%d, want all 0 (the dispatcher itself only records IncFallback)", spy.sent, spy.failed, spy.optedOut)
+	}
+}
+
+func TestRunOnce_NonSMSSendFailure_DoesNotRecordFallbackMetric(t *testing.T) {
+	outbox := &fakeOutbox{}
+	n := newInAppNotification()
+	outbox.due = []*domain.Notification{n}
+
+	sender := &toggleFakeSender{
+		ch:     domain.ChannelInApp,
+		sendFn: func(_ *domain.Notification) error { return errors.New("boom") },
+	}
+	spy := &spySMSRecorder{}
+	d, err := app.NewDispatcher(outbox, []domain.Sender{sender}, silentLogger(), metrics.NopTickRecorder{}, spy, 10, time.Minute)
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	if _, err := d.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce error = %v", err)
+	}
+	if spy.fallback != 0 {
+		t.Errorf("IncFallback calls = %d, want 0 for a non-SMS channel failure", spy.fallback)
+	}
+}
+
 func TestRunOnce_UnknownChannel_CallsMarkFailed(t *testing.T) {
 	outbox := &fakeOutbox{}
 	n := newInAppNotification()
@@ -343,35 +408,35 @@ func TestRunOnce_ClaimDueError_ReturnsError(t *testing.T) {
 }
 
 func TestNewDispatcher_NilOutbox_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(nil, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
+	_, err := app.NewDispatcher(nil, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil outbox) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_EmptySenders_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(empty senders) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_NilLogger_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, nil, metrics.NopTickRecorder{}, 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, nil, metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil logger) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_InvalidBatchSize_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 0, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 0, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(batchSize=0) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_InvalidPollInterval_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 10, 0)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, 0)
 	if err == nil {
 		t.Error("NewDispatcher(pollInterval=0) error = nil, want non-nil")
 	}
@@ -379,21 +444,21 @@ func TestNewDispatcher_InvalidPollInterval_ReturnsError(t *testing.T) {
 
 func TestNewDispatcher_DuplicateChannel_ReturnsError(t *testing.T) {
 	s := alwaysSucceedSender()
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{s, s}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{s, s}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(duplicate channel) error = nil, want non-nil")
 	}
 }
 
 func TestNewDispatcher_NilSenderEntry_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{nil}, silentLogger(), metrics.NopTickRecorder{}, 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{nil}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil sender) error = nil, want non-nil")
 	}
 }
 
 func TestRun_ReturnsWhenContextCancelled(t *testing.T) {
-	d, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, 10, 10*time.Millisecond)
+	d, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, 10, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewDispatcher: %v", err)
 	}
@@ -413,9 +478,16 @@ func TestRun_ReturnsWhenContextCancelled(t *testing.T) {
 }
 
 func TestNewDispatcher_NilTickRecorder_ReturnsError(t *testing.T) {
-	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), nil, 10, time.Minute)
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), nil, metrics.NopSMSRecorder{}, 10, time.Minute)
 	if err == nil {
 		t.Error("NewDispatcher(nil tick recorder) error = nil, want non-nil")
+	}
+}
+
+func TestNewDispatcher_NilSMSRecorder_ReturnsError(t *testing.T) {
+	_, err := app.NewDispatcher(&fakeOutbox{}, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, nil, 10, time.Minute)
+	if err == nil {
+		t.Error("NewDispatcher(nil sms recorder) error = nil, want non-nil")
 	}
 }
 
@@ -464,7 +536,7 @@ func (s *spyTickRecorder) waitForCall(t *testing.T) spyTickCall {
 func TestRun_FailingTick_ObservedWithError(t *testing.T) {
 	outbox := &fakeOutbox{claimErr: errors.New("db error")}
 	spy := &spyTickRecorder{}
-	d, err := app.NewDispatcher(outbox, []domain.Sender{alwaysSucceedSender()}, silentLogger(), spy, 10, 10*time.Millisecond)
+	d, err := app.NewDispatcher(outbox, []domain.Sender{alwaysSucceedSender()}, silentLogger(), spy, metrics.NopSMSRecorder{}, 10, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewDispatcher: %v", err)
 	}

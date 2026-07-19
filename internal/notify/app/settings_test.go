@@ -257,6 +257,63 @@ func TestSettingsService_SetPreferences_InvalidChannel_RejectsWholeBatch(t *test
 	}
 }
 
+// TestSettingsService_SetPreferences_UndeliverableChannel_Rejected is the
+// regression test for CodeRabbit round 3 (major finding #2): push and
+// email are valid domain.Channel values (Channel.Valid() accepts them —
+// see TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel
+// below) but have no wired Sender in this deployment yet, so a crafted
+// POST choosing either must be rejected at the preference-write boundary,
+// not merely at the settings UI's own <select> (which never offers them).
+func TestSettingsService_SetPreferences_UndeliverableChannel_Rejected(t *testing.T) {
+	for _, channel := range []domain.Channel{domain.ChannelPush, domain.ChannelEmail} {
+		t.Run(channel.String(), func(t *testing.T) {
+			memberID := household.NewMemberID()
+			prefs := &fakePreferenceRepo{}
+			svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeHouseholdReader{})
+
+			updates := map[domain.EventType]domain.Channel{domain.EventTypeClaimExpiring: channel}
+			err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), memberID, updates)
+			if !errors.Is(err, domain.ErrChannelNotDeliverable) {
+				t.Fatalf("SetPreferences(%s) error = %v, want ErrChannelNotDeliverable", channel, err)
+			}
+			if _, err := prefs.Get(context.Background(), memberID, domain.EventTypeClaimExpiring); !errors.Is(err, domain.ErrPreferenceNotFound) {
+				t.Errorf("SetPreferences(%s) must not persist anything", channel)
+			}
+		})
+	}
+}
+
+// TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel
+// pins the OTHER half of finding #2's contract: domain.ParseChannel/
+// Channel.Valid() themselves must stay unchanged — push and email remain
+// valid domain.Channel values for a future ticket's own Sender; only the
+// PREFERENCE-WRITE boundary narrows further.
+func TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel(t *testing.T) {
+	for _, channel := range []domain.Channel{domain.ChannelPush, domain.ChannelEmail} {
+		if !channel.Valid() {
+			t.Errorf("domain.Channel(%q).Valid() = false, want true (ParseChannel must stay unrestricted)", channel)
+		}
+	}
+}
+
+func TestSettingsService_SetPreferences_UndeliverableChannel_MixedWithValid_RejectsWholeBatch(t *testing.T) {
+	memberID := household.NewMemberID()
+	prefs := &fakePreferenceRepo{}
+	svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeHouseholdReader{})
+
+	updates := map[domain.EventType]domain.Channel{
+		domain.EventTypeClaimExpiring: domain.ChannelInApp,
+		domain.EventTypeTaskOverdue:   domain.ChannelEmail,
+	}
+	err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), memberID, updates)
+	if !errors.Is(err, domain.ErrChannelNotDeliverable) {
+		t.Fatalf("SetPreferences error = %v, want ErrChannelNotDeliverable", err)
+	}
+	if _, err := prefs.Get(context.Background(), memberID, domain.EventTypeClaimExpiring); !errors.Is(err, domain.ErrPreferenceNotFound) {
+		t.Error("a rejected batch must not persist any of its rows, including the valid in-app one")
+	}
+}
+
 // ----------------------------------------------------------------------------
 // QuietHours / SetQuietHours
 // ----------------------------------------------------------------------------

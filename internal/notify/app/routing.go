@@ -100,10 +100,22 @@ func (e *RoutingEnqueuer) route(ctx context.Context, n *domain.Notification) {
 
 	hh, err := e.households.GetHousehold(ctx, n.HouseholdID)
 	if err != nil {
-		e.logger.ErrorContext(ctx, "routing: load household for quiet hours failed, sending without deferral",
+		// Falling back to in-app here (not leaving Channel=SMS with no
+		// deferral check) matters specifically because the failure happens
+		// AFTER Channel was already resolved to SMS above: without a
+		// household to consult, there is no way to know whether
+		// ScheduledFor falls inside quiet hours, and sending SMS anyway
+		// risks exactly the "notification generated at 2am" case the
+		// deferral exists to prevent (NES-139 AC). Every other lookup
+		// failure in this type (resolveChannel's own preference/contact
+		// errors) already falls back the same way by simply never setting
+		// Channel to SMS in the first place; this is the one path where
+		// Channel must be explicitly reset.
+		e.logger.ErrorContext(ctx, "routing: load household for quiet hours failed, falling back to in-app",
 			"household_id", n.HouseholdID.String(),
 			"error", err,
 		)
+		n.Channel = domain.ChannelInApp
 		return
 	}
 	if hh.InQuietHours(n.ScheduledFor) {
