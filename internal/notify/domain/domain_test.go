@@ -86,6 +86,53 @@ func TestStatusValid(t *testing.T) {
 	}
 }
 
+func TestEventTypeParseAndValid(t *testing.T) {
+	for _, et := range domain.AllEventTypes() {
+		got, err := domain.ParseEventType(et.String())
+		if err != nil {
+			t.Errorf("ParseEventType(%q) error = %v, want nil", et.String(), err)
+		}
+		if got != et {
+			t.Errorf("ParseEventType(%q) = %v, want %v", et.String(), got, et)
+		}
+		if !got.Valid() {
+			t.Errorf("EventType(%q).Valid() = false, want true", et.String())
+		}
+		if got.Label() == "" {
+			t.Errorf("EventType(%q).Label() is empty, want a non-empty member-facing label", et.String())
+		}
+	}
+}
+
+func TestEventTypeParseUnknown(t *testing.T) {
+	_, err := domain.ParseEventType("carrier_pigeon_arrived")
+	if err == nil {
+		t.Error("ParseEventType(unknown) error = nil, want non-nil")
+	}
+}
+
+func TestEventTypeValid(t *testing.T) {
+	if domain.EventType("carrier_pigeon_arrived").Valid() {
+		t.Error("EventType(carrier_pigeon_arrived).Valid() = true, want false")
+	}
+	// The zero value (an empty EventType, meaning "not preference-routable"
+	// — see Notification.EventType's own doc) is deliberately NOT a valid
+	// event type: it must never be looked up in member_notification_pref.
+	if domain.EventType("").Valid() {
+		t.Error(`EventType("").Valid() = true, want false`)
+	}
+}
+
+func TestAllEventTypes_NoDuplicates(t *testing.T) {
+	seen := make(map[domain.EventType]bool)
+	for _, et := range domain.AllEventTypes() {
+		if seen[et] {
+			t.Errorf("AllEventTypes() contains duplicate %q", et.String())
+		}
+		seen[et] = true
+	}
+}
+
 func TestNotificationIDRoundTrip(t *testing.T) {
 	id := domain.NewNotificationID()
 	s := id.String()

@@ -278,31 +278,15 @@ func runServer(logger *slog.Logger) error {
 	// NES-24: notification outbox wiring.
 	outboxRepo := notifyadapter.NewOutboxRepository(pool)
 	inAppSender := notifyadapter.NewInAppSender(logger)
-	dispatcher, err := notifyapp.NewDispatcher(
-		outboxRepo,
-		[]domain.Sender{inAppSender},
-		logger,
-		tickRecorder,
-		dispatchBatchSize,
-		dispatchPollInterval,
-	)
-	if err != nil {
-		return fmt.Errorf("create dispatcher: %w", err)
-	}
 
 	// NES-138: SMS sender wiring — NoopSMSSender when NOTIFY_SMS_ENABLED is
 	// false (the default; zero AWS dependency), else an
 	// AWSEndUserMessagingSender instrumented with smsMetrics (see
-	// notifybootstrap.NewSMSSender's own doc). Not yet registered with the
-	// dispatcher above: routing a Notification to SMS requires member phone
-	// numbers and delivery preferences, which is NES-139 — smsSender is
-	// constructed here (so a misconfigured NOTIFY_SMS_ENABLED=true
-	// deployment fails the boot loudly now, rather than silently once
-	// NES-139 first tries to use it) and held for that ticket to register
-	// with the dispatcher once it exists. ctx bounds AWS config loading
-	// (LoadDefaultConfig may reach the EC2/ECS instance metadata service to
-	// resolve credentials when no static ones are configured), mirroring
-	// photoStoreCtx's identical bounded-startup-call reasoning below.
+	// notifybootstrap.NewSMSSender's own doc). ctx bounds AWS config
+	// loading (LoadDefaultConfig may reach the EC2/ECS instance metadata
+	// service to resolve credentials when no static ones are configured),
+	// mirroring photoStoreCtx's identical bounded-startup-call reasoning
+	// below.
 	smsCtx, cancelSMSCtx := context.WithTimeout(context.Background(), smsSenderInitTimeout)
 	smsSender, err := notifybootstrap.NewSMSSender(smsCtx, cfg.SMS, smsMetrics, logger)
 	cancelSMSCtx()
@@ -315,6 +299,51 @@ func runServer(logger *slog.Logger) error {
 	default:
 		logger.Info("sms sender configured", "provider", "aws_end_user_messaging", "region", cfg.SMS.Region)
 	}
+
+	// NES-139: member SMS contact details (phone_e164/sms_opted_in_at) and
+	// per-event-type channel preferences. contactDirectory is shared by
+	// the dispatcher's own SMS sender (below, to resolve a member's phone
+	// at delivery time) and by routingEnqueuer (to resolve a member's
+	// current opt-in state at enqueue time) — see those two consumers'
+	// own docs for why each needs its own, separately-timed check.
+	contactDirectory := notifyadapter.NewPostgresContactDirectory(pool)
+	preferenceRepo := notifyadapter.NewPostgresPreferenceRepository(pool)
+
+	// NES-139: wires the SMS channel into the dispatcher at last —
+	// AWSEndUserMessagingSender/NoopSMSSender (NES-138) is the raw
+	// send-a-body-to-a-number port; SMSNotificationSender adds the
+	// member-to-phone-number resolution a full domain.Sender needs (see
+	// that type's own doc).
+	smsNotificationSender := notifyadapter.NewSMSNotificationSender(smsSender, contactDirectory)
+
+	dispatcher, err := notifyapp.NewDispatcher(
+		outboxRepo,
+		[]domain.Sender{inAppSender, smsNotificationSender},
+		logger,
+		tickRecorder,
+		dispatchBatchSize,
+		dispatchPollInterval,
+	)
+	if err != nil {
+		return fmt.Errorf("create dispatcher: %w", err)
+	}
+
+	// NES-139: routingEnqueuer decorates outboxRepo with per-member,
+	// per-event-type channel resolution and household quiet-hours
+	// deferral (see that type's own doc) — every scheduler/service below
+	// that raises a member-addressed, preference-routable notification is
+	// wired against THIS, not outboxRepo directly. householdRepo already
+	// satisfies routing's narrow household-quiet-hours read port
+	// structurally (see householdReader's own doc), so no separate
+	// adapter is needed here.
+	//
+	// The auth context's own notification producers (webauthnService,
+	// loginMFAHandlers, further below) stay wired directly to outboxRepo,
+	// unchanged: they are outside NES-139's scope (security/login
+	// notifications, not preference-routable event types), and
+	// routingEnqueuer would be a safe no-op passthrough for them anyway
+	// (their notifications carry no EventType).
+	routingEnqueuer := notifyapp.NewRoutingEnqueuer(outboxRepo, preferenceRepo, contactDirectory, householdRepo, logger)
 
 	// NES-31: task scheduler wiring.
 	recurringTaskRepo := tasksadapter.NewRecurringTaskRepository(pool)
@@ -334,7 +363,7 @@ func runServer(logger *slog.Logger) error {
 	// outboxRepo satisfies notifydomain.Enqueuer (it embeds Enqueue); passing it
 	// here lets the scheduler emit due-soon and overdue reminders via the same
 	// outbox the dispatcher already consumes (NES-34).
-	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, choreTradeRepo, outboxRepo, logger, tickRecorder, taskSchedulerPollInterval)
+	taskScheduler, err := tasksapp.NewScheduler(taskGenerator, taskInstanceRepo, choreTradeRepo, routingEnqueuer, logger, tickRecorder, taskSchedulerPollInterval)
 	if err != nil {
 		return fmt.Errorf("create task scheduler: %w", err)
 	}
@@ -353,7 +382,7 @@ func runServer(logger *slog.Logger) error {
 		return fmt.Errorf("create restock predictor: %w", err)
 	}
 	restockScheduler, err := trackingapp.NewRestockScheduler(
-		trackedItemRepo, predictor, ingredientRepo, shoppingListRepo, outboxRepo, logger,
+		trackedItemRepo, predictor, ingredientRepo, shoppingListRepo, routingEnqueuer, logger,
 		tickRecorder, restockSchedulerPollInterval, restockSchedulerTickTimeout,
 	)
 	if err != nil {
@@ -365,7 +394,7 @@ func runServer(logger *slog.Logger) error {
 	// emitting reminders via the same outbox the dispatcher consumes.
 	subscriptionRepo := subscriptionsadapter.NewSubscriptionRepository(pool)
 	renewalScheduler, err := subscriptionsapp.NewRenewalScheduler(
-		subscriptionRepo, outboxRepo, logger,
+		subscriptionRepo, routingEnqueuer, logger,
 		tickRecorder, renewalSchedulerPollInterval, renewalSchedulerTickTimeout,
 	)
 	if err != nil {
@@ -398,7 +427,7 @@ func runServer(logger *slog.Logger) error {
 	// page. taskWebHandlers satisfies the handlers' taskGroupsBuilder
 	// dependency via its BuildGroups method, so an accept can refresh an
 	// already-open /tasks page's #task-groups fragment.
-	tradeService, err := tasksapp.NewTradeService(choreTradeRepo, outboxRepo, logger)
+	tradeService, err := tasksapp.NewTradeService(choreTradeRepo, routingEnqueuer, logger)
 	if err != nil {
 		return fmt.Errorf("create trade service: %w", err)
 	}
@@ -414,9 +443,9 @@ func runServer(logger *slog.Logger) error {
 	// redemption can notify the household's parents.
 	pointLedgerRepo := tasksadapter.NewPointLedgerPostgresRepository(pool)
 	rewardRepo := tasksadapter.NewRewardPostgresRepository(pool)
-	rewardService := tasksapp.NewRewardService(rewardRepo, householdRepo, outboxRepo, logger)
+	rewardService := tasksapp.NewRewardService(rewardRepo, householdRepo, routingEnqueuer, logger)
 	rewardAdminService := tasksapp.NewRewardAdminService(rewardRepo, logger)
-	redemptionService, err := tasksapp.NewRedemptionService(rewardRepo, outboxRepo, logger)
+	redemptionService, err := tasksapp.NewRedemptionService(rewardRepo, routingEnqueuer, logger)
 	if err != nil {
 		return fmt.Errorf("create redemption service: %w", err)
 	}
@@ -741,6 +770,14 @@ func runServer(logger *slog.Logger) error {
 		return fmt.Errorf("create kiosk service: %w", err)
 	}
 	settingsWebHandlers := kioskadapter.NewSettingsWebHandlers(kioskService, sm, logger)
+
+	// NES-139: SMS notification settings — phone entry/opt-in, per-event-type
+	// preferences, and (owner-only) household quiet hours. householdRepo
+	// satisfies quietHoursStore structurally (GetHousehold + SetQuietHours),
+	// so no separate adapter is needed here, mirroring routingEnqueuer's own
+	// reuse of it above.
+	notifySettingsService := notifyapp.NewSettingsService(contactDirectory, preferenceRepo, householdRepo)
+	notifyWebHandlers := notifyadapter.NewNotifyWebHandlers(notifySettingsService, sm, logger)
 	kioskWebHandlers := kioskadapter.NewKioskWebHandlers(
 		kioskService, taskInstanceRepo, recurringTaskRepo, unifiedCalendarService,
 		plannerService, recipeRepo, shoppingListService, ingredientRepo,
@@ -774,7 +811,7 @@ func runServer(logger *slog.Logger) error {
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers, webauthnService)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers, webauthnService, notifyWebHandlers)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},

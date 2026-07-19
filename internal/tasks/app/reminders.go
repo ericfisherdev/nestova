@@ -263,6 +263,7 @@ func (r *Reminders) enqueueClaimWarning(ctx context.Context, asOf time.Time, war
 		Status:       notifydomain.StatusPending,
 		SourceType:   "task_instance",
 		SourceID:     &instUUID,
+		EventType:    notifydomain.EventTypeClaimExpiring,
 	}
 
 	if err := r.enqueuer.Enqueue(ctx, n); err != nil {
@@ -300,6 +301,7 @@ func (r *Reminders) enqueueClaimExpiry(ctx context.Context, asOf time.Time, clai
 		Status:       notifydomain.StatusPending,
 		SourceType:   "task_instance",
 		SourceID:     &instUUID,
+		EventType:    notifydomain.EventTypeClaimExpired,
 	}
 
 	if err := r.enqueuer.Enqueue(ctx, n); err != nil {
@@ -334,13 +336,16 @@ func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt dom
 	label := categoryLabel(tgt.Category)
 
 	var title, body string
+	var eventType notifydomain.EventType
 	switch tgt.Kind {
 	case domain.ReminderDueSoon:
 		title = fmt.Sprintf("%s due soon: %s", label, tgt.Title)
 		body = fmt.Sprintf("%s is due on %s.", tgt.Title, tgt.DueOn.Format("Jan 2"))
+		eventType = notifydomain.EventTypeTaskDueSoon
 	case domain.ReminderOverdue:
 		title = fmt.Sprintf("%s overdue: %s", label, tgt.Title)
 		body = fmt.Sprintf("%s was due on %s and is now overdue.", tgt.Title, tgt.DueOn.Format("Jan 2"))
+		eventType = notifydomain.EventTypeTaskOverdue
 	default:
 		r.logger.Error("reminders: unknown reminder kind",
 			"kind", tgt.Kind,
@@ -361,6 +366,7 @@ func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt dom
 		Status:       notifydomain.StatusPending,
 		SourceType:   "task_instance",
 		SourceID:     &instUUID,
+		EventType:    eventType,
 	}
 
 	if err := r.enqueuer.Enqueue(ctx, n); err != nil {

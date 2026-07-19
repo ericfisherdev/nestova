@@ -33,6 +33,10 @@ import (
 type multiMemberHouseholdRepo struct {
 	testHouseholdRepo
 	members map[household.MemberID]*household.Member
+	// quietHours tracks SetQuietHours calls statefully, keyed by household
+	// id, so GetHousehold can reflect them back (NES-139) — see that
+	// method's own doc.
+	quietHours map[household.HouseholdID][2]*time.Duration
 }
 
 func newMultiMemberHouseholdRepo(members ...*household.Member) *multiMemberHouseholdRepo {
@@ -59,6 +63,32 @@ func (r *multiMemberHouseholdRepo) ListMembers(_ context.Context, householdID ho
 		}
 	}
 	return out, nil
+}
+
+// GetHousehold overrides testHouseholdRepo's always-not-found stub: NES-139's
+// quiet-hours settings section (rendered unconditionally by composePage for
+// an owner-role member) needs a real household to load, and every test in
+// this file that authenticates as the owner has a genuinely existing
+// household by construction (settingsTestOwner's HouseholdID). Quiet hours
+// default to disabled (nil, nil) unless SetQuietHours has been called for
+// id, which quietHours below tracks statefully — needed so
+// notify_settings_handler_test.go can exercise a real set-then-read round
+// trip, not just a fixed stub.
+func (r *multiMemberHouseholdRepo) GetHousehold(_ context.Context, id household.HouseholdID) (*household.Household, error) {
+	if bounds, ok := r.quietHours[id]; ok {
+		return &household.Household{ID: id, QuietHoursStart: bounds[0], QuietHoursEnd: bounds[1]}, nil
+	}
+	return &household.Household{ID: id}, nil
+}
+
+// SetQuietHours overrides testHouseholdRepo's no-op stub with real
+// per-household state (NES-139).
+func (r *multiMemberHouseholdRepo) SetQuietHours(_ context.Context, id household.HouseholdID, start, end *time.Duration) error {
+	if r.quietHours == nil {
+		r.quietHours = make(map[household.HouseholdID][2]*time.Duration)
+	}
+	r.quietHours[id] = [2]*time.Duration{start, end}
+	return nil
 }
 
 var _ household.HouseholdRepository = (*multiMemberHouseholdRepo)(nil)
@@ -106,7 +136,7 @@ var _ authdomain.CredentialRepository = (*fakeMemberCredRepo)(nil)
 // buildKioskTestHandler's approach but scoped to just what the MFA section
 // needs, with a household repo that supports MULTIPLE members (required for
 // the owner admin-reset flow).
-func buildSettingsTestHandler(t *testing.T, hhRepo household.HouseholdRepository, credRepo authdomain.CredentialRepository) (http.Handler, *scs.SessionManager) {
+func buildSettingsTestHandler(t *testing.T, hhRepo testHouseholdRepoWithQuietHours, credRepo authdomain.CredentialRepository) (http.Handler, *scs.SessionManager) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
@@ -133,7 +163,7 @@ func buildSettingsTestHandler(t *testing.T, hhRepo household.HouseholdRepository
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil)
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, newTestNotifyWebHandlers(hhRepo, sm, logger))
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm

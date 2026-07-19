@@ -174,6 +174,7 @@ func (s *RenewalScheduler) enqueueReminder(ctx context.Context, sub *domain.Subs
 		Status:       notifydomain.StatusPending,
 		SourceType:   renewalReminderSource,
 		SourceID:     &sourceID,
+		EventType:    notifydomain.EventTypeSubscriptionRenewalDue,
 	}
 	return s.enqueuer.Enqueue(ctx, n)
 }

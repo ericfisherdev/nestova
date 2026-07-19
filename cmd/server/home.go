@@ -16,6 +16,7 @@ import (
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
+	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
@@ -518,6 +519,7 @@ func registerSettingsPage(
 	mfaService *authapp.MFAService,
 	webauthnHandlers *authadapter.WebAuthnWebHandlers,
 	webauthnService *authapp.WebAuthnService,
+	notifyHandlers *notifyadapter.NotifyWebHandlers,
 ) {
 	const settingsPath = "/settings"
 	requireMember := authadapter.RequireMember(sm)
@@ -594,6 +596,8 @@ func registerSettingsPage(
 		mfaEnrollReveal *components.MFAEnrollReveal,
 		mfaRecoveryReveal *components.MFARecoveryCodesReveal,
 		mfaErr string,
+		notifyErr string,
+		quietErr string,
 	) {
 		hasReveal := kioskReveal != nil || mfaEnrollReveal != nil || mfaRecoveryReveal != nil
 
@@ -641,6 +645,32 @@ func registerSettingsPage(
 			view.ShowWebAuthnSection = true
 			view.WebAuthn = webauthnView
 		}
+
+		notifyView, err := notifyHandlers.SMSSectionView(r.Context(), member, notifyErr)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "settings: build notify section", "error", err)
+			if hasReveal {
+				renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view.Notify = notifyView
+
+		quietView, showQuiet, err := notifyHandlers.QuietHoursSectionView(r.Context(), member, quietErr)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "settings: build quiet hours section", "error", err)
+			if hasReveal {
+				renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view.ShowQuietHoursSection = showQuiet
+		view.QuietHours = quietView
+
 		if err := render.Render(r.Context(), w, status, layoutFor(r)(member)(components.SettingsPage(view))); err != nil {
 			logger.ErrorContext(r.Context(), "settings: render page", "error", err)
 			// render.Render buffers the component into memory first and
@@ -661,7 +691,7 @@ func registerSettingsPage(
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		composePage(w, r, member, http.StatusOK, nil, nil, nil, "")
+		composePage(w, r, member, http.StatusOK, nil, nil, nil, "", "", "")
 	})))
 
 	// Kiosk section mutations (parent-only, enforced inside settingsHandlers).
@@ -677,7 +707,7 @@ func registerSettingsPage(
 		// short-lived and single-use): it must never be cached by a shared
 		// proxy or stored in the browser's disk cache.
 		w.Header().Set("Cache-Control", "no-store")
-		composePage(w, r, member, http.StatusOK, reveal, nil, nil, "")
+		composePage(w, r, member, http.StatusOK, reveal, nil, nil, "", "", "")
 	}))))
 	mux.Handle("POST /settings/kiosk/{id}/revoke", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, ok := settingsHandlers.RevokeKioskToken(w, r)
@@ -704,7 +734,7 @@ func registerSettingsPage(
 		// browser's disk cache, mirroring the kiosk activation code and MFA
 		// recovery code reveals below.
 		w.Header().Set("Cache-Control", "no-store")
-		composePage(w, r, member, http.StatusOK, nil, reveal, nil, "")
+		composePage(w, r, member, http.StatusOK, nil, reveal, nil, "", "", "")
 	})))
 	mux.Handle("POST /settings/mfa/confirm", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, reveal, errMsg, status, ok := mfaHandlers.Confirm(w, r)
@@ -716,7 +746,7 @@ func registerSettingsPage(
 		if reveal != nil {
 			w.Header().Set("Cache-Control", "no-store")
 		}
-		composePage(w, r, member, status, nil, nil, reveal, errMsg)
+		composePage(w, r, member, status, nil, nil, reveal, errMsg, "", "")
 	})))
 	mux.Handle("POST /settings/mfa/recovery-codes/regenerate", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, reveal, errMsg, status, ok := mfaHandlers.RegenerateRecoveryCodes(w, r)
@@ -726,21 +756,54 @@ func registerSettingsPage(
 		if reveal != nil {
 			w.Header().Set("Cache-Control", "no-store")
 		}
-		composePage(w, r, member, status, nil, nil, reveal, errMsg)
+		composePage(w, r, member, status, nil, nil, reveal, errMsg, "", "")
 	})))
 	mux.Handle("POST /settings/mfa/disenroll", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, errMsg, status, ok := mfaHandlers.Disenroll(w, r, settingsPath)
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, errMsg)
+		composePage(w, r, member, status, nil, nil, nil, errMsg, "", "")
 	})))
 	mux.Handle("POST /settings/mfa/reset", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, errMsg, status, ok := mfaHandlers.AdminReset(w, r, settingsPath)
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, errMsg)
+		composePage(w, r, member, status, nil, nil, nil, errMsg, "", "")
+	})))
+
+	// SMS notification section mutations (NES-139): any member manages
+	// their OWN phone number, opt-in, and preferences.
+	mux.Handle("POST /settings/notify/phone", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := notifyHandlers.UpdatePhone(w, r)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "")
+	})))
+	mux.Handle("POST /settings/notify/opt-in", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := notifyHandlers.UpdateOptIn(w, r)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "")
+	})))
+	mux.Handle("POST /settings/notify/preferences", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := notifyHandlers.UpdatePreferences(w, r)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "")
+	})))
+	// Quiet hours mutation (NES-139, owner-only — enforced inside
+	// notifyHandlers).
+	mux.Handle("POST /settings/notify/quiet-hours", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := notifyHandlers.UpdateQuietHours(w, r)
+		if !ok {
+			return
+		}
+		composePage(w, r, member, status, nil, nil, nil, "", "", errMsg)
 	})))
 
 	// NES-136: "Your devices" passkey routes — registered only when the

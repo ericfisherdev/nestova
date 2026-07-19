@@ -151,6 +151,20 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 			"channel", n.Channel.String(),
 			"error", err,
 		)
+		// NES-139: a terminal SMS failure (the retry budget already
+		// exhausted inside SMSNotificationSender/AWSEndUserMessagingSender
+		// — see those types' own docs) must not silently lose the
+		// notification. Falling back to in-app here, rather than leaving
+		// this to a future recovery sweep, is the smallest change that
+		// satisfies "nothing silently lost" (NES-139 AC): the member still
+		// sees it in the app even though the SMS itself never arrived.
+		// Every OTHER channel's failure has no such fallback — SMS is
+		// singled out because it is the one channel with real-world
+		// preconditions (a verified, currently opted-in phone number)
+		// that can go stale between enqueue and delivery.
+		if n.Channel == domain.ChannelSMS {
+			d.fallbackToInApp(n)
+		}
 		d.markFailed(n.ID, "mark failed after send error")
 		return
 	}
@@ -162,6 +176,47 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 	if err := d.outbox.MarkSent(markCtx, n.ID); err != nil {
 		d.logger.Error("dispatcher: mark sent",
 			"notification_id", n.ID.String(),
+			"error", err,
+		)
+	}
+}
+
+// fallbackToInApp re-enqueues n's content to ChannelInApp after a terminal
+// SMS send failure (NES-139) — a NEW notification (fresh ID, scheduled
+// immediately), not a mutation of n itself, since n is about to be marked
+// failed and its own row is done. It calls d.outbox.Enqueue directly (the
+// RAW outbox, bypassing whatever RoutingEnqueuer wraps it at the
+// composition root): the fallback channel is deliberately fixed to
+// in-app — re-resolving it through member preference would risk routing
+// straight back to the very sms preference that just failed.
+//
+// A failure enqueueing the fallback itself is logged only: there is
+// nothing further to fall back to, and n's own MarkFailed (deliver's
+// caller, right after this) still runs regardless, so the original
+// notification's failure is always recorded even when this best-effort
+// fallback also fails.
+func (d *Dispatcher) fallbackToInApp(n *domain.Notification) {
+	fallback := &domain.Notification{
+		ID:           domain.NewNotificationID(),
+		HouseholdID:  n.HouseholdID,
+		MemberID:     n.MemberID,
+		Channel:      domain.ChannelInApp,
+		Title:        n.Title,
+		Body:         n.Body,
+		ScheduledFor: time.Now(),
+		Status:       domain.StatusPending,
+		SourceType:   n.SourceType,
+		SourceID:     n.SourceID,
+	}
+	// Independent, bounded context, mirroring markFailed's own reasoning
+	// immediately below: this write must survive a batch work context
+	// that has already expired or been cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), markWriteTimeout)
+	defer cancel()
+	if err := d.outbox.Enqueue(ctx, fallback); err != nil {
+		d.logger.Error("dispatcher: sms fallback to in-app enqueue failed",
+			"notification_id", n.ID.String(),
+			"fallback_id", fallback.ID.String(),
 			"error", err,
 		)
 	}

@@ -6,9 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
@@ -37,6 +39,11 @@ type PostgresRepository struct {
 // Compile-time assurance the adapter satisfies the port.
 var _ domain.HouseholdRepository = (*PostgresRepository)(nil)
 
+// Compile-time assurance the adapter also satisfies the narrower
+// quiet-hours write port (NES-139) — see that interface's own doc for why
+// it is separate from HouseholdRepository.
+var _ domain.QuietHoursWriter = (*PostgresRepository)(nil)
+
 // NewPostgresRepository constructs the repository with an injected query
 // executor. The executor is a db.TX, satisfied by both *pgxpool.Pool (the
 // default composition) and pgx.Tx (so the repository can run inside a caller's
@@ -62,7 +69,9 @@ func (r *PostgresRepository) CreateHousehold(ctx context.Context, h *domain.Hous
 
 // GetHousehold returns the household, or domain.ErrHouseholdNotFound.
 func (r *PostgresRepository) GetHousehold(ctx context.Context, id domain.HouseholdID) (*domain.Household, error) {
-	const q = `SELECT id, name, created_at, updated_at FROM household WHERE id = $1`
+	const q = `
+		SELECT id, name, quiet_hours_start, quiet_hours_end, created_at, updated_at
+		FROM household WHERE id = $1`
 	h, err := scanHousehold(r.dbtx.QueryRow(ctx, q, id.String()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -71,6 +80,49 @@ func (r *PostgresRepository) GetHousehold(ctx context.Context, id domain.Househo
 		return nil, fmt.Errorf("get household: %w", err)
 	}
 	return h, nil
+}
+
+// SetQuietHours updates householdID's quiet-hours window (NES-139).
+// Passing nil for both start and end disables quiet hours. Returns an
+// error when exactly one of start/end is nil — domain.Household's own doc
+// states both nil means disabled, so a half-set pair has no defined
+// meaning; the repository is the last line of defense for this invariant
+// (the HTTP handler already validates it, but a future caller — a test, a
+// service, admin tooling — may not). Returns domain.ErrHouseholdNotFound
+// when householdID is unknown.
+func (r *PostgresRepository) SetQuietHours(ctx context.Context, householdID domain.HouseholdID, start, end *time.Duration) error {
+	if (start == nil) != (end == nil) {
+		return fmt.Errorf("set quiet hours: start and end must both be set or both be nil")
+	}
+	const q = `UPDATE household SET quiet_hours_start = $2, quiet_hours_end = $3, updated_at = now() WHERE id = $1`
+	tag, err := r.dbtx.Exec(ctx, q, householdID.String(), durationToPgTime(start), durationToPgTime(end))
+	if err != nil {
+		return fmt.Errorf("set quiet hours: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrHouseholdNotFound
+	}
+	return nil
+}
+
+// durationToPgTime converts a duration-since-midnight to the pgtype.Time
+// wire representation Postgres' time column expects, or an invalid
+// (NULL-bound) pgtype.Time when d is nil.
+func durationToPgTime(d *time.Duration) pgtype.Time {
+	if d == nil {
+		return pgtype.Time{}
+	}
+	return pgtype.Time{Microseconds: d.Microseconds(), Valid: true}
+}
+
+// pgTimeToDuration converts a scanned pgtype.Time back to a
+// duration-since-midnight, or nil when the column was NULL.
+func pgTimeToDuration(t pgtype.Time) *time.Duration {
+	if !t.Valid {
+		return nil
+	}
+	d := time.Duration(t.Microseconds) * time.Microsecond
+	return &d
 }
 
 // AddMember inserts a member, returning domain.ErrDuplicateMember when the
@@ -159,10 +211,11 @@ type row interface {
 
 func scanHousehold(r row) (*domain.Household, error) {
 	var (
-		h     domain.Household
-		idStr string
+		h                    domain.Household
+		idStr                string
+		quietStart, quietEnd pgtype.Time
 	)
-	if err := r.Scan(&idStr, &h.Name, &h.CreatedAt, &h.UpdatedAt); err != nil {
+	if err := r.Scan(&idStr, &h.Name, &quietStart, &quietEnd, &h.CreatedAt, &h.UpdatedAt); err != nil {
 		return nil, err
 	}
 	id, err := domain.ParseHouseholdID(idStr)
@@ -170,6 +223,8 @@ func scanHousehold(r row) (*domain.Household, error) {
 		return nil, fmt.Errorf("scan household: %w", err)
 	}
 	h.ID = id
+	h.QuietHoursStart = pgTimeToDuration(quietStart)
+	h.QuietHoursEnd = pgTimeToDuration(quietEnd)
 	return &h, nil
 }
 

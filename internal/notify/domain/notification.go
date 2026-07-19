@@ -32,7 +32,14 @@ type Notification struct {
 	// notification (e.g. "task", "meal").
 	SourceType string
 	// SourceID optionally holds the UUID of the triggering entity.
-	SourceID  *uuid.UUID
+	SourceID *uuid.UUID
+	// EventType identifies the semantic KIND of event that raised this
+	// notification (NES-139) — see that type's own doc for how it differs
+	// from SourceType. Empty for a notification whose event kind is not
+	// (yet) preference-routable; a routing.RoutingEnqueuer never resolves
+	// a member preference for an empty EventType, leaving Channel exactly
+	// as the caller set it (see that type's own doc).
+	EventType EventType
 	CreatedAt time.Time
 }
 
@@ -51,6 +58,16 @@ var (
 	// caller must map this to a failed notification immediately rather
 	// than exhausting its retry budget on a send that can never succeed.
 	ErrRecipientOptedOut = errors.New("notify: recipient has opted out of sms")
+	// ErrMemberNotSMSReady is returned by the SMS Sender (NES-139) when
+	// the notification's member has no verified, opted-in phone number at
+	// SEND time — distinct from ErrRecipientOptedOut, which is AWS's own
+	// report that a phone number opted out; this instead covers a member
+	// who removed their phone number or opted out THROUGH THE APP after
+	// the notification was already routed to the SMS channel (a race the
+	// enqueue-time routing check cannot fully close — see
+	// routing.RoutingEnqueuer's own doc). Terminal and non-retryable for
+	// the same reason: there is no phone number to retry against.
+	ErrMemberNotSMSReady = errors.New("notify: member has no opted-in phone number")
 )
 
 // Enqueuer is the narrow producer port: callers that only need to queue a

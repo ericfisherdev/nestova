@@ -243,6 +243,7 @@ func (s *TradeService) notifyAccepted(ctx context.Context, at time.Time, resolve
 			Status:       notifydomain.StatusPending,
 			SourceType:   "chore_trade",
 			SourceID:     &tradeUUID,
+			EventType:    notifydomain.EventTypeChoreTradeAccepted,
 		}
 		if err := s.enqueuer.Enqueue(ctx, n); err != nil {
 			s.logger.Error("trades: accept notification enqueue failed",
@@ -271,6 +272,7 @@ func (s *TradeService) notifyProposed(ctx context.Context, at time.Time, propose
 		Status:       notifydomain.StatusPending,
 		SourceType:   "chore_trade",
 		SourceID:     &tradeUUID,
+		EventType:    notifydomain.EventTypeChoreTradeProposed,
 	}
 	if err := s.enqueuer.Enqueue(ctx, n); err != nil {
 		s.logger.Error("trades: proposal notification enqueue failed",
@@ -298,6 +300,7 @@ func (s *TradeService) notifyDeclined(ctx context.Context, at time.Time, decline
 		Status:       notifydomain.StatusPending,
 		SourceType:   "chore_trade",
 		SourceID:     &tradeUUID,
+		EventType:    notifydomain.EventTypeChoreTradeDeclined,
 	}
 	if err := s.enqueuer.Enqueue(ctx, n); err != nil {
 		s.logger.Error("trades: decline notification enqueue failed",
@@ -325,6 +328,7 @@ func (s *TradeService) enqueueTradeExpiry(ctx context.Context, asOf time.Time, t
 		Status:       notifydomain.StatusPending,
 		SourceType:   "chore_trade",
 		SourceID:     &tradeUUID,
+		EventType:    notifydomain.EventTypeChoreTradeExpired,
 	}
 	if err := s.enqueuer.Enqueue(ctx, n); err != nil {
 		s.logger.Error("trades: expiry enqueue failed",

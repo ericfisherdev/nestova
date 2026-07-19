@@ -18,6 +18,9 @@ import (
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
+	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
+	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
+	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
@@ -68,8 +71,94 @@ func (testHouseholdRepo) HasAnyHousehold(_ context.Context) (bool, error) {
 	return false, nil
 }
 
+// SetQuietHours is a no-op stub (NES-139) — testHouseholdRepo carries no
+// real quiet-hours state; a test that needs to observe it back writes its
+// own dedicated fake instead.
+func (testHouseholdRepo) SetQuietHours(_ context.Context, _ household.HouseholdID, _, _ *time.Duration) error {
+	return nil
+}
+
 // Compile-time assertion.
 var _ household.HouseholdRepository = testHouseholdRepo{}
+
+// Compile-time assertion.
+var _ household.QuietHoursWriter = testHouseholdRepo{}
+
+// ---------------------------------------------------------------------------
+// NES-139: no-op notify fakes, for tests that register the shared
+// /settings page but do not themselves exercise the SMS notification or
+// quiet-hours sections — composePage (cmd/server/home.go) builds both
+// unconditionally on every render, so a nil *notifyadapter.NotifyWebHandlers
+// would panic even a kiosk- or MFA-focused test.
+// ---------------------------------------------------------------------------
+
+// fakeContactDirectory is a no-op notify.ContactDirectory: every member has
+// no phone on file and is not opted in.
+type fakeContactDirectory struct{}
+
+func (fakeContactDirectory) GetContact(_ context.Context, memberID household.MemberID) (*notifydomain.MemberContact, error) {
+	return &notifydomain.MemberContact{MemberID: memberID}, nil
+}
+
+func (fakeContactDirectory) SetPhone(_ context.Context, _ household.MemberID, _ *notifydomain.E164Phone) error {
+	return nil
+}
+
+func (fakeContactDirectory) SetOptedIn(_ context.Context, _ household.MemberID, _ bool) error {
+	return nil
+}
+
+// Compile-time assertion.
+var _ notifydomain.ContactDirectory = fakeContactDirectory{}
+
+// fakePreferenceRepository is a no-op notify.PreferenceRepository: every
+// member has no explicit preference for any event type.
+type fakePreferenceRepository struct{}
+
+func (fakePreferenceRepository) Get(_ context.Context, _ household.MemberID, _ notifydomain.EventType) (notifydomain.Channel, error) {
+	return "", notifydomain.ErrPreferenceNotFound
+}
+
+func (fakePreferenceRepository) Set(_ context.Context, _ notifydomain.MemberPreference) error {
+	return nil
+}
+
+func (fakePreferenceRepository) ListForMember(_ context.Context, _ household.MemberID) ([]notifydomain.MemberPreference, error) {
+	return nil, nil
+}
+
+// Compile-time assertion.
+var _ notifydomain.PreferenceRepository = fakePreferenceRepository{}
+
+// quietHoursCapableHouseholdRepo mirrors notifyapp's own unexported
+// quietHoursStore interface structurally — cmd/server cannot reference
+// that type by name (it is unexported), but any household repo satisfying
+// both household.HouseholdRepository's GetHousehold and the separate
+// household.QuietHoursWriter (both exported) satisfies this too, and
+// therefore satisfies notifyapp.NewSettingsService's own parameter the
+// same way, via Go's ordinary structural interface typing.
+type quietHoursCapableHouseholdRepo interface {
+	household.QuietHoursWriter
+	GetHousehold(ctx context.Context, id household.HouseholdID) (*household.Household, error)
+}
+
+// testHouseholdRepoWithQuietHours is the fuller combination a settings-page
+// test harness needs: every method household.HouseholdRepository requires
+// (auth/MFA wiring), plus household.QuietHoursWriter (NES-139's notify
+// settings section, rendered unconditionally by composePage). Any value
+// satisfying this also satisfies quietHoursCapableHouseholdRepo above.
+type testHouseholdRepoWithQuietHours interface {
+	household.HouseholdRepository
+	household.QuietHoursWriter
+}
+
+// newTestNotifyWebHandlers builds a working NotifyWebHandlers backed by the
+// no-op fakes above, for tests that register the shared /settings page
+// without exercising NES-139's own sections.
+func newTestNotifyWebHandlers(households quietHoursCapableHouseholdRepo, sm *scs.SessionManager, logger *slog.Logger) *notifyadapter.NotifyWebHandlers {
+	settings := notifyapp.NewSettingsService(fakeContactDirectory{}, fakePreferenceRepository{}, households)
+	return notifyadapter.NewNotifyWebHandlers(settings, sm, logger)
+}
 
 // testCredStore is a no-op credentialStore (EmailExists always false) for unit
 // tests that have no database.

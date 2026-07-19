@@ -200,6 +200,12 @@ func (s *RestockScheduler) notify(ctx context.Context, item *domain.TrackedItem,
 		Status:       notifydomain.StatusPending,
 		SourceType:   "restock",
 		SourceID:     &sourceID,
+		// EventType is set for consistency even though this notification
+		// is household-wide (no MemberID) and therefore never
+		// preference-routed by routing.RoutingEnqueuer today — see that
+		// type's own doc. A future ticket that addresses restock alerts
+		// to a specific member would then already carry the right key.
+		EventType: notifydomain.EventTypeRestockSoon,
 	}
 	return s.enqueuer.Enqueue(ctx, n)
 }
