@@ -34,6 +34,7 @@ templ passkeyButton(props passkeyButtonProps) {
 			type="button"
 			x-on:click="start()"
 			x-bind:disabled="busy"
+			aria-live="polite"
 			class="min-h-[48px] w-full rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark disabled:opacity-50"
 		>
 			<span x-show="!busy">{ props.IdleLabel }</span>

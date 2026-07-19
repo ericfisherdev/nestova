@@ -502,12 +502,18 @@ func runServer(logger *slog.Logger) error {
 	// the RP ID must be pinned once, at startup, for the entire lifetime of
 	// every credential ever registered against it (see docs/webauthn.md:
 	// changing it later orphans every existing passkey). A deployment with
-	// no PublicBaseURL simply does not offer passkey registration OR login
-	// at all — webauthnHandlers/webauthnService/loginPasskeyHandlers all
-	// stay nil, registerSettingsPage never wires the settings-page routes
-	// or renders its section (ShowWebAuthnSection), LoginForm never shows
-	// the passkey button (ShowPasskeyLogin), and the /login/passkey/... and
-	// /login/mfa/passkey/... routes are never registered at all.
+	// no PublicBaseURL simply does not offer passkey registration OR
+	// USERNAMELESS login at all — webauthnHandlers/webauthnService/
+	// loginPasskeyHandlers all stay nil, registerSettingsPage never wires
+	// the settings-page routes or renders its section
+	// (ShowWebAuthnSection), LoginForm never shows the passkey button
+	// (ShowPasskeyLogin), and the /login/passkey/... routes are never
+	// registered at all (loginPasskeyHandlers == nil, home.go). The
+	// /login/mfa/passkey/... step-up routes are DIFFERENT: they stay
+	// registered whenever loginMFAHandlers itself exists (always, in
+	// production) regardless of whether WebAuthn is wired — PasskeyBegin/
+	// PasskeyFinish defensively 404 on a nil webauthn service instead
+	// (see their own doc, login_mfa.go).
 	//
 	// Constructed here — BEFORE authHandlers/loginMFAHandlers below — since
 	// NES-137 makes both depend on webauthnService (possibly nil) too:

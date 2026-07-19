@@ -103,14 +103,14 @@ func passkeyButton(props passkeyButtonProps) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\"><button type=\"button\" x-on:click=\"start()\" x-bind:disabled=\"busy\" class=\"min-h-[48px] w-full rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark disabled:opacity-50\"><span x-show=\"!busy\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\"><button type=\"button\" x-on:click=\"start()\" x-bind:disabled=\"busy\" aria-live=\"polite\" class=\"min-h-[48px] w-full rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark disabled:opacity-50\"><span x-show=\"!busy\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(props.IdleLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/passkey_button.templ`, Line: 39, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/passkey_button.templ`, Line: 40, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -123,7 +123,7 @@ func passkeyButton(props passkeyButtonProps) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(props.BusyLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/passkey_button.templ`, Line: 40, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/passkey_button.templ`, Line: 41, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {

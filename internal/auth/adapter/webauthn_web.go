@@ -53,6 +53,17 @@ const webauthnRegistrationErrorMessage = "Registration could not be completed. P
 // (a different package, so not directly reusable).
 const webauthnDisplayDateLayout = "Jan 2, 2006 3:04 PM"
 
+// maxWebAuthnResponseBodyBytes bounds every WebAuthn ceremony response body
+// this package reads (registration's RegisterFinish here, and NES-137's
+// login/step-up LoginPasskeyHandlers.Finish/LoginMFAHandlers.PasskeyFinish)
+// before it is ever handed to a protocol parser. A real
+// PublicKeyCredential.toJSON() payload — attestation or assertion — is a
+// few hundred bytes to a few KB at most (base64url-encoded public key/
+// signature/authenticator data plus a short clientDataJSON); 64 KiB is
+// generous headroom for that while still bounding an attacker-supplied
+// body to a fixed, small cost instead of an unbounded one.
+const maxWebAuthnResponseBodyBytes = 64 * 1024
+
 // WebAuthnWebHandlers serves the auth context's per-member "Your devices"
 // section of the shared /settings page (NES-136): the registered-passkey
 // list, the begin/finish JSON registration ceremony, and rename/revoke.
@@ -185,6 +196,12 @@ type webauthnFinishPayload struct {
 // webAuthnDeviceLister) — including, self-referentially, a second call to
 // this same route.
 func (h *WebAuthnWebHandlers) RegisterFinish(w http.ResponseWriter, r *http.Request) {
+	// A real attestation response is at most a few KB; bounding the body
+	// BEFORE anything reads it caps an attacker-supplied body to a fixed,
+	// small cost instead of an unbounded one (see maxWebAuthnResponseBodyBytes's
+	// own doc).
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebAuthnResponseBodyBytes)
+
 	member, ok := h.requireMember(w, r)
 	if !ok {
 		return
@@ -212,6 +229,11 @@ func (h *WebAuthnWebHandlers) RegisterFinish(w http.ResponseWriter, r *http.Requ
 	// exactly the same wire payload with no risk of the two disagreeing.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}

@@ -115,6 +115,14 @@ func (h *LoginPasskeyHandlers) Begin(w http.ResponseWriter, r *http.Request) {
 // WebAuthnWebHandlers.RegisterFinish's own single-use-regardless-of-outcome
 // contract.
 func (h *LoginPasskeyHandlers) Finish(w http.ResponseWriter, r *http.Request) {
+	// A real assertion response is at most a few KB; bounding the body
+	// BEFORE anything reads it caps an attacker-supplied body to a fixed,
+	// small cost instead of an unbounded one (see
+	// maxWebAuthnResponseBodyBytes's own doc, webauthn_web.go). Applied
+	// before VerifyCSRF too — an oversized, unauthenticated pre-auth
+	// request should never even reach the CSRF/parse work below.
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebAuthnResponseBodyBytes)
+
 	if !VerifyCSRF(r, h.sm) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
@@ -132,6 +140,11 @@ func (h *LoginPasskeyHandlers) Finish(w http.ResponseWriter, r *http.Request) {
 
 	parsed, err := protocol.ParseCredentialRequestResponseBody(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, webauthnLoginErrorMessage, http.StatusBadRequest)
 		return
 	}
