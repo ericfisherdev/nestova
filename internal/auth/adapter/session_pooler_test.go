@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexedwards/scs/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -73,44 +74,69 @@ func TestSessionStorePoolerSafe(t *testing.T) {
 	// the pool is closed before the final schema reset opens its own handle.
 	pool := newExecModePool(t, dsn)
 	sm := authadapter.NewSessionManager(pool, config.SessionConfig{Lifetime: time.Hour})
-	store := sm.Store
+
+	// pgxstore.PostgresStore implements the plain scs.Store methods
+	// (Find/Commit/Delete/All) only as panic("missing context arg") stubs
+	// that exist to satisfy the interface at compile time — its real
+	// implementations are the *Ctx variants on scs.CtxStore, which
+	// scs.SessionManager dispatches to via a type assertion internally.
+	// Calling the plain methods directly on sm.Store therefore panics;
+	// every direct store call below MUST go through the CtxStore
+	// interface.
+	store, ok := sm.Store.(scs.CtxStore)
+	if !ok {
+		t.Fatalf("sm.Store (%T) does not implement scs.CtxStore", sm.Store)
+	}
+	ctx := context.Background()
 
 	const token = "pooler-safe-token"
 	expiry := time.Now().Add(time.Hour)
 
 	// Create.
-	if err := store.Commit(token, []byte("payload-1"), expiry); err != nil {
-		t.Fatalf("Commit (create): %v", err)
+	if err := store.CommitCtx(ctx, token, []byte("payload-1"), expiry); err != nil {
+		t.Fatalf("CommitCtx (create): %v", err)
 	}
 
 	// Read.
-	data, found, err := store.Find(token)
+	data, found, err := store.FindCtx(ctx, token)
 	if err != nil {
-		t.Fatalf("Find: %v", err)
+		t.Fatalf("FindCtx: %v", err)
 	}
 	if !found || string(data) != "payload-1" {
-		t.Fatalf("Find = (%q, %v), want (\"payload-1\", true)", data, found)
+		t.Fatalf("FindCtx = (%q, %v), want (\"payload-1\", true)", data, found)
 	}
 
 	// Refresh (upsert with new payload + expiry).
-	if err := store.Commit(token, []byte("payload-2"), expiry.Add(time.Hour)); err != nil {
-		t.Fatalf("Commit (refresh): %v", err)
+	if err := store.CommitCtx(ctx, token, []byte("payload-2"), expiry.Add(time.Hour)); err != nil {
+		t.Fatalf("CommitCtx (refresh): %v", err)
 	}
-	data, found, err = store.Find(token)
+	data, found, err = store.FindCtx(ctx, token)
 	if err != nil {
-		t.Fatalf("Find after refresh: %v", err)
+		t.Fatalf("FindCtx after refresh: %v", err)
 	}
 	if !found || string(data) != "payload-2" {
-		t.Fatalf("Find after refresh = (%q, %v), want (\"payload-2\", true)", data, found)
+		t.Fatalf("FindCtx after refresh = (%q, %v), want (\"payload-2\", true)", data, found)
+	}
+	// The refresh must also have persisted the LATER expiry — a store that
+	// upserted the payload but kept the original expiry would pass the
+	// payload assertions above and then drop the session an hour early.
+	// Asserted against the row itself rather than by waiting out real
+	// expiries.
+	var storedExpiry time.Time
+	if err := pool.QueryRow(ctx, "SELECT expiry FROM sessions WHERE token = $1", token).Scan(&storedExpiry); err != nil {
+		t.Fatalf("read stored expiry: %v", err)
+	}
+	if !storedExpiry.After(expiry) {
+		t.Fatalf("refresh did not advance expiry: stored %v, want after %v", storedExpiry, expiry)
 	}
 
 	// Delete.
-	if err := store.Delete(token); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if err := store.DeleteCtx(ctx, token); err != nil {
+		t.Fatalf("DeleteCtx: %v", err)
 	}
-	if _, found, err = store.Find(token); err != nil {
-		t.Fatalf("Find after delete: %v", err)
+	if _, found, err = store.FindCtx(ctx, token); err != nil {
+		t.Fatalf("FindCtx after delete: %v", err)
 	} else if found {
-		t.Fatal("Find after delete = found, want not found")
+		t.Fatal("FindCtx after delete = found, want not found")
 	}
 }
