@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
@@ -33,6 +34,10 @@ func init() {
 	// sm.Put call stores a plain string (e.g. sessionKeyMemberID's
 	// memberID.String()), which gob handles natively without registration.
 	gob.Register(time.Time{})
+	// webauthn.SessionData (NES-136, webauthn_web.go's
+	// sessionKeyWebAuthnRegChallenge) is the second non-string value stored
+	// in the session, for the same reason.
+	gob.Register(webauthn.SessionData{})
 }
 
 // sessionContextKey is the unexported type for context keys in this package.

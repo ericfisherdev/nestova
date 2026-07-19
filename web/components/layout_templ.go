@@ -65,7 +65,7 @@ func Layout(props ShellProps, nav []NavItem, content templ.Component) templ.Comp
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><script src=\"/static/js/htmx.min.js\" defer></script><!-- Claim countdown badge for claimed chores (NES-118), and the photo\n\t\t\t     album's drag-and-drop upload queue (NES-124). Extension scripts that\n\t\t\t     register Alpine.data must load and run BEFORE alpine.min.js: its\n\t\t\t     'alpine:init' listener has to be attached before Alpine dispatches the\n\t\t\t     event, and Alpine dispatches it as soon as ITS OWN deferred script\n\t\t\t     runs — not on DOMContentLoaded — so a script listed after alpine.min.js\n\t\t\t     can lose the race and never see the component registered. --><script src=\"/static/js/claim-countdown.js\" defer></script><script src=\"/static/js/upload-queue.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script><!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. --><script src=\"/static/js/gsap.min.js\" defer></script><script src=\"/static/js/dashboard-motion.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen\" x-data=\"{ open: false }\" @keydown.escape.window=\"if (open) { open = false; $refs.navToggle.focus() }\"><a href=\"#main-content\" class=\"sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white\">Skip to content</a><!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).\n\t\t\t     Opening moves focus into the drawer; closing returns it here. --><button type=\"button\" x-ref=\"navToggle\" class=\"fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden\" @click=\"open = true; $nextTick(() => $refs.navPanel.focus())\" aria-label=\"Open navigation\" aria-controls=\"sidebar\" :aria-expanded=\"open\"><span aria-hidden=\"true\">&#9776;</span></button><!-- Click-away overlay shown with the drawer on narrow screens. This is\n\t\t\t     a pointer-only convenience: it carries no accessible name and isn't\n\t\t\t     reachable by keyboard, so it's marked aria-hidden to keep assistive\n\t\t\t     tech from exposing it as an ambiguous interactive element. Keyboard\n\t\t\t     users close the drawer via the Escape handler on <body> above. --><div x-show=\"open\" x-cloak @click=\"open = false; $refs.navToggle.focus()\" class=\"fixed inset-0 z-30 bg-ink/30 md:hidden\" aria-hidden=\"true\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><script src=\"/static/js/htmx.min.js\" defer></script><!-- Claim countdown badge for claimed chores (NES-118), the photo\n\t\t\t     album's drag-and-drop upload queue (NES-124), and passkey\n\t\t\t     registration on the settings page (NES-136). Extension scripts that\n\t\t\t     register Alpine.data must load and run BEFORE alpine.min.js: its\n\t\t\t     'alpine:init' listener has to be attached before Alpine dispatches the\n\t\t\t     event, and Alpine dispatches it as soon as ITS OWN deferred script\n\t\t\t     runs — not on DOMContentLoaded — so a script listed after alpine.min.js\n\t\t\t     can lose the race and never see the component registered. --><script src=\"/static/js/claim-countdown.js\" defer></script><script src=\"/static/js/upload-queue.js\" defer></script><script src=\"/static/js/webauthn-register.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script><!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. --><script src=\"/static/js/gsap.min.js\" defer></script><script src=\"/static/js/dashboard-motion.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen\" x-data=\"{ open: false }\" @keydown.escape.window=\"if (open) { open = false; $refs.navToggle.focus() }\"><a href=\"#main-content\" class=\"sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-control focus:bg-sage focus:px-3 focus:py-2 focus:text-white\">Skip to content</a><!-- Narrow-screen drawer toggle (hidden once the sidebar is fixed).\n\t\t\t     Opening moves focus into the drawer; closing returns it here. --><button type=\"button\" x-ref=\"navToggle\" class=\"fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden\" @click=\"open = true; $nextTick(() => $refs.navPanel.focus())\" aria-label=\"Open navigation\" aria-controls=\"sidebar\" :aria-expanded=\"open\"><span aria-hidden=\"true\">&#9776;</span></button><!-- Click-away overlay shown with the drawer on narrow screens. This is\n\t\t\t     a pointer-only convenience: it carries no accessible name and isn't\n\t\t\t     reachable by keyboard, so it's marked aria-hidden to keep assistive\n\t\t\t     tech from exposing it as an ambiguous interactive element. Keyboard\n\t\t\t     users close the drawer via the Escape handler on <body> above. --><div x-show=\"open\" x-cloak @click=\"open = false; $refs.navToggle.focus()\" class=\"fixed inset-0 z-30 bg-ink/30 md:hidden\" aria-hidden=\"true\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -159,7 +159,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 137, Col: 36}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 139, Col: 36}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -182,7 +182,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(props.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 143, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 145, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -231,7 +231,7 @@ func miniMonth() templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(day))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 161, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 163, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {

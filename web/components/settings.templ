@@ -55,16 +55,23 @@ type KioskSettingsView struct {
 }
 
 // SettingsView is the view model for the GET /settings page (NES-128 +
-// NES-134). The MFA section renders for every member regardless of role;
-// the kiosk section renders only when ShowKioskSection is true (parent-only
-// — the page-level parent gate NES-128 originally applied has moved to this
-// section-level flag so every member can reach the page for their own MFA).
+// NES-134 + NES-136). The MFA and WebAuthn ("Your devices") sections render
+// for every member regardless of role; the kiosk section renders only when
+// ShowKioskSection is true (parent-only — the page-level parent gate
+// NES-128 originally applied has moved to this section-level flag so every
+// member can reach the page for their own MFA/passkeys).
 type SettingsView struct {
 	// ShowKioskSection gates the kiosk device section, true only for a
 	// parent (owner/adult) member.
 	ShowKioskSection bool
 	Kiosk            KioskSettingsView
 	MFA              MFASettingsView
+	// ShowWebAuthnSection gates the "Your devices" passkey section, false
+	// when the deployment has no Server.PublicBaseURL configured (WebAuthn
+	// requires a fixed, stable RP ID — see docs/webauthn.md) — the
+	// composition root does not wire the feature at all in that case.
+	ShowWebAuthnSection bool
+	WebAuthn            WebAuthnSettingsView
 	// CSRFToken is shared by every form on the page (kiosk and MFA alike).
 	CSRFToken string
 }
@@ -80,6 +87,9 @@ templ SettingsPage(view SettingsView) {
 	<div class="mx-auto flex max-w-3xl flex-col gap-6 p-6">
 		<h1 class="text-2xl font-semibold text-ink">Settings</h1>
 		@mfaSection(view.MFA)
+		if view.ShowWebAuthnSection {
+			@webauthnSection(view.WebAuthn)
+		}
 		if view.ShowKioskSection {
 			@kioskSection(view.Kiosk, view.CSRFToken)
 		}

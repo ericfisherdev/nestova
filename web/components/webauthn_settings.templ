@@ -1,0 +1,151 @@
+package components
+
+// WebAuthnDeviceView is one row in the "Your devices" list (NES-136).
+type WebAuthnDeviceView struct {
+	// ID is the string form of the WebAuthnCredentialID UUID.
+	ID string
+	// Nickname is the member-chosen label (e.g. "iPhone", "Work laptop").
+	Nickname string
+	// CreatedAtLabel is the pre-formatted registration date.
+	CreatedAtLabel string
+	// LastUsedAtLabel is the pre-formatted last-login date; empty means the
+	// credential has never been used to log in (NES-137).
+	LastUsedAtLabel string
+}
+
+// WebAuthnSettingsView is the view model for the /settings page's "Your
+// devices" section (NES-136), rendered for every member regardless of
+// role. Unlike MFASettingsView, there is no reveal/error field: the
+// registration ceremony is entirely JS-driven (web/static/js/webauthn-register.js),
+// so a failed attempt renders its message inline via Alpine, not through a
+// server round trip that re-renders this section.
+type WebAuthnSettingsView struct {
+	// Devices is the member's registered passkeys, oldest first.
+	Devices []WebAuthnDeviceView
+	// CSRFToken is embedded in every rename/revoke form AND read by the
+	// Alpine registration component (data-csrf-token) to append to its own
+	// begin/finish fetch() calls (see RegisterFinish's own doc for why the
+	// registration ceremony's CSRF token travels as a query parameter,
+	// not a form field).
+	CSRFToken string
+	// BeginURL and FinishURL are the JSON registration ceremony endpoints,
+	// embedded as data attributes so the Alpine component never hardcodes
+	// them.
+	BeginURL  string
+	FinishURL string
+}
+
+// webauthnSection renders the "Your devices" card: the registered-passkey
+// list (each with an inline rename form and a revoke button) plus an "Add a
+// passkey" button that drives the begin/create step of the ceremony via
+// Alpine (webauthnRegister, web/static/js/webauthn-register.js) — no plain
+// HTML form can invoke navigator.credentials.create(), so this is
+// necessarily JS-mediated. Once the authenticator prompt succeeds, an
+// inline nickname field (NOT a native window.prompt() dialog — unstyled,
+// unvalidatable, and inconsistent with every other form on this page) is
+// revealed to name the device before it is actually saved
+// (webauthnRegister.confirmNickname).
+templ webauthnSection(view WebAuthnSettingsView) {
+	@Card("Your devices") {
+		<p class="mb-4 text-sm text-ink-secondary">
+			Register your phone or laptop's built-in authenticator (Face ID, fingerprint
+			unlock, Windows Hello) as a passkey. This does not protect sign-in yet — we'll
+			let you know here once passkey sign-in is turned on.
+		</p>
+		<div
+			id="webauthn-devices"
+			x-data="webauthnRegister"
+			data-begin-url={ view.BeginURL }
+			data-finish-url={ view.FinishURL }
+			data-csrf-token={ view.CSRFToken }
+		>
+			@webauthnDeviceList(view.Devices, view.CSRFToken)
+			<div x-show="!awaitingNickname" class="flex flex-col gap-2">
+				<button
+					type="button"
+					x-on:click="startRegistration()"
+					x-bind:disabled="busy"
+					class="min-h-[48px] self-start rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark disabled:opacity-50"
+				>
+					<span x-show="!busy">Add a passkey</span>
+					<span x-show="busy" x-cloak>Registering…</span>
+				</button>
+			</div>
+			<form
+				x-show="awaitingNickname"
+				x-cloak
+				x-on:submit.prevent="confirmNickname()"
+				class="flex items-end gap-3"
+			>
+				<div class="flex-1">
+					<label class="mb-1 block text-sm font-medium text-ink-secondary" for="webauthn-new-nickname">
+						Name this passkey
+					</label>
+					<input
+						id="webauthn-new-nickname"
+						x-ref="webauthnNickname"
+						type="text"
+						x-model="nickname"
+						placeholder="e.g. iPhone, Work laptop"
+						class="w-full rounded-control border border-sidebar-border px-3 py-2 text-sm text-ink"
+					/>
+				</div>
+				<button
+					type="submit"
+					x-bind:disabled="busy"
+					class="min-h-[48px] rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark disabled:opacity-50"
+				>
+					<span x-show="!busy">Save</span>
+					<span x-show="busy" x-cloak>Saving…</span>
+				</button>
+			</form>
+			<p x-show="error" x-text="error" x-cloak role="alert" class="mt-2 text-sm text-red-600"></p>
+		</div>
+	}
+}
+
+templ webauthnDeviceList(devices []WebAuthnDeviceView, csrfToken string) {
+	if len(devices) == 0 {
+		<p class="mb-4 text-sm text-ink-muted">No passkeys registered yet.</p>
+	} else {
+		<ul class="mb-4 flex flex-col gap-2">
+			for _, d := range devices {
+				@webauthnDeviceRow(d, csrfToken)
+			}
+		</ul>
+	}
+}
+
+templ webauthnDeviceRow(d WebAuthnDeviceView, csrfToken string) {
+	<li class="flex items-center justify-between gap-3 rounded-control border border-sidebar-border bg-surface p-3">
+		<div class="flex-1">
+			<form method="post" action={ templ.SafeURL("/settings/webauthn/" + d.ID + "/rename") } class="flex items-center gap-2">
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				<input
+					type="text"
+					name="nickname"
+					value={ d.Nickname }
+					class="rounded-control border border-sidebar-border bg-surface-warm px-2 py-1 text-sm font-medium text-ink"
+				/>
+				<button type="submit" class="text-xs font-medium text-sage hover:text-sage-dark">Save</button>
+			</form>
+			<p class="mt-1 text-xs text-ink-muted">
+				Added { d.CreatedAtLabel }
+				if d.LastUsedAtLabel != "" {
+					· Last used { d.LastUsedAtLabel }
+				} else {
+					· Never used
+				}
+			</p>
+		</div>
+		<form method="post" action={ templ.SafeURL("/settings/webauthn/" + d.ID + "/revoke") }>
+			<input type="hidden" name="csrf_token" value={ csrfToken }/>
+			<button
+				type="submit"
+				class="min-h-[40px] rounded-control border border-red-200 bg-red-50 px-3 py-1 text-sm font-medium text-red-700 hover:bg-red-100"
+			>
+				Remove
+			</button>
+		</form>
+	</li>
+}

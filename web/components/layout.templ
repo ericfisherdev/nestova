@@ -48,8 +48,9 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 				content={ `{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}` }
 			/>
 			<script src="/static/js/htmx.min.js" defer></script>
-			<!-- Claim countdown badge for claimed chores (NES-118), and the photo
-			     album's drag-and-drop upload queue (NES-124). Extension scripts that
+			<!-- Claim countdown badge for claimed chores (NES-118), the photo
+			     album's drag-and-drop upload queue (NES-124), and passkey
+			     registration on the settings page (NES-136). Extension scripts that
 			     register Alpine.data must load and run BEFORE alpine.min.js: its
 			     'alpine:init' listener has to be attached before Alpine dispatches the
 			     event, and Alpine dispatches it as soon as ITS OWN deferred script
@@ -57,6 +58,7 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			     can lose the race and never see the component registered. -->
 			<script src="/static/js/claim-countdown.js" defer></script>
 			<script src="/static/js/upload-queue.js" defer></script>
+			<script src="/static/js/webauthn-register.js" defer></script>
 			<script src="/static/js/alpine.min.js" defer></script>
 			<!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. -->
 			<script src="/static/js/gsap.min.js" defer></script>

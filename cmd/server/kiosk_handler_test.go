@@ -435,7 +435,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService)
+	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, nil)
 	registerKioskPages(mux, kioskHandlers)
 
 	handler := sm.LoadAndSave(

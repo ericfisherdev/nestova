@@ -287,19 +287,31 @@ func (h *Handlers) renderLoginPage(w http.ResponseWriter, r *http.Request, statu
 	}
 }
 
-// VerifyCSRF performs a constant-time comparison of the form's csrf_token field
-// against the value stored in the session. It returns false when either value is
-// absent. The caller must have already parsed the form (e.g. via r.ParseForm())
-// before calling this function. Exported so handlers outside this package (e.g.
-// OnboardingHandlers, member handlers) can reuse the same CSRF check without
-// duplicating the logic.
+// VerifyCSRF performs a constant-time comparison of the presented CSRF
+// token against the value stored in the session. It returns false when
+// either value is absent.
+//
+// The presented token is read from the X-CSRF-Token request header FIRST
+// (NES-136: JSON endpoints like WebAuthnWebHandlers' registration ceremony
+// have no form field to carry it in, and putting it in the URL query string
+// instead — as an earlier version of this code did — leaks a
+// session-lifetime secret into access logs, proxy logs, and browser
+// history), falling back to the csrf_token form field for every existing
+// plain-HTML-form caller. The caller must have already parsed the form
+// (e.g. via r.ParseForm()) before calling this function if it relies on the
+// form-field fallback. Exported so handlers outside this package (e.g.
+// OnboardingHandlers, member handlers) can reuse the same CSRF check
+// without duplicating the logic.
 func VerifyCSRF(r *http.Request, sm *scs.SessionManager) bool {
 	sessionToken := sm.GetString(r.Context(), sessionKeyCSRF)
-	formToken := r.FormValue("csrf_token")
-	if sessionToken == "" || formToken == "" {
+	presentedToken := r.Header.Get("X-CSRF-Token")
+	if presentedToken == "" {
+		presentedToken = r.FormValue("csrf_token")
+	}
+	if sessionToken == "" || presentedToken == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(sessionToken), []byte(formToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(sessionToken), []byte(presentedToken)) == 1
 }
 
 // checkCSRF is the unexported per-receiver helper that delegates to VerifyCSRF
