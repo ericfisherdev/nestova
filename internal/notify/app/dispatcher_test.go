@@ -578,6 +578,30 @@ func TestRunOnce_UnregisteredSMSChannel_RecordsFallbackMetric(t *testing.T) {
 	}
 }
 
+// TestRunOnce_UnregisteredEmailChannel_RecordsFallbackMetric mirrors
+// TestRunOnce_UnregisteredSMSChannel_RecordsFallbackMetric for the email
+// channel: an unregistered email channel must record the SAME IncFallback
+// metric a real send-failure fallback would, via the SAME
+// fallbackForChannel helper.
+func TestRunOnce_UnregisteredEmailChannel_RecordsFallbackMetric(t *testing.T) {
+	outbox := &fakeOutbox{}
+	n := newEmailNotification()
+	outbox.due = []*domain.Notification{n}
+
+	spy := &spyEmailRecorder{}
+	d, err := app.NewDispatcher(outbox, []domain.Sender{alwaysSucceedSender()}, silentLogger(), metrics.NopTickRecorder{}, metrics.NopSMSRecorder{}, spy, 10, time.Minute)
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+
+	if _, err := d.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce error = %v", err)
+	}
+	if spy.fallback != 1 {
+		t.Errorf("IncFallback calls = %d, want 1", spy.fallback)
+	}
+}
+
 func TestRunOnce_OneFailureDoesNotAbortBatch(t *testing.T) {
 	// Two notifications: first send fails, second succeeds. Both must be
 	// processed: count must be 2, one in failedIDs, one in sentIDs.
