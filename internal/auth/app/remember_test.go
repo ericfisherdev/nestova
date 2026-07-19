@@ -54,18 +54,66 @@ func TestRememberDeviceSigner_Verify_TamperedRejected(t *testing.T) {
 	now := time.Now()
 	token := signer.Sign(household.NewMemberID(), now)
 
-	// Flip one character in the payload segment (before the "."), leaving
-	// the signature segment untouched — the signature must no longer match.
+	// Flip the FIRST character of the payload segment (before the "."),
+	// leaving the signature segment untouched — the signature must no
+	// longer match.
+	//
+	// The first character is used deliberately, not the last: base64
+	// encodes 6 bits per character, and when the encoded length is not a
+	// multiple of 4 characters, the FINAL character's low bits are padding
+	// that a non-strict decoder (base64.RawURLEncoding.DecodeString, what
+	// rememberDecode uses) ignores entirely. This payload (a 36-character
+	// UUID + "|" + a Unix timestamp) can land on exactly such a boundary,
+	// so flipping the last character sometimes decodes to IDENTICAL
+	// payload bytes — a value-preserving mutation the MAC then correctly
+	// still verifies, making the test flaky rather than the signer wrong
+	// (see internal/deeplink/app/signer.go's decode() for the same
+	// base64-trailing-bit malleability, documented in more detail there).
+	// The first character's 6 bits are always part of the first FULL byte,
+	// so any flip there is guaranteed to change the decoded payload.
 	dot := strings.IndexByte(token, '.')
 	if dot <= 0 {
 		t.Fatalf("token %q has no payload/signature separator", token)
 	}
 	mutated := []byte(token)
-	mutated[dot-1] = flipBase64URLChar(mutated[dot-1])
+	mutated[0] = flipBase64URLChar(mutated[0])
 	tampered := string(mutated)
 
 	if _, err := signer.Verify(tampered, now); !errors.Is(err, app.ErrInvalidRememberToken) {
 		t.Errorf("Verify(tampered token): err = %v, want ErrInvalidRememberToken", err)
+	}
+}
+
+// TestRememberDeviceSigner_Verify_TamperedSignatureRejected covers the
+// other tamperable segment: flipping a character in the SIGNATURE (after
+// the ".") rather than the payload. It flips the segment's FIRST character
+// for the same reason TestRememberDeviceSigner_Verify_TamperedRejected
+// does for the payload's first character: those bits are always part of
+// the first full byte, so the flip is guaranteed to change the decoded
+// value regardless of the segment's total length — the signature's OWN
+// last character has the identical base64 trailing-bit malleability the
+// payload's last character does (32 bytes does not encode to a multiple of
+// 4 base64url characters either), so that position would be just as
+// unsafe to flip here.
+func TestRememberDeviceSigner_Verify_TamperedSignatureRejected(t *testing.T) {
+	t.Parallel()
+	signer, err := app.NewRememberDeviceSigner([]byte("a-test-remember-device-signing-key"))
+	if err != nil {
+		t.Fatalf("NewRememberDeviceSigner: %v", err)
+	}
+	now := time.Now()
+	token := signer.Sign(household.NewMemberID(), now)
+
+	dot := strings.IndexByte(token, '.')
+	if dot < 0 || dot+1 >= len(token) {
+		t.Fatalf("token %q has no non-empty signature segment", token)
+	}
+	mutated := []byte(token)
+	mutated[dot+1] = flipBase64URLChar(mutated[dot+1])
+	tampered := string(mutated)
+
+	if _, err := signer.Verify(tampered, now); !errors.Is(err, app.ErrInvalidRememberToken) {
+		t.Errorf("Verify(tampered signature): err = %v, want ErrInvalidRememberToken", err)
 	}
 }
 
