@@ -431,11 +431,11 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 	// role-gate tests) can mint a session cookie + CSRF token exactly as it
 	// does against the real app; login itself is never exercised (the tests
 	// stamp member_id into the session directly, bypassing real credentials).
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, nil)
+	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil)
 	registerKioskPages(mux, kioskHandlers)
 
 	handler := sm.LoadAndSave(

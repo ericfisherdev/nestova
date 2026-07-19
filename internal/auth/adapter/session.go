@@ -167,6 +167,22 @@ type mfaStatusChecker interface {
 	Status(ctx context.Context, memberID household.MemberID) (*authdomain.MFAEnrollment, error)
 }
 
+// WebAuthnDeviceLister is the narrow read port (ISP) RequireStepUp depends
+// on to ALSO treat "at least one registered passkey" as something to step
+// up FROM (NES-137) — a member with a passkey but no TOTP enrollment
+// otherwise has enrollment.Confirmed() == false and would pass through
+// RequireStepUp's gate unconditionally, exactly like a password-only
+// member with no second factor at all, which is wrong: that member DOES
+// have a second factor, it just is not TOTP. Satisfied by
+// *authapp.WebAuthnService (a superset); nil-safe (see RequireStepUp's own
+// doc) for deployments that never wired WebAuthn at all
+// (Server.PublicBaseURL unset, cmd/server/main.go). Exported so the
+// composition root (cmd/server/home.go) can declare a nil-valued variable
+// of this exact type without duplicating its method shape.
+type WebAuthnDeviceLister interface {
+	ListDevices(ctx context.Context, memberID household.MemberID) ([]authdomain.WebAuthnCredential, error)
+}
+
 // RequireStepUp is a middleware enforcing that the current session's login
 // MFA verification is fresh (within stepUpFreshnessWindow) before allowing
 // a security-sensitive action to proceed — e.g. provisioning a kiosk device
@@ -175,19 +191,26 @@ type mfaStatusChecker interface {
 // the context) and mirrors RequireMember's own HX-Request-vs-redirect
 // branching for the "needs step-up" outcome.
 //
-// A member with NO confirmed MFA enrollment always passes through
-// unconditionally — there is nothing to step up FROM (the same reasoning
-// finishLogin's own doc applies to a password-only member); without this
-// check, EVERY member's session would eventually go "stale" past
-// stepUpFreshnessWindow and get stuck unable to satisfy a step-up prompt
-// they have no second factor to complete.
+// A member with NEITHER a confirmed MFA enrollment NOR a registered
+// passkey always passes through unconditionally — there is nothing to step
+// up FROM (the same reasoning finishLogin's own doc applies to a
+// password-only member); without this check, EVERY member's session would
+// eventually go "stale" past stepUpFreshnessWindow and get stuck unable to
+// satisfy a step-up prompt they have no second factor to complete.
 //
 // landingPath is where the member lands after completing (or already
 // satisfying) the step-up: RequireStepUp never attempts to replay the
 // original request, which may have been a POST mutation a GET redirect
 // cannot resubmit — the caller supplies a safe page its own route group can
 // be re-entered from (e.g. "/settings").
-func RequireStepUp(sm *scs.SessionManager, mfa mfaStatusChecker, landingPath string, logger *slog.Logger) middleware.Middleware {
+//
+// passkeys may be nil (a typed nil interface value must never be passed —
+// see cmd/server/home.go's construction of this middleware for how a
+// caller keeps the interface itself nil when WebAuthn is not wired at
+// all): a nil passkeys disables the "has a passkey" check entirely, and
+// RequireStepUp's gate is driven by TOTP enrollment status alone, exactly
+// as it behaved before NES-137.
+func RequireStepUp(sm *scs.SessionManager, mfa mfaStatusChecker, passkeys WebAuthnDeviceLister, landingPath string, logger *slog.Logger) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			member, ok := CurrentMember(r.Context())
@@ -205,7 +228,17 @@ func RequireStepUp(sm *scs.SessionManager, mfa mfaStatusChecker, landingPath str
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
-			if !enrollment.Confirmed() {
+			hasSecondFactor := enrollment.Confirmed()
+			if !hasSecondFactor && passkeys != nil {
+				creds, err := passkeys.ListDevices(r.Context(), member.ID)
+				if err != nil {
+					logger.ErrorContext(r.Context(), "step-up: list passkeys", "error", err)
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				hasSecondFactor = len(creds) > 0
+			}
+			if !hasSecondFactor {
 				next.ServeHTTP(w, r)
 				return
 			}

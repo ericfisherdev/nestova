@@ -66,7 +66,7 @@ func buildSubscriptionsTestHandler(t *testing.T, member *household.Member, repo 
 	householdRepo := authedHouseholdRepo{member: member}
 
 	authn := authapp.New(testCredRepo{})
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 
 	subService, err := subscriptionsapp.NewSubscriptionService(repo)
 	if err != nil {

@@ -341,7 +341,7 @@ func buildGroceriesTestHandler(
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 	authn := authapp.New(testCredRepo{})
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(
 		householdRepo, testCredStore{}, testProvisioner{}, sm, logger,
 	)
@@ -359,7 +359,7 @@ func buildGroceriesTestHandler(
 	groceryHandlers := buildGroceryHandlers(fakes, householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

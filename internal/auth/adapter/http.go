@@ -53,6 +53,15 @@ type Handlers struct {
 	authn    *authapp.Authenticator
 	mfa      *authapp.MFAService
 	remember *authapp.RememberDeviceSigner
+	// webauthn is used two ways (NES-137), both optional: LoginPage reads
+	// webauthn != nil to decide whether to show "Sign in with passkey" at
+	// all, and Login calls webauthn.ListDevices to decide whether THIS
+	// member has a passkey to step up from — see needsLoginStepUp's own
+	// doc for why TOTP-confirmed status alone is no longer sufficient for
+	// that decision. Login itself never completes a passkey ceremony
+	// (that's LoginPasskeyHandlers, login_passkey.go) — this is a read-only
+	// dependency.
+	webauthn *authapp.WebAuthnService
 	logger   *slog.Logger
 }
 
@@ -60,17 +69,21 @@ type Handlers struct {
 // and panic when nil, matching this codebase's usual "every dependency is
 // required, fail fast at construction" DI convention.
 //
-// mfa and remember (NES-135) are a DELIBERATE exception to that convention:
-// they MAY be nil. A nil mfa disables login MFA gating entirely, so Login
-// behaves exactly as it did before NES-135. This exists purely to bound the
-// blast radius of adding these two params: Handlers is constructed in ~20
-// otherwise-unrelated cmd/server test files that have no need to wire the
-// MFA context, and making mfa/remember required would force every one of
-// them to build a full MFAService (repo/cipher/totp/cred/household fakes)
+// mfa, remember (NES-135), and webauthn (NES-137) are a DELIBERATE
+// exception to that convention: they MAY be nil. A nil mfa disables login
+// MFA gating entirely, so Login behaves exactly as it did before NES-135; a
+// nil webauthn disables both the login page's passkey button and Login's
+// passkey-aware step-up gate, so it behaves exactly as it did before
+// NES-137. This exists purely to bound the blast radius of adding these
+// params: Handlers is constructed in ~20 otherwise-unrelated cmd/server
+// test files that have no need to wire the MFA/WebAuthn context, and making
+// them required would force every one of them to build a full MFAService/
+// WebAuthnService (repo/cipher/totp/cred/household/webauthn.WebAuthn fakes)
 // just to compile. The real server composition root (cmd/server/main.go)
-// always supplies both together — nil is a test-harness accommodation, not
-// a supported production configuration.
-func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceSigner, logger *slog.Logger) *Handlers {
+// always supplies mfa+remember together, and webauthn whenever
+// Server.PublicBaseURL is configured — nil is a test-harness
+// accommodation, not a supported production configuration.
+func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceSigner, webauthnService *authapp.WebAuthnService, logger *slog.Logger) *Handlers {
 	if sm == nil {
 		panic("adapter: NewHandlers requires a non-nil session manager")
 	}
@@ -80,7 +93,7 @@ func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *auth
 	if logger == nil {
 		panic("adapter: NewHandlers requires a non-nil logger")
 	}
-	return &Handlers{sm: sm, authn: authn, mfa: mfa, remember: remember, logger: logger}
+	return &Handlers{sm: sm, authn: authn, mfa: mfa, remember: remember, webauthn: webauthnService, logger: logger}
 }
 
 // GetCSRFToken returns the per-session CSRF token stored in the session,
@@ -112,25 +125,27 @@ func (h *Handlers) LoginPage(w http.ResponseWriter, r *http.Request) {
 	token := GetCSRFToken(r.Context(), h.sm)
 	next := r.URL.Query().Get("next")
 	h.renderLoginPage(w, r, http.StatusOK, components.LoginForm{
-		CSRFToken: token,
-		Next:      next,
+		CSRFToken:        token,
+		Next:             next,
+		ShowPasskeyLogin: h.webauthn != nil,
 	})
 }
 
 // Login handles POST /login — it verifies the CSRF token, reads credentials,
 // authenticates via the Authenticator, and on success either promotes the
-// session directly or (NES-135) hands off to the login MFA step. On a
-// password failure it re-renders the login page with a generic error
-// message (no enumeration).
+// session directly or hands off to the login MFA step (NES-135's TOTP/
+// recovery-code form and, NES-137, a "use your passkey" option on that same
+// page). On a password failure it re-renders the login page with a generic
+// error message (no enumeration).
 //
-// NES-135 MFA gate: a member with a CONFIRMED enrollment must complete a
-// second factor before the session is promoted, UNLESS a valid
-// remembered-device cookie naming THIS member is presented — in which case
-// the prompt is skipped, but the session is NOT marked as freshly
-// MFA-verified (see finishLogin's doc), so RequireStepUp still demands the
-// prompt again for a security-sensitive action. A member with no confirmed
-// enrollment (or when h.mfa is nil — see NewHandlers's doc) logs in
-// unchanged.
+// The hand-off gate is needsLoginStepUp: a member with EITHER a CONFIRMED
+// TOTP enrollment OR at least one registered passkey must complete a second
+// factor before the session is promoted, UNLESS a valid remembered-device
+// cookie naming THIS member is presented — in which case the prompt is
+// skipped, but the session is NOT marked as freshly MFA-verified (see
+// finishLogin's doc), so RequireStepUp still demands the prompt again for a
+// security-sensitive action. A member with NEITHER (or when h.mfa is nil —
+// see NewHandlers's doc) logs in unchanged.
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -151,10 +166,11 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, authdomain.ErrInvalidCredentials) {
 			token := GetCSRFToken(r.Context(), h.sm)
 			h.renderLoginPage(w, r, http.StatusUnauthorized, components.LoginForm{
-				CSRFToken: token,
-				Next:      next,
-				Email:     email,
-				Error:     "Invalid email or password.",
+				CSRFToken:        token,
+				Next:             next,
+				Email:            email,
+				Error:            "Invalid email or password.",
+				ShowPasskeyLogin: h.webauthn != nil,
 			})
 			return
 		}
@@ -164,13 +180,13 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.mfa != nil {
-		confirmed, err := h.hasConfirmedMFA(r.Context(), memberID)
+		needsStepUp, err := h.needsLoginStepUp(r.Context(), memberID)
 		if err != nil {
 			h.logger.ErrorContext(r.Context(), "mfa status check", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		if confirmed {
+		if needsStepUp {
 			if h.hasRememberedDevice(r, memberID) {
 				if err := finishLogin(r.Context(), h.sm, memberID, false); err != nil {
 					h.logger.ErrorContext(r.Context(), "renew session token", "error", err)
@@ -201,6 +217,31 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+// needsLoginStepUp reports whether memberID must complete a second factor
+// before Login promotes their session: a CONFIRMED TOTP enrollment OR (NES-137)
+// at least one registered passkey, checked in that order (TOTP first, since
+// it needs no extra round trip when already confirmed — mirrors
+// RequireStepUp's own check order, session.go). h.webauthn == nil (WebAuthn
+// not wired at all) skips the passkey half entirely, matching this
+// codebase's usual optional-dependency convention.
+func (h *Handlers) needsLoginStepUp(ctx context.Context, memberID household.MemberID) (bool, error) {
+	confirmed, err := h.hasConfirmedMFA(ctx, memberID)
+	if err != nil {
+		return false, err
+	}
+	if confirmed {
+		return true, nil
+	}
+	if h.webauthn == nil {
+		return false, nil
+	}
+	creds, err := h.webauthn.ListDevices(ctx, memberID)
+	if err != nil {
+		return false, err
+	}
+	return len(creds) > 0, nil
 }
 
 // hasConfirmedMFA reports whether memberID has a CONFIRMED MFA enrollment.

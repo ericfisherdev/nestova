@@ -235,7 +235,7 @@ func buildTestHandler() http.Handler {
 	sm := newTestSessionManager()
 	repo := testHouseholdRepo{}
 	authn := authapp.New(testCredRepo{})
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(repo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	// Stub task dependencies so the composition root builds without a database.
@@ -250,7 +250,7 @@ func buildTestHandler() http.Handler {
 	groceryHandlers := newTestGroceryHandlers(repo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, onboardingHandlers, repo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, taskInstanceRepo, repo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, repo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, taskInstanceRepo, repo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	// Apply the session middleware so CSRF tokens and member lookups work.
 	return sm.LoadAndSave(

@@ -108,6 +108,19 @@ type WebAuthnCredential struct {
 //     matches id scoped to BOTH memberID and householdID — a
 //     defense-in-depth tenant check identical in shape to
 //     MFARepository.DeleteEnrollment's.
+//   - FindByUserHandle returns household.ErrMemberNotFound when no
+//     credential row carries handle at all — an unknown, forged, or stale
+//     handle, or a handle for a member whose last credential was since
+//     revoked (member_credential's composite tenant FK cascades on member
+//     deletion, so a resolvable handle always names a member that still
+//     exists).
+//   - UpdateAfterAssertion returns ErrWebAuthnCredentialNotFound only when
+//     credentialID matches no row at all — defense-in-depth only; a caller
+//     only ever supplies a credentialID that a preceding FindByUserHandle
+//     or ListByMember call in the SAME request just returned. When the row
+//     exists but a monotonic guard skipped the write (a concurrent, more
+//     recently issued assertion already recorded fresher state — see the
+//     method's own doc), this returns nil, not an error.
 type WebAuthnCredentialRepository interface {
 	// ListByMember returns every credential registered by memberID, oldest
 	// first.
@@ -125,4 +138,35 @@ type WebAuthnCredentialRepository interface {
 	// Delete removes the credential identified by id, scoped to memberID
 	// and householdID — revoking it immediately (NES-136 AC).
 	Delete(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, id WebAuthnCredentialID) error
+
+	// FindByUserHandle resolves a stable WebAuthn user handle (the value
+	// WebAuthnUserHandleDeriver.Derive computes for a member, stored
+	// redundantly on every one of that member's credential rows — see
+	// UserHandle's own doc) to the member that owns it and every one of
+	// that member's registered credentials — the lookup NES-137's
+	// usernameless login performs after the browser selects a discoverable
+	// credential and the assertion response reports its userHandle.
+	FindByUserHandle(ctx context.Context, handle []byte) (household.MemberID, []WebAuthnCredential, error)
+
+	// UpdateAfterAssertion persists the authenticator's new signature
+	// counter and last-used timestamp on the credential identified by
+	// credentialID (the raw WebAuthn credential id CredentialID — globally
+	// unique by construction, see the migration's own doc — not this row's
+	// own WebAuthnCredentialID). Called after EVERY successful login or
+	// step-up assertion (NES-137), regardless of whether the new count
+	// triggered a clone-suspicion flag: the caller (app.WebAuthnService)
+	// always advances the stored count to the authenticator's latest
+	// reported value so the NEXT assertion's comparison is against
+	// up-to-date state, not a stale one that would otherwise re-flag a
+	// legitimate, already-seen count forever.
+	//
+	// The write is monotonically guarded on usedAt: when two assertions on
+	// the SAME credential complete concurrently, a later-completing but
+	// OLDER (smaller usedAt) one must never overwrite a newer sign_count/
+	// last_used_at pair a faster concurrent assertion already recorded —
+	// doing so would silently regress state clone-detection depends on.
+	// Losing that race is NOT an error (see the interface doc's own error
+	// contract): the assertion was already verified before this call, so
+	// the caller's login/step-up still succeeds either way.
+	UpdateAfterAssertion(ctx context.Context, credentialID []byte, signCount uint32, usedAt time.Time) error
 }
