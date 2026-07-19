@@ -10,12 +10,16 @@ const (
 	smsResultSent     = "sent"
 	smsResultFailed   = "failed"
 	smsResultOptedOut = "opted_out"
-	// smsResultFallback records a TERMINAL SMS failure that
-	// Dispatcher.fallbackToInApp (NES-139) re-enqueued to the in-app
-	// channel — tracked as its own result value, not folded into
-	// smsResultFailed, so a terminal failure that still reached the
-	// member (via the in-app fallback) is distinguishable in metrics from
-	// one that did not (see IncFallback's own doc).
+	// smsResultFallback records a TERMINAL SMS failure for which
+	// Dispatcher.fallbackToInApp (NES-139) ATTEMPTED to re-enqueue the
+	// content to the in-app channel — tracked as its own result value,
+	// not folded into smsResultFailed, so an operator can see how often
+	// SMS delivery is falling back without it being buried in the
+	// outbox's overall failed-notification count. This records the
+	// ATTEMPT, not confirmed delivery: IncFallback is called before the
+	// fallback's own outbox.Enqueue call runs, and that enqueue can
+	// itself fail (logged separately, not reflected in this counter) —
+	// see IncFallback's own doc.
 	smsResultFallback = "fallback"
 )
 
@@ -37,12 +41,16 @@ type SMSRecorder interface {
 	// opt-out is an expected, non-retryable outcome, not a delivery
 	// failure worth alerting on the same way a provider error is.
 	IncOptedOut()
-	// IncFallback records a terminal SMS failure that the dispatcher
-	// re-enqueued to the in-app channel instead of losing entirely
-	// (NES-139, Dispatcher.fallbackToInApp) — CodeRabbit PR #109 round 3:
-	// distinguishing this from a plain IncFailed/generic MarkFailed lets
-	// an operator see how often SMS delivery is falling back, without it
-	// being buried in the outbox's overall failed-notification count.
+	// IncFallback records that the dispatcher ATTEMPTED to re-enqueue a
+	// terminal SMS failure's content to the in-app channel instead of
+	// losing it entirely (NES-139, Dispatcher.fallbackToInApp). This is
+	// an attempt count, not a confirmed-delivery count: the call happens
+	// before the fallback's own outbox.Enqueue runs, and that enqueue can
+	// itself fail — a rare, separately-logged condition this counter does
+	// not distinguish from a successful fallback enqueue. Distinguishing
+	// this from a plain IncFailed/generic MarkFailed lets an operator see
+	// how often SMS delivery is falling back, without it being buried in
+	// the outbox's overall failed-notification count.
 	IncFallback()
 }
 
