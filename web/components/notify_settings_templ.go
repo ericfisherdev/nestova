@@ -8,27 +8,28 @@ package components
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-// NotifyPreferenceRow is one event type's row in the SMS notification
-// preferences table (NES-139): its label and the member's current channel
-// for it (defaulted to "inapp" by the section view builder when the
-// member has no explicit preference row).
+// NotifyPreferenceRow is one event type's row in the notification
+// preferences table (NES-139, email added NES-141): its label and the
+// member's current channel for it (defaulted to "inapp" by the section
+// view builder when the member has no explicit preference row).
 type NotifyPreferenceRow struct {
 	// EventType is the stored event-type value, used as this row's
 	// <select> form field name suffix (pref_<event_type>).
 	EventType string
 	Label     string
-	// Channel is the current selection: "inapp" or "sms" — the only two
-	// channels this deployment can actually deliver through (NES-138/
-	// NES-139); push and email are not offered here even though the
-	// schema itself allows them, since selecting one with no wired sender
-	// would silently fail every notification of that event type with no
-	// fallback (unlike SMS's own dispatcher-level fallback).
+	// Channel is the current selection: "inapp", "sms", or "email" — the
+	// only channels this deployment can actually deliver through
+	// (NES-138/139/141); push is not offered here even though the schema
+	// itself allows it, since selecting it with no wired sender would
+	// silently fail every notification of that event type with no
+	// fallback (unlike SMS/email's own dispatcher-level fallback).
 	Channel string
 }
 
-// NotifySettingsView is the view model for the /settings page's SMS
-// notification section (NES-139): phone entry, opt-in consent, and
-// per-event-type channel preferences. Rendered for every member
+// NotifySettingsView is the view model for the /settings page's
+// notification delivery section (NES-139, email added NES-141): phone
+// entry, opt-in consent, and per-event-type channel preferences. Rendered
+// for every member
 // regardless of role — each member manages their OWN contact details and
 // preferences, mirroring the MFA section's per-member scope.
 type NotifySettingsView struct {
@@ -92,7 +93,7 @@ func notifySection(view NotifySettingsView) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"mb-4 text-sm text-ink-secondary\">Add your phone number and turn on text messages to get urgent, time-sensitive alerts by SMS — like a chore claim about to expire — even when you're not looking at the app. Everything else stays in-app by default. By checking the box below, you agree to receive automated SMS messages from this household; message and data rates may apply, and you can turn it off here at any time.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"mb-4 text-sm text-ink-secondary\">Choose how you get notified, per event type, below: in-app only (the default), email, or text message. Add your phone number and turn on text messages to get urgent, time-sensitive alerts by SMS — like a chore claim about to expire — even when you're not looking at the app. By checking the box below, you agree to receive automated SMS messages from this household; message and data rates may apply, and you can turn it off here at any time.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -104,7 +105,7 @@ func notifySection(view NotifySettingsView) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(view.Error)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 66, Col: 16}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 68, Col: 16}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -143,7 +144,7 @@ func notifySection(view NotifySettingsView) templ.Component {
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = Card("SMS notifications").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = Card("Notification delivery").Render(templ.WithChildren(ctx, templ_7745c5c3_Var2), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -179,7 +180,7 @@ func notifyPhoneForm(view NotifySettingsView) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(view.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 79, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 81, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -192,7 +193,7 @@ func notifyPhoneForm(view NotifySettingsView) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(view.Phone)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 89, Col: 22}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 91, Col: 22}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -234,7 +235,7 @@ func notifyOptInForm(view NotifySettingsView) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(view.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 104, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 106, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -286,7 +287,7 @@ func notifyPreferencesForm(view NotifySettingsView) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(view.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 126, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 128, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -304,7 +305,7 @@ func notifyPreferencesForm(view NotifySettingsView) templ.Component {
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(row.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 137, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 139, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
@@ -317,7 +318,7 @@ func notifyPreferencesForm(view NotifySettingsView) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs("pref_" + row.EventType)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 140, Col: 38}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 142, Col: 38}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -330,7 +331,7 @@ func notifyPreferencesForm(view NotifySettingsView) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(row.Label + " notification channel")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 141, Col: 56}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 143, Col: 56}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -362,12 +363,22 @@ func notifyPreferencesForm(view NotifySettingsView) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, ">Text message</option></select></td></tr>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, ">Text message</option> <option value=\"email\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if row.Channel == "email" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, " selected")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, ">Email</option></select></td></tr>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "</tbody></table><button type=\"submit\" class=\"min-h-[48px] self-start rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark\">Save preferences</button></form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</tbody></table><button type=\"submit\" class=\"min-h-[48px] self-start rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark\">Save preferences</button></form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -408,79 +419,79 @@ func quietHoursSection(view QuietHoursSettingsView) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "<p class=\"mb-4 text-sm text-ink-secondary\">While quiet hours are on, an SMS that would otherwise send during the window waits until quiet hours end instead — nothing is lost, it just arrives later. In-app notifications are never delayed.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<p class=\"mb-4 text-sm text-ink-secondary\">While quiet hours are on, an SMS that would otherwise send during the window waits until quiet hours end instead — nothing is lost, it just arrives later. In-app notifications are never delayed.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if view.Error != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "<p class=\"mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700\" role=\"alert\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "<p class=\"mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700\" role=\"alert\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var16 string
 				templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(view.Error)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 170, Col: 16}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 173, Col: 16}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, " <form method=\"post\" action=\"/settings/notify/quiet-hours\" class=\"flex flex-col gap-3\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, " <form method=\"post\" action=\"/settings/notify/quiet-hours\" class=\"flex flex-col gap-3\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var17 string
 			templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(view.CSRFToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 174, Col: 64}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 177, Col: 64}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "\"> <label class=\"flex items-center gap-3\"><input type=\"checkbox\" name=\"quiet_enabled\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "\"> <label class=\"flex items-center gap-3\"><input type=\"checkbox\" name=\"quiet_enabled\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if view.Enabled {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, " checked")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, " checked")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, " class=\"h-5 w-5 rounded border-sidebar-border\"> <span class=\"text-sm font-medium text-ink\">Turn on quiet hours</span></label><div class=\"flex items-end gap-3\"><div><label class=\"mb-1 block text-sm font-medium text-ink-secondary\" for=\"quiet-start\">Starts</label> <input id=\"quiet-start\" type=\"time\" name=\"quiet_start\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, " class=\"h-5 w-5 rounded border-sidebar-border\"> <span class=\"text-sm font-medium text-ink\">Turn on quiet hours</span></label><div class=\"flex items-end gap-3\"><div><label class=\"mb-1 block text-sm font-medium text-ink-secondary\" for=\"quiet-start\">Starts</label> <input id=\"quiet-start\" type=\"time\" name=\"quiet_start\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(view.StartValue)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 193, Col: 29}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 196, Col: 29}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\" class=\"rounded-control border border-sidebar-border px-3 py-2\"></div><div><label class=\"mb-1 block text-sm font-medium text-ink-secondary\" for=\"quiet-end\">Ends</label> <input id=\"quiet-end\" type=\"time\" name=\"quiet_end\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "\" class=\"rounded-control border border-sidebar-border px-3 py-2\"></div><div><label class=\"mb-1 block text-sm font-medium text-ink-secondary\" for=\"quiet-end\">Ends</label> <input id=\"quiet-end\" type=\"time\" name=\"quiet_end\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(view.EndValue)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 205, Col: 27}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/notify_settings.templ`, Line: 208, Col: 27}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 34, "\" class=\"rounded-control border border-sidebar-border px-3 py-2\"></div></div><button type=\"submit\" class=\"min-h-[48px] self-start rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink hover:bg-sidebar-border/20\">Save quiet hours</button></form>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "\" class=\"rounded-control border border-sidebar-border px-3 py-2\"></div></div><button type=\"submit\" class=\"min-h-[48px] self-start rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink hover:bg-sidebar-border/20\">Save quiet hours</button></form>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

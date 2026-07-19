@@ -74,6 +74,11 @@ const photoStoreInitTimeout = 10 * time.Second
 // bound).
 const smsSenderInitTimeout = 10 * time.Second
 
+// emailSenderInitTimeout mirrors smsSenderInitTimeout's identical
+// reasoning for notifybootstrap.NewEmailSender's AWS config loading
+// (NES-141). Unused when NOTIFY_EMAIL_ENABLED is false.
+const emailSenderInitTimeout = 10 * time.Second
+
 // Notification dispatcher tuning (NES-24).
 const (
 	// dispatchBatchSize caps how many due notifications one poll cycle claims.
@@ -304,6 +309,7 @@ func runServer(logger *slog.Logger) error {
 	tickRecorder := metrics.NewPromTickRecorder(registry)
 	syncMetrics := metrics.NewSyncMetrics(registry)
 	smsMetrics := metrics.NewSMSMetrics(registry)
+	emailMetrics := metrics.NewEmailMetrics(registry)
 
 	// NES-24: notification outbox wiring.
 	outboxRepo := notifyadapter.NewOutboxRepository(pool)
@@ -330,12 +336,34 @@ func runServer(logger *slog.Logger) error {
 		logger.Info("sms sender configured", "provider", "aws_end_user_messaging", "region", cfg.SMS.Region)
 	}
 
+	// NES-141: email sender wiring — NoopEmailSender when
+	// NOTIFY_EMAIL_ENABLED is false (the default; zero AWS dependency),
+	// else an SESEmailSender instrumented with emailMetrics (see
+	// notifybootstrap.NewEmailSender's own doc). ctx bounds AWS config
+	// loading, mirroring smsCtx's identical bounded-startup-call
+	// reasoning above.
+	emailCtx, cancelEmailCtx := context.WithTimeout(context.Background(), emailSenderInitTimeout)
+	emailSender, err := notifybootstrap.NewEmailSender(emailCtx, cfg.Email, emailMetrics, logger)
+	cancelEmailCtx()
+	if err != nil {
+		return fmt.Errorf("create email sender: %w", err)
+	}
+	switch emailSender.(type) {
+	case *notifyadapter.NoopEmailSender:
+		logger.Info("email sender configured", "provider", "noop")
+	default:
+		logger.Info("email sender configured", "provider", "ses", "region", cfg.Email.Region)
+	}
+
 	// NES-139: member SMS contact details (phone_e164/sms_opted_in_at) and
 	// per-event-type channel preferences. contactDirectory is shared by
 	// the dispatcher's own SMS sender (below, to resolve a member's phone
 	// at delivery time) and by routingEnqueuer (to resolve a member's
 	// current opt-in state at enqueue time) — see those two consumers'
 	// own docs for why each needs its own, separately-timed check.
+	// preferenceRepo is ALSO shared with the email sender below (NES-141),
+	// which downgrades a bounced member's email preferences through the
+	// SAME repository.
 	contactDirectory := notifyadapter.NewPostgresContactDirectory(pool)
 	preferenceRepo := notifyadapter.NewPostgresPreferenceRepository(pool)
 
@@ -346,12 +374,58 @@ func runServer(logger *slog.Logger) error {
 	// that type's own doc).
 	smsNotificationSender := notifyadapter.NewSMSNotificationSender(smsSender, contactDirectory)
 
+	// NES-141: wires the email channel into the dispatcher the same way —
+	// SESEmailSender/NoopEmailSender is the raw send-a-body-to-an-address
+	// port; EmailNotificationSender adds the member-to-email-address
+	// resolution a full domain.Sender needs, plus bounce handling (see
+	// that type's own doc). credRepo (constructed earlier, NES-23)
+	// structurally satisfies notify/domain.MemberEmailResolver via its
+	// own ResolveEmail method — notify never imports auth, per this
+	// file's own adapters-never-import-each-other convention (see the
+	// onboarding provisioner above). householdRepo structurally satisfies
+	// the narrow member-lister EmailNotificationSender needs to warn
+	// owner-role members on a bounce. outboxRepo (not routingEnqueuer,
+	// constructed below) is passed as the RAW Enqueuer for that warning,
+	// mirroring Dispatcher.fallbackToInApp's identical
+	// bypass-routing-for-a-fixed-channel reasoning.
+	emailNotificationSender := notifyadapter.NewEmailNotificationSender(
+		emailSender, credRepo, preferenceRepo, householdRepo, outboxRepo, logger,
+	)
+
+	// NES-141 (CodeRabbit round 2, major finding #3): SMS/email are
+	// registered with the dispatcher ONLY when their own channel is
+	// enabled — NOT unconditionally with a Noop-backed sender wrapped
+	// inside. A NoopSMSSender/NoopEmailSender ALWAYS reports success (see
+	// those types' own docs), so registering one here would make an
+	// SMS/email-preference notification look "delivered" — logged only,
+	// never actually sent, and with NO fallback — the moment the whole
+	// channel is disabled at the app level, even though nothing about
+	// that member's own preference or contact details is wrong. Leaving
+	// the channel UNREGISTERED instead makes Dispatcher.deliver hit its
+	// own unknown-channel branch, which (see fallbackForChannel's own
+	// doc) falls back to in-app for SMS/email exactly as a real send
+	// failure would — so a member with an sms/email preference and the
+	// whole channel administratively off still gets their notification,
+	// in-app, rather than silently losing it.
+	senders := []domain.Sender{inAppSender}
+	if cfg.SMS.Enabled {
+		senders = append(senders, smsNotificationSender)
+	} else {
+		logger.Info("sms channel not registered with dispatcher (NOTIFY_SMS_ENABLED=false); any sms-preference notification falls back to in-app")
+	}
+	if cfg.Email.Enabled {
+		senders = append(senders, emailNotificationSender)
+	} else {
+		logger.Info("email channel not registered with dispatcher (NOTIFY_EMAIL_ENABLED=false); any email-preference notification falls back to in-app")
+	}
+
 	dispatcher, err := notifyapp.NewDispatcher(
 		outboxRepo,
-		[]domain.Sender{inAppSender, smsNotificationSender},
+		senders,
 		logger,
 		tickRecorder,
 		smsMetrics,
+		emailMetrics,
 		dispatchBatchSize,
 		dispatchPollInterval,
 	)

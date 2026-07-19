@@ -30,6 +30,8 @@ var allKeys = []string{
 	"MEDIA_CHORE_PROOF_RETENTION_DAYS",
 	"NOTIFY_SMS_ENABLED", "SMS_ORIGINATION_IDENTITY", "SMS_REGION",
 	"SMS_ACCESS_KEY_ID", "SMS_SECRET_ACCESS_KEY", "SMS_RETRY_MAX_ATTEMPTS",
+	"NOTIFY_EMAIL_ENABLED", "SES_FROM_ADDRESS", "SES_REGION",
+	"SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY",
 	"CACHE_DIR",
 }
 
@@ -609,6 +611,82 @@ func TestLoadValid(t *testing.T) {
 				},
 			},
 		},
+		{
+			// Email enabled with static credentials (NES-141) — mirrors "sms
+			// enabled with static credentials and an explicit retry cap"'s
+			// shape for the email channel.
+			name: "email enabled with static credentials",
+			env: map[string]string{
+				"NOTIFY_EMAIL_ENABLED":  "true",
+				"SES_FROM_ADDRESS":      "notifications@example.com",
+				"SES_REGION":            "us-east-1",
+				"SES_ACCESS_KEY_ID":     "AKIAEXAMPLE",
+				"SES_SECRET_ACCESS_KEY": "secret",
+			},
+			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+				Email: config.EmailConfig{
+					Enabled: true, FromAddress: "notifications@example.com", Region: "us-east-1",
+					AccessKeyID: "AKIAEXAMPLE", SecretAccessKey: "secret",
+				},
+			},
+		},
+		{
+			// Email enabled without static credentials falls back to the AWS
+			// SDK's default credential chain (NES-141) — mirrors "sms enabled
+			// without static credentials uses the default retry cap"'s shape.
+			name: "email enabled without static credentials",
+			env: map[string]string{
+				"NOTIFY_EMAIL_ENABLED": "true",
+				"SES_FROM_ADDRESS":     "notifications@example.com",
+				"SES_REGION":           "us-east-1",
+			},
+			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+				Email: config.EmailConfig{
+					Enabled: true, FromAddress: "notifications@example.com", Region: "us-east-1",
+				},
+			},
+		},
+		{
+			// Regression test (mirrors "sms disabled ignores malformed and
+			// partial sms settings entirely" above): a disabled deployment
+			// (NOTIFY_EMAIL_ENABLED=false, the default) must load
+			// successfully even with a lone SES_ACCESS_KEY_ID with no
+			// matching secret — that pairing check only runs when
+			// NOTIFY_EMAIL_ENABLED is actually true.
+			name: "email disabled ignores partial email settings entirely",
+			env: map[string]string{
+				"SES_ACCESS_KEY_ID": "AKIAEXAMPLE",
+			},
+			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+				Email: config.EmailConfig{
+					AccessKeyID: "AKIAEXAMPLE",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -961,6 +1039,42 @@ func TestLoadInvalid(t *testing.T) {
 				"SMS_REGION": "us-east-1", "SMS_RETRY_MAX_ATTEMPTS": "abc",
 			},
 			wantContains: []string{"SMS_RETRY_MAX_ATTEMPTS"},
+		},
+		{
+			name:         "email enabled without from address or region",
+			env:          map[string]string{"NOTIFY_EMAIL_ENABLED": "true"},
+			wantContains: []string{"SES_FROM_ADDRESS", "SES_REGION"},
+		},
+		{
+			name: "email enabled without region",
+			env: map[string]string{
+				"NOTIFY_EMAIL_ENABLED": "true", "SES_FROM_ADDRESS": "notifications@example.com",
+			},
+			wantContains: []string{"SES_REGION"},
+		},
+		{
+			// Email credential validation (like every other SES_* check) is
+			// gated on NOTIFY_EMAIL_ENABLED actually being true, mirroring
+			// SMS's identical credential-pairing checks above.
+			name: "email access key without secret",
+			env: map[string]string{
+				"NOTIFY_EMAIL_ENABLED": "true", "SES_FROM_ADDRESS": "notifications@example.com",
+				"SES_REGION": "us-east-1", "SES_ACCESS_KEY_ID": "AKIAEXAMPLE",
+			},
+			wantContains: []string{"SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY"},
+		},
+		{
+			name: "email secret without access key",
+			env: map[string]string{
+				"NOTIFY_EMAIL_ENABLED": "true", "SES_FROM_ADDRESS": "notifications@example.com",
+				"SES_REGION": "us-east-1", "SES_SECRET_ACCESS_KEY": "secret",
+			},
+			wantContains: []string{"SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY"},
+		},
+		{
+			name:         "non-boolean NOTIFY_EMAIL_ENABLED",
+			env:          map[string]string{"NOTIFY_EMAIL_ENABLED": "maybe"},
+			wantContains: []string{"NOTIFY_EMAIL_ENABLED"},
 		},
 	}
 

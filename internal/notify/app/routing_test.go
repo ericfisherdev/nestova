@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,16 @@ func (f *fakePreferenceRepo) Set(_ context.Context, pref domain.MemberPreference
 
 func (f *fakePreferenceRepo) ListForMember(_ context.Context, _ household.MemberID) ([]domain.MemberPreference, error) {
 	return nil, nil
+}
+
+func (f *fakePreferenceRepo) DowngradeChannel(_ context.Context, memberID household.MemberID, from, to domain.Channel) error {
+	prefix := memberID.String() + "|"
+	for key, ch := range f.prefs {
+		if strings.HasPrefix(key, prefix) && ch == from {
+			f.prefs[key] = to
+		}
+	}
+	return nil
 }
 
 // fakeContactDirectory is an in-memory domain.ContactDirectory.
@@ -201,6 +212,34 @@ func TestRoutingEnqueuer_SMSPreference_MemberReady_RoutesToSMS(t *testing.T) {
 	}
 	if n.Channel != domain.ChannelSMS {
 		t.Errorf("Channel = %v, want ChannelSMS", n.Channel)
+	}
+}
+
+// TestRoutingEnqueuer_EmailPreference_RoutesToEmail is the NES-141
+// regression test: unlike SMS, an email preference is resolved
+// unconditionally, with no ContactDirectory (or any other) readiness
+// check at enqueue time — member email resolution happens entirely at
+// send time inside EmailNotificationSender (see that type's own doc for
+// why: email readiness lives in a different bounded context this
+// package does not import).
+func TestRoutingEnqueuer_EmailPreference_RoutesToEmail(t *testing.T) {
+	outbox := &fakeOutbox{}
+	memberID := household.NewMemberID()
+	prefs := &fakePreferenceRepo{prefs: map[string]domain.Channel{
+		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelEmail,
+	}}
+	contacts := &fakeContactDirectory{}
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeHouseholdReader{}, silentLogger())
+
+	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
+	if err := e.Enqueue(context.Background(), n); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if n.Channel != domain.ChannelEmail {
+		t.Errorf("Channel = %v, want ChannelEmail", n.Channel)
+	}
+	if contacts.getContactCalls != 0 {
+		t.Errorf("GetContact calls = %d, want 0 (email resolution happens at send time, not enqueue time)", contacts.getContactCalls)
 	}
 }
 

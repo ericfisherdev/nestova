@@ -18,6 +18,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.22.34
 	github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2 v1.31.1
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.2
+	github.com/aws/aws-sdk-go-v2/service/sesv2 v1.63.1
 	github.com/dgraph-io/badger/v4 v4.9.4
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/google/uuid v1.6.0

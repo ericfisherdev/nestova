@@ -258,14 +258,17 @@ func TestSettingsService_SetPreferences_InvalidChannel_RejectsWholeBatch(t *test
 }
 
 // TestSettingsService_SetPreferences_UndeliverableChannel_Rejected is the
-// regression test for CodeRabbit round 3 (major finding #2): push and
-// email are valid domain.Channel values (Channel.Valid() accepts them —
-// see TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel
-// below) but have no wired Sender in this deployment yet, so a crafted
-// POST choosing either must be rejected at the preference-write boundary,
-// not merely at the settings UI's own <select> (which never offers them).
+// regression test for CodeRabbit round 3 (major finding #2): push is a
+// valid domain.Channel value (Channel.Valid() accepts it — see
+// TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel
+// below) but has no wired Sender in this deployment yet, so a crafted
+// POST choosing it must be rejected at the preference-write boundary, not
+// merely at the settings UI's own <select> (which never offers it). Email
+// joined the deliverable set in NES-141 (see
+// TestSettingsService_SetPreferences_EmailChannel_Accepted below), so it
+// is no longer part of this table.
 func TestSettingsService_SetPreferences_UndeliverableChannel_Rejected(t *testing.T) {
-	for _, channel := range []domain.Channel{domain.ChannelPush, domain.ChannelEmail} {
+	for _, channel := range []domain.Channel{domain.ChannelPush} {
 		t.Run(channel.String(), func(t *testing.T) {
 			memberID := household.NewMemberID()
 			prefs := &fakePreferenceRepo{}
@@ -285,11 +288,11 @@ func TestSettingsService_SetPreferences_UndeliverableChannel_Rejected(t *testing
 
 // TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel
 // pins the OTHER half of finding #2's contract: domain.ParseChannel/
-// Channel.Valid() themselves must stay unchanged — push and email remain
-// valid domain.Channel values for a future ticket's own Sender; only the
+// Channel.Valid() themselves must stay unchanged — push remains a valid
+// domain.Channel value for a future ticket's own Sender; only the
 // PREFERENCE-WRITE boundary narrows further.
 func TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel(t *testing.T) {
-	for _, channel := range []domain.Channel{domain.ChannelPush, domain.ChannelEmail} {
+	for _, channel := range []domain.Channel{domain.ChannelPush} {
 		if !channel.Valid() {
 			t.Errorf("domain.Channel(%q).Valid() = false, want true (ParseChannel must stay unrestricted)", channel)
 		}
@@ -303,7 +306,7 @@ func TestSettingsService_SetPreferences_UndeliverableChannel_MixedWithValid_Reje
 
 	updates := map[domain.EventType]domain.Channel{
 		domain.EventTypeClaimExpiring: domain.ChannelInApp,
-		domain.EventTypeTaskOverdue:   domain.ChannelEmail,
+		domain.EventTypeTaskOverdue:   domain.ChannelPush,
 	}
 	err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), memberID, updates)
 	if !errors.Is(err, domain.ErrChannelNotDeliverable) {
@@ -311,6 +314,34 @@ func TestSettingsService_SetPreferences_UndeliverableChannel_MixedWithValid_Reje
 	}
 	if _, err := prefs.Get(context.Background(), memberID, domain.EventTypeClaimExpiring); !errors.Is(err, domain.ErrPreferenceNotFound) {
 		t.Error("a rejected batch must not persist any of its rows, including the valid in-app one")
+	}
+}
+
+// TestSettingsService_SetPreferences_EmailChannel_Accepted is the NES-141
+// regression test: unlike SMS, email needs no readiness check at
+// preference-write time (member email resolution happens entirely at
+// send time — see EmailNotificationSender's own doc), so a plain email
+// preference write must succeed and persist with no ContactDirectory
+// lookup at all.
+func TestSettingsService_SetPreferences_EmailChannel_Accepted(t *testing.T) {
+	memberID := household.NewMemberID()
+	prefs := &fakePreferenceRepo{}
+	contacts := &fakeContactDirectory{}
+	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+
+	updates := map[domain.EventType]domain.Channel{domain.EventTypeClaimExpiring: domain.ChannelEmail}
+	if err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), memberID, updates); err != nil {
+		t.Fatalf("SetPreferences(email): %v", err)
+	}
+	got, err := prefs.Get(context.Background(), memberID, domain.EventTypeClaimExpiring)
+	if err != nil {
+		t.Fatalf("Get after SetPreferences(email): %v", err)
+	}
+	if got != domain.ChannelEmail {
+		t.Errorf("persisted channel = %v, want email", got)
+	}
+	if contacts.getContactCalls != 0 {
+		t.Errorf("GetContact calls = %d, want 0 (email needs no SMS-style readiness check)", contacts.getContactCalls)
 	}
 }
 

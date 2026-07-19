@@ -81,6 +81,7 @@ type Config struct {
 	Recipes RecipesConfig
 	Media   MediaConfig
 	SMS     SMSConfig
+	Email   EmailConfig
 	Cache   CacheConfig
 	TLS     TLSConfig
 	HSTS    HSTSConfig
@@ -436,6 +437,31 @@ type SMSConfig struct {
 	RetryMaxAttempts int
 }
 
+// EmailConfig configures the optional email notification channel
+// (NES-141), an Amazon SES-backed domain.EmailSender. It is only
+// consulted when Enabled is true; every other field is otherwise ignored
+// (and unvalidated), mirroring SMSConfig's own identical
+// enabled-gates-required-fields pattern — a deployment with email
+// disabled (the default) never has to set any of it, and runs with the
+// Noop sender and zero AWS dependency.
+type EmailConfig struct {
+	// Enabled turns the email channel on.
+	Enabled bool
+	// FromAddress is the verified SES sending address SendEmail sends
+	// from. Required when Enabled — see docs/aws-email.md for the SES
+	// sandbox verification this deployment stays in.
+	FromAddress string
+	// Region is passed to every SES API request. Required when Enabled.
+	Region string
+	// AccessKeyID / SecretAccessKey are optional static credentials. When
+	// BOTH are blank, the AWS SDK's default credential chain (environment,
+	// shared config/credentials file, EC2/ECS instance role, etc.)
+	// supplies credentials instead — mirrors SMSConfig's identical field
+	// pair and its own doc.
+	AccessKeyID     string
+	SecretAccessKey string
+}
+
 // CacheConfig configures the on-disk BadgerDB cache (NES-140) for data
 // that is derived, re-computable, or externally sourced — see
 // internal/platform/cache's own package doc for the full scope. Mirrors
@@ -619,6 +645,17 @@ func Load() (Config, error) {
 		collect(err)
 		smsRetryMaxAttempts = int(smsRetryMaxAttempts32)
 	}
+
+	// NOTIFY_EMAIL_ENABLED gates every SES_* setting below (NES-141),
+	// mirroring NOTIFY_SMS_ENABLED's identical gating pattern immediately
+	// above: a deployment with email disabled (the default) must never
+	// fail startup on a stray or malformed SES_* value it will never use,
+	// and must run with zero AWS dependency — the NoopEmailSender the
+	// composition root wires when emailEnabled is false imports nothing
+	// from aws-sdk-go-v2 at all.
+	emailEnabled, err := getbool("NOTIFY_EMAIL_ENABLED", false)
+	collect(err)
+
 	hstsEnabled, err := getbool("HSTS_ENABLED", false)
 	collect(err)
 	// Track whether HSTS_MAX_AGE was set explicitly so an explicit 0 (clear HSTS)
@@ -746,6 +783,13 @@ func Load() (Config, error) {
 			AccessKeyID:         strings.TrimSpace(os.Getenv("SMS_ACCESS_KEY_ID")),
 			SecretAccessKey:     strings.TrimSpace(os.Getenv("SMS_SECRET_ACCESS_KEY")),
 			RetryMaxAttempts:    smsRetryMaxAttempts,
+		},
+		Email: EmailConfig{
+			Enabled:         emailEnabled,
+			FromAddress:     strings.TrimSpace(os.Getenv("SES_FROM_ADDRESS")),
+			Region:          strings.TrimSpace(os.Getenv("SES_REGION")),
+			AccessKeyID:     strings.TrimSpace(os.Getenv("SES_ACCESS_KEY_ID")),
+			SecretAccessKey: strings.TrimSpace(os.Getenv("SES_SECRET_ACCESS_KEY")),
 		},
 		Cache: CacheConfig{
 			Dir: strings.TrimSpace(getenv("CACHE_DIR", devCacheDir)),
@@ -916,6 +960,25 @@ func (c Config) validate() []error {
 		// identical pairing check.
 		if (c.SMS.AccessKeyID == "") != (c.SMS.SecretAccessKey == "") {
 			errs = append(errs, errors.New("SMS_ACCESS_KEY_ID and SMS_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
+		}
+	}
+
+	// EVERY SES_* setting below is validated ONLY when
+	// NOTIFY_EMAIL_ENABLED is true (NES-141), mirroring NOTIFY_SMS_ENABLED's
+	// identical enabled-gates-required-fields pattern immediately above: a
+	// deployment with email disabled (the default) must never fail
+	// startup on a stray or partial SES_* value it will never use.
+	if c.Email.Enabled {
+		if c.Email.FromAddress == "" {
+			errs = append(errs, errors.New("SES_FROM_ADDRESS is required when NOTIFY_EMAIL_ENABLED=true"))
+		}
+		if c.Email.Region == "" {
+			errs = append(errs, errors.New("SES_REGION is required when NOTIFY_EMAIL_ENABLED=true"))
+		}
+		// Static SES credentials are both-or-neither, mirroring SMS's
+		// identical pairing check.
+		if (c.Email.AccessKeyID == "") != (c.Email.SecretAccessKey == "") {
+			errs = append(errs, errors.New("SES_ACCESS_KEY_ID and SES_SECRET_ACCESS_KEY must be set together (or both left unset to use the default AWS credential chain)"))
 		}
 	}
 

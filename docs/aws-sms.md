@@ -130,6 +130,19 @@ or a real end-to-end send — it only tells you a send was ATTEMPTED and how
 it resolved, not that configuration is otherwise correct before any send
 has happened.
 
+Dispatcher-level fallback to in-app is tracked separately, in its own
+`nestova_sms_fallbacks_total` counter — it is not a `result` value on
+`nestova_sms_sends_total`, because it is a different kind of event (a
+dispatcher re-enqueue action, not a send attempt) and counting it as a send
+result would double-count against `nestova_sms_sends_total`'s own
+`failed`/`opted_out` totals. `nestova_sms_fallbacks_total` increments both
+for a terminal send failure and for a notification that could not be
+delivered because the SMS channel was not registered at all — i.e.
+`NOTIFY_SMS_ENABLED=false` with a member still preferring SMS. Email
+reports the identical pair of counters (`nestova_email_sends_total` /
+`nestova_email_fallbacks_total`) for the same reason — see
+[`docs/aws-email.md`](aws-email.md).
+
 ## The runbook
 
 1. **Provision** the toll-free number and complete its verification, and

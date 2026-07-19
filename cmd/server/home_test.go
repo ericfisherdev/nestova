@@ -127,6 +127,10 @@ func (fakePreferenceRepository) ListForMember(_ context.Context, _ household.Mem
 	return nil, nil
 }
 
+func (fakePreferenceRepository) DowngradeChannel(_ context.Context, _ household.MemberID, _, _ notifydomain.Channel) error {
+	return nil
+}
+
 // Compile-time assertion.
 var _ notifydomain.PreferenceRepository = fakePreferenceRepository{}
 

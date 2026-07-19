@@ -21,14 +21,16 @@ type quietHoursStore interface {
 
 // deliverablePreferenceChannels is the set of channels
 // SettingsService.SetPreferences accepts for a member preference write —
-// narrower than domain.Channel.Valid(), which also accepts push and
-// email (valid domain.Channel values reserved for a future ticket's own
-// Sender). See domain.ErrChannelNotDeliverable's own doc for why
-// accepting an undeliverable channel here would be a silent-notification-
-// loss risk, not just a cosmetic UI mismatch.
+// narrower than domain.Channel.Valid(), which also accepts push (a
+// valid domain.Channel value reserved for a future ticket's own Sender).
+// See domain.ErrChannelNotDeliverable's own doc for why accepting an
+// undeliverable channel here would be a silent-notification-loss risk,
+// not just a cosmetic UI mismatch. Email joined this set in NES-141, once
+// EmailNotificationSender existed as a wired Sender for it.
 var deliverablePreferenceChannels = map[domain.Channel]bool{
 	domain.ChannelInApp: true,
 	domain.ChannelSMS:   true,
+	domain.ChannelEmail: true,
 }
 
 // SettingsService implements the member-facing business rules behind the
@@ -140,15 +142,14 @@ func (s *SettingsService) SetPreference(
 //
 // Every channel is also checked against deliverablePreferenceChannels
 // (domain.ErrChannelNotDeliverable otherwise): domain.Channel.Valid()
-// alone accepts push and email too, since those remain valid domain
-// values for a future ticket's own Sender, but persisting a preference
-// for one TODAY — before any Sender for it exists — would let
-// routing.RoutingEnqueuer route a future notification straight into a
-// dispatcher failure with no fallback (Dispatcher.fallbackToInApp only
-// covers SMS). Rejecting it here, at the write boundary, is the
+// alone accepts push too, since it remains a valid domain value for a
+// future ticket's own Sender, but persisting a preference for it TODAY —
+// before any Sender for it exists — would let routing.RoutingEnqueuer
+// route a future notification straight into a dispatcher failure with no
+// fallback (Dispatcher.fallbackToInApp covers SMS and, since NES-141,
+// email — not push). Rejecting it here, at the write boundary, is the
 // intentional defense-in-depth for a crafted POST that bypasses the
-// settings UI's own two-option (in-app/SMS) <select> — CodeRabbit PR #109
-// round 3.
+// settings UI's own <select> options — CodeRabbit PR #109 round 3.
 func (s *SettingsService) SetPreferences(
 	ctx context.Context,
 	householdID household.HouseholdID,
