@@ -36,7 +36,12 @@ below.
 
 Scope the sending credential to `ses:SendEmail` only — it must not carry any
 identity-management or account-configuration permissions; those are
-console/admin actions, never the application's own runtime credential.
+console/admin actions, never the application's own runtime credential. Scope
+the `Resource` to the verified sending identity's ARN and pin the
+`ses:FromAddress` condition to `SES_FROM_ADDRESS`, so a leaked application
+credential cannot send from any other verified identity in the account.
+Replace `<region>`, `<account-id>`, and `<SES_FROM_ADDRESS>` with this
+deployment's real values:
 
 ```json
 {
@@ -46,7 +51,12 @@ console/admin actions, never the application's own runtime credential.
       "Sid": "SESSend",
       "Effect": "Allow",
       "Action": ["ses:SendEmail"],
-      "Resource": "*"
+      "Resource": "arn:aws:ses:<region>:<account-id>:identity/<SES_FROM_ADDRESS>",
+      "Condition": {
+        "StringEquals": {
+          "ses:FromAddress": "<SES_FROM_ADDRESS>"
+        }
+      }
     }
   ]
 }

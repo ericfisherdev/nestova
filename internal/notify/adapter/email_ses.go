@@ -174,6 +174,13 @@ func (s *SESEmailSender) Send(ctx context.Context, to, subject, htmlBody, textBo
 // BOTH the documented "not verified" phrase AND the destination address
 // to appear guards against an incidental substring match in some
 // unrelated MessageRejected text.
+//
+// This heuristic is inherently coupled to AWS's current free-text wording
+// for MessageRejected, which carries no structured reason code. If this
+// deployment ever grows past sandbox/family scale, prefer SES event
+// publishing (SNS bounce/complaint notifications) for a structured,
+// wording-independent signal instead — see the graduation-path note in
+// docs/aws-email.md.
 func isDestinationRejection(rejected *types.MessageRejected, to string) bool {
 	if rejected.Message == nil {
 		return false
