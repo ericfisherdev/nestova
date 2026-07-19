@@ -14,10 +14,35 @@ version: "2"
 
 linters:
   # Start from the curated standard set (errcheck, govet, ineffassign,
-  # staticcheck, unused) and add revive for style/lint rules.
+  # staticcheck, unused) and add revive for style/lint rules, plus
+  # depguard (NES-140) to enforce the badger import boundary below.
   default: standard
   enable:
     - revive
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # NES-140: github.com/dgraph-io/badger/v4 is isolated to
+        # internal/platform/cache/badger.go — every other consumer
+        # depends on cache.Cache instead. Scoped via a NEGATED files glob
+        # (applies to every file EXCEPT that package) rather than an
+        # allow-list naming every other third-party dependency this repo
+        # already uses: list-mode "original" with an empty allow list
+        # means "allowed unless denied," so this rule adds exactly one
+        # restriction without touching anything else's import freedom.
+        badger-isolation:
+          list-mode: original
+          files:
+            # A leading "**/" is required for the negated glob to actually
+            # exclude files directly inside the package directory (verified
+            # empirically: "!internal/platform/cache/*.go" alone still
+            # matched badger.go — golangci-lint's depguard glob matching
+            # needs the recursive prefix even for a non-recursive target).
+            - "!**/internal/platform/cache/*.go"
+          deny:
+            - pkg: "github.com/dgraph-io/badger"
+              desc: "NES-140: badger is isolated to internal/platform/cache — depend on cache.Cache instead"
   exclusions:
     # Skip files carrying the "// Code generated ... DO NOT EDIT." header
     # (e.g. templ's *_templ.go output) using the strict Go convention.

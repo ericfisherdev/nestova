@@ -62,6 +62,7 @@ environment variables always take precedence over `.env`.
 | `HSTS_MAX_AGE` | no | `4320h` (180d) | HSTS max-age (Go duration; `d`/days is not valid). Unset applies the default; an explicit `0s` clears a previously-sent policy in browsers. |
 | `HSTS_INCLUDE_SUBDOMAINS` | no | `false` | Add `includeSubDomains` to the HSTS header. |
 | `HSTS_PRELOAD` | no | `false` | Add `preload` to the HSTS header. Requires `HSTS_INCLUDE_SUBDOMAINS=true` and `HSTS_MAX_AGE` ≥ 1 year (a hard-to-undo public commitment; validated at startup). |
+| `CACHE_DIR` | no | `./.localdata/cache` | Directory for the on-disk BadgerDB cache — derived/re-computable or externally-sourced data only, never domain reads, sessions, or point balances (see [`internal/platform/cache`](internal/platform/cache/cache.go)). Losing this directory is always a non-event: every consumer recomputes or re-fetches on a miss, and a BadgerDB open failure falls back to an in-process cache rather than blocking boot. The default is relative to the process's working directory — like `MEDIA_ROOT`, this is intentional best-effort local storage, not an enforced invariant. **In production, set this to an absolute path on the data volume, not the SD card** (see note below). |
 
 In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
 `SESSION_SECRET`, and the Google OAuth credentials must be supplied explicitly
@@ -72,6 +73,19 @@ In `prod`, cookies are automatically marked `Secure`, and `DATABASE_URL`,
 > dedicated manager (e.g. HashiCorp Vault, AWS/GCP Secrets Manager, or
 > Kubernetes Secrets) and inject them into the environment, rather than storing
 > them in plaintext `.env` files.
+
+> **`CACHE_DIR` on a Raspberry Pi:** BadgerDB writes continuously (value log
+> segments, background compaction), which wears out an SD card's limited
+> write-endurance far faster than the occasional writes elsewhere in the app.
+> Set `CACHE_DIR` to an **absolute path** on whatever local storage backs
+> your data volume (an attached SSD or USB drive — the same volume
+> `MEDIA_ROOT` and the Postgres data directory should already be using), not
+> the boot SD card, and not a relative path (its resolved location would
+> then depend on how the process happens to be launched). BadgerDB relies on
+> OS-level directory locking and fsync durability guarantees it documents as
+> tested against local, SSD-oriented filesystems; a mounted network share is
+> **not** a supported target unless you have separately validated its
+> locking and fsync semantics match what a local filesystem provides.
 
 ### Supported databases
 

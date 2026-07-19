@@ -81,6 +81,7 @@ type Config struct {
 	Recipes RecipesConfig
 	Media   MediaConfig
 	SMS     SMSConfig
+	Cache   CacheConfig
 	TLS     TLSConfig
 	HSTS    HSTSConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
@@ -435,8 +436,40 @@ type SMSConfig struct {
 	RetryMaxAttempts int
 }
 
+// CacheConfig configures the on-disk BadgerDB cache (NES-140) for data
+// that is derived, re-computable, or externally sourced — see
+// internal/platform/cache's own package doc for the full scope. Mirrors
+// MediaConfig.Root exactly: a safe local default in every environment, so
+// it is never required to boot, and — deliberately, matching Root's own
+// precedent — validate only checks it is non-empty, not that it is
+// absolute. A relative CACHE_DIR resolves against cmd/server's working
+// directory at the time it was launched, which can vary by how the
+// service is started (systemd unit, an ad hoc shell, a container
+// WORKDIR); best-effort local storage is intentional, not a startup
+// invariant this package enforces, exactly as with MEDIA_ROOT. See the
+// README's "Configuration" table for the operational recommendation:
+// production deployments should set CACHE_DIR to an absolute path so its
+// location does not depend on how the process happens to be launched.
+type CacheConfig struct {
+	// Dir is the directory BadgerCache opens its store under. In
+	// production this SHOULD be an absolute path pointing at the data
+	// volume, not the SD card: BadgerDB writes continuously (value log
+	// segments, compaction), and an SD card's limited write-endurance
+	// makes it a poor target for that write pattern. Losing this
+	// directory is always a non-event (see the cache package's own
+	// doc) — if a misconfigured relative path defeats persistence, the
+	// worst case is a cold cache, not corrupted or lost data, and
+	// BadgerCache's own open failure additionally falls back to an
+	// in-process MemoryCache rather than blocking boot (see
+	// cmd/server's composition root).
+	Dir string
+}
+
 // devMediaRoot is the default photo-storage directory when MEDIA_ROOT is unset.
 const devMediaRoot = "./.localdata/media"
+
+// devCacheDir is the default BadgerDB cache directory when CACHE_DIR is unset.
+const devCacheDir = "./.localdata/cache"
 
 // defaultMaxUploadBytes is the default per-upload size cap (25 MiB) —
 // sized for bulk album uploads of modern phone camera originals (NES-123).
@@ -714,6 +747,9 @@ func Load() (Config, error) {
 			SecretAccessKey:     strings.TrimSpace(os.Getenv("SMS_SECRET_ACCESS_KEY")),
 			RetryMaxAttempts:    smsRetryMaxAttempts,
 		},
+		Cache: CacheConfig{
+			Dir: strings.TrimSpace(getenv("CACHE_DIR", devCacheDir)),
+		},
 		TLS: TLSConfig{
 			CertFile: strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
 			KeyFile:  strings.TrimSpace(os.Getenv("TLS_KEY_FILE")),
@@ -790,6 +826,9 @@ func (c Config) validate() []error {
 	}
 	if strings.TrimSpace(c.Media.Root) == "" {
 		errs = append(errs, errors.New("MEDIA_ROOT must not be empty"))
+	}
+	if strings.TrimSpace(c.Cache.Dir) == "" {
+		errs = append(errs, errors.New("CACHE_DIR must not be empty"))
 	}
 	// App-terminated TLS (NES-54): both files or neither, so a half-configured
 	// listener can never start.

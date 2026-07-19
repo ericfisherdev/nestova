@@ -30,6 +30,7 @@ var allKeys = []string{
 	"MEDIA_CHORE_PROOF_RETENTION_DAYS",
 	"NOTIFY_SMS_ENABLED", "SMS_ORIGINATION_IDENTITY", "SMS_REGION",
 	"SMS_ACCESS_KEY_ID", "SMS_SECRET_ACCESS_KEY", "SMS_RETRY_MAX_ATTEMPTS",
+	"CACHE_DIR",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -44,6 +45,9 @@ const devSecret = "dev-only-insecure-session-secret-change-me"
 
 // devEncKey mirrors the package's dev default encryption key (64 hex chars).
 const devEncKey = "00000000000000000000000000000000000000000000000000000000deadbeef"
+
+// devCacheDir mirrors the package's dev default BadgerDB cache directory.
+const devCacheDir = "./.localdata/cache"
 
 // defaultSMSRetryMaxAttempts mirrors the package's own private default
 // (SMS_RETRY_MAX_ATTEMPTS's default), applied unconditionally regardless of
@@ -80,6 +84,7 @@ func TestLoadValid(t *testing.T) {
 			name: "defaults when empty",
 			env:  map[string]string{},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -96,6 +101,7 @@ func TestLoadValid(t *testing.T) {
 				"DATABASE_URL": "postgres://test:test@localhost:5432/nestova_test",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvTest,
 				Server:  config.ServerConfig{Addr: ":9090", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://test:test@localhost:5432/nestova_test", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -109,6 +115,7 @@ func TestLoadValid(t *testing.T) {
 			name: "colon-prefixed PORT is normalized",
 			env:  map[string]string{"PORT": ":3000"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":3000", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -122,6 +129,7 @@ func TestLoadValid(t *testing.T) {
 			name: "DATABASE_URL override in dev",
 			env:  map[string]string{"DATABASE_URL": "postgres://custom:pwd@dbhost:5432/mydb"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://custom:pwd@dbhost:5432/mydb", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -137,6 +145,7 @@ func TestLoadValid(t *testing.T) {
 				"DB_MAX_CONNS": "10", "DB_CONNECT_TIMEOUT": "2s", "SESSION_LIFETIME": "48h",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 10, ConnTimeout: 2 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -156,6 +165,7 @@ func TestLoadValid(t *testing.T) {
 				"ENCRYPTION_KEY":      validEncryptionKey,
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvProd,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -174,6 +184,7 @@ func TestLoadValid(t *testing.T) {
 				"RECIPES_API_BASE_URL":     "https://api.spoonacular.com",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -188,6 +199,7 @@ func TestLoadValid(t *testing.T) {
 			name: "PUBLIC_BASE_URL is trimmed of a trailing slash",
 			env:  map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net/"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second, PublicBaseURL: "https://nestova.tailnet.ts.net"},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -208,6 +220,7 @@ func TestLoadValid(t *testing.T) {
 			name: "PUBLIC_BASE_URL with multiple trailing slashes is fully trimmed",
 			env:  map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net//"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second, PublicBaseURL: "https://nestova.tailnet.ts.net"},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -224,6 +237,7 @@ func TestLoadValid(t *testing.T) {
 				"DATABASE_URL": "postgres://u:p@pooler.supabase.com:5432/postgres?sslmode=require",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:5432/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeSession},
@@ -245,6 +259,7 @@ func TestLoadValid(t *testing.T) {
 				"DATABASE_URL":     "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=verify-full", MaxConns: 5, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, SSLRootCert: "/etc/ssl/supabase-ca.crt"},
@@ -265,6 +280,7 @@ func TestLoadValid(t *testing.T) {
 				"MIGRATE_DATABASE_URL": "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@pooler.supabase.com:6543/postgres?sslmode=require", MaxConns: 10, ConnTimeout: 5 * time.Second, Provider: config.DBProviderSupabase, PoolMode: config.DBPoolModeTransaction, MigrateDSN: "postgres://u:p@db.supabase.com:5432/postgres?sslmode=require"},
@@ -280,6 +296,7 @@ func TestLoadValid(t *testing.T) {
 			name: "explicit trusted proxies list",
 			env:  map[string]string{"TRUSTED_PROXIES": "10.0.0.0/8, 192.168.0.0/16"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", TrustedProxies: "10.0.0.0/8, 192.168.0.0/16", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -293,6 +310,7 @@ func TestLoadValid(t *testing.T) {
 			name: "explicit SERVER_REQUEST_TIMEOUT override",
 			env:  map[string]string{"SERVER_REQUEST_TIMEOUT": "45s"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 45 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -310,6 +328,7 @@ func TestLoadValid(t *testing.T) {
 			name: "SESSION_COOKIE_SECURE=auto in dev stays insecure",
 			env:  map[string]string{"SESSION_COOKIE_SECURE": "auto"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -324,6 +343,7 @@ func TestLoadValid(t *testing.T) {
 			name: "SESSION_COOKIE_SECURE=true forces secure outside prod",
 			env:  map[string]string{"SESSION_COOKIE_SECURE": "true"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -347,6 +367,7 @@ func TestLoadValid(t *testing.T) {
 				"SESSION_COOKIE_SECURE": "false",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvProd,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: "postgres://u:p@db:5432/app", MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -365,6 +386,7 @@ func TestLoadValid(t *testing.T) {
 				"TLS_KEY_FILE":  "/etc/nestova/tls/key.pem",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -387,6 +409,7 @@ func TestLoadValid(t *testing.T) {
 				"HSTS_PRELOAD":            "true",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -403,6 +426,7 @@ func TestLoadValid(t *testing.T) {
 			name: "explicit HSTS max-age=0 is captured as set",
 			env:  map[string]string{"HSTS_ENABLED": "true", "HSTS_MAX_AGE": "0s"},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -428,6 +452,7 @@ func TestLoadValid(t *testing.T) {
 				"S3_PRESIGN_TTL":        "5m",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -456,6 +481,7 @@ func TestLoadValid(t *testing.T) {
 				"MEDIA_CHORE_PROOF_RETENTION_DAYS": "30",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -487,6 +513,7 @@ func TestLoadValid(t *testing.T) {
 				"S3_ACCESS_KEY_ID":  "minioadmin",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -514,6 +541,7 @@ func TestLoadValid(t *testing.T) {
 				"SMS_RETRY_MAX_ATTEMPTS":   "5",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -538,6 +566,7 @@ func TestLoadValid(t *testing.T) {
 				"SMS_REGION":               "us-east-1",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
@@ -567,6 +596,7 @@ func TestLoadValid(t *testing.T) {
 				"SMS_ACCESS_KEY_ID":      "AKIAEXAMPLE",
 			},
 			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
 				Env:     config.EnvDev,
 				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
 				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},

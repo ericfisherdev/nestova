@@ -37,6 +37,7 @@ import (
 	notifybootstrap "github.com/ericfisherdev/nestova/internal/notify/bootstrap"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/bootstrap"
+	"github.com/ericfisherdev/nestova/internal/platform/cache"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
@@ -105,6 +106,13 @@ const (
 	// long poll interval so graceful shutdown is not held up for an hour.
 	restockSchedulerTickTimeout = 5 * time.Minute
 )
+
+// cacheGCInterval is how often BadgerCache's value-log GC pass runs
+// (NES-140). The cache's own workload (recipe search results, refreshed at
+// most daily) turns over slowly, so this trades reclaim latency for a low
+// background workload — matching the other slow-moving background
+// workers' hourly cadence.
+const cacheGCInterval = time.Hour
 
 // Renewal scheduler tuning (NES-65).
 const (
@@ -246,6 +254,28 @@ func runServer(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 	logger.Info("connected to postgres", "max_conns", pool.Config().MaxConns)
+
+	// NES-140: on-disk cache for derived/externally-sourced data (first
+	// consumer: meals' external recipe search, wired below). BadgerCache's
+	// own constructor already retries once after wiping a corrupt
+	// directory (see its own doc); if that retry ALSO fails — e.g. a
+	// permissions problem os.RemoveAll cannot fix — fall back to an
+	// in-process MemoryCache rather than fail boot over a cache, matching
+	// the cache package's own "losing the cache is always a non-event"
+	// design. badgerCache (as opposed to appCache) stays nil in the
+	// fallback case, so the shutdown sequence below knows there is no
+	// on-disk store to GC or close (NewBadgerCache returns a nil
+	// *BadgerCache alongside a non-nil error, so badgerCache is already
+	// nil in the fallback branch below).
+	var appCache cache.Cache
+	badgerCache, err := cache.NewBadgerCache(cfg.Cache.Dir, logger)
+	if err != nil {
+		logger.Error("cache: failed to open BadgerDB cache, falling back to in-memory cache",
+			"dir", cfg.Cache.Dir, "error", err)
+		appCache = cache.NewMemoryCache()
+	} else {
+		appCache = badgerCache
+	}
 
 	// NES-23: session manager backed by Postgres (scs + pgxstore).
 	sm := authadapter.NewSessionManager(pool, cfg.Session)
@@ -513,7 +543,7 @@ func runServer(logger *slog.Logger) error {
 	if cfg.Recipes.ExternalEnabled {
 		externalRecipeSource, err = mealsadapter.NewExternalRecipeSource(
 			&http.Client{Timeout: mealsadapter.ExternalRequestTimeout},
-			cfg.Recipes.BaseURL, cfg.Recipes.APIKey, recipeRepo, ingredientRepo, ingredientRepo,
+			cfg.Recipes.BaseURL, cfg.Recipes.APIKey, recipeRepo, ingredientRepo, ingredientRepo, appCache, logger,
 		)
 		if err != nil {
 			return fmt.Errorf("create external recipe source: %w", err)
@@ -879,6 +909,21 @@ func runServer(logger *slog.Logger) error {
 		calendarSyncScheduler.Run(ctx)
 	}()
 
+	// NES-140: BadgerCache's value-log GC is a sixth background worker on
+	// the same signal-cancelled ctx, only started when badgerCache is
+	// non-nil (the MemoryCache fallback has nothing to GC). cacheGCDone is
+	// awaited below before pool.Close, same as every other worker; unlike
+	// those, GC does not itself own the resource it runs against, so
+	// badgerCache.Close() is called explicitly afterward to release it.
+	var cacheGCDone chan struct{}
+	if badgerCache != nil {
+		cacheGCDone = make(chan struct{})
+		go func() {
+			defer close(cacheGCDone)
+			badgerCache.RunGC(ctx, cacheGCInterval)
+		}()
+	}
+
 	var runErr error
 	select {
 	case err := <-serverErr:
@@ -906,6 +951,12 @@ func runServer(logger *slog.Logger) error {
 	<-restockSchedulerDone
 	<-renewalSchedulerDone
 	<-calendarSyncSchedulerDone
+	if cacheGCDone != nil {
+		<-cacheGCDone
+		if err := badgerCache.Close(); err != nil {
+			logger.Error("cache: failed to close BadgerDB cache", "error", err)
+		}
+	}
 
 	if shutdownErr != nil {
 		return errors.Join(runErr, shutdownErr)
