@@ -34,6 +34,7 @@ import (
 	mediabootstrap "github.com/ericfisherdev/nestova/internal/media/bootstrap"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
+	notifybootstrap "github.com/ericfisherdev/nestova/internal/notify/bootstrap"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/bootstrap"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
@@ -64,6 +65,13 @@ const shutdownTimeout = 15 * time.Second
 // unreachable endpoint is reported quickly. Unused when backend=local (the
 // local store has no network call to bound).
 const photoStoreInitTimeout = 10 * time.Second
+
+// smsSenderInitTimeout bounds notifybootstrap.NewSMSSender's AWS config
+// loading (LoadDefaultConfig may reach the EC2/ECS instance metadata
+// service to resolve credentials — see NewSMSSender's own doc). Unused
+// when NOTIFY_SMS_ENABLED is false (the Noop sender has no network call to
+// bound).
+const smsSenderInitTimeout = 10 * time.Second
 
 // Notification dispatcher tuning (NES-24).
 const (
@@ -265,6 +273,7 @@ func runServer(logger *slog.Logger) error {
 	httpMetrics := metrics.NewHTTPMetrics(registry)
 	tickRecorder := metrics.NewPromTickRecorder(registry)
 	syncMetrics := metrics.NewSyncMetrics(registry)
+	smsMetrics := metrics.NewSMSMetrics(registry)
 
 	// NES-24: notification outbox wiring.
 	outboxRepo := notifyadapter.NewOutboxRepository(pool)
@@ -279,6 +288,32 @@ func runServer(logger *slog.Logger) error {
 	)
 	if err != nil {
 		return fmt.Errorf("create dispatcher: %w", err)
+	}
+
+	// NES-138: SMS sender wiring — NoopSMSSender when NOTIFY_SMS_ENABLED is
+	// false (the default; zero AWS dependency), else an
+	// AWSEndUserMessagingSender instrumented with smsMetrics (see
+	// notifybootstrap.NewSMSSender's own doc). Not yet registered with the
+	// dispatcher above: routing a Notification to SMS requires member phone
+	// numbers and delivery preferences, which is NES-139 — smsSender is
+	// constructed here (so a misconfigured NOTIFY_SMS_ENABLED=true
+	// deployment fails the boot loudly now, rather than silently once
+	// NES-139 first tries to use it) and held for that ticket to register
+	// with the dispatcher once it exists. ctx bounds AWS config loading
+	// (LoadDefaultConfig may reach the EC2/ECS instance metadata service to
+	// resolve credentials when no static ones are configured), mirroring
+	// photoStoreCtx's identical bounded-startup-call reasoning below.
+	smsCtx, cancelSMSCtx := context.WithTimeout(context.Background(), smsSenderInitTimeout)
+	smsSender, err := notifybootstrap.NewSMSSender(smsCtx, cfg.SMS, smsMetrics, logger)
+	cancelSMSCtx()
+	if err != nil {
+		return fmt.Errorf("create sms sender: %w", err)
+	}
+	switch smsSender.(type) {
+	case *notifyadapter.NoopSMSSender:
+		logger.Info("sms sender configured", "provider", "noop")
+	default:
+		logger.Info("sms sender configured", "provider", "aws_end_user_messaging", "region", cfg.SMS.Region)
 	}
 
 	// NES-31: task scheduler wiring.

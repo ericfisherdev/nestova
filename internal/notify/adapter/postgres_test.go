@@ -293,6 +293,38 @@ func TestMarkFailed_UnknownID_ReturnsErrNotificationNotFound(t *testing.T) {
 	}
 }
 
+// TestEnqueue_SMSChannel_Accepted proves the 00035 migration's widened
+// notification_channel_check CHECK constraint actually accepts 'sms'
+// (NES-138) — a schema-level round trip, not just Channel.Valid()'s own
+// in-memory check (domain_test.go), since the CONSTRAINT is the thing this
+// migration changed. If the migration's DROP CONSTRAINT named the wrong
+// (guessed) auto-generated constraint name, this whole test FILE would
+// already fail at newTestPool's migrate.Up step, before this test's own
+// Enqueue call ever runs.
+func TestEnqueue_SMSChannel_Accepted(t *testing.T) {
+	pool := newTestPool(t)
+	repo := notifyadapter.NewOutboxRepository(pool)
+
+	hhID, _ := seedHouseholdAndMember(t, pool)
+
+	n := newPendingNotification(hhID, time.Now().Add(-time.Second))
+	n.Channel = domain.ChannelSMS
+	if err := repo.Enqueue(testCtx(t), n); err != nil {
+		t.Fatalf("Enqueue (sms channel): %v", err)
+	}
+
+	claimed, err := repo.ClaimDue(testCtx(t), 10)
+	if err != nil {
+		t.Fatalf("ClaimDue: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("ClaimDue returned %d, want 1", len(claimed))
+	}
+	if claimed[0].Channel != domain.ChannelSMS {
+		t.Errorf("ClaimDue channel = %v, want %v", claimed[0].Channel, domain.ChannelSMS)
+	}
+}
+
 func TestEnqueue_MemberTargeted(t *testing.T) {
 	pool := newTestPool(t)
 	repo := notifyadapter.NewOutboxRepository(pool)

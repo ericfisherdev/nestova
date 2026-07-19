@@ -44,6 +44,13 @@ var (
 	// ErrUnknownChannel is returned by the sender registry when no Sender is
 	// registered for the notification's channel.
 	ErrUnknownChannel = errors.New("notify: unknown channel")
+	// ErrRecipientOptedOut is returned by SMSSender.Send when the
+	// destination phone number has opted out of SMS (NES-138) — a
+	// terminal, non-retryable outcome: the carrier will not deliver to
+	// that number regardless of how many times the send is retried, so a
+	// caller must map this to a failed notification immediately rather
+	// than exhausting its retry budget on a send that can never succeed.
+	ErrRecipientOptedOut = errors.New("notify: recipient has opted out of sms")
 )
 
 // Enqueuer is the narrow producer port: callers that only need to queue a

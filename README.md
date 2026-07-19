@@ -456,6 +456,19 @@ future recovery sweep can close both gaps.
 - The dispatcher goroutine uses the same signal-cancelled context as the HTTP
   server, so it stops cleanly on `SIGINT`/`SIGTERM`.
 
+**SMS channel (NES-138):** `internal/notify/domain.SMSSender` is a
+narrower port for the SMS channel specifically — a destination phone
+number and a message body, rather than a whole outbox row — implemented by
+`NoopSMSSender` (the default, zero AWS dependency) or
+`AWSEndUserMessagingSender` (AWS End User Messaging), selected by
+`internal/notify/bootstrap.NewSMSSender` based on `NOTIFY_SMS_ENABLED`.
+This ticket ships the port, the adapter, and its spend safety only —
+routing a notification to this channel (member phone numbers, delivery
+preferences) is NES-139. See
+[`docs/aws-sms.md`](docs/aws-sms.md) for the operator runbook and
+[`docs/aws-guardrails.md`](docs/aws-guardrails.md) for the account-level
+spend guardrails it depends on.
+
 ### Observability (NES-114 / NES-115)
 
 The server exposes Prometheus metrics at `GET /metrics`, backed by a dedicated
@@ -494,6 +507,12 @@ cardinality stays bounded even against misuse.
 | --- | --- | --- | --- |
 | `nestova_calendar_sync_events_total` | counter | — | External calendar events applied to the cache (upserts and deletes) across all accounts |
 | `nestova_calendar_sync_account_errors_total` | counter | — | Per-account sync failures (one increment per failed account per pass) |
+
+**SMS send metrics** (recorded around every `SMSSender.Send` call, NES-138):
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nestova_sms_sends_total` | counter | `result` | SMS send attempts; `result` is `sent`, `failed`, or `opted_out` |
 
 ### Linting (golangci-lint)
 
