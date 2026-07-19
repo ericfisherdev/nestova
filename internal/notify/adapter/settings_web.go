@@ -218,6 +218,9 @@ func (h *NotifyWebHandlers) UpdatePreferences(w http.ResponseWriter, r *http.Req
 		if errors.Is(err, domain.ErrMemberNotSMSReady) {
 			return member, "Opt in to text messages with a verified phone number before choosing SMS.", http.StatusBadRequest, true
 		}
+		if errors.Is(err, domain.ErrChannelNotDeliverable) {
+			return member, "That notification channel isn't available yet.", http.StatusBadRequest, true
+		}
 		h.logger.ErrorContext(r.Context(), "notify settings: update preferences", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return nil, "", 0, false

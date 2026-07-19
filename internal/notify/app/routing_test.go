@@ -324,7 +324,13 @@ func TestRoutingEnqueuer_ContactLookupError_KeepsDefaultChannel(t *testing.T) {
 	}
 }
 
-func TestRoutingEnqueuer_HouseholdLookupError_RoutesToSMSWithoutDeferral(t *testing.T) {
+// TestRoutingEnqueuer_HouseholdLookupError_FallsBackToInApp is the
+// regression test for CodeRabbit round 3 (major finding #1): a household
+// lookup failure must reset Channel to ChannelInApp, not leave it on SMS
+// with the quiet-hours check simply skipped — the earlier behavior risked
+// sending SMS at any hour, including inside quiet hours, whenever the
+// household lookup happened to fail.
+func TestRoutingEnqueuer_HouseholdLookupError_FallsBackToInApp(t *testing.T) {
 	outbox := &fakeOutbox{}
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{prefs: map[string]domain.Channel{
@@ -339,14 +345,11 @@ func TestRoutingEnqueuer_HouseholdLookupError_RoutesToSMSWithoutDeferral(t *test
 	if err := e.Enqueue(context.Background(), n); err != nil {
 		t.Fatalf("Enqueue: %v, want nil", err)
 	}
-	// Channel resolution already succeeded before the household lookup
-	// failed, so the channel stays SMS — only the quiet-hours deferral is
-	// skipped.
-	if n.Channel != domain.ChannelSMS {
-		t.Errorf("Channel = %v, want ChannelSMS (already resolved before the household lookup failed)", n.Channel)
+	if n.Channel != domain.ChannelInApp {
+		t.Errorf("Channel = %v, want ChannelInApp (the household lookup failure must fall back, not leave Channel on SMS with no deferral check)", n.Channel)
 	}
 	if !n.ScheduledFor.Equal(scheduledFor) {
-		t.Errorf("ScheduledFor = %v, want unchanged %v (deferral skipped on lookup failure)", n.ScheduledFor, scheduledFor)
+		t.Errorf("ScheduledFor = %v, want unchanged %v (no deferral is applied on the in-app fallback path)", n.ScheduledFor, scheduledFor)
 	}
 }
 

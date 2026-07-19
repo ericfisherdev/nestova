@@ -10,6 +10,13 @@ const (
 	smsResultSent     = "sent"
 	smsResultFailed   = "failed"
 	smsResultOptedOut = "opted_out"
+	// smsResultFallback records a TERMINAL SMS failure that
+	// Dispatcher.fallbackToInApp (NES-139) re-enqueued to the in-app
+	// channel — tracked as its own result value, not folded into
+	// smsResultFailed, so a terminal failure that still reached the
+	// member (via the in-app fallback) is distinguishable in metrics from
+	// one that did not (see IncFallback's own doc).
+	smsResultFallback = "fallback"
 )
 
 // SMSRecorder is the minimal port (ISP) an SMS sender records each send
@@ -30,6 +37,13 @@ type SMSRecorder interface {
 	// opt-out is an expected, non-retryable outcome, not a delivery
 	// failure worth alerting on the same way a provider error is.
 	IncOptedOut()
+	// IncFallback records a terminal SMS failure that the dispatcher
+	// re-enqueued to the in-app channel instead of losing entirely
+	// (NES-139, Dispatcher.fallbackToInApp) — CodeRabbit PR #109 round 3:
+	// distinguishing this from a plain IncFailed/generic MarkFailed lets
+	// an operator see how often SMS delivery is falling back, without it
+	// being buried in the outbox's overall failed-notification count.
+	IncFallback()
 }
 
 // SMSMetrics is the Prometheus-backed SMSRecorder. The field is exported so
@@ -72,6 +86,9 @@ func (m *SMSMetrics) IncFailed() { m.SendsTotal.WithLabelValues(smsResultFailed)
 // IncOptedOut increments the opted-out-result counter.
 func (m *SMSMetrics) IncOptedOut() { m.SendsTotal.WithLabelValues(smsResultOptedOut).Inc() }
 
+// IncFallback increments the fallback-result counter.
+func (m *SMSMetrics) IncFallback() { m.SendsTotal.WithLabelValues(smsResultFallback).Inc() }
+
 // NopSMSRecorder is a no-op SMSRecorder for tests and optional wiring where
 // SMS instrumentation is irrelevant.
 type NopSMSRecorder struct{}
@@ -87,3 +104,6 @@ func (NopSMSRecorder) IncFailed() {}
 
 // IncOptedOut discards the observation.
 func (NopSMSRecorder) IncOptedOut() {}
+
+// IncFallback discards the observation.
+func (NopSMSRecorder) IncFallback() {}
