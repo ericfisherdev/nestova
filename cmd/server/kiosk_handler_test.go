@@ -33,16 +33,23 @@ import (
 	trackingdomain "github.com/ericfisherdev/nestova/internal/tracking/domain"
 )
 
-// fakeMFARepo is an in-memory authdomain.MFARepository used by the kiosk test
-// harness, which only needs registerSettingsPage's MFA section to build
-// without error (no kiosk test exercises MFA enrollment itself — that has
-// its own dedicated coverage in internal/auth/app and internal/auth/adapter).
+// fakeMFARepo is an in-memory authdomain.MFARepository shared by the kiosk
+// (registerSettingsPage's MFA section only needs to build without error)
+// and login-MFA (NES-135) test harnesses — the latter DOES exercise real
+// enrollment, recovery codes, and login-step replay guarding end to end, so
+// every method here mirrors the real repository's contract rather than
+// stubbing it out.
 type fakeMFARepo struct {
 	enrollments map[household.MemberID]*authdomain.MFAEnrollment
+	codes       map[household.MemberID][]authdomain.RecoveryCode
+	nextCodeID  int
 }
 
 func newFakeMFARepo() *fakeMFARepo {
-	return &fakeMFARepo{enrollments: make(map[household.MemberID]*authdomain.MFAEnrollment)}
+	return &fakeMFARepo{
+		enrollments: make(map[household.MemberID]*authdomain.MFAEnrollment),
+		codes:       make(map[household.MemberID][]authdomain.RecoveryCode),
+	}
 }
 
 func (f *fakeMFARepo) GetEnrollment(_ context.Context, memberID household.MemberID) (*authdomain.MFAEnrollment, error) {
@@ -62,7 +69,7 @@ func (f *fakeMFARepo) BeginEnrollment(_ context.Context, memberID household.Memb
 	return nil
 }
 
-func (f *fakeMFARepo) ConfirmEnrollmentWithCodes(_ context.Context, memberID household.MemberID, _ []string) error {
+func (f *fakeMFARepo) ConfirmEnrollmentWithCodes(_ context.Context, memberID household.MemberID, hashes []string) error {
 	e, ok := f.enrollments[memberID]
 	if !ok {
 		return authdomain.ErrMFANotEnrolled
@@ -72,6 +79,17 @@ func (f *fakeMFARepo) ConfirmEnrollmentWithCodes(_ context.Context, memberID hou
 	}
 	now := time.Now()
 	e.ConfirmedAt = &now
+
+	codes := make([]authdomain.RecoveryCode, 0, len(hashes))
+	for _, h := range hashes {
+		f.nextCodeID++
+		codes = append(codes, authdomain.RecoveryCode{
+			ID:       recoveryCodeIDFromInt(f.nextCodeID),
+			MemberID: memberID,
+			CodeHash: h,
+		})
+	}
+	f.codes[memberID] = codes
 	return nil
 }
 
@@ -81,19 +99,71 @@ func (f *fakeMFARepo) DeleteEnrollment(_ context.Context, householdID household.
 		return authdomain.ErrMFANotEnrolled
 	}
 	delete(f.enrollments, memberID)
+	delete(f.codes, memberID)
 	return nil
 }
 
-func (f *fakeMFARepo) ReplaceRecoveryCodes(_ context.Context, _ household.MemberID, _ []string) error {
+func (f *fakeMFARepo) ReplaceRecoveryCodes(_ context.Context, memberID household.MemberID, hashes []string) error {
+	codes := make([]authdomain.RecoveryCode, 0, len(hashes))
+	for _, h := range hashes {
+		f.nextCodeID++
+		codes = append(codes, authdomain.RecoveryCode{
+			ID:       recoveryCodeIDFromInt(f.nextCodeID),
+			MemberID: memberID,
+			CodeHash: h,
+		})
+	}
+	f.codes[memberID] = codes
 	return nil
 }
 
-func (f *fakeMFARepo) ListUnusedRecoveryCodes(_ context.Context, _ household.MemberID) ([]authdomain.RecoveryCode, error) {
-	return nil, nil
+func (f *fakeMFARepo) ListUnusedRecoveryCodes(_ context.Context, memberID household.MemberID) ([]authdomain.RecoveryCode, error) {
+	var out []authdomain.RecoveryCode
+	for _, c := range f.codes[memberID] {
+		if !c.Used() {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
-func (f *fakeMFARepo) MarkRecoveryCodeUsed(_ context.Context, _ authdomain.RecoveryCodeID) error {
+func (f *fakeMFARepo) MarkRecoveryCodeUsed(_ context.Context, codeID authdomain.RecoveryCodeID) error {
+	for memberID, codes := range f.codes {
+		for i := range codes {
+			if codes[i].ID == codeID {
+				now := time.Now()
+				codes[i].UsedAt = &now
+				f.codes[memberID] = codes
+				return nil
+			}
+		}
+	}
+	return authdomain.ErrRecoveryCodeInvalid
+}
+
+// RecordLoginStep mirrors the real repository's replay guard: it only
+// accepts step when the stored LastTOTPStep is nil or strictly less than
+// step (NES-135).
+func (f *fakeMFARepo) RecordLoginStep(_ context.Context, memberID household.MemberID, step int64) error {
+	e, ok := f.enrollments[memberID]
+	if !ok {
+		return authdomain.ErrInvalidTOTPCode
+	}
+	if e.LastTOTPStep != nil && step <= *e.LastTOTPStep {
+		return authdomain.ErrInvalidTOTPCode
+	}
+	e.LastTOTPStep = &step
 	return nil
+}
+
+// recoveryCodeIDFromInt derives a deterministic RecoveryCodeID from a small
+// int for fixture bookkeeping (mirrors internal/auth/app/mfa_test.go's own
+// helper of the same name and purpose — a real id is a UUIDv7; tests only
+// need distinct, comparable ids).
+func recoveryCodeIDFromInt(n int) authdomain.RecoveryCodeID {
+	id := authdomain.NewRecoveryCodeID()
+	id[0] = byte(n)
+	return id
 }
 
 // Compile-time assertion.
@@ -361,11 +431,11 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 	// role-gate tests) can mint a session cookie + CSRF token exactly as it
 	// does against the real app; login itself is never exercised (the tests
 	// stamp member_id into the session directly, bypassing real credentials).
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers)
+	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService)
 	registerKioskPages(mux, kioskHandlers)
 
 	handler := sm.LoadAndSave(

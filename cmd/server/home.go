@@ -9,6 +9,7 @@ import (
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
+	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	deeplinkadapter "github.com/ericfisherdev/nestova/internal/deeplink/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -74,6 +75,7 @@ func registerWebRoutes(
 	logger *slog.Logger,
 	sm *scs.SessionManager,
 	authHandlers *authadapter.Handlers,
+	loginMFAHandlers *authadapter.LoginMFAHandlers,
 	onboardingHandlers *authadapter.OnboardingHandlers,
 	households household.HouseholdRepository,
 	taskHandlers *tasksadapter.WebHandlers,
@@ -87,6 +89,12 @@ func registerWebRoutes(
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
 	mux.HandleFunc("POST /login", authHandlers.Login)
 	mux.HandleFunc("POST /logout", authHandlers.Logout)
+	// NES-135: the pre-auth login MFA step. Public in the sense that no
+	// RequireMember gate applies — access is instead controlled by the
+	// pending-member session state Handlers.Login (or RequireStepUp) sets;
+	// with no pending state, LoginMFAHandlers redirects to /login.
+	mux.HandleFunc("GET /login/mfa", loginMFAHandlers.Page)
+	mux.HandleFunc("POST /login/mfa", loginMFAHandlers.Verify)
 
 	// Onboarding routes — public (first-run guard enforced inside the handlers).
 	mux.HandleFunc("GET /onboarding", onboardingHandlers.OnboardingPage)
@@ -471,9 +479,16 @@ func registerSettingsPage(
 	households household.HouseholdRepository,
 	settingsHandlers *kioskadapter.SettingsWebHandlers,
 	mfaHandlers *authadapter.MFAWebHandlers,
+	mfaService *authapp.MFAService,
 ) {
 	const settingsPath = "/settings"
 	requireMember := authadapter.RequireMember(sm)
+	// NES-135: kiosk token provisioning is security-sensitive (it mints a
+	// long-lived device credential), so it additionally requires a FRESH
+	// login MFA verification, not just an authenticated session — see
+	// RequireStepUp's doc for why landingPath is settingsPath rather than
+	// an attempt to replay the original POST.
+	requireStepUp := authadapter.RequireStepUp(sm, mfaService, settingsPath, logger)
 	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
@@ -584,7 +599,10 @@ func registerSettingsPage(
 	})))
 
 	// Kiosk section mutations (parent-only, enforced inside settingsHandlers).
-	mux.Handle("POST /settings/kiosk/generate", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Generating a device token is security-sensitive (NES-135): requireMember
+	// runs first (identity), then requireStepUp (freshness of that identity's
+	// own MFA verification) before the mutation handler ever runs.
+	mux.Handle("POST /settings/kiosk/generate", requireMember(requireStepUp(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, reveal, ok := settingsHandlers.CreateActivationCode(w, r)
 		if !ok {
 			return
@@ -594,7 +612,7 @@ func registerSettingsPage(
 		// proxy or stored in the browser's disk cache.
 		w.Header().Set("Cache-Control", "no-store")
 		composePage(w, r, member, http.StatusOK, reveal, nil, nil, "")
-	})))
+	}))))
 	mux.Handle("POST /settings/kiosk/{id}/revoke", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, ok := settingsHandlers.RevokeKioskToken(w, r)
 		if !ok {

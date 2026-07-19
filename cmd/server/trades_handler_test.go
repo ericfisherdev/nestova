@@ -136,7 +136,7 @@ func buildTradeTestHandler(
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	authn := authapp.New(testCredRepo{})
-	authHandlers := authadapter.NewHandlers(sm, authn, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	recurringRepo := fakeRecurringTaskRepo{}
@@ -157,7 +157,7 @@ func buildTradeTestHandler(
 	)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

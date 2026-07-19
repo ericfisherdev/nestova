@@ -1,0 +1,85 @@
+package components
+
+// LoginMFAForm holds the data the login MFA page template needs to render
+// (NES-135).
+type LoginMFAForm struct {
+	// CSRFToken is the per-session CSRF token embedded as a hidden form field.
+	CSRFToken string
+	// Next is the path the user should be redirected to after a successful
+	// verification.
+	Next string
+	// Error is a generic error message shown below the form on a failed or
+	// locked-out verification attempt. Empty string means no error is shown.
+	Error string
+}
+
+// LoginMFAPage renders the pre-auth login MFA step: a member whose password
+// already verified (or whose session went stale — see RequireStepUp)
+// enters their current authenticator code, a recovery code, or checks
+// "remember this device". It is a self-contained HTML page (not wrapped in
+// Layout), mirroring LoginPage — the app shell requires an authenticated
+// member, which this page's visitor is not yet.
+templ LoginMFAPage(form LoginMFAForm) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Verify it's you – Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4">
+			<div class="w-full max-w-sm">
+				<div class="mb-8 text-center">
+					<span class="inline-block h-10 w-10 rounded-full border-4 border-sage" aria-hidden="true"></span>
+					<h1 class="mt-3 text-2xl font-semibold">Nestova</h1>
+					<p class="mt-1 text-sm text-ink-muted">Enter your two-factor code</p>
+				</div>
+				<div class="rounded-card bg-surface p-6 shadow-warm">
+					<form method="POST" action="/login/mfa" novalidate>
+						<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+						<input type="hidden" name="next" value={ form.Next }/>
+						<div class="flex flex-col gap-4">
+							<div class="flex flex-col gap-1">
+								<label for="mfa-login-code" class="text-sm font-medium text-ink-secondary">
+									Authenticator app code
+								</label>
+								<input
+									id="mfa-login-code"
+									type="text"
+									name="code"
+									inputmode="numeric"
+									autocomplete="one-time-code"
+									autofocus
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none font-mono"
+									placeholder="123456"
+								/>
+							</div>
+							<div class="flex flex-col gap-1">
+								<label for="mfa-login-recovery" class="text-sm font-medium text-ink-secondary">
+									Or a recovery code
+								</label>
+								<input
+									id="mfa-login-recovery"
+									type="text"
+									name="recovery_code"
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none font-mono"
+									placeholder="xxxx-xxxx-xxxx"
+								/>
+							</div>
+							<label class="flex items-center gap-2 text-sm text-ink-secondary">
+								<input type="checkbox" name="remember_device" value="1"/>
+								Remember this device for 30 days
+							</label>
+							if form.Error != "" {
+								<p role="alert" class="text-sm text-red-600">{ form.Error }</p>
+							}
+							@Button("Verify", ButtonPrimary, "submit")
+						</div>
+					</form>
+				</div>
+			</div>
+		</body>
+	</html>
+}

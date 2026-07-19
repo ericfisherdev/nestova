@@ -48,17 +48,17 @@ type MFAMemberOption struct {
 // MFASettingsView is the view model for the /settings page's MFA section
 // (NES-134), rendered for every member regardless of role.
 type MFASettingsView struct {
-	Status               MFAEnrollmentStatus
-	EnrollReveal         *MFAEnrollReveal
-	RecoveryCodesReveal  *MFARecoveryCodesReveal
-	CSRFToken            string
+	Status              MFAEnrollmentStatus
+	EnrollReveal        *MFAEnrollReveal
+	RecoveryCodesReveal *MFARecoveryCodesReveal
+	CSRFToken           string
 	// IsOwner and OtherMembers gate and populate the admin reset
 	// sub-section, shown only to the household owner (not just any parent).
-	IsOwner              bool
-	OtherMembers         []MFAMemberOption
+	IsOwner      bool
+	OtherMembers []MFAMemberOption
 	// Error is a generic, non-enumerating message re-shown inline after a
 	// failed confirm/disenroll/regenerate/reset attempt on THIS page render.
-	Error                string
+	Error string
 }
 
 templ mfaSection(view MFASettingsView) {

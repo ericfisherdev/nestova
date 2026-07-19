@@ -341,7 +341,7 @@ func buildDeepLinkFixture(t *testing.T, member *household.Member) *deepLinkFixtu
 	)
 
 	credRepo := newSuccessCredRepo(t, member.ID, "member@example.com", "correct horse battery staple")
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -1035,7 +1035,7 @@ func buildDeepLinkFixtureWithSharedStores(t *testing.T, member *household.Member
 		sm, logger, shared.clock.Now,
 	)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(shared.credRepo), logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(shared.credRepo), nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

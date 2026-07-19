@@ -142,7 +142,7 @@ func buildChoreProofTestHandler(t *testing.T, member *household.Member, store *f
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, logger)
 
 	svc, err := mediaapp.NewChoreProofPhotoService(newFakeStoreResolver(mediadomain.StorageBackendLocal, store), mediadomain.StorageBackendLocal, exif, repo, choreProofTestMaxUploadBytes, choreProofTestFreshnessWindow)
 	if err != nil {

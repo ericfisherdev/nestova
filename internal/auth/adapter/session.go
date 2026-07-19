@@ -2,18 +2,38 @@ package adapter
 
 import (
 	"context"
+	"encoding/gob"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 )
+
+// stepUpFreshnessWindow bounds how recently a session must have completed
+// login MFA verification for RequireStepUp (NES-135) to consider it fresh
+// enough to gate a security-sensitive action without demanding it again.
+const stepUpFreshnessWindow = 15 * time.Minute
+
+func init() {
+	// scs serializes session data via gob, which requires every concrete
+	// type assigned through an interface{} (sm.Put's value parameter) to be
+	// registered up front (see the scs README's "Storing custom types"
+	// note). sessionKeyMFAVerifiedAt (NES-135, http.go) is the first
+	// non-string value this codebase stores in the session — every prior
+	// sm.Put call stores a plain string (e.g. sessionKeyMemberID's
+	// memberID.String()), which gob handles natively without registration.
+	gob.Register(time.Time{})
+}
 
 // sessionContextKey is the unexported type for context keys in this package.
 type sessionContextKey int
@@ -120,4 +140,84 @@ func RequireMember(_ *scs.SessionManager) middleware.Middleware {
 // round-tripped through the login form hidden field.
 func escapePath(path string) string {
 	return url.QueryEscape(path)
+}
+
+// MFAVerifiedAt returns the timestamp the current session last completed
+// login MFA verification (see sessionKeyMFAVerifiedAt's doc in http.go),
+// and false when the session carries no such stamp at all — either because
+// it predates NES-135, or because finishLogin deliberately left it unset
+// (a remembered-device login that skipped the prompt).
+func MFAVerifiedAt(ctx context.Context, sm *scs.SessionManager) (time.Time, bool) {
+	t := sm.GetTime(ctx, sessionKeyMFAVerifiedAt)
+	return t, !t.IsZero()
+}
+
+// mfaStatusChecker is the narrow read port RequireStepUp depends on (ISP):
+// only the enrollment-status lookup authapp.MFAService exposes, needed to
+// decide whether a member has anything to step up FROM at all. Satisfied
+// by *authapp.MFAService (a superset); defined locally rather than
+// importing authapp's own interface to avoid a package-level dependency on
+// authapp just for this one method shape.
+type mfaStatusChecker interface {
+	Status(ctx context.Context, memberID household.MemberID) (*authdomain.MFAEnrollment, error)
+}
+
+// RequireStepUp is a middleware enforcing that the current session's login
+// MFA verification is fresh (within stepUpFreshnessWindow) before allowing
+// a security-sensitive action to proceed — e.g. provisioning a kiosk device
+// token (cmd/server/home.go's registerSettingsPage). It must run AFTER
+// RequireMember (it assumes an authenticated Member is already present in
+// the context) and mirrors RequireMember's own HX-Request-vs-redirect
+// branching for the "needs step-up" outcome.
+//
+// A member with NO confirmed MFA enrollment always passes through
+// unconditionally — there is nothing to step up FROM (the same reasoning
+// finishLogin's own doc applies to a password-only member); without this
+// check, EVERY member's session would eventually go "stale" past
+// stepUpFreshnessWindow and get stuck unable to satisfy a step-up prompt
+// they have no second factor to complete.
+//
+// landingPath is where the member lands after completing (or already
+// satisfying) the step-up: RequireStepUp never attempts to replay the
+// original request, which may have been a POST mutation a GET redirect
+// cannot resubmit — the caller supplies a safe page its own route group can
+// be re-entered from (e.g. "/settings").
+func RequireStepUp(sm *scs.SessionManager, mfa mfaStatusChecker, landingPath string, logger *slog.Logger) middleware.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			member, ok := CurrentMember(r.Context())
+			if !ok {
+				// RequireMember (which must run before this) should already
+				// have handled the unauthenticated case — defensive fallback
+				// only.
+				http.Redirect(w, r, "/login?next="+escapePath(r.URL.RequestURI()), http.StatusSeeOther)
+				return
+			}
+
+			enrollment, err := mfa.Status(r.Context(), member.ID)
+			if err != nil {
+				logger.ErrorContext(r.Context(), "step-up: mfa status", "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if !enrollment.Confirmed() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if verifiedAt, ok := MFAVerifiedAt(r.Context(), sm); ok && time.Since(verifiedAt) <= stepUpFreshnessWindow {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			if r.Header.Get("HX-Request") == "true" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			// Re-prompt the second factor directly — the member is already
+			// authenticated, so there is no need to re-enter their
+			// password, mirroring Handlers.Login's own pending-MFA handoff.
+			sm.Put(r.Context(), sessionKeyMFAPendingMemberID, member.ID.String())
+			http.Redirect(w, r, "/login/mfa?next="+url.QueryEscape(landingPath), http.StatusSeeOther)
+		})
+	}
 }

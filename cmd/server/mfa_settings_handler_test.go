@@ -129,11 +129,11 @@ func buildSettingsTestHandler(t *testing.T, hhRepo household.HouseholdRepository
 	}
 	mfaHandlers := authadapter.NewMFAWebHandlers(mfaService, hhRepo, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers)
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService)
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm
