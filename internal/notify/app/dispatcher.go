@@ -49,32 +49,36 @@ func (r senderRegistry) resolve(channel domain.Channel) (domain.Sender, error) {
 // concurrently: the Outbox.ClaimDue uses FOR UPDATE SKIP LOCKED so each
 // dispatcher claims a disjoint batch.
 type Dispatcher struct {
-	outbox       domain.Outbox
-	senders      senderRegistry
-	logger       *slog.Logger
-	ticks        metrics.TickRecorder
-	smsRecorder  metrics.SMSRecorder
-	batchSize    int
-	pollInterval time.Duration
+	outbox        domain.Outbox
+	senders       senderRegistry
+	logger        *slog.Logger
+	ticks         metrics.TickRecorder
+	smsRecorder   metrics.SMSRecorder
+	emailRecorder metrics.EmailRecorder
+	batchSize     int
+	pollInterval  time.Duration
 }
 
 // NewDispatcher constructs a Dispatcher with injected dependencies.
 // ticks records each poll cycle's duration and outcome (NES-115); pass
 // [metrics.NopTickRecorder] when tick instrumentation is irrelevant.
-// smsRecorder records terminal SMS failures the dispatcher falls back to
-// in-app (NES-139, IncFallback — see fallbackToInApp's own doc); pass
-// [metrics.NopSMSRecorder] when that instrumentation is irrelevant.
+// smsRecorder/emailRecorder record terminal SMS/email failures the
+// dispatcher falls back to in-app (NES-139, generalized to email in
+// NES-141 — IncFallback, see fallbackToInApp's own doc); pass
+// [metrics.NopSMSRecorder]/[metrics.NopEmailRecorder] when that
+// instrumentation is irrelevant.
 // batchSize caps the number of notifications claimed per RunOnce call.
 // pollInterval controls how often Run polls the outbox.
-// Returns an error when outbox, logger, ticks, or smsRecorder is nil,
-// when batchSize or pollInterval is not positive, or when the sender set
-// is empty or invalid.
+// Returns an error when outbox, logger, ticks, smsRecorder, or
+// emailRecorder is nil, when batchSize or pollInterval is not positive,
+// or when the sender set is empty or invalid.
 func NewDispatcher(
 	outbox domain.Outbox,
 	senders []domain.Sender,
 	logger *slog.Logger,
 	ticks metrics.TickRecorder,
 	smsRecorder metrics.SMSRecorder,
+	emailRecorder metrics.EmailRecorder,
 	batchSize int,
 	pollInterval time.Duration,
 ) (*Dispatcher, error) {
@@ -90,6 +94,9 @@ func NewDispatcher(
 	if smsRecorder == nil {
 		return nil, errors.New("app: NewDispatcher requires a non-nil sms recorder")
 	}
+	if emailRecorder == nil {
+		return nil, errors.New("app: NewDispatcher requires a non-nil email recorder")
+	}
 	if batchSize <= 0 {
 		return nil, fmt.Errorf("app: NewDispatcher batchSize must be positive, got %d", batchSize)
 	}
@@ -101,13 +108,14 @@ func NewDispatcher(
 		return nil, err
 	}
 	return &Dispatcher{
-		outbox:       outbox,
-		senders:      reg,
-		logger:       logger,
-		ticks:        ticks,
-		smsRecorder:  smsRecorder,
-		batchSize:    batchSize,
-		pollInterval: pollInterval,
+		outbox:        outbox,
+		senders:       reg,
+		logger:        logger,
+		ticks:         ticks,
+		smsRecorder:   smsRecorder,
+		emailRecorder: emailRecorder,
+		batchSize:     batchSize,
+		pollInterval:  pollInterval,
 	}, nil
 }
 
@@ -151,6 +159,19 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 			"channel", n.Channel.String(),
 			"error", err,
 		)
+		// NES-141 (CodeRabbit round 2, major finding #3): an SMS/email
+		// channel can be unregistered not just because of a genuinely
+		// invalid Channel value, but because the operator has that whole
+		// channel disabled at the app level
+		// (NOTIFY_SMS_ENABLED/NOTIFY_EMAIL_ENABLED=false) while a member
+		// still has an explicit preference set for it — the composition
+		// root only registers SMSNotificationSender/EmailNotificationSender
+		// with the dispatcher when their channel is enabled (see
+		// cmd/server/main.go's own comment). Falling back to in-app here,
+		// exactly as a real send failure would (see fallbackForChannel's
+		// own doc), is what keeps that combination from silently dropping
+		// the notification instead of failing loudly enough to recover it.
+		d.fallbackForChannel(n)
 		d.markFailed(n.ID, "mark failed after unknown channel")
 		return
 	}
@@ -161,20 +182,20 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 			"channel", n.Channel.String(),
 			"error", err,
 		)
-		// NES-139: a terminal SMS failure (the retry budget already
-		// exhausted inside SMSNotificationSender/AWSEndUserMessagingSender
-		// — see those types' own docs) must not silently lose the
-		// notification. Falling back to in-app here, rather than leaving
-		// this to a future recovery sweep, is the smallest change that
-		// satisfies "nothing silently lost" (NES-139 AC): the member still
-		// sees it in the app even though the SMS itself never arrived.
-		// Every OTHER channel's failure has no such fallback — SMS is
-		// singled out because it is the one channel with real-world
-		// preconditions (a verified, currently opted-in phone number)
-		// that can go stale between enqueue and delivery.
-		if n.Channel == domain.ChannelSMS {
-			d.fallbackToInApp(n)
-		}
+		// NES-139 (generalized to email in NES-141): a terminal SMS or
+		// email failure (the retry budget already exhausted inside
+		// SMSNotificationSender/EmailNotificationSender and their wrapped
+		// provider senders — see those types' own docs) must not silently
+		// lose the notification. Falling back to in-app here, rather than
+		// leaving this to a future recovery sweep, is the smallest change
+		// that satisfies "nothing silently lost" (NES-139 AC): the member
+		// still sees it in the app even though the original channel never
+		// delivered it. Every OTHER channel's failure has no such
+		// fallback — SMS and email are singled out because each is the
+		// one channel with real-world preconditions (an opted-in phone
+		// number; a resolvable, currently-accepting email address) that
+		// can go stale between enqueue and delivery.
+		d.fallbackForChannel(n)
 		d.markFailed(n.ID, "mark failed after send error")
 		return
 	}
@@ -191,28 +212,52 @@ func (d *Dispatcher) deliver(ctx context.Context, n *domain.Notification) {
 	}
 }
 
+// fallbackForChannel dispatches to fallbackToInApp with the recorder that
+// matches n.Channel, for every channel that HAS a fallback path (SMS and
+// email — see fallbackToInApp's own doc for why those two specifically).
+// Any other channel (including a genuinely unknown/invalid one, e.g. a
+// future push notification with no wired Sender at all) is a deliberate
+// no-op: this is the ONE place both of deliver's two failure branches
+// (unknown channel, and a real send error) share the channel-to-recorder
+// mapping, so it can never drift between them.
+func (d *Dispatcher) fallbackForChannel(n *domain.Notification) {
+	switch n.Channel {
+	case domain.ChannelSMS:
+		d.fallbackToInApp(n, d.smsRecorder)
+	case domain.ChannelEmail:
+		d.fallbackToInApp(n, d.emailRecorder)
+	}
+}
+
 // fallbackToInApp re-enqueues n's content to ChannelInApp after a terminal
-// SMS send failure (NES-139) — a NEW notification (fresh ID, scheduled
-// immediately), not a mutation of n itself, since n is about to be marked
-// failed and its own row is done. It calls d.outbox.Enqueue directly (the
-// RAW outbox, bypassing whatever RoutingEnqueuer wraps it at the
-// composition root): the fallback channel is deliberately fixed to
-// in-app — re-resolving it through member preference would risk routing
-// straight back to the very sms preference that just failed.
+// SMS or email send failure (NES-139, generalized to email in NES-141) —
+// a NEW notification (fresh ID, scheduled immediately), not a mutation of
+// n itself, since n is about to be marked failed and its own row is done.
+// It calls d.outbox.Enqueue directly (the RAW outbox, bypassing whatever
+// RoutingEnqueuer wraps it at the composition root): the fallback channel
+// is deliberately fixed to in-app — re-resolving it through member
+// preference would risk routing straight back to the very sms/email
+// preference that just failed.
+//
+// recorder is whichever channel-specific metrics.FallbackRecorder
+// (SMSMetrics or EmailMetrics) corresponds to n's own failed channel —
+// deliver's caller picks it, since Dispatcher itself has no single
+// recorder type that covers every channel (ISP: FallbackRecorder is the
+// narrow slice of each recorder's interface this method actually needs).
 //
 // A failure enqueueing the fallback itself is logged only: there is
 // nothing further to fall back to, and n's own MarkFailed (deliver's
 // caller, right after this) still runs regardless, so the original
 // notification's failure is always recorded even when this best-effort
 // fallback also fails.
-func (d *Dispatcher) fallbackToInApp(n *domain.Notification) {
+func (d *Dispatcher) fallbackToInApp(n *domain.Notification, recorder metrics.FallbackRecorder) {
 	// Recorded unconditionally, before the enqueue attempt below: the
-	// metric represents "a terminal SMS failure occurred and a fallback
-	// was attempted," the same way IncSent/IncFailed record the SMS send
-	// OUTCOME itself, not a downstream effect. A failure enqueueing the
-	// fallback (logged separately below) is a distinct, rarer condition
-	// this counter is not meant to capture.
-	d.smsRecorder.IncFallback()
+	// metric represents "a terminal SMS/email failure occurred and a
+	// fallback was attempted," the same way IncSent/IncFailed record the
+	// send OUTCOME itself, not a downstream effect. A failure enqueueing
+	// the fallback (logged separately below) is a distinct, rarer
+	// condition this counter is not meant to capture.
+	recorder.IncFallback()
 
 	fallback := &domain.Notification{
 		ID:           domain.NewNotificationID(),

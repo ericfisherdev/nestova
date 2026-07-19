@@ -118,6 +118,28 @@ func (r *CredentialRepository) EmailExists(ctx context.Context, email string) (b
 	return exists, nil
 }
 
+// ResolveEmail returns memberID's current email address. It structurally
+// satisfies notify/domain.MemberEmailResolver (NES-141): the composition
+// root wires this repository directly against that port, without notify
+// importing auth or auth importing notify (main.go's own
+// adapters-never-import-each-other convention, documented alongside the
+// onboarding provisioner). Returns a wrapped error — no sentinel, see
+// that port's own doc for why — when memberID does not exist or has no
+// email on file (member.email and password_hash are set or cleared
+// together, per 00002_auth's own CHECK, so "no email" and "no
+// credentials" are the same state).
+func (r *CredentialRepository) ResolveEmail(ctx context.Context, memberID household.MemberID) (string, error) {
+	const q = `SELECT email FROM member WHERE id = $1 AND email IS NOT NULL`
+	var email string
+	if err := r.dbtx.QueryRow(ctx, q, memberID.String()).Scan(&email); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("resolve email: no email on file for member %s", memberID)
+		}
+		return "", fmt.Errorf("resolve email: %w", err)
+	}
+	return email, nil
+}
+
 // SetPassword stores (or replaces) the email and password hash on the member
 // row identified by memberID. It returns household.ErrMemberNotFound when the
 // member does not exist, and authdomain.ErrEmailAlreadyInUse when the email is

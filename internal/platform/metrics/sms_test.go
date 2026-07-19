@@ -28,6 +28,11 @@ func TestNewSMSMetricsRegistersOnRegistry(t *testing.T) {
 	if !names["nestova_sms_sends_total"] {
 		t.Error("nestova_sms_sends_total not registered on the provided registry")
 	}
+	// FallbacksTotal is a plain Counter (not a vector), so it appears in a
+	// gather immediately — no zero-value observation needed first.
+	if !names["nestova_sms_fallbacks_total"] {
+		t.Error("nestova_sms_fallbacks_total not registered on the provided registry")
+	}
 }
 
 // TestNewSMSMetricsNilRegistererPanics pins the platform convention of
@@ -42,8 +47,8 @@ func TestNewSMSMetricsNilRegistererPanics(t *testing.T) {
 }
 
 // TestSMSMetrics_IncrementsAreIndependentPerResult verifies each of
-// IncSent/IncFailed/IncOptedOut/IncFallback increments its OWN "result"
-// label series without affecting the others.
+// IncSent/IncFailed/IncOptedOut increments its OWN "result" label series
+// on SendsTotal without affecting the others.
 func TestSMSMetrics_IncrementsAreIndependentPerResult(t *testing.T) {
 	m := metrics.NewSMSMetrics(metrics.NewRegistry())
 
@@ -53,10 +58,6 @@ func TestSMSMetrics_IncrementsAreIndependentPerResult(t *testing.T) {
 	m.IncOptedOut()
 	m.IncOptedOut()
 	m.IncOptedOut()
-	m.IncFallback()
-	m.IncFallback()
-	m.IncFallback()
-	m.IncFallback()
 
 	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("sent")); got != 2 {
 		t.Errorf("sent = %v, want 2", got)
@@ -67,8 +68,29 @@ func TestSMSMetrics_IncrementsAreIndependentPerResult(t *testing.T) {
 	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("opted_out")); got != 3 {
 		t.Errorf("opted_out = %v, want 3", got)
 	}
-	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("fallback")); got != 4 {
-		t.Errorf("fallback = %v, want 4", got)
+}
+
+// TestSMSMetrics_IncFallback_UsesADedicatedCounter_NotSendsTotal is the
+// CodeRabbit round-2 regression test (major finding #2): IncFallback must
+// increment its own FallbacksTotal counter, never a "fallback" value on
+// SendsTotal — folding it in there would let sum(nestova_sms_sends_total)
+// over-count real SMS send attempts by however many fell back.
+func TestSMSMetrics_IncFallback_UsesADedicatedCounter_NotSendsTotal(t *testing.T) {
+	m := metrics.NewSMSMetrics(metrics.NewRegistry())
+
+	m.IncSent()
+	m.IncFallback()
+	m.IncFallback()
+	m.IncFallback()
+	m.IncFallback()
+
+	if got := testutil.ToFloat64(m.FallbacksTotal); got != 4 {
+		t.Errorf("FallbacksTotal = %v, want 4", got)
+	}
+	// SendsTotal must reflect ONLY the real send attempt (IncSent above),
+	// not the four fallback attempts.
+	if got := testutil.ToFloat64(m.SendsTotal.WithLabelValues("sent")); got != 1 {
+		t.Errorf("SendsTotal{result=sent} = %v, want 1 (unaffected by IncFallback)", got)
 	}
 }
 

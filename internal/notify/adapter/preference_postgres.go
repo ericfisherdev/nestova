@@ -101,3 +101,18 @@ func (r *PostgresPreferenceRepository) ListForMember(ctx context.Context, member
 	}
 	return prefs, nil
 }
+
+// DowngradeChannel replaces every one of memberID's preference rows
+// currently set to from with to. Matching zero rows is not an error — a
+// member with no explicit from-channel preference at all is a normal
+// outcome (see the port's own doc).
+func (r *PostgresPreferenceRepository) DowngradeChannel(ctx context.Context, memberID household.MemberID, from, to domain.Channel) error {
+	const q = `
+		UPDATE member_notification_pref
+		   SET channel = $1, updated_at = now()
+		 WHERE member_id = $2 AND channel = $3`
+	if _, err := r.pool.Exec(ctx, q, to.String(), memberID.String(), from.String()); err != nil {
+		return fmt.Errorf("downgrade member preference channel: %w", err)
+	}
+	return nil
+}

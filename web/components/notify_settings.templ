@@ -1,26 +1,27 @@
 package components
 
-// NotifyPreferenceRow is one event type's row in the SMS notification
-// preferences table (NES-139): its label and the member's current channel
-// for it (defaulted to "inapp" by the section view builder when the
-// member has no explicit preference row).
+// NotifyPreferenceRow is one event type's row in the notification
+// preferences table (NES-139, email added NES-141): its label and the
+// member's current channel for it (defaulted to "inapp" by the section
+// view builder when the member has no explicit preference row).
 type NotifyPreferenceRow struct {
 	// EventType is the stored event-type value, used as this row's
 	// <select> form field name suffix (pref_<event_type>).
 	EventType string
 	Label     string
-	// Channel is the current selection: "inapp" or "sms" — the only two
-	// channels this deployment can actually deliver through (NES-138/
-	// NES-139); push and email are not offered here even though the
-	// schema itself allows them, since selecting one with no wired sender
-	// would silently fail every notification of that event type with no
-	// fallback (unlike SMS's own dispatcher-level fallback).
+	// Channel is the current selection: "inapp", "sms", or "email" — the
+	// only channels this deployment can actually deliver through
+	// (NES-138/139/141); push is not offered here even though the schema
+	// itself allows it, since selecting it with no wired sender would
+	// silently fail every notification of that event type with no
+	// fallback (unlike SMS/email's own dispatcher-level fallback).
 	Channel string
 }
 
-// NotifySettingsView is the view model for the /settings page's SMS
-// notification section (NES-139): phone entry, opt-in consent, and
-// per-event-type channel preferences. Rendered for every member
+// NotifySettingsView is the view model for the /settings page's
+// notification delivery section (NES-139, email added NES-141): phone
+// entry, opt-in consent, and per-event-type channel preferences. Rendered
+// for every member
 // regardless of role — each member manages their OWN contact details and
 // preferences, mirroring the MFA section's per-member scope.
 type NotifySettingsView struct {
@@ -52,12 +53,13 @@ type QuietHoursSettingsView struct {
 }
 
 templ notifySection(view NotifySettingsView) {
-	@Card("SMS notifications") {
+	@Card("Notification delivery") {
 		<p class="mb-4 text-sm text-ink-secondary">
-			Add your phone number and turn on text messages to get urgent,
-			time-sensitive alerts by SMS — like a chore claim about to expire —
-			even when you're not looking at the app. Everything else stays
-			in-app by default. By checking the box below, you agree to receive
+			Choose how you get notified, per event type, below: in-app only
+			(the default), email, or text message. Add your phone number and
+			turn on text messages to get urgent, time-sensitive alerts by SMS —
+			like a chore claim about to expire — even when you're not looking
+			at the app. By checking the box below, you agree to receive
 			automated SMS messages from this household; message and data rates
 			may apply, and you can turn it off here at any time.
 		</p>
@@ -143,6 +145,7 @@ templ notifyPreferencesForm(view NotifySettingsView) {
 							>
 								<option value="inapp" selected?={ row.Channel == "inapp" }>In-app only</option>
 								<option value="sms" disabled?={ !view.OptedIn } selected?={ row.Channel == "sms" }>Text message</option>
+								<option value="email" selected?={ row.Channel == "email" }>Email</option>
 							</select>
 						</td>
 					</tr>

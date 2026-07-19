@@ -483,6 +483,32 @@ preferences) is NES-139. See
 [`docs/aws-guardrails.md`](docs/aws-guardrails.md) for the account-level
 spend guardrails it depends on.
 
+**Email channel (NES-141):** `internal/notify/domain.EmailSender` is the
+analogous narrower port for email — a destination address, subject, and
+separate HTML/text bodies — implemented by `NoopEmailSender` (the default,
+zero AWS dependency) or `SESEmailSender` (Amazon SES, deliberately kept in
+the SES sandbox), selected by `internal/notify/bootstrap.NewEmailSender`
+based on `NOTIFY_EMAIL_ENABLED`. Unlike SMS, member email resolution
+(`internal/notify/domain.MemberEmailResolver`) and routing (the
+`deliverablePreferenceChannels` allowlist in `internal/notify/app/settings.go`)
+ship in this same ticket: email is a fully wired, default-rich channel from
+day one, with SMS reserved for urgent alerts. See
+[`docs/aws-email.md`](docs/aws-email.md) for the operator runbook,
+including sandbox verification, rejected-recipient/bounce handling, and the
+production graduation path.
+
+`cmd/server/main.go` registers `SMSNotificationSender`/`EmailNotificationSender`
+with the dispatcher ONLY when that channel is enabled
+(`NOTIFY_SMS_ENABLED`/`NOTIFY_EMAIL_ENABLED`) — a Noop-backed sender is
+never registered, since it always reports success and would otherwise make
+a member's sms/email-preference notification look "delivered" (logged
+only) while the whole channel is administratively off. With the channel
+unregistered, `Dispatcher.deliver` instead hits its own unknown-channel
+path, which falls back to in-app for sms/email exactly as a real send
+failure would (NES-141 round 2) — so a member with an sms/email
+preference set and the channel disabled still gets their notification,
+in-app, rather than it silently disappearing.
+
 ### Observability (NES-114 / NES-115)
 
 The server exposes Prometheus metrics at `GET /metrics`, backed by a dedicated
@@ -524,11 +550,27 @@ cardinality stays bounded even against misuse.
 
 **SMS send metrics** (recorded around every `Send` call through the AWS
 End User Messaging sender specifically — `NoopSMSSender` is never
-instrumented, and no code sends an SMS at all until NES-139, NES-138):
+instrumented, and no code sends an SMS at all until NES-139, NES-138).
+`nestova_sms_fallbacks_total` is a SEPARATE counter, not another `result`
+value on `nestova_sms_sends_total`: a fallback is `Dispatcher`
+re-enqueueing content to the in-app channel, not an SMS send attempt
+itself, so folding the two together would let `sum(nestova_sms_sends_total)`
+over-count real SMS attempts (NES-141 round 2):
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `nestova_sms_sends_total` | counter | `result` | SMS send attempts; `result` is `sent`, `failed`, or `opted_out` |
+| `nestova_sms_fallbacks_total` | counter | — | Terminal SMS failures (including an unregistered SMS channel — `NOTIFY_SMS_ENABLED=false` with a member still preferring SMS) for which the dispatcher attempted an in-app fallback |
+
+**Email send metrics** (recorded around every `Send` call through the SES
+sender specifically — `NoopEmailSender` is never instrumented, NES-141).
+`nestova_email_fallbacks_total` is the email-channel counterpart to
+`nestova_sms_fallbacks_total` above, for the identical reason:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nestova_email_sends_total` | counter | `result` | Email send attempts; `result` is `sent`, `failed`, or `rejected` |
+| `nestova_email_fallbacks_total` | counter | — | Terminal email failures (including an unregistered email channel — `NOTIFY_EMAIL_ENABLED=false` with a member still preferring email) for which the dispatcher attempted an in-app fallback |
 
 ### Linting (golangci-lint)
 

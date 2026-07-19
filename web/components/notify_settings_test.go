@@ -81,6 +81,34 @@ func TestSettingsPage_NotifySection_NotOptedIn_SMSOptionDisabled(t *testing.T) {
 	}
 }
 
+// TestSettingsPage_NotifySection_EmailOption_AlwaysSelectableAndNeverDisabled
+// is the NES-141 regression test: unlike sms (gated on OptedIn), the
+// email option must always be present, never carry a disabled attribute,
+// and reflect the member's current selection when set — every member
+// reaching the settings page already has an email (login requires one),
+// so there is no readiness gate to render here (see
+// EmailNotificationSender's own doc for why resolution instead happens
+// entirely at send time).
+func TestSettingsPage_NotifySection_EmailOption_AlwaysSelectableAndNeverDisabled(t *testing.T) {
+	view := components.SettingsView{
+		Notify: components.NotifySettingsView{
+			CSRFToken: "csrf-test",
+			Preferences: []components.NotifyPreferenceRow{
+				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "email"},
+			},
+		},
+		CSRFToken: "csrf-test",
+	}
+	out := renderString(t, components.SettingsPage(view))
+
+	if strings.Contains(out, `value="email" disabled`) {
+		t.Errorf("the email option must never be disabled: %q", out)
+	}
+	if !strings.Contains(out, `value="email" selected`) {
+		t.Errorf("the claim_expiring row must show email selected: %q", out)
+	}
+}
+
 func TestSettingsPage_NotifySection_ErrorMessage_RendersInline(t *testing.T) {
 	view := components.SettingsView{
 		Notify:    components.NotifySettingsView{CSRFToken: "csrf-test", Error: "Enter a valid phone number, e.g. +15551234567."},

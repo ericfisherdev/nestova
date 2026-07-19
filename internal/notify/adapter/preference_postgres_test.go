@@ -102,3 +102,66 @@ func TestPostgresPreferenceRepository_ListForMember(t *testing.T) {
 		t.Errorf("task_overdue channel = %v, want inapp", byEventType[domain.EventTypeTaskOverdue])
 	}
 }
+
+// TestPostgresPreferenceRepository_DowngradeChannel_ReplacesOnlyMatchingRows
+// is the NES-141 regression test for bounce handling: DowngradeChannel
+// must replace every row currently set to `from` with `to`, scoped to the
+// given member, and must leave rows already on a DIFFERENT channel (and
+// rows belonging to a DIFFERENT member) untouched.
+func TestPostgresPreferenceRepository_DowngradeChannel_ReplacesOnlyMatchingRows(t *testing.T) {
+	pool := newTestPool(t)
+	repo := notifyadapter.NewPostgresPreferenceRepository(pool)
+	hhID, memberID := seedHouseholdAndMember(t, pool)
+	otherHHID, otherMemberID := seedHouseholdAndMember(t, pool)
+
+	// memberID: two email preferences, one already inapp.
+	if err := repo.Set(testCtx(t), domain.MemberPreference{HouseholdID: hhID, MemberID: memberID, EventType: domain.EventTypeClaimExpiring, Channel: domain.ChannelEmail}); err != nil {
+		t.Fatalf("Set (claim expiring, email): %v", err)
+	}
+	if err := repo.Set(testCtx(t), domain.MemberPreference{HouseholdID: hhID, MemberID: memberID, EventType: domain.EventTypeTaskOverdue, Channel: domain.ChannelEmail}); err != nil {
+		t.Fatalf("Set (task overdue, email): %v", err)
+	}
+	if err := repo.Set(testCtx(t), domain.MemberPreference{HouseholdID: hhID, MemberID: memberID, EventType: domain.EventTypeChoreTradeProposed, Channel: domain.ChannelInApp}); err != nil {
+		t.Fatalf("Set (chore trade, inapp): %v", err)
+	}
+	// A different member in a different household with their OWN email
+	// preference must be untouched.
+	if err := repo.Set(testCtx(t), domain.MemberPreference{HouseholdID: otherHHID, MemberID: otherMemberID, EventType: domain.EventTypeClaimExpiring, Channel: domain.ChannelEmail}); err != nil {
+		t.Fatalf("Set (other member, email): %v", err)
+	}
+
+	if err := repo.DowngradeChannel(testCtx(t), memberID, domain.ChannelEmail, domain.ChannelInApp); err != nil {
+		t.Fatalf("DowngradeChannel: %v", err)
+	}
+
+	prefs, err := repo.ListForMember(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("ListForMember: %v", err)
+	}
+	for _, p := range prefs {
+		if p.Channel != domain.ChannelInApp {
+			t.Errorf("preference for %s = %v, want inapp (every preference must have been downgraded or already been inapp)", p.EventType, p.Channel)
+		}
+	}
+
+	otherChannel, err := repo.Get(testCtx(t), otherMemberID, domain.EventTypeClaimExpiring)
+	if err != nil {
+		t.Fatalf("Get (other member): %v", err)
+	}
+	if otherChannel != domain.ChannelEmail {
+		t.Errorf("other member's preference = %v, want email (DowngradeChannel must be scoped to the given member only)", otherChannel)
+	}
+}
+
+// TestPostgresPreferenceRepository_DowngradeChannel_NoMatchingRows_IsNotAnError
+// confirms a member with no from-channel preference rows at all is a
+// normal outcome, not an error — see the port's own doc.
+func TestPostgresPreferenceRepository_DowngradeChannel_NoMatchingRows_IsNotAnError(t *testing.T) {
+	pool := newTestPool(t)
+	repo := notifyadapter.NewPostgresPreferenceRepository(pool)
+	_, memberID := seedHouseholdAndMember(t, pool)
+
+	if err := repo.DowngradeChannel(testCtx(t), memberID, domain.ChannelEmail, domain.ChannelInApp); err != nil {
+		t.Errorf("DowngradeChannel (no matching rows): %v, want nil", err)
+	}
+}

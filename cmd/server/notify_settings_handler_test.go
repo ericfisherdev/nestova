@@ -117,6 +117,18 @@ func (r *statefulPreferenceRepo) ListForMember(_ context.Context, memberID house
 	return out, nil
 }
 
+func (r *statefulPreferenceRepo) DowngradeChannel(_ context.Context, memberID household.MemberID, from, to notifydomain.Channel) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, p := range r.prefs {
+		if p.MemberID == memberID && p.Channel == from {
+			p.Channel = to
+			r.prefs[key] = p
+		}
+	}
+	return nil
+}
+
 // buildNotifySettingsTestHandler mirrors buildSettingsTestHandler's
 // construction, but wires STATEFUL notify fakes so this file's tests can
 // exercise real set-then-read behavior over HTTP, returning them alongside
@@ -307,11 +319,11 @@ func TestNotifySettings_SetPreference_SMSWithOptIn_Succeeds(t *testing.T) {
 
 // TestNotifySettings_SetPreference_UndeliverableChannel_Rejected is the
 // end-to-end regression test for CodeRabbit round 3 (major finding #2): a
-// crafted POST choosing channel=email or channel=push — never offered by
-// the settings UI's own <select>, which only has in-app and SMS options —
-// must be rejected server-side, and persist nothing.
+// crafted POST choosing channel=push — never offered by the settings
+// UI's own <select> (in-app, SMS, and — since NES-141 — email) — must be
+// rejected server-side, and persist nothing.
 func TestNotifySettings_SetPreference_UndeliverableChannel_Rejected(t *testing.T) {
-	for _, channel := range []string{"email", "push"} {
+	for _, channel := range []string{"push"} {
 		t.Run(channel, func(t *testing.T) {
 			member := settingsTestAdultInHousehold(household.NewHouseholdID())
 			hhRepo := newMultiMemberHouseholdRepo(member)
@@ -347,6 +359,27 @@ func TestNotifySettings_SetPreference_InApp_Succeeds(t *testing.T) {
 	got, err := prefs.Get(context.Background(), member.ID, notifydomain.EventTypeTaskOverdue)
 	if err != nil || got != notifydomain.ChannelInApp {
 		t.Errorf("stored preference = (%v, %v), want (inapp, nil)", got, err)
+	}
+}
+
+// TestNotifySettings_SetPreference_Email_Succeeds is the NES-141
+// end-to-end regression test: unlike sms (which requires opt-in
+// consent), submitting channel=email needs no readiness precondition and
+// must succeed and persist directly.
+func TestNotifySettings_SetPreference_Email_Succeeds(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	handler, sm, _, prefs := buildNotifySettingsTestHandler(t, hhRepo)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	rec := doForm(t, handler, http.MethodPost, "/settings/notify/preferences", cookie,
+		"csrf_token="+csrfToken+"&pref_"+notifydomain.EventTypeTaskOverdue.String()+"=email")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/notify/preferences (email): status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	got, err := prefs.Get(context.Background(), member.ID, notifydomain.EventTypeTaskOverdue)
+	if err != nil || got != notifydomain.ChannelEmail {
+		t.Errorf("stored preference = (%v, %v), want (email, nil)", got, err)
 	}
 }
 
