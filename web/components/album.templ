@@ -27,8 +27,13 @@ templ AlbumViewerPage(view AlbumViewerView) {
 			<title>{ view.AlbumName } — Nestova</title>
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			<script src="/static/js/gsap.min.js" defer></script>
-			<script src="/static/js/alpine.min.js" defer></script>
+			<!-- album.js registers Alpine.data('albumViewer') via an 'alpine:init'
+			     listener, so it must load and run BEFORE alpine.min.js — Alpine
+			     dispatches 'alpine:init' as soon as its own deferred script runs,
+			     and a listener registered after that has already fired never sees
+			     it (NES-147; same rule as layout.templ's extension scripts). -->
 			<script src="/static/js/album.js" defer></script>
+			<script src="/static/js/alpine.min.js" defer></script>
 		</head>
 		<body class="h-full overflow-hidden bg-black text-white">
 			if len(view.Slides) == 0 {

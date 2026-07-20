@@ -158,18 +158,29 @@ func TestKioskLayout_IdleScreensaverWiring(t *testing.T) {
 }
 
 func TestKioskLayout_ScriptOrder(t *testing.T) {
-	// kiosk-idle.js registers its own Alpine.data provider and must load and
-	// run before alpine.min.js (layout.templ's documented script-order rule).
+	// kiosk-idle.js AND album.js each register an Alpine.data provider via
+	// an 'alpine:init' listener, so both must load and run before
+	// alpine.min.js (layout.templ's documented script-order rule; album.js
+	// previously loaded after Alpine and its component silently never
+	// registered — NES-147).
 	props := components.KioskShellProps{Active: components.KioskTabChores}
 	out := renderString(t, components.KioskLayout(props, templ.Raw("")))
 
-	idleIdx := strings.Index(out, "kiosk-idle.js")
-	alpineIdx := strings.Index(out, "alpine.min.js")
-	if idleIdx == -1 || alpineIdx == -1 {
-		t.Fatalf("missing expected scripts in shell: %q", out)
+	// Match the src attributes, not bare filenames — the head comments
+	// mention these script names too, and a comment match would compare
+	// prose positions instead of actual load order.
+	alpineIdx := strings.Index(out, `src="/static/js/alpine.min.js"`)
+	if alpineIdx == -1 {
+		t.Fatalf("missing alpine.min.js script tag in shell: %q", out)
 	}
-	if idleIdx > alpineIdx {
-		t.Errorf("kiosk-idle.js must load before alpine.min.js, got order: %q", out)
+	for _, script := range []string{`src="/static/js/kiosk-idle.js"`, `src="/static/js/album.js"`} {
+		idx := strings.Index(out, script)
+		if idx == -1 {
+			t.Fatalf("missing %s in shell: %q", script, out)
+		}
+		if idx > alpineIdx {
+			t.Errorf("%s must load before alpine.min.js, got order: %q", script, out)
+		}
 	}
 }
 
