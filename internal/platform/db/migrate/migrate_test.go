@@ -249,6 +249,53 @@ func TestDownAndStatus(t *testing.T) {
 	}
 }
 
+// TestDownTo_RollsBackToTheGivenVersion exercises DownTo directly, mirroring
+// TestDownAndStatus: it must land on exactly the requested version rather
+// than a fixed number of steps, and must be reversible.
+func TestDownTo_RollsBackToTheGivenVersion(t *testing.T) {
+	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the migration DownTo test")
+	}
+	ctx := context.Background()
+
+	if err := Reset(ctx, dsn); err != nil {
+		t.Fatalf("initial Reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := Reset(ctx, dsn); err != nil {
+			t.Logf("cleanup Reset failed: %v", err)
+		}
+	})
+
+	if err := Up(ctx, dsn); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	top := appliedVersion(t, dsn)
+	if top <= 24 {
+		t.Fatalf("expected more than 24 migrations applied, got %d", top)
+	}
+
+	// Land on an intermediate version well below the top, so this asserts a
+	// TARGET rather than a step count — and keeps doing so as migrations
+	// accumulate above it.
+	const target = 24
+	if err := DownTo(ctx, dsn, target); err != nil {
+		t.Fatalf("DownTo %d: %v", target, err)
+	}
+	if got := appliedVersion(t, dsn); got != target {
+		t.Errorf("applied version after DownTo = %d, want %d", got, target)
+	}
+
+	// Reversible: the rolled-back migrations reapply cleanly.
+	if err := Up(ctx, dsn); err != nil {
+		t.Fatalf("Up after DownTo: %v", err)
+	}
+	if got := appliedVersion(t, dsn); got != top {
+		t.Errorf("applied version after re-Up = %d, want %d", got, top)
+	}
+}
+
 // TestUpTo_BackfillsPreExistingRequestedRows proves migration 00025 handles a
 // database that already has reward_redemption rows in the pre-NES-127 shape
 // (status = 'requested') — coverage TestUpDownRoundTrip cannot provide, since
@@ -257,6 +304,12 @@ func TestDownAndStatus(t *testing.T) {
 // the old or the new CHECK constraint regardless of statement ordering. See
 // 00025_reward_redemption_fulfillment.sql's Up section doc for the exact
 // ordering bug this guards against (CodeRabbit finding, NES-127).
+//
+// BOTH migration boundaries are pinned by version (UpTo 24 -> seed -> UpTo
+// 25 -> DownTo 24), so the test keeps exercising migration 00025 no matter
+// how many migrations land above it. It originally used Up/Down, which
+// meant "everything" and "the latest one" — so once 00026+ arrived it was
+// silently asserting against 00032's down-migration instead (NES-155).
 func TestUpTo_BackfillsPreExistingRequestedRows(t *testing.T) {
 	dsn := isolatedDSN(t)
 	ctx := context.Background()
@@ -311,9 +364,10 @@ func TestUpTo_BackfillsPreExistingRequestedRows(t *testing.T) {
 		t.Fatalf("seed pre-migration redemption (status='requested'): %v", err)
 	}
 
-	// Apply the rest of the migrations, including 00025.
-	if err := Up(ctx, dsn); err != nil {
-		t.Fatalf("Up (through 00025): %v", err)
+	// Apply exactly one more migration: 00025, the one under test. UpTo
+	// (not Up) keeps this pinned to 00025 as later migrations land.
+	if err := UpTo(ctx, dsn, 25); err != nil {
+		t.Fatalf("UpTo 25: %v", err)
 	}
 
 	// The pre-existing row must have been backfilled to 'pending', not left
@@ -355,8 +409,10 @@ func TestUpTo_BackfillsPreExistingRequestedRows(t *testing.T) {
 	// redemption look 'requested' (actionable, points still owed) again, or
 	// the pre-NES-127 app could fulfill or re-refund it. Roll back 00025 and
 	// confirm it folds to 'cancelled' instead (CodeRabbit finding, NES-127).
-	if err := Down(ctx, dsn); err != nil {
-		t.Fatalf("Down (roll back 00025): %v", err)
+	// DownTo 24 (not Down) rolls back exactly 00025 — Down would roll back
+	// whatever migration happens to be latest.
+	if err := DownTo(ctx, dsn, 24); err != nil {
+		t.Fatalf("DownTo 24 (roll back 00025): %v", err)
 	}
 	var postDownStatus string
 	if err := db.QueryRow(`SELECT status FROM reward_redemption WHERE id = $1`, redemptionID).Scan(&postDownStatus); err != nil {
