@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -407,7 +409,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), mfaTestCipher, totp.NewProvider(), testCredRepo{}, householdRepo, logger)
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), mfaTestCipher, totp.NewProvider(), testCredRepo{}, householdRepo, cryptotest.Hasher(), logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
@@ -431,7 +433,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 	// role-gate tests) can mint a session cookie + CSRF token exactly as it
 	// does against the real app; login itself is never exercised (the tests
 	// stamp member_id into the session directly, bypassing real credentials).
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}, cryptotest.Hasher()), nil, nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

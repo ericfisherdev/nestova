@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -93,7 +95,7 @@ func buildPhotoPolicyTestHandler(
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm = newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
-	authn := authapp.New(testCredRepo{})
+	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
 	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
@@ -252,7 +254,7 @@ func TestTasksList_PhotoPolicy_BatchesProofPhotoLookupAcrossRows(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
-	authn := authapp.New(testCredRepo{})
+	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
 	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 

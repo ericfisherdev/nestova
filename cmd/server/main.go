@@ -289,7 +289,11 @@ func runServer(logger *slog.Logger) error {
 	// constructed further below (NES-135), once the MFA service and the
 	// remember-device signer it now depends on both exist.
 	credRepo := authadapter.NewCredentialRepository(pool)
-	authn := authapp.New(credRepo)
+	// The production password hasher. Built once and shared by every auth
+	// service so there is exactly one place the argon2id cost is chosen, and it
+	// is always the OWASP-recommended set.
+	passwordHasher := crypto.NewHasher(crypto.DefaultParams())
+	authn := authapp.New(credRepo, passwordHasher)
 	householdRepo := householdadapter.NewPostgresRepository(pool)
 
 	// NES-26: onboarding + member provisioning handlers. The provisioner runs the
@@ -656,7 +660,7 @@ func runServer(logger *slog.Logger) error {
 	// the member-lookup port ResetMemberMFA uses to resolve the acting
 	// owner's role/household independently of any caller claim.
 	mfaRepo := authadapter.NewMFARepository(pool)
-	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, householdRepo, logger)
+	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, householdRepo, passwordHasher, logger)
 	if err != nil {
 		return fmt.Errorf("create mfa service: %w", err)
 	}

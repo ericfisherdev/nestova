@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 	pquernatotp "github.com/pquerna/otp/totp"
 
@@ -153,13 +155,13 @@ func buildSettingsTestHandler(t *testing.T, hhRepo testHouseholdRepoWithQuietHou
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, logger)
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
 	mfaHandlers := authadapter.NewMFAWebHandlers(mfaService, hhRepo, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

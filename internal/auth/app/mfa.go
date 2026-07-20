@@ -9,7 +9,6 @@ import (
 
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 )
 
 // recoveryCodeCount is how many single-use recovery codes are generated at
@@ -73,12 +72,13 @@ type MFAService struct {
 	totp      totpProvider
 	passwords passwordVerifier
 	members   memberLookup
+	hasher    passwordHasher
 	logger    *slog.Logger
 }
 
-// NewMFAService constructs the service with injected dependencies. All six
+// NewMFAService constructs the service with injected dependencies. All seven
 // are required.
-func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totpProvider, passwords passwordVerifier, members memberLookup, logger *slog.Logger) (*MFAService, error) {
+func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totpProvider, passwords passwordVerifier, members memberLookup, hasher passwordHasher, logger *slog.Logger) (*MFAService, error) {
 	if repo == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil MFARepository")
 	}
@@ -94,10 +94,13 @@ func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totp
 	if members == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil member lookup")
 	}
+	if hasher == nil {
+		return nil, errors.New("auth: NewMFAService requires a non-nil password hasher")
+	}
 	if logger == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil logger")
 	}
-	return &MFAService{repo: repo, cipher: cipher, totp: totp, passwords: passwords, members: members, logger: logger}, nil
+	return &MFAService{repo: repo, cipher: cipher, totp: totp, passwords: passwords, members: members, hasher: hasher, logger: logger}, nil
 }
 
 // Status returns the member's current enrollment, or nil if none exists
@@ -284,7 +287,7 @@ func (s *MFAService) ResetMemberMFA(ctx context.Context, actingOwnerID household
 		}
 		return fmt.Errorf("mfa: look up owner credential: %w", err)
 	}
-	ok, err := crypto.Verify(ownerPassword, cred.PasswordHash)
+	ok, err := s.hasher.Verify(ownerPassword, cred.PasswordHash)
 	if err != nil || !ok {
 		return authdomain.ErrOwnerReauthRequired
 	}
@@ -435,7 +438,7 @@ func (s *MFAService) verifyLoginTOTP(ctx context.Context, memberID household.Mem
 	return nil
 }
 
-// matchRecoveryCode normalizes raw and compares it (via crypto.Verify, the
+// matchRecoveryCode normalizes raw and compares it (via the injected hasher,
 // same argon2id KDF as member passwords) against every unused recovery code
 // on file for memberID, returning the matched code's id. The unused set is
 // bounded by recoveryCodeCount (ten), so a linear scan of argon2id
@@ -450,10 +453,10 @@ func (s *MFAService) matchRecoveryCode(ctx context.Context, memberID household.M
 		return authdomain.RecoveryCodeID{}, false, fmt.Errorf("mfa: list recovery codes: %w", err)
 	}
 	for _, c := range codes {
-		ok, err := crypto.Verify(normalized, c.CodeHash)
+		ok, err := s.hasher.Verify(normalized, c.CodeHash)
 		if err != nil {
 			// A malformed stored hash should never happen (every hash this
-			// service writes comes from crypto.Hash); skip defensively
+			// service writes comes from the same hasher); skip defensively
 			// rather than failing the whole lookup for one bad row.
 			s.logger.ErrorContext(ctx, "mfa: malformed recovery code hash", "recovery_code_id", c.ID.String())
 			continue
@@ -466,7 +469,7 @@ func (s *MFAService) matchRecoveryCode(ctx context.Context, memberID household.M
 }
 
 // generateRecoveryCodes generates recoveryCodeCount fresh raw codes and
-// their argon2id hashes (crypto.Hash), performing no repository writes —
+// their argon2id hashes (via the injected hasher), performing no repository writes —
 // the caller decides how to persist hashes (see ConfirmEnrollment, which
 // needs this as a separate step from the atomic confirm+store write, and
 // regenerateRecoveryCodes below, which stores via a plain replace). codes
@@ -479,7 +482,7 @@ func (s *MFAService) generateRecoveryCodes() (codes, hashes []string, err error)
 		if err != nil {
 			return nil, nil, err
 		}
-		hash, err := crypto.Hash(authdomain.NormalizeRecoveryCode(raw))
+		hash, err := s.hasher.Hash(authdomain.NormalizeRecoveryCode(raw))
 		if err != nil {
 			return nil, nil, fmt.Errorf("mfa: hash recovery code: %w", err)
 		}

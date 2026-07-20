@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -279,7 +281,7 @@ func newMFAFixture(t *testing.T) *mfaFixture {
 	passwords := &fakePasswordVerifier{credentials: make(map[household.MemberID]*authdomain.Credential)}
 	members := newFakeMemberLookup()
 	logger, buf := discardLogger()
-	svc, err := app.NewMFAService(repo, testCipher(t), totpFake, passwords, members, logger)
+	svc, err := app.NewMFAService(repo, testCipher(t), totpFake, passwords, members, cryptotest.Hasher(), logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}

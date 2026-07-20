@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -142,7 +144,7 @@ func buildChoreProofTestHandler(t *testing.T, member *household.Member, store *f
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}, cryptotest.Hasher()), nil, nil, nil, logger)
 
 	svc, err := mediaapp.NewChoreProofPhotoService(newFakeStoreResolver(mediadomain.StorageBackendLocal, store), mediadomain.StorageBackendLocal, exif, repo, choreProofTestMaxUploadBytes, choreProofTestFreshnessWindow)
 	if err != nil {
