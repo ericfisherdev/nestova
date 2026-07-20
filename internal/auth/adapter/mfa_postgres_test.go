@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
@@ -117,7 +119,7 @@ func TestMFAServiceBeginEnrollment_SecretNotStoredInPlaintext(t *testing.T) {
 	}
 
 	cipher := mfaTestCipher(t)
-	svc, err := authapp.NewMFAService(authadapter.NewMFARepository(pool), cipher, totp.NewProvider(), credRepo, hhRepo, discardMFALogger())
+	svc, err := authapp.NewMFAService(authadapter.NewMFARepository(pool), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), discardMFALogger())
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}

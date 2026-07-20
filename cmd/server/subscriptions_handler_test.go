@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
@@ -65,7 +67,7 @@ func buildSubscriptionsTestHandler(t *testing.T, member *household.Member, repo 
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 
-	authn := authapp.New(testCredRepo{})
+	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
 	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 
 	subService, err := subscriptionsapp.NewSubscriptionService(repo)

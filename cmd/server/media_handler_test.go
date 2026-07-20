@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
@@ -283,7 +285,7 @@ func buildMediaTestHandler(t *testing.T, member *household.Member, store *fakeMe
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(testCredRepo{}, cryptotest.Hasher()), nil, nil, nil, logger)
 
 	albumRepo := newFakeMediaAlbumRepo()
 	albumPhotoRepo := &fakeMediaAlbumPhotoRepo{}

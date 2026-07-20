@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -121,7 +123,7 @@ func buildLoginMFATestHandler(t *testing.T, hhRepo household.HouseholdRepository
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, logger)
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
@@ -129,7 +131,7 @@ func buildLoginMFATestHandler(t *testing.T, hhRepo household.HouseholdRepository
 	if err != nil {
 		t.Fatalf("NewRememberDeviceSigner: %v", err)
 	}
-	authn := authapp.New(credRepo)
+	authn := authapp.New(credRepo, cryptotest.Hasher())
 	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberSigner, nil, logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberSigner, nil, notify, false, logger)
 

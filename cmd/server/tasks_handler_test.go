@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -195,7 +197,7 @@ func buildTaskTestHandler(instanceRepo *fakeTaskInstanceRepo) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	householdRepo := testHouseholdRepo{}
-	authn := authapp.New(testCredRepo{})
+	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
 	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 	"github.com/alexedwards/scs/v2/memstore"
 
@@ -327,7 +329,7 @@ func buildTestHandler() http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	repo := testHouseholdRepo{}
-	authn := authapp.New(testCredRepo{})
+	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
 	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(repo, testCredStore{}, testProvisioner{}, sm, logger)
 

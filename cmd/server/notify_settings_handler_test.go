@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+
 	"github.com/alexedwards/scs/v2"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
@@ -151,7 +153,7 @@ func buildNotifySettingsTestHandler(t *testing.T, hhRepo *multiMemberHouseholdRe
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, logger)
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger)
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
@@ -162,7 +164,7 @@ func buildNotifySettingsTestHandler(t *testing.T, hhRepo *multiMemberHouseholdRe
 	settingsService := notifyapp.NewSettingsService(contacts, prefs, hhRepo)
 	notifyHandlers := notifyadapter.NewNotifyWebHandlers(settingsService, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
