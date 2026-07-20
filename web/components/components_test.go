@@ -132,3 +132,23 @@ func TestLayoutLoadsMotionScriptsDeferred(t *testing.T) {
 		t.Errorf("motion scripts should be deferred: %q", out)
 	}
 }
+
+// TestLayout_RendersPWAHead guards the manifest/theme-color/apple-touch-icon
+// tags added in NES-151. Without the manifest link Chrome never offers to
+// install the app, and the failure is invisible outside a real device.
+func TestLayout_RendersPWAHead(t *testing.T) {
+	out := renderString(t, components.Layout(components.ShellProps{}, nil, templ.Raw("")))
+
+	for _, want := range []string{
+		`rel="manifest"`,
+		`href="/static/manifest.webmanifest"`,
+		`name="theme-color"`,
+		`content="#6f8c6a"`, // --color-sage, the Hearth status-bar tint
+		`rel="apple-touch-icon"`,
+		`href="/static/icons/icon-180.png"`, // iOS ignores the manifest icons
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("layout head missing %s: %q", want, out)
+		}
+	}
+}

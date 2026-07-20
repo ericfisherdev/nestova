@@ -31,6 +31,14 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>Nestova</title>
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<!-- PWA identity (NES-151). Deliberately scoped to this member
+			     shell only: album.templ and kiosk.templ are standalone
+			     appliance documents nobody installs to a home screen (the same
+			     kiosk-out-of-scope reasoning as NES-137). apple-touch-icon is
+			     listed separately because iOS ignores the manifest's icons. -->
+			<link rel="manifest" href="/static/manifest.webmanifest"/>
+			<meta name="theme-color" content="#6f8c6a"/>
+			<link rel="apple-touch-icon" href="/static/icons/icon-180.png"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			<!-- htmx by default never swaps a 4xx/5xx response into the DOM (see
 			     htmx's own QUIRKS.md, "By Default 4xx & 5xx Responses Do Not
