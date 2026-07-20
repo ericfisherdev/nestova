@@ -24,6 +24,20 @@ func TestAlbumViewerPageRendersSlidesAndScripts(t *testing.T) {
 			t.Errorf("viewer page missing %q", want)
 		}
 	}
+	// album.js registers Alpine.data('albumViewer') via an 'alpine:init'
+	// listener, so it must appear BEFORE alpine.min.js — loaded after,
+	// the listener registers after the event already fired and the
+	// component silently never exists (NES-147).
+	// src-attribute matches, not bare paths — the head comment mentions
+	// the script names too.
+	albumIdx := strings.Index(out, `src="/static/js/album.js"`)
+	alpineIdx := strings.Index(out, `src="/static/js/alpine.min.js"`)
+	if albumIdx == -1 || alpineIdx == -1 {
+		t.Fatalf("missing album.js or alpine.min.js script tag in viewer page: %q", out)
+	}
+	if albumIdx > alpineIdx {
+		t.Errorf("album.js must load before alpine.min.js, got order: %q", out)
+	}
 	// The Alpine component + rotation cadence.
 	if !strings.Contains(out, `x-data="albumViewer"`) || !strings.Contains(out, `data-rotation-seconds="6"`) {
 		t.Errorf("missing viewer hooks: %q", out)

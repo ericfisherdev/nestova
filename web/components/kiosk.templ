@@ -77,21 +77,21 @@ templ KioskLayout(props KioskShellProps, content templ.Component) {
 			     does not matter; it is placed first purely to match layout.templ's
 			     convention). -->
 			<script src="/static/js/htmx.min.js" defer></script>
-			<!-- kiosk-idle.js registers Alpine.data('kioskIdle', ...) and must load and
-			     run BEFORE alpine.min.js (see layout.templ's script-order rule: Alpine
-			     dispatches 'alpine:init' as soon as its own deferred script runs, so a
-			     listener registered after that has already fired never sees it).
+			<!-- kiosk-idle.js and album.js each register an Alpine component via an
+			     'alpine:init' listener, so BOTH must load and run BEFORE
+			     alpine.min.js (see layout.templ's script-order rule: Alpine
+			     dispatches 'alpine:init' as soon as its own deferred script runs, so
+			     a listener registered after that has already fired never sees it —
+			     NES-147 fixed album.js, which previously loaded after Alpine and
+			     silently never registered, leaving the idle screensaver static).
 			     kiosk-idle.js only listens for touchstart/mousedown/keydown (NES-128):
 			     it does not observe htmx events or DOM mutations, so the NES-130
 			     content polls above never reset the idle timer on their own — only an
-			     actual touch/click/keypress does.
-			     album.js is reused verbatim from the NES-76 album viewer and keeps that
-			     page's own script order (after alpine.min.js) rather than this rule, to
-			     stay byte-for-byte consistent with the one other page that loads it. -->
+			     actual touch/click/keypress does. -->
 			<script src="/static/js/kiosk-idle.js" defer></script>
+			<script src="/static/js/album.js" defer></script>
 			<script src="/static/js/gsap.min.js" defer></script>
 			<script src="/static/js/alpine.min.js" defer></script>
-			<script src="/static/js/album.js" defer></script>
 		</head>
 		<body
 			class="flex h-full flex-col overflow-hidden bg-main text-ink"
