@@ -21,7 +21,12 @@
 // makes clients fetch the new bytes; activate() then deletes every older
 // cache. Forgetting the bump leaves clients on old CSS indefinitely.
 // See docs/pwa.md.
-const CACHE_NAME = 'nestova-static-v1';
+// CACHE_PREFIX namespaces this worker's caches. activate() evicts only
+// caches carrying it, so anything else on the origin that uses Cache
+// Storage keeps its data — deleting every key would silently wipe a
+// neighbouring feature's cache each time this worker activates.
+const CACHE_PREFIX = 'nestova-static-';
+const CACHE_NAME = `${CACHE_PREFIX}v1`;
 
 // Pre-cached on install. Only immutable, household-data-free assets, plus
 // the offline page itself — that one is the reason install must succeed
@@ -73,7 +78,9 @@ self.addEventListener('activate', (event) => {
       .keys()
       .then((keys) =>
         Promise.all(
-          keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
+          keys
+            .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+            .map((key) => caches.delete(key)),
         ),
       )
       .then(() => self.clients.claim()),
