@@ -102,6 +102,37 @@ func UpTo(ctx context.Context, dsn string, version int64, opts ...Option) error 
 	return nil
 }
 
+// DownTo rolls back migrations until only those up to and including the
+// given goose version remain applied — the mirror of UpTo, and like it, it
+// bypasses goose's command-string dispatcher because "down-to" takes a
+// version argument. DownTo(ctx, dsn, 24) leaves 00024 applied and rolls
+// back everything above it.
+//
+// This is the pinned-version-boundary pattern for migration tests: a test
+// that means "roll back exactly migration N" must use DownTo(N-1), never
+// Down. Down rolls back whatever is LATEST, so a test written against it
+// silently starts exercising a different migration the moment another one
+// lands on top — precisely how TestUpTo_BackfillsPreExistingRequestedRows
+// broke once migrations moved past 00025 (NES-155). Pinning both
+// boundaries keeps such a test meaningful at any future highest version.
+func DownTo(ctx context.Context, dsn string, version int64, opts ...Option) error {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	db, err := connect(ctx, dsn, o.poolerSafe)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := goose.DownToContext(ctx, db, dir, version); err != nil {
+		return fmt.Errorf("goose down-to %d: %w", version, err)
+	}
+	return nil
+}
+
 // run opens a database/sql handle via the pgx stdlib driver and executes the
 // goose command against the embedded migrations.
 func run(ctx context.Context, command, dsn string, opts ...Option) error {
