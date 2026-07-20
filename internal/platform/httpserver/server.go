@@ -4,8 +4,12 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -15,6 +19,7 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/web"
+	"github.com/ericfisherdev/nestova/web/components"
 )
 
 const (
@@ -164,6 +169,16 @@ func routes(deps Deps) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(deps.Ready))
+	// PWA (NES-152). Both are deliberately unauthenticated: /offline must
+	// render when the network — not the session — is the problem, and a
+	// service worker script is fetched by the browser outside any page
+	// context. Neither exposes household data.
+	//
+	// /sw.js is served from the site ROOT, not /static/: a service worker's
+	// scope is capped at the directory it is served from, so /static/sw.js
+	// could only ever control /static/* and would never see a navigation.
+	mux.HandleFunc("GET /sw.js", handleServiceWorker)
+	mux.HandleFunc("GET /offline", handleOffline)
 	// Prometheus scrape endpoint. Intentionally unauthenticated, like /healthz:
 	// it is scraped by Prometheus over the internal docker network and exposes
 	// only operational counters/gauges, no user data.
@@ -200,6 +215,44 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// handleServiceWorker serves the embedded service worker script from the site
+// root so its scope covers the whole origin (NES-152).
+//
+// Cache-Control is no-cache, deliberately bypassing staticAssets()' one-hour
+// lifetime: a cached service worker script is the classic stuck-on-old-code
+// trap, where clients keep running a superseded worker — including its old
+// cache-busting logic — long after a deploy. no-cache still allows a
+// revalidated 304, so this costs a conditional request, not a full refetch.
+func handleServiceWorker(w http.ResponseWriter, r *http.Request) {
+	data, err := fs.ReadFile(web.StaticFS(), "sw.js")
+	if err != nil {
+		http.Error(w, "service worker unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// no-cache means "revalidate before reuse", which needs a validator to
+	// revalidate against — without one every check is a full refetch of the
+	// script rather than a 304. The content is embedded at build time and
+	// has no meaningful modtime, so the ETag is its own content hash: it
+	// changes exactly when the worker changes, which is the semantics
+	// clients need.
+	sum := sha256.Sum256(data)
+	w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:16])+`"`)
+	http.ServeContent(w, r, "sw.js", time.Time{}, bytes.NewReader(data))
+}
+
+// handleOffline renders the service worker's navigation fallback page. It is
+// pre-cached at worker install, so this route is normally hit only to warm
+// that cache — but it stays available online too.
+func handleOffline(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := components.OfflinePage().Render(r.Context(), w); err != nil {
+		http.Error(w, "render offline page", http.StatusInternalServerError)
+	}
 }
 
 // handleReadyz reports whether the server is ready to serve traffic by checking

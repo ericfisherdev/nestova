@@ -39,6 +39,22 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<link rel="manifest" href="/static/manifest.webmanifest"/>
 			<meta name="theme-color" content="#6f8c6a"/>
 			<link rel="apple-touch-icon" href="/static/icons/icon-180.png"/>
+			<!-- Service worker registration (NES-152). Guarded on feature
+			     detection because navigator.serviceWorker is undefined outside
+			     a secure context: the kiosk and any plain-HTTP LAN access skip
+			     this and keep working exactly as before. The catch matters for
+			     the same reason — the app is fully functional without a
+			     worker, so a failed registration must never break the page. -->
+			<script>
+				if ('serviceWorker' in navigator) {
+					window.addEventListener('load', function() {
+						navigator.serviceWorker.register('/sw.js').catch(function() {
+							/* No worker: the offline page and asset caching are
+							   unavailable; everything else works normally. */
+						});
+					});
+				}
+			</script>
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			<!-- htmx by default never swaps a 4xx/5xx response into the DOM (see
 			     htmx's own QUIRKS.md, "By Default 4xx & 5xx Responses Do Not
