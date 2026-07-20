@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
+	"github.com/ericfisherdev/nestova/web"
 )
 
 // testConfig returns a minimal config for building the server in tests.
@@ -163,5 +165,107 @@ func TestReadyz(t *testing.T) {
 				t.Errorf("body = %q, want %q", got, tt.wantBody)
 			}
 		})
+	}
+}
+
+// TestServiceWorkerRoute covers the two properties that make the service
+// worker actually work, both of which fail silently in a browser (NES-152).
+func TestServiceWorkerRoute(t *testing.T) {
+	rec := doRequest(t, nil, "/sw.js")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	// Served from the ROOT, not /static/: a worker's scope is capped at the
+	// directory it is served from, so a /static/sw.js could never control a
+	// navigation. This route's existence is the scope guarantee.
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Errorf("Content-Type = %q, want text/javascript", ct)
+	}
+	// no-cache, deliberately unlike the 1-hour /static/ lifetime: a cached
+	// worker script strands clients on superseded code after a deploy.
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want %q", cc, "no-cache")
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "CACHE_NAME") {
+		t.Errorf("body does not look like the service worker script: %q", body)
+	}
+}
+
+// TestOfflineRoute confirms the navigation fallback renders without auth —
+// it has to work when the network, not the session, is what failed.
+func TestOfflineRoute(t *testing.T) {
+	rec := doRequest(t, nil, "/offline")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"You're offline", `data-testid="offline-page"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("offline page missing %q", want)
+		}
+	}
+	// The page must reference only pre-cached assets: anything else would
+	// fail to load in the exact situation the page exists for.
+	for _, forbidden := range []string{"/static/js/", "hx-get", "hx-post"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("offline page references %q, which is not pre-cached", forbidden)
+		}
+	}
+	// Positive contract, not just the deny-list above: every asset the page
+	// actually references must appear in the worker's pre-cache list, so
+	// dropping one from either side fails here rather than producing an
+	// unstyled offline page that only shows up when the network is down.
+	sw, err := fs.ReadFile(web.StaticFS(), "sw.js")
+	if err != nil {
+		t.Fatalf("read sw.js: %v", err)
+	}
+	for _, asset := range []string{
+		"/static/favicon.svg",
+		"/static/css/app.css",
+		"/static/icons/icon-192.png",
+	} {
+		if !strings.Contains(body, asset) {
+			t.Errorf("offline page no longer references %s; update this test and the pre-cache list", asset)
+		}
+		if !strings.Contains(string(sw), asset) {
+			t.Errorf("sw.js does not pre-cache %s, which the offline page needs", asset)
+		}
+	}
+	if !strings.Contains(string(sw), `'/offline'`) {
+		t.Error("sw.js does not pre-cache /offline, so the fallback could not render")
+	}
+}
+
+// TestServiceWorkerRouteRevalidates confirms the script carries a validator:
+// Cache-Control: no-cache asks clients to revalidate before reuse, which is
+// only cheap if there is something to revalidate against — otherwise every
+// check refetches the whole script instead of getting a 304.
+func TestServiceWorkerRouteRevalidates(t *testing.T) {
+	first := doRequest(t, nil, "/sw.js")
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("no ETag on /sw.js; no-cache cannot produce a 304 without a validator")
+	}
+
+	// Same content must yield the same ETag (it is a content hash, not a
+	// per-request value), and a matching conditional request must 304.
+	second := doRequest(t, nil, "/sw.js")
+	if got := second.Header().Get("ETag"); got != etag {
+		t.Errorf("ETag changed between identical requests: %q then %q", etag, got)
+	}
+
+	deps := httpserver.Deps{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	srv := httpserver.New(testConfig(), deps)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	req.Header.Set("If-None-Match", etag)
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Errorf("conditional GET status = %d, want %d", rec.Code, http.StatusNotModified)
 	}
 }

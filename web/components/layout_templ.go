@@ -52,14 +52,14 @@ func Layout(props ShellProps, nav []NavItem, content templ.Component) templ.Comp
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><!-- PWA identity (NES-151). Deliberately scoped to this member\n\t\t\t     shell only: album.templ and kiosk.templ are standalone\n\t\t\t     appliance documents nobody installs to a home screen (the same\n\t\t\t     kiosk-out-of-scope reasoning as NES-137). apple-touch-icon is\n\t\t\t     listed separately because iOS ignores the manifest's icons. --><link rel=\"manifest\" href=\"/static/manifest.webmanifest\"><meta name=\"theme-color\" content=\"#6f8c6a\"><link rel=\"apple-touch-icon\" href=\"/static/icons/icon-180.png\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- htmx by default never swaps a 4xx/5xx response into the DOM (see\n\t\t\t     htmx's own QUIRKS.md, \"By Default 4xx & 5xx Responses Do Not\n\t\t\t     Swap\"). NES-120 needs 422 to swap: TaskRowItem's Complete action\n\t\t\t     re-renders the chore row itself with an inline error message\n\t\t\t     (WebHandlers.handleCompleteError) when a recurring task's photo\n\t\t\t     policy blocks completion, at HTTP 422 — the status this app\n\t\t\t     already uses elsewhere for a validation-style rejection (see\n\t\t\t     ChoreProofWebHandlers.handleUploadError). This is the exact\n\t\t\t     configuration htmx's own docs recommend for that case; every\n\t\t\t     other status keeps its default (no-swap-on-error) behavior, so\n\t\t\t     this has no effect on any other action's error handling. --><meta name=\"htmx-config\" content=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><!-- PWA identity (NES-151). Deliberately scoped to this member\n\t\t\t     shell only: album.templ and kiosk.templ are standalone\n\t\t\t     appliance documents nobody installs to a home screen (the same\n\t\t\t     kiosk-out-of-scope reasoning as NES-137). apple-touch-icon is\n\t\t\t     listed separately because iOS ignores the manifest's icons. --><link rel=\"manifest\" href=\"/static/manifest.webmanifest\"><meta name=\"theme-color\" content=\"#6f8c6a\"><link rel=\"apple-touch-icon\" href=\"/static/icons/icon-180.png\"><!-- Service worker registration (NES-152). Guarded on feature\n\t\t\t     detection because navigator.serviceWorker is undefined outside\n\t\t\t     a secure context: the kiosk and any plain-HTTP LAN access skip\n\t\t\t     this and keep working exactly as before. The catch matters for\n\t\t\t     the same reason — the app is fully functional without a\n\t\t\t     worker, so a failed registration must never break the page. --><script>\n\t\t\t\tif ('serviceWorker' in navigator) {\n\t\t\t\t\twindow.addEventListener('load', function() {\n\t\t\t\t\t\tnavigator.serviceWorker.register('/sw.js').catch(function() {\n\t\t\t\t\t\t\t/* No worker: the offline page and asset caching are\n\t\t\t\t\t\t\t   unavailable; everything else works normally. */\n\t\t\t\t\t\t});\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t</script><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- htmx by default never swaps a 4xx/5xx response into the DOM (see\n\t\t\t     htmx's own QUIRKS.md, \"By Default 4xx & 5xx Responses Do Not\n\t\t\t     Swap\"). NES-120 needs 422 to swap: TaskRowItem's Complete action\n\t\t\t     re-renders the chore row itself with an inline error message\n\t\t\t     (WebHandlers.handleCompleteError) when a recurring task's photo\n\t\t\t     policy blocks completion, at HTTP 422 — the status this app\n\t\t\t     already uses elsewhere for a validation-style rejection (see\n\t\t\t     ChoreProofWebHandlers.handleUploadError). This is the exact\n\t\t\t     configuration htmx's own docs recommend for that case; every\n\t\t\t     other status keeps its default (no-swap-on-error) behavior, so\n\t\t\t     this has no effect on any other action's error handling. --><meta name=\"htmx-config\" content=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(`{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}`)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 56, Col: 195}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 72, Col: 195}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -159,7 +159,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 				var templ_7745c5c3_Var4 string
 				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 147, Col: 36}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 163, Col: 36}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 				if templ_7745c5c3_Err != nil {
@@ -182,7 +182,7 @@ func sidebar(props ShellProps, nav []NavItem) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(props.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 153, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 169, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -231,7 +231,7 @@ func miniMonth() templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(day))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 171, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/layout.templ`, Line: 187, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {

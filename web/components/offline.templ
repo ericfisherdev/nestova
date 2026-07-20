@@ -1,0 +1,52 @@
+package components
+
+// OfflinePage is the service worker's navigation fallback (NES-152): the
+// document shown when a navigation cannot reach the server at all.
+//
+// It is a standalone document (its own <html>, same precedent as
+// AlbumViewerPage and KioskLayout) rather than a shell page, for two
+// reasons: the dashboard shell's data would be meaningless here, and this
+// page must render from the service worker's cache with no server round
+// trip, so it can reference nothing beyond the pre-cached stylesheet and
+// icon.
+//
+// Deliberately script-free apart from the reload button: it has to work
+// when everything else is unreachable.
+templ OfflinePage() {
+	<!DOCTYPE html>
+	<html lang="en" class="h-full">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Offline — Nestova</title>
+			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+			<meta name="theme-color" content="#6f8c6a"/>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+		</head>
+		<body class="flex h-full items-center justify-center bg-sand p-6 text-ink">
+			<main class="flex max-w-sm flex-col items-center gap-5 text-center" data-testid="offline-page">
+				<img
+					src="/static/icons/icon-192.png"
+					alt=""
+					width="72"
+					height="72"
+					class="rounded-2xl"
+				/>
+				<div class="flex flex-col gap-2">
+					<h1 class="text-2xl font-semibold">You're offline</h1>
+					<p class="text-sm leading-relaxed text-ink-secondary">
+						Nestova can't reach the home server. It'll be here as soon
+						as you're back on the house network.
+					</p>
+				</div>
+				<button
+					type="button"
+					onclick="location.reload()"
+					class="min-h-[44px] rounded-xl bg-sage px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-dark"
+				>
+					Try again
+				</button>
+			</main>
+		</body>
+	</html>
+}
