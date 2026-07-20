@@ -39,8 +39,14 @@ Static asset URLs are **not** content-hashed, so a deploy reuses the same
 paths. `CACHE_NAME` in `web/static/sw.js` carries the version:
 
 ```js
-const CACHE_NAME = 'nestova-static-v1';
+const CACHE_PREFIX = 'nestova-static-';
+const CACHE_NAME = `${CACHE_PREFIX}v1`;
 ```
+
+Bump only the version suffix, keeping the prefix: `activate` evicts
+caches carrying that prefix and leaves anything else on the origin
+alone, so a renamed prefix would orphan the old cache instead of
+replacing it.
 
 **Bump the suffix whenever any pre-cached asset changes** — a CSS rebuild,
 a font swap, an icon or manifest edit. The bump forces a fresh install-time
