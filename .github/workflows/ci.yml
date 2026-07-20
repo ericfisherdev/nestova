@@ -3,13 +3,21 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Runs on main exist to populate the *default-branch* cache scope. A workflow
+  # run may only restore caches written by its own ref or by the default branch,
+  # so without this trigger every PR starts from a cold Go cache and recompiles
+  # every dependency (twice: once plain, once race-instrumented).
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but never cancel a main-branch run: those are the
+  # only runs that refresh the shared cache every PR restores from.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -27,7 +35,26 @@ jobs:
         with:
           # Single source of truth: the version in go.mod.
           go-version-file: go.mod
-          cache: true
+          # Caching is handled explicitly below. setup-go's built-in cache
+          # derives its key solely from the Go version and the go.sum hash, with
+          # no job discriminator, so every job in this workflow would contend for
+          # one key and only the fastest job's cache would ever persist.
+          cache: false
+
+      - name: Restore Go caches
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # Job-scoped prefix: this job's build cache is race-instrumented and
+          # is not interchangeable with the lint job's.
+          key: go-test-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+          # A go.sum bump then restores the previous cache rather than going
+          # fully cold; only the changed modules recompile.
+          restore-keys: |
+            go-test-${{ runner.os }}-
 
       - name: Verify generated templ output is in sync
         # templ is pinned via the go.mod tool directive, so the generated code
@@ -58,22 +85,6 @@ jobs:
             exit 1
           fi
 
-      - name: Install golangci-lint
-        # install-only adds the pinned golangci-lint to PATH without running it,
-        # so the lint and format steps below invoke the same binary via the
-        # Makefile (single source of truth). version must match
-        # GOLANGCI_LINT_VERSION in the Makefile.
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          install-only: true
-          version: v2.11.4
-
-      - name: Lint
-        run: make lint
-
-      - name: Check formatting
-        run: golangci-lint fmt --diff
-
       - name: Test (race detector + coverage)
         run: make test
 
@@ -91,9 +102,87 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Save Go caches
+        # Only main-branch runs write the cache. PRs restore but never save,
+        # which is what keeps the repo under GitHub's 10 GB cache ceiling: one
+        # 215 MB entry per PR previously filled it (9.65 GB across 83 entries)
+        # and thrashed LRU eviction hard enough that even same-PR reruns missed.
+        # `always()` keeps the (still valid) compilation work when tests fail;
+        # the cache-hit guard skips a redundant re-upload on an exact key match.
+        if: always() && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    # Split out of `build` so static analysis runs concurrently with the test
+    # suite instead of serially ahead of it. The *_templ.go files are committed,
+    # so this job needs no generate step.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # See the build job: caching is explicit and job-scoped.
+          cache: false
+
+      - name: Restore Go caches
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-lint-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-lint-${{ runner.os }}-
+
+      - name: Install golangci-lint
+        # install-only adds the pinned golangci-lint to PATH without running it,
+        # so the lint and format steps below invoke the same binary via the
+        # Makefile (single source of truth). version must match
+        # GOLANGCI_LINT_VERSION in the Makefile.
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          install-only: true
+          version: v2.11.4
+          # The action's own cache is redundant here: install-only never runs the
+          # linter, so the entries it wrote were 0-1 MB of nothing while still
+          # consuming the repo's cache budget. golangci-lint's real speedup comes
+          # from the Go build cache restored above.
+          skip-cache: true
+
+      - name: Lint
+        run: make lint
+
+      - name: Check formatting
+        run: golangci-lint fmt --diff
+
+      - name: Save Go caches
+        if: always() && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
   commit-lint:
     name: commit-lint
     runs-on: ubuntu-latest
+    # Inherently PR-scoped: it diffs the PR's commits against the base branch,
+    # and both `pull_request.head.sha` and `base_ref` are empty on a push.
+    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -108,7 +197,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          # Deliberately uncached. This job only compiles `conform`, finishes in
+          # well under a minute, and is never on the critical path; sharing a
+          # cache key with the heavier jobs is what let it clobber their caches.
+          cache: false
 
       - name: Lint commit messages
         # conform enforces the Conventional Commits policy in .conform.yaml over
