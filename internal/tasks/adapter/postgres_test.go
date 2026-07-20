@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"os"
 	"testing"
 	"time"
 
@@ -13,47 +12,20 @@ import (
 
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 	"github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
 
-// newTestPool returns a pool backed by NESTOVA_TEST_DATABASE_URL with the full
-// schema applied, or skips when the env var is unset (keeping the default test
-// run hermetic). The cleanup handler resets the schema after the test.
+// newTestPool returns a pool against this package's own derived database
+// (NES-149), freshly reset and migrated. dbtest.NewIsolatedPool owns the
+// safety rail, the on-demand CREATE DATABASE, and the reset/migrate
+// lifecycle; the per-package database is what lets gated packages run
+// concurrently without resetting each other's schema mid-test.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the tasks repository tests")
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	pool, err := db.New(setupCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "tasks")
 }
 
 // testCtx returns a per-call context bounded to 10 s so a slow or unresponsive

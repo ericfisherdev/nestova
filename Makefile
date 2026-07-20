@@ -53,7 +53,7 @@ CSS_OUTPUT := web/static/css/app.css
 # Coverage profile written by `make test` and read by `make cover`.
 COVERAGE_OUT := coverage.out
 
-.PHONY: all build run test cover lint fmt generate assets hooks hooks-uninstall tidy clean help \
+.PHONY: all build run test test-gated cover lint fmt generate assets hooks hooks-uninstall tidy clean help \
 	migrate-up migrate-down migrate-status migrate-reset migrate-create \
 	supabase-up supabase-down supabase-status require-supabase-cli
 
@@ -91,6 +91,29 @@ run:
 ## test: run the test suite with the race detector and write a coverage profile
 test:
 	go test -race -cover -coverprofile=$(COVERAGE_OUT) ./...
+
+# Packages whose tests need NESTOVA_TEST_DATABASE_URL (see docs/testing.md).
+GATED_TEST_PACKAGES := \
+	./cmd/storage/... \
+	./internal/auth/adapter/... \
+	./internal/calendar/adapter/... \
+	./internal/household/adapter/... \
+	./internal/kiosk/adapter/... \
+	./internal/meals/adapter/... \
+	./internal/meals/app/... \
+	./internal/media/adapter/... \
+	./internal/notify/adapter/... \
+	./internal/platform/db/... \
+	./internal/subscriptions/adapter/... \
+	./internal/tasks/adapter/... \
+	./internal/tracking/adapter/... \
+	./internal/tracking/app/...
+
+## test-gated: run the database-gated suites (needs NESTOVA_TEST_DATABASE_URL)
+test-gated:
+	@test -n "$(NESTOVA_TEST_DATABASE_URL)" || \
+		{ echo "NESTOVA_TEST_DATABASE_URL is not set; see docs/testing.md"; exit 1; }
+	go test -race -count=1 $(GATED_TEST_PACKAGES)
 
 ## cover: print a per-function coverage summary (runs test first)
 cover: test

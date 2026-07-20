@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io/fs"
 	"math"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -62,14 +64,124 @@ func TestPoolerSafeConnConfig(t *testing.T) {
 	})
 }
 
+// isolatedDSN derives this package's own gated test database, mirroring
+// internal/platform/db/dbtest.NewIsolatedPool (NES-149) without importing
+// it: dbtest is BUILT ON this package (it calls Reset/Up), so importing it
+// here would be an import cycle — and these tests exercise the very
+// primitives dbtest depends on, so they must not be layered over it. The
+// duplicated logic is deliberately minimal: safety rail, CREATE DATABASE,
+// rewritten DSN. Schema reset/teardown stays in each test, which is the
+// point of this package's tests.
+func isolatedDSN(t *testing.T) string {
+	t.Helper()
+	base := os.Getenv("NESTOVA_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the gated migrate tests")
+	}
+	cfg, err := pgx.ParseConfig(base)
+	if err != nil {
+		t.Fatalf("parse NESTOVA_TEST_DATABASE_URL: %v", err)
+	}
+	name := strings.ToLower(cfg.Database)
+	if name != "test" && !strings.HasSuffix(name, "_test") {
+		t.Fatalf("refusing to use database %q; name must be \"test\" or end with \"_test\"", name)
+	}
+	derived := name + "_migrate"
+
+	adminCfg := cfg.Copy()
+	adminCfg.Database = "postgres"
+	// Bounded: CREATE DATABASE takes an exclusive lock on the template
+	// database and can block on another session, which would otherwise hang
+	// until the whole `go test` timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn, err := pgx.ConnectConfig(ctx, adminCfg)
+	if err != nil {
+		t.Fatalf("connect to maintenance database: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{derived}.Sanitize()); err != nil {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42P04" {
+			t.Fatalf("create database %q (the test role needs CREATEDB; see docs/testing.md): %v", derived, err)
+		}
+	}
+
+	// Swap only the database name on the ORIGINAL DSN — re-rendering from
+	// the parsed config would drop options pgx folds into the connection
+	// (sslrootcert, connect_timeout, ...) and force re-escaping values such
+	// as a password containing spaces. Mirrors dbtest.rewriteDatabase.
+	if u, err := url.Parse(base); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		u.Path = "/" + derived
+		return u.String()
+	}
+	// Conninfo form: splice over just the dbname value. Quote-aware for the
+	// same reason as dbtest's scanner — a whitespace split would collapse
+	// spaces inside a quoted password.
+	if start, end, ok := dbnameValueSpan(base); ok {
+		return base[:start] + derived + base[end:]
+	}
+	t.Fatalf("cannot derive a database name from NESTOVA_TEST_DATABASE_URL: no dbname= key and not a postgres:// URL")
+	return ""
+}
+
+// dbnameValueSpan locates the dbname value in a libpq conninfo string,
+// returning its half-open byte range; when dbname repeats, the LAST
+// occurrence wins, matching libpq. Mirrors dbtest's scanner of the same
+// name (see isolatedDSN for why this package cannot import dbtest).
+func dbnameValueSpan(conninfo string) (start, end int, ok bool) {
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	i := 0
+	for i < len(conninfo) {
+		for i < len(conninfo) && isSpace(conninfo[i]) {
+			i++
+		}
+		if i >= len(conninfo) {
+			break
+		}
+		keyStart := i
+		for i < len(conninfo) && conninfo[i] != '=' && !isSpace(conninfo[i]) {
+			i++
+		}
+		key := conninfo[keyStart:i]
+		if i >= len(conninfo) || conninfo[i] != '=' {
+			continue
+		}
+		i++
+		valStart := i
+		if i < len(conninfo) && conninfo[i] == '\'' {
+			i++
+			for i < len(conninfo) {
+				if conninfo[i] == '\\' && i+1 < len(conninfo) {
+					i += 2
+					continue
+				}
+				if conninfo[i] == '\'' {
+					i++
+					break
+				}
+				i++
+			}
+		} else {
+			for i < len(conninfo) && !isSpace(conninfo[i]) {
+				if conninfo[i] == '\\' && i+1 < len(conninfo) {
+					i++
+				}
+				i++
+			}
+		}
+		if key == "dbname" {
+			start, end, ok = valStart, i, true // keep scanning: last wins
+		}
+	}
+	return start, end, ok
+}
+
 // TestUpDownRoundTrip applies and rolls back the full migration set against a
 // real database. It is skipped unless NESTOVA_TEST_DATABASE_URL is set, keeping
 // the default test run hermetic.
 func TestUpDownRoundTrip(t *testing.T) {
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the migration round-trip test")
-	}
+	dsn := isolatedDSN(t)
 	ctx := context.Background()
 
 	// Start from a known-clean schema.
@@ -104,10 +216,7 @@ func TestUpDownRoundTrip(t *testing.T) {
 // TestDownAndStatus exercises single-migration rollback and the status command
 // against a real database. Skipped unless NESTOVA_TEST_DATABASE_URL is set.
 func TestDownAndStatus(t *testing.T) {
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the migration Down/Status test")
-	}
+	dsn := isolatedDSN(t)
 	ctx := context.Background()
 
 	if err := Reset(ctx, dsn); err != nil {
@@ -149,10 +258,7 @@ func TestDownAndStatus(t *testing.T) {
 // 00025_reward_redemption_fulfillment.sql's Up section doc for the exact
 // ordering bug this guards against (CodeRabbit finding, NES-127).
 func TestUpTo_BackfillsPreExistingRequestedRows(t *testing.T) {
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the stepped-migration backfill test")
-	}
+	dsn := isolatedDSN(t)
 	ctx := context.Background()
 
 	if err := Reset(ctx, dsn); err != nil {

@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +15,7 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/media/adapter"
 	"github.com/ericfisherdev/nestova/internal/media/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
 // preResetSweep is a best-effort DELETE of any lingering s3-stamped photo/
@@ -52,50 +48,12 @@ func preResetSweep(ctx context.Context, dsn string) {
 	_, _ = conn.Exec(ctx, `DELETE FROM photo WHERE storage_backend = 's3'`)
 }
 
-// newTestPool returns a pool against NESTOVA_TEST_DATABASE_URL with a freshly
-// reset+migrated schema. It refuses to run unless the DSN's database name is
-// "test" or ends with "_test" so migrate.Reset can never wipe a real database.
+// newTestPool returns a pool against this package's own derived database
+// (NES-149), freshly reset and migrated. preResetSweep runs before each
+// reset (see its own doc) via the dbtest pre-reset hook.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the media adapter tests")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse test DSN: %v", err)
-	}
-	name := strings.ToLower(cfg.ConnConfig.Database)
-	if name != "test" && !strings.HasSuffix(name, "_test") {
-		t.Fatalf("refusing to reset database %q; name must be \"test\" or end with \"_test\"", name)
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	preResetSweep(setupCtx, dsn)
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelCleanup()
-		preResetSweep(cleanupCtx, dsn)
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	poolCtx, cancelPool := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelPool()
-	pool, err := db.New(poolCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "media", dbtest.WithPreReset(preResetSweep))
 }
 
 func testCtx(t *testing.T) context.Context {

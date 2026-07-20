@@ -3,7 +3,6 @@ package adapter_test
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -13,45 +12,17 @@ import (
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
-// newTestRepos returns a credential repository (and household repository for
-// seeding) backed by NESTOVA_TEST_DATABASE_URL, or skips when the env var is
-// unset.
+// newTestRepos returns a credential repository (and household repository
+// for seeding) over this package's own derived database (NES-149), freshly
+// reset and migrated. dbtest.NewIsolatedPool owns the safety rail, the
+// on-demand CREATE DATABASE, and the reset/migrate lifecycle.
 func newTestRepos(t *testing.T) (*authadapter.CredentialRepository, *householdadapter.PostgresRepository, *pgxpool.Pool) {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the auth credential repository tests")
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	pool, err := db.New(setupCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
+	pool := dbtest.NewIsolatedPool(t, "auth")
 	return authadapter.NewCredentialRepository(pool), householdadapter.NewPostgresRepository(pool), pool
 }
 

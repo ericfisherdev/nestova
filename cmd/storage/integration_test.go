@@ -28,7 +28,6 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -42,9 +41,7 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
 	mediadomain "github.com/ericfisherdev/nestova/internal/media/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
 const (
@@ -74,52 +71,12 @@ func preResetSweep(ctx context.Context, dsn string) {
 	_, _ = conn.Exec(ctx, `DELETE FROM photo WHERE storage_backend = 's3'`)
 }
 
-// newIntegrationPool mirrors internal/media/adapter/postgres_test.go's
-// newTestPool (unexported there, so not importable from this separate
-// binary): a pool against NESTOVA_TEST_DATABASE_URL, reset and freshly
-// migrated, refusing to run against anything whose database name does not
-// end in "test".
+// newIntegrationPool returns a pool against this binary's own derived
+// database (NES-149), freshly reset and migrated. preResetSweep runs
+// before each reset (see its own doc) via the dbtest pre-reset hook.
 func newIntegrationPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the storage migrator/verifier integration tests")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse test DSN: %v", err)
-	}
-	name := strings.ToLower(cfg.ConnConfig.Database)
-	if name != "test" && !strings.HasSuffix(name, "_test") {
-		t.Fatalf("refusing to reset database %q; name must be \"test\" or end with \"_test\"", name)
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	preResetSweep(setupCtx, dsn)
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelCleanup()
-		preResetSweep(cleanupCtx, dsn)
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	poolCtx, cancelPool := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelPool()
-	pool, err := db.New(poolCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "storage", dbtest.WithPreReset(preResetSweep))
 }
 
 // newIntegrationS3Store mirrors photo_store_s3_test.go's newTestS3Store: a

@@ -3,7 +3,6 @@ package adapter_test
 import (
 	"context"
 	"errors"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -16,41 +15,17 @@ import (
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
-// newTestPool connects to NESTOVA_TEST_DATABASE_URL and applies migrations, or
-// skips when the env var is unset (keeping the default test run hermetic).
+// newTestPool returns a pool against this package's own derived database
+// (NES-149), freshly reset and migrated. dbtest.NewIsolatedPool owns the
+// safety rail, the on-demand CREATE DATABASE, and the reset/migrate
+// lifecycle; the per-package database is what lets gated packages run
+// concurrently without resetting each other's schema mid-test.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the notify adapter tests")
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	pool, err := db.New(setupCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "notify")
 }
 
 // testCtx returns a per-call context bounded so a slow/unresponsive database
@@ -169,10 +144,9 @@ func TestClaimDue_Concurrency_NoDoubleClaimWithSKIPLOCKED(t *testing.T) {
 	// Connect a second pool to the same database to simulate two independent
 	// dispatcher instances. Each calls ClaimDue concurrently; SKIP LOCKED must
 	// ensure the single due notification is claimed by exactly one of them.
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the notify adapter tests")
-	}
+	// The second pool must target the SAME derived database as newTestPool
+	// (NES-149) — the base DSN names a different database entirely.
+	dsn := dbtest.DSN(t, "notify")
 
 	pool1 := newTestPool(t)
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
