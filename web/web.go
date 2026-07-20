@@ -6,11 +6,24 @@ package web
 import (
 	"embed"
 	"io/fs"
+	"mime"
 	"net/http"
 )
 
 //go:embed static
 var staticFS embed.FS
+
+// Go's mime package has no built-in mapping for .webmanifest, so
+// http.FileServerFS would sniff the manifest and serve it as text/plain.
+// Chrome requires a JSON-ish type (application/manifest+json) before it
+// will accept a manifest, so registering the extension here is what makes
+// the app installable from the Go binary alone, with no reverse proxy
+// involved (NES-151).
+func init() {
+	if err := mime.AddExtensionType(".webmanifest", "application/manifest+json"); err != nil {
+		panic("web: registering .webmanifest MIME type: " + err.Error())
+	}
+}
 
 // StaticFS returns the embedded static assets rooted so that, e.g.,
 // "css/app.css" resolves to web/static/css/app.css.
