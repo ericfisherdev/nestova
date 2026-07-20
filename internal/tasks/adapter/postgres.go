@@ -1315,7 +1315,31 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 		RETURNING ti.id, ti.household_id, ti.assignee_id, ti.due_on,
 		          due.title, due.category`
 
-	rows, err := r.dbtx.Query(ctx, q, domain.DateOf(asOf))
+	// The claim runs inside an explicit transaction committed only AFTER
+	// every returned row has decoded cleanly. Without it, the single
+	// statement's implicit transaction commits the reminded_at marks the
+	// moment the statement finishes — a Go-side scan/parse failure after
+	// that point would strand the marked rows exactly the way the
+	// two-query shape this method replaced could (marked, never returned,
+	// never reselected). A decode error now rolls the marks back, and the
+	// next scheduler tick reselects the same rows.
+	//
+	// db.TX is either a *pgxpool.Pool or a pgx.Tx; both expose Begin
+	// (pgx.Tx.Begin opens a savepoint) — the same pattern
+	// CreateWithRotation and SetRotationMembers use.
+	beginner, ok := r.dbtx.(interface {
+		Begin(context.Context) (pgx.Tx, error)
+	})
+	if !ok {
+		return nil, errors.New("claim due-soon reminders: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("claim due-soon reminders: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, q, domain.DateOf(asOf))
 	if err != nil {
 		return nil, fmt.Errorf("claim due-soon reminders: %w", err)
 	}
@@ -1362,6 +1386,12 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("claim due-soon reminders: %w", err)
+	}
+	// The result set must be fully drained and closed before any other
+	// command runs on this connection — Commit included.
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("claim due-soon reminders: commit: %w", err)
 	}
 	return targets, nil
 }
