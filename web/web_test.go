@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -108,7 +109,10 @@ func TestStaticHandler_ServesEveryManifestIcon(t *testing.T) {
 
 	var sawMaskable bool
 	for _, icon := range manifest.Icons {
-		if icon.Purpose == "maskable" {
+		// purpose is a space-separated token list per the spec: "maskable"
+		// and "any maskable" both declare a maskable icon, so match the
+		// token rather than the whole field.
+		if slices.Contains(strings.Fields(icon.Purpose), "maskable") {
 			sawMaskable = true
 		}
 		resp, err := http.Get(srv.URL + icon.Src)
