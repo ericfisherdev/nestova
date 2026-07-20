@@ -164,6 +164,25 @@ func deriveDSN(t *testing.T, baseDSN, suffix string) (dsn, name string) {
 	return dsn, name
 }
 
+// isPackageIdentifier reports whether s is safe to splice into a DSN and
+// use as an unquoted Postgres identifier fragment: ASCII letters, digits,
+// and underscores only. Deliberately strict — the suffixes are short
+// hand-written literals ("tasks", "auth"), so there is no reason to permit
+// anything that could carry conninfo or SQL syntax.
+func isPackageIdentifier(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_':
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
 // derive is deriveDSN's pure core: it validates baseDSN and suffix and
 // returns the per-package DSN and database name, or an error.
 //
@@ -176,6 +195,17 @@ func derive(baseDSN, suffix string) (dsn, name string, err error) {
 	// database and quietly undo the isolation this package exists for.
 	if strings.TrimSpace(suffix) == "" {
 		return "", "", errors.New("suffix must be a non-empty package identifier")
+	}
+	// The suffix is spliced into a DSN, so it must not be able to carry
+	// conninfo syntax. Without this, a suffix like "x dbname=production"
+	// yields "dbname=nestova_test_x dbname=production" — and since the LAST
+	// dbname wins (for libpq and for dbnameValueSpan alike), the connection
+	// would target production, defeating the base-name safety rail entirely
+	// and pointing migrate.Reset at a real database. Restricting the suffix
+	// to a package-identifier character set closes that off, and keeps the
+	// derived name a legal unquoted Postgres identifier besides.
+	if !isPackageIdentifier(suffix) {
+		return "", "", fmt.Errorf("suffix %q must contain only ASCII letters, digits, or underscores", suffix)
 	}
 	connCfg, parseErr := pgx.ParseConfig(baseDSN)
 	if parseErr != nil {
