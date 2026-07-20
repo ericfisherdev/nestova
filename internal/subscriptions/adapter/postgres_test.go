@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,58 +13,21 @@ import (
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
 	"github.com/ericfisherdev/nestova/internal/subscriptions/domain"
 )
 
-// newTestPool returns a pool against the NESTOVA_TEST_DATABASE_URL database with
-// a freshly reset+migrated schema. It refuses to run unless the DSN's database
-// name is "test" or ends with "_test" so migrate.Reset can never wipe a real
-// database (a substring match could be satisfied by a host or password).
+// newTestPool returns a pool against this package's own derived database
+// (NES-149), freshly reset and migrated. dbtest.NewIsolatedPool owns the
+// safety rail, the on-demand CREATE DATABASE, and the reset/migrate
+// lifecycle; the per-package database is what lets gated packages run
+// concurrently without resetting each other's schema mid-test.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the subscriptions adapter tests")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse test DSN: %v", err)
-	}
-	name := strings.ToLower(cfg.ConnConfig.Database)
-	if name != "test" && !strings.HasSuffix(name, "_test") {
-		t.Fatalf("refusing to reset database %q; name must be \"test\" or end with \"_test\"", name)
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelCleanup()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	poolCtx, cancelPool := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelPool()
-	pool, err := db.New(poolCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "subs")
 }
 
 func testCtx(t *testing.T) context.Context {

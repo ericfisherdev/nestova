@@ -2,7 +2,6 @@ package adapter_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
 // newExecModePool builds a pool configured exactly as db.poolConfig's
@@ -46,32 +45,20 @@ func newExecModePool(t *testing.T, dsn string) *pgxpool.Pool {
 // Supabase transaction pooler requires. It is DB-gated and skipped unless
 // NESTOVA_TEST_DATABASE_URL is set, keeping the default test run hermetic.
 func TestSessionStorePoolerSafe(t *testing.T) {
-	// NESTOVA_TEST_DATABASE_URL should point at a direct (non-pooled) connection;
-	// the test simulates the transaction pooler purely by configuring the pool
-	// with QueryExecModeExec, so no real pooler is needed in the test environment.
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the session store pooler test")
-	}
+	// This test builds its OWN pool (QueryExecModeExec) rather than using
+	// newTestPool, so it takes the derived DSN and drives the schema
+	// lifecycle itself — dbtest.NewIsolatedPool against the same "auth"
+	// suffix does the reset/migrate and registers the cleanup, and the
+	// returned pool is closed immediately since only the DSN is wanted.
+	// The base DSN should point at a direct (non-pooled) connection; the
+	// transaction pooler is simulated purely by the exec mode below, so no
+	// real pooler is needed in the test environment.
+	dbtest.NewIsolatedPool(t, "auth").Close()
+	dsn := dbtest.DSN(t, "auth")
 
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	// pool.Close is registered after the reset cleanup, so it runs first (LIFO):
-	// the pool is closed before the final schema reset opens its own handle.
+	// pool.Close is registered after dbtest's reset cleanup, so it runs first
+	// (LIFO): the pool is closed before the final schema reset opens its own
+	// handle.
 	pool := newExecModePool(t, dsn)
 	sm := authadapter.NewSessionManager(pool, config.SessionConfig{Lifetime: time.Hour})
 

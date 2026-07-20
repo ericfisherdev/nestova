@@ -2,12 +2,12 @@ package adapter_test
 
 import (
 	"errors"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 	"github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	"github.com/ericfisherdev/nestova/internal/tasks/domain"
 )
@@ -38,10 +38,9 @@ func hashPtr(s string) *string { return &s }
 // multi-process deployment (or, as here, simply two independent connections)
 // can never both succeed for the same signed link.
 func TestRedeemWithDebit_DeepLinkSignature_DurableAcrossRepositoryInstances(t *testing.T) {
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the tasks repository tests")
-	}
+	// The second pool must target the SAME derived database as newTestPool
+	// (NES-149) — the base DSN names a different database entirely.
+	dsn := dbtest.DSN(t, "tasks")
 
 	pool1 := newTestPool(t) // resets and migrates the schema once
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool1)
@@ -103,10 +102,9 @@ func TestRedeemWithDebit_DeepLinkSignature_DurableAcrossRepositoryInstances(t *t
 // brand-new pool and repository, constructed from nothing but the DSN, are
 // asked to redeem the SAME signature hash again.
 func TestRedeemWithDebit_DeepLinkSignature_DurableAfterSimulatedRestart(t *testing.T) {
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the tasks repository tests")
-	}
+	// The reopened pool must target the SAME derived database as newTestPool
+	// (NES-149) — the base DSN names a different database entirely.
+	dsn := dbtest.DSN(t, "tasks")
 
 	// newTestPool's own t.Cleanup resets the schema at the end of the test
 	// (not "on restart") — that is fine here: this test's own restart

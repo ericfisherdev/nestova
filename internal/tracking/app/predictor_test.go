@@ -3,16 +3,13 @@ package app_test
 import (
 	"context"
 	"math"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 	"github.com/ericfisherdev/nestova/internal/tracking/adapter"
 	"github.com/ericfisherdev/nestova/internal/tracking/app"
 	"github.com/ericfisherdev/nestova/internal/tracking/domain"
@@ -217,33 +214,14 @@ func appendDepletion(t *testing.T, repo *adapter.UsageEventRepository, hh househ
 
 func approxEqual(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
+// newTestPool returns a pool against this package's own derived database
+// (NES-149), freshly reset and migrated. dbtest.NewIsolatedPool owns the
+// safety rail, the on-demand CREATE DATABASE, and the reset/migrate
+// lifecycle; the per-package database is what lets gated packages run
+// concurrently without resetting each other's schema mid-test.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the predictor DB test")
-	}
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelCleanup()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-	pool, err := db.New(setupCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "trackingapp")
 }
 
 func testCtx(t *testing.T) context.Context {

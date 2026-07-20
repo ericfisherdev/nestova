@@ -3,8 +3,6 @@ package adapter_test
 import (
 	"context"
 	"errors"
-	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,67 +12,17 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	"github.com/ericfisherdev/nestova/internal/kiosk/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/db"
-	"github.com/ericfisherdev/nestova/internal/platform/db/migrate"
+	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
-// newTestPool returns a pool against NESTOVA_TEST_DATABASE_URL with a freshly
-// reset+migrated schema. It refuses to run unless the DSN's database name is
-// "test" or ends with "_test" so migrate.Reset can never wipe a real database.
-// Mirrors internal/media/adapter/postgres_test.go's helper of the same name.
-//
-// Isolation note: every test using this helper calls migrate.Reset (drop
-// everything) then migrate.Up (recreate the full schema) against the SAME
-// shared DSN, both on setup and again in t.Cleanup. This is safe for tests
-// WITHIN this package running sequentially (Go's default `go test` behavior
-// for a single package), but two DIFFERENT gated packages must never be run
-// concurrently against the same database: one package's Reset can drop the
-// schema out from under another package's in-flight test. Always invoke a
-// gated package's tests as a single, separate `go test ./path/to/one/pkg/...`
-// command — never combined with another gated package (including
-// internal/platform/db/migrate's own tests, which exercise Reset/Up
-// directly) in the same run, and never run two gated packages' test binaries
-// at the same time against one shared NESTOVA_TEST_DATABASE_URL.
+// newTestPool returns a pool against this package's own derived database
+// (NES-149), freshly reset and migrated. dbtest.NewIsolatedPool owns the
+// safety rail, the on-demand CREATE DATABASE, and the reset/migrate
+// lifecycle; the per-package database is what lets gated packages run
+// concurrently without resetting each other's schema mid-test.
 func newTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the kiosk adapter tests")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("parse test DSN: %v", err)
-	}
-	name := strings.ToLower(cfg.ConnConfig.Database)
-	if name != "test" && !strings.HasSuffix(name, "_test") {
-		t.Fatalf("refusing to reset database %q; name must be \"test\" or end with \"_test\"", name)
-	}
-
-	setupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := migrate.Reset(setupCtx, dsn); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if err := migrate.Up(setupCtx, dsn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelCleanup()
-		if err := migrate.Reset(cleanupCtx, dsn); err != nil {
-			t.Logf("cleanup reset failed: %v", err)
-		}
-	})
-
-	poolCtx, cancelPool := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelPool()
-	pool, err := db.New(poolCtx, config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
-	if err != nil {
-		t.Fatalf("connect pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return dbtest.NewIsolatedPool(t, "kiosk")
 }
 
 func testCtx(t *testing.T) context.Context {
