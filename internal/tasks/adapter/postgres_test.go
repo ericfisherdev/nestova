@@ -1591,8 +1591,15 @@ func TestTaskInstance_ClaimDueSoonReminders(t *testing.T) {
 	if targets[0].InstanceID != insideWindow.ID {
 		t.Errorf("targets[0].InstanceID = %v, want %v (inside-window instance)", targets[0].InstanceID, insideWindow.ID)
 	}
-	if targets[0].Title == "" {
-		t.Error("targets[0].Title is empty, want recurring task title")
+	// Title and category come from the SAME atomic statement as the mark
+	// (NES-146) — assert the exact seeded values, not mere non-emptiness,
+	// so a regression back to a separate (or wrong-join) enrichment step
+	// cannot pass.
+	if targets[0].Title != rt.Title {
+		t.Errorf("targets[0].Title = %q, want %q", targets[0].Title, rt.Title)
+	}
+	if targets[0].Category != rt.Category {
+		t.Errorf("targets[0].Category = %v, want %v", targets[0].Category, rt.Category)
 	}
 	if targets[0].HouseholdID != h.ID {
 		t.Errorf("targets[0].HouseholdID = %v, want %v", targets[0].HouseholdID, h.ID)

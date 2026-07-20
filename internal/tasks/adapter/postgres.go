@@ -1286,9 +1286,19 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 	// so Postgres can use the partial index on due_on; the lower bound
 	// (ti.due_on >= $1::date) excludes past-due pending rows from the due-soon
 	// stream.
+	//
+	// The title/category enrichment rides the SAME statement as the mark
+	// (NES-146, mirroring ClaimWarnings' NES-118 fix): the due CTE already
+	// joins recurring_task for lead_time_days, so it carries rt.title and
+	// rt.category through to RETURNING. A separate follow-up title query —
+	// the previous shape — had a silent-loss failure mode: if it failed
+	// after the mark committed, the rows stayed reminded_at-stamped, were
+	// never reselected (reminded_at IS NULL), and their reminders were
+	// permanently lost. One statement means the mark and its notification
+	// content are returned together or nothing is marked at all.
 	const q = `
 		WITH due AS (
-			SELECT ti.id
+			SELECT ti.id, rt.title, rt.category
 			  FROM task_instance ti
 			  JOIN recurring_task rt ON rt.id = ti.recurring_task_id
 			 WHERE ti.status       = 'pending'
@@ -1303,7 +1313,7 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 		  FROM due
 		 WHERE ti.id = due.id
 		RETURNING ti.id, ti.household_id, ti.assignee_id, ti.due_on,
-		          ti.recurring_task_id`
+		          due.title, due.category`
 
 	rows, err := r.dbtx.Query(ctx, q, domain.DateOf(asOf))
 	if err != nil {
@@ -1311,7 +1321,49 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 	}
 	defer rows.Close()
 
-	return scanReminderRows(ctx, rows, domain.ReminderDueSoon, "claim due-soon reminders", r)
+	targets := make([]domain.ReminderTarget, 0)
+	for rows.Next() {
+		var (
+			instStr, hhStr, title, categoryStr string
+			assigneeIDStr                      *string
+			dueOn                              time.Time
+		)
+		if err := rows.Scan(&instStr, &hhStr, &assigneeIDStr, &dueOn, &title, &categoryStr); err != nil {
+			return nil, fmt.Errorf("claim due-soon reminders: scan: %w", err)
+		}
+		instID, err := domain.ParseTaskInstanceID(instStr)
+		if err != nil {
+			return nil, fmt.Errorf("claim due-soon reminders: parse instance id: %w", err)
+		}
+		hhID, err := household.ParseHouseholdID(hhStr)
+		if err != nil {
+			return nil, fmt.Errorf("claim due-soon reminders: parse household id: %w", err)
+		}
+		cat, err := domain.ParseCategory(categoryStr)
+		if err != nil {
+			return nil, fmt.Errorf("claim due-soon reminders: parse category: %w", err)
+		}
+		target := domain.ReminderTarget{
+			InstanceID:  instID,
+			HouseholdID: hhID,
+			Title:       title,
+			Category:    cat,
+			DueOn:       domain.DateOf(dueOn),
+			Kind:        domain.ReminderDueSoon,
+		}
+		if assigneeIDStr != nil {
+			memberID, err := household.ParseMemberID(*assigneeIDStr)
+			if err != nil {
+				return nil, fmt.Errorf("claim due-soon reminders: parse assignee id: %w", err)
+			}
+			target.AssigneeID = &memberID
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("claim due-soon reminders: %w", err)
+	}
+	return targets, nil
 }
 
 // ClaimWarnings atomically selects every claim entering its warning window
@@ -1323,7 +1375,8 @@ func (r *TaskInstanceRepository) ClaimDueSoonReminders(ctx context.Context, asOf
 // The selection, the claim_warned_at UPDATE, and the title lookup are
 // chained CTEs feeding one final SELECT, rather than a separate follow-up
 // query for the title the way scanReminderRows resolves titles for
-// ClaimDueSoonReminders/MarkPendingOverdueAll. That two-step shape has a
+// MarkPendingOverdueAll (ClaimDueSoonReminders was moved to this same
+// single-statement shape by NES-146). That two-step shape has a
 // latent bug this method must not repeat: if a follow-up title query failed
 // after the mark had already committed, the row would come back
 // claim_warned_at-stamped but never reach the caller — since a stamped row
