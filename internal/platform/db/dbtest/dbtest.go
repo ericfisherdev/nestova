@@ -151,35 +151,53 @@ func DSN(t *testing.T, suffix string) string {
 }
 
 // deriveDSN validates the configured DSN and rewrites its database name to
-// the per-package derived one. The safety rail is enforced on the BASE name
-// so a misconfigured DSN pointing at a real database is rejected before
-// anything is created or dropped — previously only 5 of the 15 gated
-// packages checked this at all.
+// the per-package derived one, failing the test on any problem. The rules
+// live in derive (below) so they are directly unit-testable, including the
+// rejection paths — a t.Fatal cannot be asserted on from a parent test,
+// since a failing subtest fails its parent too.
 func deriveDSN(t *testing.T, baseDSN, suffix string) (dsn, name string) {
 	t.Helper()
+	dsn, name, err := derive(baseDSN, suffix)
+	if err != nil {
+		t.Fatalf("dbtest: %v", err)
+	}
+	return dsn, name
+}
+
+// derive is deriveDSN's pure core: it validates baseDSN and suffix and
+// returns the per-package DSN and database name, or an error.
+//
+// The safety rail is enforced on the BASE database name so a misconfigured
+// DSN pointing at a real database is rejected before anything is created or
+// dropped — previously only 5 of the 15 gated packages checked this at all.
+func derive(baseDSN, suffix string) (dsn, name string, err error) {
 	// Validated here rather than only in NewIsolatedPool so DSN() cannot
 	// bypass it: an empty suffix would derive a single shared "<base>_"
 	// database and quietly undo the isolation this package exists for.
 	if strings.TrimSpace(suffix) == "" {
-		t.Fatal("dbtest: suffix must be a non-empty package identifier")
+		return "", "", errors.New("suffix must be a non-empty package identifier")
 	}
-	connCfg, err := pgx.ParseConfig(baseDSN)
-	if err != nil {
-		t.Fatalf("parse %s: %v", EnvVar, err)
+	connCfg, parseErr := pgx.ParseConfig(baseDSN)
+	if parseErr != nil {
+		return "", "", fmt.Errorf("parse %s: %w", EnvVar, parseErr)
 	}
 	base := strings.ToLower(connCfg.Database)
 	if base != "test" && !strings.HasSuffix(base, "_test") {
-		t.Fatalf("refusing to use database %q; %s's database name must be \"test\" or end with \"_test\"", base, EnvVar)
+		return "", "", fmt.Errorf("refusing to use database %q; %s's database name must be %q or end with %q", base, EnvVar, "test", "_test")
 	}
 
 	derived := base + "_" + strings.ToLower(suffix)
 	if len(derived) > 63 {
 		// Postgres truncates identifiers past 63 bytes, which would silently
 		// merge two packages' databases back into one.
-		t.Fatalf("derived database name %q exceeds Postgres's 63-byte identifier limit; shorten the suffix", derived)
+		return "", "", fmt.Errorf("derived database name %q exceeds Postgres's 63-byte identifier limit; shorten the suffix", derived)
 	}
 
-	return rewriteDatabase(t, baseDSN, derived), derived
+	rewritten, rewriteErr := rewriteDatabase(baseDSN, derived)
+	if rewriteErr != nil {
+		return "", "", rewriteErr
+	}
+	return rewritten, derived, nil
 }
 
 // rewriteDatabase returns baseDSN with its database name replaced, editing
@@ -189,22 +207,20 @@ func deriveDSN(t *testing.T, baseDSN, suffix string) (dsn, name string) {
 // would need to re-escape values like a password containing spaces — both
 // of which change how the test connects. Swapping just the name keeps
 // every other option exactly as the operator wrote it.
-func rewriteDatabase(t *testing.T, baseDSN, newName string) string {
-	t.Helper()
-
+func rewriteDatabase(baseDSN, newName string) (string, error) {
 	// URL form: postgres://user:pass@host:port/dbname?opts
 	if u, err := url.Parse(baseDSN); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
 		u.Path = "/" + newName
-		return u.String()
+		return u.String(), nil
 	}
 
 	// Key/value (conninfo) form: host=... dbname=... — splice a new value
 	// over just the dbname one, leaving every other byte untouched.
 	start, end, ok := dbnameValueSpan(baseDSN)
 	if !ok {
-		t.Fatalf("cannot derive a database name from %s: no dbname= key and not a postgres:// URL", EnvVar)
+		return "", fmt.Errorf("cannot derive a database name from %s: no dbname= key and not a postgres:// URL", EnvVar)
 	}
-	return baseDSN[:start] + newName + baseDSN[end:]
+	return baseDSN[:start] + newName + baseDSN[end:], nil
 }
 
 // dbnameValueSpan locates the effective dbname value inside a libpq
