@@ -11,7 +11,7 @@ Related runbooks: [`kiosk.md`](kiosk.md) for the entryway touchscreen,
 
 ## The shape of it
 
-```
+```text
  phone / laptop ──HTTPS──▶ tailscale serve ──HTTP──▶ nestova on :8080
    (tailnet)               (TLS terminated,          (systemd service)
                             Let's Encrypt cert)
@@ -28,6 +28,47 @@ that derived scheme.
 The kiosk keeps talking plain HTTP over the LAN and is unaffected by any
 of this; its service worker simply never registers, which is by design
 (see [`pwa.md`](pwa.md)).
+
+## 0. Prerequisites on a fresh Pi
+
+Everything below assumes these exist. On a brand-new or replacement Pi
+they do not, and skipping this step fails in two confusing ways: the
+`install` in step 1 aborts because the target directory is absent, and
+systemd refuses to start the unit because its `User=` or
+`EnvironmentFile=` is missing.
+
+```sh
+# Service account: no login shell, no home directory — it only runs the binary.
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin nestova
+
+# Directories: binary, config, and the writable state directory that the
+# unit's ReadWritePaths= grants access to.
+sudo install -d -o root    -g root    -m 0755 /opt/nestova/bin
+sudo install -d -o root    -g nestova -m 0750 /etc/nestova
+sudo install -d -o nestova -g nestova -m 0750 /var/lib/nestova
+```
+
+Postgres must be installed and running, since the unit both `Requires=`
+and orders itself after `postgresql.service`:
+
+```sh
+sudo apt install -y postgresql
+sudo systemctl enable --now postgresql
+sudo -u postgres createuser --pwprompt nestova
+sudo -u postgres createdb --owner=nestova nestova
+```
+
+Then create `/etc/nestova/server.env` with at least `DATABASE_URL`, plus
+the knobs from step 3. It holds the database password, so lock it down:
+
+```sh
+sudo touch /etc/nestova/server.env
+sudo chown root:nestova /etc/nestova/server.env
+sudo chmod 0640 /etc/nestova/server.env
+```
+
+Root-owned and group-readable — the service user reads it, but cannot
+rewrite its own configuration.
 
 ## 1. The server as a systemd service
 
@@ -70,9 +111,9 @@ RestrictSUIDSGID=true
 WantedBy=multi-user.target
 ```
 
-`/etc/nestova/server.env` holds `DATABASE_URL` and the knobs from step 3
-— `chmod 600`, owned by the service user, since it contains the database
-password.
+`/etc/nestova/server.env` holds `DATABASE_URL` and the knobs from step 3;
+step 0 created it with the permissions it needs, since it contains the
+database password.
 
 ```sh
 sudo install -m 0755 -o root -g root server /opt/nestova/bin/server
@@ -80,7 +121,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now nestova-server.service
 systemctl status nestova-server.service
 curl -fsS http://localhost:8080/healthz && echo   # expect: ok
+curl -fsS http://localhost:8080/readyz  && echo   # expect: ready
 ```
+
+Check both, and treat `/readyz` as the one that matters here.
+`/healthz` reports process liveness only — it never touches a backing
+dependency, so it answers `ok` from a server whose database is
+unreachable. `/readyz` runs a real database health check and returns 503
+when Postgres is down. A deploy verified with `/healthz` alone can look
+healthy while every actual request fails.
 
 ### What the LAN can reach
 
@@ -182,7 +231,8 @@ Do all of it; several failure modes only appear on one path.
 
 | Check | How |
 |---|---|
-| Server is up | `curl -fsS http://localhost:8080/healthz` on the Pi |
+| Server process is up | `curl -fsS http://localhost:8080/healthz` on the Pi |
+| Database is reachable | `curl -fsS http://localhost:8080/readyz` on the Pi — 503 means Postgres is down |
 | HTTPS + valid cert, on-LAN | Open `https://nestova.<tailnet>.ts.net` from a tailnet device on the home network |
 | HTTPS + valid cert, off-LAN | Same URL from a phone on **mobile data** (tailnet, not LAN) |
 | Sessions survive the proxy hop | Log in with a test account, navigate, and confirm you stay logged in |
@@ -204,8 +254,14 @@ After it comes back:
 ```sh
 systemctl status nestova-server.service   # active (running)
 tailscale serve status                    # the proxy config is still there
-curl -fsS https://nestova.<tailnet>.ts.net/healthz && echo
+curl -fsS https://nestova.<tailnet>.ts.net/readyz && echo
 ```
+
+`/readyz` rather than `/healthz` is the deliberate choice after a reboot:
+this is exactly the moment Postgres and the app race each other to come
+up, and the systemd ordering only sequences *starts*, not readiness. A
+server that won its race against a database still finishing recovery
+answers `/healthz` with `ok` while every real request fails.
 
 `tailscale serve --bg` persists its configuration, and the systemd unit
 is enabled — but verify rather than assume. A serve config that does not
