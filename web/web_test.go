@@ -107,6 +107,20 @@ func TestStaticHandler_ServesEveryManifestIcon(t *testing.T) {
 	srv := httptest.NewServer(http.StripPrefix("/static/", web.StaticHandler()))
 	t.Cleanup(srv.Close)
 
+	// apple-touch-icon is referenced by layout.templ but deliberately absent
+	// from the manifest (iOS ignores manifest icons and uses the <link> tag),
+	// so the manifest-driven loop below would never cover it — a missing file
+	// would be a silent 404 for iOS users with no test failure.
+	appleResp, err := http.Get(srv.URL + "/static/icons/icon-180.png")
+	if err != nil {
+		t.Errorf("GET apple-touch-icon: %v", err)
+	} else {
+		_ = appleResp.Body.Close()
+		if appleResp.StatusCode != http.StatusOK {
+			t.Errorf("apple-touch-icon status = %d, want 200", appleResp.StatusCode)
+		}
+	}
+
 	var sawMaskable bool
 	for _, icon := range manifest.Icons {
 		// purpose is a space-separated token list per the spec: "maskable"
