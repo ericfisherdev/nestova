@@ -208,6 +208,28 @@ func TestDerive_RejectsUnsafeInput(t *testing.T) {
 			wantErr: "non-empty package identifier",
 		},
 		{
+			// The critical case: an unquoted conninfo DSN would become
+			// "dbname=nestova_test_x dbname=production", and since the LAST
+			// dbname wins, migrate.Reset would target production despite the
+			// base DSN passing the name check.
+			name:    "suffix smuggles a second dbname into the conninfo",
+			dsn:     "host=localhost user=u dbname=nestova_test",
+			suffix:  "x dbname=production",
+			wantErr: "ASCII letters, digits, or underscores",
+		},
+		{
+			name:    "suffix carries a URL query delimiter",
+			dsn:     "postgres://u:p@localhost:5432/nestova_test",
+			suffix:  "x?sslmode=disable",
+			wantErr: "ASCII letters, digits, or underscores",
+		},
+		{
+			name:    "suffix carries a quote",
+			dsn:     "host=localhost dbname=nestova_test",
+			suffix:  "x'y",
+			wantErr: "ASCII letters, digits, or underscores",
+		},
+		{
 			name:    "suffix pushes the name past Postgres's identifier limit",
 			dsn:     "postgres://u:p@localhost:5432/nestova_test?sslmode=disable",
 			suffix:  strings.Repeat("x", 60),
