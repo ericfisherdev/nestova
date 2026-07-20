@@ -174,3 +174,65 @@ func TestDeriveDSN_KeyValueForm_LastDbnameWins(t *testing.T) {
 		t.Errorf("derived DSN = %q, want %q", dsn, want)
 	}
 }
+
+// TestDerive_RejectsUnsafeInput covers the rejection paths — the safety
+// rail itself. Every other test here feeds an input that should be
+// accepted; these prove derive refuses anything that could put a real
+// database in front of migrate.Reset, or silently collapse two packages
+// onto one database.
+func TestDerive_RejectsUnsafeInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		dsn     string
+		suffix  string
+		wantErr string
+	}{
+		{
+			name:    "database is not a test database",
+			dsn:     "postgres://u:p@localhost:5432/production?sslmode=disable",
+			suffix:  "tasks",
+			wantErr: "refusing to use database",
+		},
+		{
+			// "testing" neither equals "test" nor ends in "_test": a
+			// prefix/substring match here would be a real hole.
+			name:    "database name merely starts with test",
+			dsn:     "postgres://u:p@localhost:5432/testing?sslmode=disable",
+			suffix:  "tasks",
+			wantErr: "refusing to use database",
+		},
+		{
+			name:    "empty suffix would collapse packages onto one database",
+			dsn:     "postgres://u:p@localhost:5432/nestova_test?sslmode=disable",
+			suffix:  "   ",
+			wantErr: "non-empty package identifier",
+		},
+		{
+			name:    "suffix pushes the name past Postgres's identifier limit",
+			dsn:     "postgres://u:p@localhost:5432/nestova_test?sslmode=disable",
+			suffix:  strings.Repeat("x", 60),
+			wantErr: "63-byte identifier limit",
+		},
+		{
+			name:    "DSN has no database at all",
+			dsn:     "host=localhost user=u",
+			suffix:  "tasks",
+			wantErr: "refusing to use database",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn, name, err := derive(tc.dsn, tc.suffix)
+			if err == nil {
+				t.Fatalf("derive(%q, %q) = (%q, %q), want an error", tc.dsn, tc.suffix, dsn, name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.wantErr)
+			}
+			if dsn != "" || name != "" {
+				t.Errorf("derive returned (%q, %q) alongside its error; both must be empty", dsn, name)
+			}
+		})
+	}
+}
