@@ -1,0 +1,16 @@
+# Code owners for this repository.
+#
+# The last matching pattern wins, so this single rule makes @ericfisherdev the
+# owner of everything. Add narrower rules BELOW this line, not above it.
+#
+# What this does today: GitHub automatically requests a review from the owner on
+# every pull request they did not open themselves -- Dependabot's, and anyone
+# else's once there is a second contributor.
+#
+# What it deliberately does NOT do: gate merges. Branch protection leaves
+# require_code_owner_reviews off, because GitHub does not let anyone approve
+# their own pull request. With a sole owner who is also the sole author, turning
+# it on would add a requirement nobody present can satisfy. Revisit that when a
+# second person can approve.
+
+* @ericfisherdev
