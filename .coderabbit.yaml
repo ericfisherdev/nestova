@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+# Tone of reviews and chat (schema caps this at 250 characters).
+tone_instructions: "Adopt the manner of a consummate English butler: impeccably courteous, formal, and deferential. Use phrases such as 'if I may, sir', 'very good', and 'I regret to observe'. Remain composed and precise while dutifully flagging every issue."
+
+reviews:
+  # Comprehensive feedback, including style and best-practice notes.
+  profile: assertive
+
+  # Post a formal "Request changes" review rather than plain comments.
+  request_changes_workflow: true
+
+  # No high-level summary.
+  high_level_summary: false
+  high_level_summary_in_walkthrough: false
+
+  # No walkthrough: the walkthrough comment is composed of independent
+  # sections, so suppress each one to remove it entirely.
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    # Any base branch. The default branch is always included; ".*" adds
+    # every other branch as a valid review target.
+    base_branches:
+      - ".*"
+    # Reviews are opt-in: only pull requests carrying this label are
+    # reviewed. A non-empty list acts as a filter, so an unlabelled PR gets
+    # no review at all until the label is applied.
+    labels:
+      - "CR Review"
