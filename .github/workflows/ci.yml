@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # ready_for_review is NOT in the default type set, and omitting it would
+    # quietly break the SonarQube gate: the scan is skipped while a PR is a
+    # draft, so without a run triggered by the draft -> ready transition the
+    # check would never execute on a PR that is actually up for merge.
+    types: [opened, synchronize, reopened, ready_for_review]
   # Runs on main exist to populate the *default-branch* cache scope. A workflow
   # run may only restore caches written by its own ref or by the default branch,
   # so without this trigger every PR starts from a cold Go cache and recompiles
@@ -101,6 +106,20 @@ jobs:
             go tool cover -func=coverage.out | tail -n 1
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage profile
+        # Handed to the sonarqube job below. Coverage travels as an artifact so
+        # the scan does not have to re-run the (race-instrumented) suite purely
+        # to regenerate a file this job already produced. No `always()`: a
+        # failed test run means a partial profile, and a failed build skips the
+        # scan anyway.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: error
+          # Consumed within the same run; no reason to keep it the default 90 days.
+          retention-days: 1
 
       - name: Save Go caches
         # Only main-branch runs write the cache. PRs restore but never save,
@@ -209,3 +228,52 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: go tool conform enforce --base-branch="origin/${BASE_REF}"
+
+  sonarqube:
+    name: SonarQube
+    runs-on: ubuntu-latest
+    # Gated on build purely to inherit its coverage profile. This does serialise
+    # the scan behind the test suite; the alternative -- running `make test`
+    # again inside this job -- keeps the two parallel but pays for a second
+    # race-instrumented run of the whole suite, which costs more than the wait.
+    needs: build
+    # Skip while a PR is a draft: a draft is work in progress, and an analysis of
+    # it burns a scan to report findings the author is still mid-way through
+    # creating. The ready_for_review trigger above runs it the moment the PR is
+    # genuinely up for review.
+    #
+    # The event_name arm is load-bearing. On a push, github.event.pull_request is
+    # null, and `null == false` is false in GitHub expressions -- so testing only
+    # the draft field would silently stop analysing main.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Sonar reads SCM blame from the local history to attribute issues and
+          # to decide what counts as "new code". A shallow clone degrades both,
+          # so full history is required here even though the other jobs skip it.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download coverage profile
+        # Lands coverage.out at the workspace root, where
+        # sonar.go.coverage.reportPaths expects it.
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage
+
+      - name: SonarQube Scan
+        # Project key and organization come from sonar-project.properties at the
+        # repo root. SONAR_HOST_URL is deliberately unset: the action targets
+        # SonarQube Cloud by default, which is the instance this project uses.
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        with:
+          # Without this the scanner uploads the report and exits 0 regardless of
+          # the verdict, so the job goes green on a failing gate and gates
+          # nothing. sonar.qualitygate.wait makes it poll for the computed status
+          # and exit non-zero when the gate fails, which is what lets this job be
+          # a required check.
+          args: -Dsonar.qualitygate.wait=true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
