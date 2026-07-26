@@ -767,6 +767,20 @@ func runServer(logger *slog.Logger) error {
 	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, webauthnService, logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, webauthnService, outboxRepo, cfg.Session.Secure, logger)
 
+	// NSTR-105: the federation authorize endpoint — Nestova acting as the
+	// identity provider Nestorage's own login redirects into. Constructed
+	// ONLY when the registered federation client is fully configured
+	// (cfg.Federation.Enabled), mirroring loginPasskeyHandlers' own
+	// optional-wiring pattern above: an install that has never paired with
+	// Nestorage registers no /federation/authorize route at all
+	// (federationHandlers stays nil, home.go). NSTR-110 extends the same
+	// struct with its own token-exchange dependencies.
+	var federationHandlers *authadapter.FederationHandlers
+	if cfg.Federation.Enabled() {
+		federationCodeRepo := authadapter.NewAuthorizationCodeRepository(pool)
+		federationHandlers = authadapter.NewFederationHandlers(cfg.Federation, sm, federationCodeRepo, logger)
+	}
+
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {
 		return fmt.Errorf("create oauth state signer: %w", err)
@@ -916,7 +930,7 @@ func runServer(logger *slog.Logger) error {
 			kioskadapter.AuthenticateDevice(kioskService, logger),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, loginPasskeyHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, loginPasskeyHandlers, federationHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)

@@ -78,6 +78,7 @@ func registerWebRoutes(
 	authHandlers *authadapter.Handlers,
 	loginMFAHandlers *authadapter.LoginMFAHandlers,
 	loginPasskeyHandlers *authadapter.LoginPasskeyHandlers,
+	federationHandlers *authadapter.FederationHandlers,
 	onboardingHandlers *authadapter.OnboardingHandlers,
 	households household.HouseholdRepository,
 	taskHandlers *tasksadapter.WebHandlers,
@@ -131,6 +132,19 @@ func registerWebRoutes(
 	if loginPasskeyHandlers != nil {
 		mux.HandleFunc("GET /login/passkey/begin", loginPasskeyHandlers.Begin)
 		mux.HandleFunc("POST /login/passkey/finish", loginPasskeyHandlers.Finish)
+	}
+	// NSTR-105: the federation authorize endpoint — registered ONLY when the
+	// composition root wired a federation client at all (federationHandlers
+	// is only non-nil then, main.go), mirroring loginPasskeyHandlers' own
+	// nil-gated convention immediately above: an install that has never
+	// paired with Nestorage genuinely does not have this route, and a
+	// client that somehow still requests it gets Go's own 404. Public in
+	// the same sense /login is — no requireMember wrapping, since
+	// Authorize's own client/redirect validation must run before any
+	// authentication check (see its own doc). NSTR-110 registers
+	// POST /federation/token alongside this.
+	if federationHandlers != nil {
+		mux.HandleFunc("GET /federation/authorize", federationHandlers.Authorize)
 	}
 
 	// Onboarding routes — public (first-run guard enforced inside the handlers).
