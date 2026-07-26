@@ -28,6 +28,29 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    # Backs the database-gated test suites (docs/testing.md) so `make test`
+    # exercises every package, not just the hermetic ones. Without this,
+    # every *_postgres.go adapter's tests self-skip (NESTOVA_TEST_DATABASE_URL
+    # unset) and the coverage.out this job hands to the sonarqube job never
+    # contains a single line of DB-adapter coverage — invisible until
+    # sonar-project.properties started gating new_coverage on it (NSTR-105),
+    # since no prior PR's new code depended on a *_postgres.go file's lines
+    # being counted. Same image and credentials as the local recipe; the
+    # `postgres` role is the image's default superuser, so it already has the
+    # CREATEDB privilege NES-149's per-package database isolation needs.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: nestova_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d nestova_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -91,6 +114,10 @@ jobs:
           fi
 
       - name: Test (race detector + coverage)
+        # Set here (not job-wide) so only this step's gated adapter tests run
+        # against the service above -- see the services: block's own comment.
+        env:
+          NESTOVA_TEST_DATABASE_URL: postgres://postgres:test@localhost:55432/nestova_test?sslmode=disable
         run: make test
 
       - name: Report coverage
