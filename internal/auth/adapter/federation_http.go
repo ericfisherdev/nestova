@@ -20,6 +20,14 @@ import (
 // authorization code grant just keeps the request shape familiar.
 const federationAuthorizeResponseType = "code"
 
+// internalServerErrorMessage is the body Authorize and redirectWithError send
+// on every unexpected failure (code generation, persistence, or parsing the
+// registered redirect URL) — never revealing failure detail an attacker
+// could use to distinguish failure modes. Extracted to a constant purely
+// because it repeats four times in this file (go:S1192); the message itself
+// carries no federation-specific meaning.
+const internalServerErrorMessage = "internal server error"
+
 // FederationHandlers serves Nestova's identity-provider side of the
 // federation authorize/token hand-off to Nestorage: GET /federation/authorize
 // (NSTR-105, this file) and POST /federation/token (NSTR-110). It holds the
@@ -108,7 +116,7 @@ func (h *FederationHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	rawCode, err := authdomain.GenerateAuthorizationCode()
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "federation: generate authorization code", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, internalServerErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	code := &authdomain.AuthorizationCode{
@@ -121,7 +129,7 @@ func (h *FederationHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.codes.Create(r.Context(), code); err != nil {
 		h.logger.ErrorContext(r.Context(), "federation: create authorization code", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, internalServerErrorMessage, http.StatusInternalServerError)
 		return
 	}
 
@@ -132,7 +140,7 @@ func (h *FederationHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		// as an absolute http(s) URL at startup (config.Load) — this branch
 		// is defensive, not reachable in practice.
 		h.logger.ErrorContext(r.Context(), "federation: parse registered redirect url", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, internalServerErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	dq := dest.Query()
@@ -150,7 +158,7 @@ func (h *FederationHandlers) redirectWithError(w http.ResponseWriter, r *http.Re
 	dest, err := url.Parse(redirectURI)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "federation: parse registered redirect url", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, internalServerErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	dq := dest.Query()
