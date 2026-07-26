@@ -1,0 +1,109 @@
+package components
+
+// FederationSettingsView is the view model for the /settings page's
+// federation section (NSTR-106): attaching and detaching the household's
+// single Nestorage instance. Owner-only, mirroring QuietHoursSettingsView's
+// gate — see FederationWebHandlers.SectionView's own doc. The stored api
+// key is never included in this view, in either state.
+type FederationSettingsView struct {
+	// Attached is true once the household has a live instance link.
+	Attached bool
+	// InstanceHost is the linked instance's host (e.g.
+	// "nestorage.example.ts.net"), shown only when Attached — never the
+	// full url with any credential-bearing query string, and never the
+	// api key itself.
+	InstanceHost string
+	// AttachedAtDisplay is the pre-formatted attach timestamp, shown only
+	// when Attached.
+	AttachedAtDisplay string
+	CSRFToken         string
+	// ErrorMessage re-shows an inline failure message from an Attach
+	// mutation on this same response (a wrong or unreachable instance, or
+	// a conflicting binding). Never populated from a Detach failure — that
+	// mutation fails hard (see FederationWebHandlers.Detach's own doc).
+	ErrorMessage string
+}
+
+templ federationSection(view FederationSettingsView) {
+	@Card("Nestorage") {
+		<p class="mb-4 text-sm text-ink-secondary">
+			Attach this household to a Nestorage instance to track household
+			storage — bins, items, and their locations — from the same
+			household login. Attaching verifies the instance and its API key
+			before storing anything; it does not push or create anything on
+			its own.
+		</p>
+		if view.ErrorMessage != "" {
+			<p class="mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+				{ view.ErrorMessage }
+			</p>
+		}
+		if view.Attached {
+			@federationAttachedStatus(view)
+		} else {
+			@federationAttachForm(view)
+		}
+	}
+}
+
+templ federationAttachedStatus(view FederationSettingsView) {
+	<div class="mb-4 rounded-control border border-sidebar-border bg-surface p-3">
+		<p class="font-medium text-ink">{ view.InstanceHost }</p>
+		<p class="text-sm text-ink-muted">Attached since { view.AttachedAtDisplay }</p>
+	</div>
+	<div class="flex items-center gap-3">
+		<a
+			href="/settings/federation/reconcile"
+			class="min-h-[48px] rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark"
+		>
+			Continue to member matching
+		</a>
+		<form method="post" action="/settings/federation/detach">
+			<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+			<button
+				type="submit"
+				class="min-h-[48px] rounded-control border border-sidebar-border bg-red-50 px-4 py-2 font-medium text-red-700 hover:bg-red-100"
+			>
+				Detach
+			</button>
+		</form>
+	</div>
+}
+
+templ federationAttachForm(view FederationSettingsView) {
+	<form method="post" action="/settings/federation/attach" class="flex flex-col gap-3">
+		<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+		<div>
+			<label class="mb-1 block text-sm font-medium text-ink-secondary" for="federation-base-url">
+				Nestorage URL
+			</label>
+			<input
+				id="federation-base-url"
+				type="url"
+				name="base_url"
+				placeholder="https://nestorage.example.ts.net"
+				required
+				class="w-full rounded-control border border-sidebar-border px-3 py-2 font-mono"
+			/>
+		</div>
+		<div>
+			<label class="mb-1 block text-sm font-medium text-ink-secondary" for="federation-api-key">
+				API key
+			</label>
+			<input
+				id="federation-api-key"
+				type="password"
+				name="api_key"
+				autocomplete="off"
+				required
+				class="w-full rounded-control border border-sidebar-border px-3 py-2 font-mono"
+			/>
+		</div>
+		<button
+			type="submit"
+			class="min-h-[48px] self-start rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark"
+		>
+			Attach instance
+		</button>
+	</form>
+}

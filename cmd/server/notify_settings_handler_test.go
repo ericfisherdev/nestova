@@ -168,7 +168,7 @@ func buildNotifySettingsTestHandler(t *testing.T, hhRepo *multiMemberHouseholdRe
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, notifyHandlers)
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, notifyHandlers, newTestFederationWebHandlers(sm, logger))
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm, contacts, prefs

@@ -12,6 +12,7 @@ import (
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
 	deeplinkadapter "github.com/ericfisherdev/nestova/internal/deeplink/adapter"
+	federationadapter "github.com/ericfisherdev/nestova/internal/federation/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
@@ -534,8 +535,14 @@ func registerSettingsPage(
 	webauthnHandlers *authadapter.WebAuthnWebHandlers,
 	webauthnService *authapp.WebAuthnService,
 	notifyHandlers *notifyadapter.NotifyWebHandlers,
+	federationHandlers *federationadapter.FederationWebHandlers,
 ) {
 	const settingsPath = "/settings"
+	// federationReconcilePath is NSTR-109's member-matching screen: the
+	// canonical destination a successful attach redirects to (NSTR-106's own
+	// plan fixes this exact path; NSTR-107/108 reuse the same stored link,
+	// never a different route).
+	const federationReconcilePath = "/settings/federation/reconcile"
 	requireMember := authadapter.RequireMember(sm)
 	// NES-135: kiosk token provisioning is security-sensitive (it mints a
 	// long-lived device credential), so it additionally requires a FRESH
@@ -612,6 +619,7 @@ func registerSettingsPage(
 		mfaErr string,
 		notifyErr string,
 		quietErr string,
+		federationErr string,
 	) {
 		hasReveal := kioskReveal != nil || mfaEnrollReveal != nil || mfaRecoveryReveal != nil
 
@@ -685,6 +693,19 @@ func registerSettingsPage(
 		view.ShowQuietHoursSection = showQuiet
 		view.QuietHours = quietView
 
+		federationView, showFederation, err := federationHandlers.SectionView(r.Context(), member, federationErr)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "settings: build federation section", "error", err)
+			if hasReveal {
+				renderReveal(w, r, kioskReveal, mfaEnrollReveal, mfaRecoveryReveal)
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		view.ShowFederationSection = showFederation
+		view.Federation = federationView
+
 		if err := render.Render(r.Context(), w, status, layoutFor(r)(member)(components.SettingsPage(view))); err != nil {
 			logger.ErrorContext(r.Context(), "settings: render page", "error", err)
 			// render.Render buffers the component into memory first and
@@ -705,7 +726,7 @@ func registerSettingsPage(
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		composePage(w, r, member, http.StatusOK, nil, nil, nil, "", "", "")
+		composePage(w, r, member, http.StatusOK, nil, nil, nil, "", "", "", "")
 	})))
 
 	// Kiosk section mutations (parent-only, enforced inside settingsHandlers).
@@ -721,7 +742,7 @@ func registerSettingsPage(
 		// short-lived and single-use): it must never be cached by a shared
 		// proxy or stored in the browser's disk cache.
 		w.Header().Set("Cache-Control", "no-store")
-		composePage(w, r, member, http.StatusOK, reveal, nil, nil, "", "", "")
+		composePage(w, r, member, http.StatusOK, reveal, nil, nil, "", "", "", "")
 	}))))
 	mux.Handle("POST /settings/kiosk/{id}/revoke", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, ok := settingsHandlers.RevokeKioskToken(w, r)
@@ -748,7 +769,7 @@ func registerSettingsPage(
 		// browser's disk cache, mirroring the kiosk activation code and MFA
 		// recovery code reveals below.
 		w.Header().Set("Cache-Control", "no-store")
-		composePage(w, r, member, http.StatusOK, nil, reveal, nil, "", "", "")
+		composePage(w, r, member, http.StatusOK, nil, reveal, nil, "", "", "", "")
 	})))
 	mux.Handle("POST /settings/mfa/confirm", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, reveal, errMsg, status, ok := mfaHandlers.Confirm(w, r)
@@ -760,7 +781,7 @@ func registerSettingsPage(
 		if reveal != nil {
 			w.Header().Set("Cache-Control", "no-store")
 		}
-		composePage(w, r, member, status, nil, nil, reveal, errMsg, "", "")
+		composePage(w, r, member, status, nil, nil, reveal, errMsg, "", "", "")
 	})))
 	mux.Handle("POST /settings/mfa/recovery-codes/regenerate", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, reveal, errMsg, status, ok := mfaHandlers.RegenerateRecoveryCodes(w, r)
@@ -770,21 +791,21 @@ func registerSettingsPage(
 		if reveal != nil {
 			w.Header().Set("Cache-Control", "no-store")
 		}
-		composePage(w, r, member, status, nil, nil, reveal, errMsg, "", "")
+		composePage(w, r, member, status, nil, nil, reveal, errMsg, "", "", "")
 	})))
 	mux.Handle("POST /settings/mfa/disenroll", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, errMsg, status, ok := mfaHandlers.Disenroll(w, r, settingsPath)
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, errMsg, "", "")
+		composePage(w, r, member, status, nil, nil, nil, errMsg, "", "", "")
 	})))
 	mux.Handle("POST /settings/mfa/reset", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, errMsg, status, ok := mfaHandlers.AdminReset(w, r, settingsPath)
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, errMsg, "", "")
+		composePage(w, r, member, status, nil, nil, nil, errMsg, "", "", "")
 	})))
 
 	// SMS notification section mutations (NES-139): any member manages
@@ -794,21 +815,21 @@ func registerSettingsPage(
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "")
+		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "", "")
 	})))
 	mux.Handle("POST /settings/notify/opt-in", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, errMsg, status, ok := notifyHandlers.UpdateOptIn(w, r)
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "")
+		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "", "")
 	})))
 	mux.Handle("POST /settings/notify/preferences", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, errMsg, status, ok := notifyHandlers.UpdatePreferences(w, r)
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "")
+		composePage(w, r, member, status, nil, nil, nil, "", errMsg, "", "")
 	})))
 	// Quiet hours mutation (NES-139, owner-only — enforced inside
 	// notifyHandlers).
@@ -817,7 +838,41 @@ func registerSettingsPage(
 		if !ok {
 			return
 		}
-		composePage(w, r, member, status, nil, nil, nil, "", "", errMsg)
+		composePage(w, r, member, status, nil, nil, nil, "", "", errMsg, "")
+	})))
+
+	// Federation section mutations (NSTR-106, owner-only — enforced inside
+	// federationHandlers). Attaching stores a long-lived Nestorage api key,
+	// the same security-sensitivity kiosk token provisioning has (NES-135):
+	// requireMember runs first (identity), then requireStepUp (freshness of
+	// that identity's own MFA verification) before the mutation ever runs.
+	// Detaching only clears a credential, so it is not step-up-gated,
+	// mirroring the kiosk section's own generate-vs-revoke asymmetry.
+	mux.Handle("POST /settings/federation/attach", requireMember(requireStepUp(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		member, errMsg, status, ok := federationHandlers.Attach(w, r)
+		if !ok {
+			return
+		}
+		if errMsg != "" {
+			composePage(w, r, member, status, nil, nil, nil, "", "", "", errMsg)
+			return
+		}
+		// Attach never provisions or reconciles anything on its own — a
+		// successful attach redirects straight into NSTR-109's member
+		// matching screen rather than recomposing /settings itself.
+		http.Redirect(w, r, federationReconcilePath, http.StatusSeeOther)
+	}))))
+	mux.Handle("POST /settings/federation/detach", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, ok := federationHandlers.Detach(w, r)
+		if !ok {
+			return
+		}
+		if render.IsHTMX(r) {
+			w.Header().Set("HX-Redirect", settingsPath)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, settingsPath, http.StatusSeeOther)
 	})))
 
 	// NES-136: "Your devices" passkey routes — registered only when the
