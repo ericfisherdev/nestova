@@ -103,13 +103,16 @@ func (r *InstanceLinkRepository) DeleteByHousehold(ctx context.Context, househol
 	return nil
 }
 
-// row is the read surface shared by pgx.Row and pgx.Rows for scan helpers,
-// mirroring kiosk/adapter's identically named interface.
-type row interface {
+// scanner is the read surface shared by pgx.Row and pgx.Rows for scan
+// helpers — named for its single Scan method per the codebase's
+// single-method-interface convention (e.g. media/adapter's queryRower,
+// txBeginner), rather than kiosk/adapter's identically-shaped but
+// unrenamed row.
+type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanInstanceLink(r row) (*domain.InstanceLink, error) {
+func scanInstanceLink(r scanner) (*domain.InstanceLink, error) {
 	var (
 		link         domain.InstanceLink
 		idStr, hhStr string
