@@ -179,3 +179,141 @@ func TestInstanceLinkRepositoryDeleteByHousehold(t *testing.T) {
 		t.Errorf("DeleteByHousehold on an already-unbound household: %v", err)
 	}
 }
+
+func newMemberLink(memberID household.MemberID, hh household.HouseholdID, remoteUserID string, via domain.LinkOrigin) domain.MemberLink {
+	return domain.MemberLink{MemberID: memberID, HouseholdID: hh, RemoteUserID: remoteUserID, LinkedVia: via}
+}
+
+func TestMemberLinkRepositoryPutAndListByHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewMemberLinkRepository(pool)
+	hh := seedHousehold(t, pool)
+	member := seedMember(t, pool, hh, "Maya")
+	ctx := testCtx(t)
+
+	link := newMemberLink(member, hh, "remote-1", domain.LinkOriginEmail)
+	if err := repo.Put(ctx, link); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	links, err := repo.ListByHousehold(ctx, hh)
+	if err != nil {
+		t.Fatalf("ListByHousehold: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("ListByHousehold() returned %d links, want 1", len(links))
+	}
+	got := links[0]
+	if got.MemberID != member || got.HouseholdID != hh || got.RemoteUserID != "remote-1" || got.LinkedVia != domain.LinkOriginEmail {
+		t.Errorf("ListByHousehold()[0] = %+v, want matching %+v", got, link)
+	}
+	if got.LinkedAt.IsZero() {
+		t.Error("Put did not populate LinkedAt")
+	}
+}
+
+func TestMemberLinkRepositoryPutIsIdempotent(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewMemberLinkRepository(pool)
+	hh := seedHousehold(t, pool)
+	member := seedMember(t, pool, hh, "Maya")
+	ctx := testCtx(t)
+
+	link := newMemberLink(member, hh, "remote-1", domain.LinkOriginEmail)
+	if err := repo.Put(ctx, link); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+	// A retried Put naming the SAME remote account succeeds unchanged —
+	// what makes a retried Confirm call after a partial failure
+	// losslessly re-runnable.
+	if err := repo.Put(ctx, link); err != nil {
+		t.Fatalf("second Put (same remote account): %v", err)
+	}
+
+	links, err := repo.ListByHousehold(ctx, hh)
+	if err != nil {
+		t.Fatalf("ListByHousehold: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("ListByHousehold() returned %d links after idempotent retry, want 1", len(links))
+	}
+}
+
+func TestMemberLinkRepositoryPutRefusesRemoteAccountLinkedToDifferentMember(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewMemberLinkRepository(pool)
+	hh := seedHousehold(t, pool)
+	first := seedMember(t, pool, hh, "Maya")
+	second := seedMember(t, pool, hh, "Sam")
+	ctx := testCtx(t)
+
+	if err := repo.Put(ctx, newMemberLink(first, hh, "remote-1", domain.LinkOriginEmail)); err != nil {
+		t.Fatalf("first Put: %v", err)
+	}
+	err := repo.Put(ctx, newMemberLink(second, hh, "remote-1", domain.LinkOriginManual))
+	if !errors.Is(err, domain.ErrLinkConflict) {
+		t.Fatalf("Put() for a second member on the same remote account error = %v, want ErrLinkConflict", err)
+	}
+}
+
+func TestMemberLinkRepositoryListByHouseholdEmptyWhenNoLinks(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewMemberLinkRepository(pool)
+	hh := seedHousehold(t, pool)
+	ctx := testCtx(t)
+
+	links, err := repo.ListByHousehold(ctx, hh)
+	if err != nil {
+		t.Fatalf("ListByHousehold: %v", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("ListByHousehold() = %v, want empty", links)
+	}
+}
+
+func TestMemberReaderMembersByHousehold(t *testing.T) {
+	pool := newTestPool(t)
+	reader := adapter.NewMemberReader(pool)
+	hh := seedHousehold(t, pool)
+	member := seedMember(t, pool, hh, "Maya")
+	ctx := testCtx(t)
+
+	// member_credentials_complete (00002_auth.sql) requires email and
+	// password_hash together — set both, even though only email matters
+	// to this test.
+	if _, err := pool.Exec(ctx, `UPDATE member SET email = $2, password_hash = $3 WHERE id = $1`,
+		member.String(), "maya@example.com", "argon2id-placeholder-hash"); err != nil {
+		t.Fatalf("seed member email: %v", err)
+	}
+
+	members, err := reader.MembersByHousehold(ctx, hh)
+	if err != nil {
+		t.Fatalf("MembersByHousehold: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("MembersByHousehold() returned %d members, want 1", len(members))
+	}
+	got := members[0]
+	if got.MemberID != member || got.DisplayName != "Maya" || got.Role != household.RoleOwner {
+		t.Errorf("MembersByHousehold()[0] = %+v, want matching seeded member", got)
+	}
+	if got.Email == nil || *got.Email != "maya@example.com" {
+		t.Errorf("MembersByHousehold()[0].Email = %v, want %q", got.Email, "maya@example.com")
+	}
+}
+
+func TestMemberReaderMembersByHouseholdNilEmailWhenNoneOnFile(t *testing.T) {
+	pool := newTestPool(t)
+	reader := adapter.NewMemberReader(pool)
+	hh := seedHousehold(t, pool)
+	seedMember(t, pool, hh, "Sam")
+	ctx := testCtx(t)
+
+	members, err := reader.MembersByHousehold(ctx, hh)
+	if err != nil {
+		t.Fatalf("MembersByHousehold: %v", err)
+	}
+	if len(members) != 1 || members[0].Email != nil {
+		t.Fatalf("MembersByHousehold() = %+v, want one member with a nil email", members)
+	}
+}
