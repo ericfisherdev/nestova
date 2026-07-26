@@ -29,7 +29,7 @@
 CREATE TABLE federation_instance_link (
     id           uuid        PRIMARY KEY,
     household_id uuid        NOT NULL REFERENCES household (id) ON DELETE CASCADE,
-    base_url     text        NOT NULL CHECK (btrim(base_url) <> ''),
+    base_url     text        NOT NULL CHECK (base_url !~ '^[[:space:]]*$'),
     api_key_enc  bytea       NOT NULL,
     attached_by  uuid        REFERENCES member (id) ON DELETE SET NULL,
     attached_at  timestamptz NOT NULL DEFAULT now(),
