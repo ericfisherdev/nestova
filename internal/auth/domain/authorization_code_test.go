@@ -96,6 +96,30 @@ func TestAuthorizationCodeValidate(t *testing.T) {
 	}
 }
 
+// TestAuthorizationCodeIDStringAndParse covers AuthorizationCodeID's String
+// and ParseAuthorizationCodeID round trip, plus the malformed-input error
+// path — mirrors RecoveryCodeID's own id tests, which this type has none of
+// yet since it was added directly to ids.go without dedicated coverage.
+func TestAuthorizationCodeIDStringAndParse(t *testing.T) {
+	id := authdomain.NewAuthorizationCodeID()
+	s := id.String()
+	if s == "" {
+		t.Fatal("String() returned an empty string")
+	}
+
+	parsed, err := authdomain.ParseAuthorizationCodeID(s)
+	if err != nil {
+		t.Fatalf("ParseAuthorizationCodeID(%q): %v", s, err)
+	}
+	if parsed != id {
+		t.Errorf("ParseAuthorizationCodeID round-trip = %v, want %v", parsed, id)
+	}
+
+	if _, err := authdomain.ParseAuthorizationCodeID("not-a-uuid"); err == nil {
+		t.Error("ParseAuthorizationCodeID(\"not-a-uuid\") returned no error, want one for malformed input")
+	}
+}
+
 func TestAuthorizationCodeUsable(t *testing.T) {
 	now := time.Now()
 
