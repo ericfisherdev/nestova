@@ -26,9 +26,9 @@
 CREATE TABLE federation_authorization_code (
     id           uuid        PRIMARY KEY,
     member_id    uuid        NOT NULL REFERENCES member (id) ON DELETE CASCADE,
-    client_id    text        NOT NULL CHECK (btrim(client_id) <> ''),
-    redirect_uri text        NOT NULL CHECK (btrim(redirect_uri) <> ''),
-    code_hash    text        NOT NULL CHECK (btrim(code_hash) <> ''),
+    client_id    text        NOT NULL CHECK (client_id !~ '^[[:space:]]*$'),
+    redirect_uri text        NOT NULL CHECK (redirect_uri !~ '^[[:space:]]*$'),
+    code_hash    text        NOT NULL CHECK (code_hash !~ '^[[:space:]]*$'),
     created_at   timestamptz NOT NULL DEFAULT now(),
     expires_at   timestamptz NOT NULL,
     used_at      timestamptz,
