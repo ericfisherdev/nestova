@@ -24,6 +24,14 @@ var (
 // when the supplied Nestorage base url is not an absolute http(s) url.
 var ErrInvalidBaseURL = errors.New("federation: base url must be an absolute http(s) url")
 
+// ErrLinkConflict is returned by MemberLinkRepository.Put when the remote
+// account is already linked to a DIFFERENT member — the storage-level
+// backstop is nestorage_member_link_remote_user_id_uniq (migration 00039).
+// adapter.NestorageClient.Provision also returns it for the equivalent
+// remote-side 409 conflict, since both represent the same fact: this
+// remote account is already claimed by someone else.
+var ErrLinkConflict = errors.New("federation: nestorage account is already linked to a different member")
+
 // instanceVerifier (adapter.NestorageClient) errors. Both are returned
 // directly by Verify's own status-code mapping — never constructed
 // elsewhere — so LinkService.Attach can propagate whichever one occurred

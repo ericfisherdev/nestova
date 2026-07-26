@@ -25,3 +25,24 @@ type InstanceLinkRepository interface {
 	// no link exists — Detach is idempotent.
 	DeleteByHousehold(ctx context.Context, householdID household.HouseholdID) error
 }
+
+// MemberLinkRepository persists nestorage member links (NSTR-107): the
+// record tying a household member to the Nestorage account
+// ReconciliationService.Confirm resolved for them, one per member.
+//
+// Error contracts:
+//   - Put returns ErrLinkConflict when link.RemoteUserID already names a
+//     DIFFERENT member than link.MemberID.
+type MemberLinkRepository interface {
+	// ListByHousehold returns every existing link for householdID, in no
+	// particular order — callers needing a deterministic view (Proposals)
+	// sort or index it themselves.
+	ListByHousehold(ctx context.Context, householdID household.HouseholdID) ([]MemberLink, error)
+	// Put idempotently records link: creating it when link.MemberID has no
+	// link yet, or succeeding unchanged when link.MemberID already names
+	// exactly this RemoteUserID — which is what makes a retried Confirm
+	// call after a partial failure losslessly re-runnable. Returns
+	// ErrLinkConflict when link.RemoteUserID is already linked to a
+	// DIFFERENT member.
+	Put(ctx context.Context, link MemberLink) error
+}

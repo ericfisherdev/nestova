@@ -51,3 +51,23 @@ func mapCreateError(err error) error {
 	}
 	return nil
 }
+
+// nestorage_member_link's constraint names (migration 00039).
+// remoteUserIDUniq is the UNIQUE(remote_user_id) constraint; a violation
+// means a DIFFERENT member already claims that remote account —
+// MemberLinkRepository.Put's own domain.ErrLinkConflict case.
+const memberLinkRemoteUserIDUniq = "nestorage_member_link_remote_user_id_uniq"
+
+// mapMemberLinkPutError translates a Put failure into domain.ErrLinkConflict
+// when it violates the remote-user-id uniqueness constraint, or returns nil
+// (Put wraps err unchanged) for anything else.
+func mapMemberLinkPutError(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return nil
+	}
+	if pgErr.Code == uniqueViolation && pgErr.ConstraintName == memberLinkRemoteUserIDUniq {
+		return domain.ErrLinkConflict
+	}
+	return nil
+}
