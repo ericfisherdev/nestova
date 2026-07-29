@@ -34,11 +34,11 @@ var ErrNotAttached = errors.New("federation: household is not attached to a nest
 // binding it was verified against.
 var ErrMemberOutsideHousehold = errors.New("federation: decision names a member outside the household")
 
-// bindingCredential is the narrow read port (ISP) ReconciliationService
+// credentialReader is the narrow read port (ISP) ReconciliationService
 // needs onto LinkService — just Credential, mirroring
 // internal/notify/app/household_reader.go's own narrow-port precedent:
 // neither Attach, Detach, nor Status is this service's concern.
-type bindingCredential interface {
+type credentialReader interface {
 	Credential(ctx context.Context, householdID household.HouseholdID) (baseURL, apiKey string, err error)
 }
 
@@ -112,7 +112,7 @@ type Outcome struct {
 // local or remote — only Confirm does, and only for the decisions it is
 // given.
 type ReconciliationService struct {
-	binding   bindingCredential
+	binding   credentialReader
 	accounts  accountReader
 	provision provisioner
 	links     domain.MemberLinkRepository
@@ -123,7 +123,7 @@ type ReconciliationService struct {
 // NewReconciliationService constructs the service with injected
 // dependencies, returning an error on any nil dependency (mirrors
 // NewLinkService's own constructor-injection convention).
-func NewReconciliationService(binding bindingCredential, accounts accountReader, provision provisioner, links domain.MemberLinkRepository, members memberReader, logger *slog.Logger) (*ReconciliationService, error) {
+func NewReconciliationService(binding credentialReader, accounts accountReader, provision provisioner, links domain.MemberLinkRepository, members memberReader, logger *slog.Logger) (*ReconciliationService, error) {
 	if binding == nil {
 		return nil, errors.New("federation: NewReconciliationService requires a non-nil binding reader")
 	}

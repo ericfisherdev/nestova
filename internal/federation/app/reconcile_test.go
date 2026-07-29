@@ -12,17 +12,17 @@ import (
 
 func strPtr(s string) *string { return &s }
 
-// fakeBindingCredential is a scripted bindingCredential: it returns baseURL/
+// fakeCredentialReader is a scripted credentialReader: it returns baseURL/
 // apiKey/err exactly as configured, and records how many times it was
 // called.
-type fakeBindingCredential struct {
+type fakeCredentialReader struct {
 	baseURL string
 	apiKey  string
 	err     error
 	calls   int
 }
 
-func (f *fakeBindingCredential) Credential(_ context.Context, _ household.HouseholdID) (string, string, error) {
+func (f *fakeCredentialReader) Credential(_ context.Context, _ household.HouseholdID) (string, string, error) {
 	f.calls++
 	return f.baseURL, f.apiKey, f.err
 }
@@ -105,7 +105,7 @@ func (f *fakeMemberLinkRepository) Put(_ context.Context, link domain.MemberLink
 	return nil
 }
 
-func mustReconciliationService(t *testing.T, binding *fakeBindingCredential, accounts *fakeAccountReader, provision *fakeProvisioner, links domain.MemberLinkRepository, members *fakeMemberReader) *app.ReconciliationService {
+func mustReconciliationService(t *testing.T, binding *fakeCredentialReader, accounts *fakeAccountReader, provision *fakeProvisioner, links domain.MemberLinkRepository, members *fakeMemberReader) *app.ReconciliationService {
 	t.Helper()
 	svc, err := app.NewReconciliationService(binding, accounts, provision, links, members, discardLogger())
 	if err != nil {
@@ -115,7 +115,7 @@ func mustReconciliationService(t *testing.T, binding *fakeBindingCredential, acc
 }
 
 func TestNewReconciliationServiceRequiresDependencies(t *testing.T) {
-	binding := &fakeBindingCredential{}
+	binding := &fakeCredentialReader{}
 	accounts := &fakeAccountReader{}
 	provision := &fakeProvisioner{}
 	links := newFakeMemberLinkRepository()
@@ -143,7 +143,7 @@ func TestNewReconciliationServiceRequiresDependencies(t *testing.T) {
 }
 
 func TestReconciliationServiceProposalsNotAttached(t *testing.T) {
-	binding := &fakeBindingCredential{err: domain.ErrLinkNotFound}
+	binding := &fakeCredentialReader{err: domain.ErrLinkNotFound}
 	svc := mustReconciliationService(t, binding, &fakeAccountReader{}, &fakeProvisioner{}, newFakeMemberLinkRepository(), &fakeMemberReader{})
 
 	_, err := svc.Proposals(context.Background(), household.NewHouseholdID())
@@ -158,7 +158,7 @@ func TestReconciliationServiceProposalsReturnsOneRowPerMember(t *testing.T) {
 	linked := household.NewMemberID()
 	hh := household.NewHouseholdID()
 
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{
 		{MemberID: matched, DisplayName: "Maya", Email: strPtr("maya@example.com")},
 		{MemberID: unmatched, DisplayName: "Sam", Email: strPtr("sam@example.com")},
@@ -213,7 +213,7 @@ func TestReconciliationServiceProposalsReturnsOneRowPerMember(t *testing.T) {
 func TestReconciliationServiceProposalsWritesNothing(t *testing.T) {
 	hh := household.NewHouseholdID()
 	member := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{{MemberID: member, Email: strPtr("maya@example.com")}}}
 	accounts := &fakeAccountReader{accounts: []domain.RemoteAccount{{RemoteUserID: "remote-1", Email: "maya@example.com"}}}
 	provision := &fakeProvisioner{}
@@ -232,7 +232,7 @@ func TestReconciliationServiceProposalsWritesNothing(t *testing.T) {
 }
 
 func TestReconciliationServiceConfirmNotAttached(t *testing.T) {
-	binding := &fakeBindingCredential{err: domain.ErrLinkNotFound}
+	binding := &fakeCredentialReader{err: domain.ErrLinkNotFound}
 	svc := mustReconciliationService(t, binding, &fakeAccountReader{}, &fakeProvisioner{}, newFakeMemberLinkRepository(), &fakeMemberReader{})
 
 	_, err := svc.Confirm(context.Background(), household.NewHouseholdID(), []app.Decision{{MemberID: household.NewMemberID()}})
@@ -245,7 +245,7 @@ func TestReconciliationServiceConfirmRejectsMemberOutsideHousehold(t *testing.T)
 	hh := household.NewHouseholdID()
 	inHousehold := household.NewMemberID()
 	outsider := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{{MemberID: inHousehold, DisplayName: "Maya"}}}
 	provision := &fakeProvisioner{}
 
@@ -260,7 +260,7 @@ func TestReconciliationServiceConfirmRejectsMemberOutsideHousehold(t *testing.T)
 }
 
 func TestReconciliationServiceConfirmDecisionFreeSubmitWritesNothing(t *testing.T) {
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	provision := &fakeProvisioner{}
 	links := newFakeMemberLinkRepository()
 
@@ -280,7 +280,7 @@ func TestReconciliationServiceConfirmDecisionFreeSubmitWritesNothing(t *testing.
 func TestReconciliationServiceConfirmLinksAcceptedMatch(t *testing.T) {
 	hh := household.NewHouseholdID()
 	member := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{{MemberID: member, DisplayName: "Maya", Email: strPtr("maya@example.com")}}}
 	provision := &fakeProvisioner{}
 	links := newFakeMemberLinkRepository()
@@ -305,7 +305,7 @@ func TestReconciliationServiceConfirmLinksAcceptedMatch(t *testing.T) {
 func TestReconciliationServiceConfirmManualLinkRecordsManualOrigin(t *testing.T) {
 	hh := household.NewHouseholdID()
 	member := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{{MemberID: member, DisplayName: "Maya"}}}
 	links := newFakeMemberLinkRepository()
 
@@ -322,7 +322,7 @@ func TestReconciliationServiceConfirmManualLinkRecordsManualOrigin(t *testing.T)
 func TestReconciliationServiceConfirmCreatesNewAccountForNoMatch(t *testing.T) {
 	hh := household.NewHouseholdID()
 	member := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{
 		{MemberID: member, DisplayName: "Sam", Role: household.RoleAdult, Email: strPtr("sam@example.com")},
 	}}
@@ -353,7 +353,7 @@ func TestReconciliationServiceConfirmCreatesNewAccountForNoMatch(t *testing.T) {
 func TestReconciliationServiceConfirmSkipsAlreadyLinkedMembers(t *testing.T) {
 	hh := household.NewHouseholdID()
 	member := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{{MemberID: member, DisplayName: "Maya"}}}
 	provision := &fakeProvisioner{}
 	links := newFakeMemberLinkRepository()
@@ -376,7 +376,7 @@ func TestReconciliationServiceConfirmPartialFailureKeepsSuccessesAndRetryProvisi
 	hh := household.NewHouseholdID()
 	ok := household.NewMemberID()
 	bad := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{
 		{MemberID: ok, DisplayName: "Ok"},
 		{MemberID: bad, DisplayName: "Bad"},
@@ -427,7 +427,7 @@ func TestReconciliationServiceConfirmPartialFailureKeepsSuccessesAndRetryProvisi
 func TestReconciliationServiceConfirmLinkConflictPassthrough(t *testing.T) {
 	hh := household.NewHouseholdID()
 	member := household.NewMemberID()
-	binding := &fakeBindingCredential{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
+	binding := &fakeCredentialReader{baseURL: "https://nestorage.example.ts.net", apiKey: "key"}
 	members := &fakeMemberReader{members: []domain.MemberCandidate{{MemberID: member, DisplayName: "Maya"}}}
 	provision := &fakeProvisioner{err: domain.ErrLinkConflict}
 	links := newFakeMemberLinkRepository()
