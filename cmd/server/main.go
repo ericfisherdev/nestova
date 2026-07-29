@@ -23,8 +23,6 @@ import (
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	deeplinkadapter "github.com/ericfisherdev/nestova/internal/deeplink/adapter"
 	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
-	federationadapter "github.com/ericfisherdev/nestova/internal/federation/adapter"
-	federationapp "github.com/ericfisherdev/nestova/internal/federation/app"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	kioskapp "github.com/ericfisherdev/nestova/internal/kiosk/app"
@@ -769,20 +767,6 @@ func runServer(logger *slog.Logger) error {
 	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, webauthnService, logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, webauthnService, outboxRepo, cfg.Session.Secure, logger)
 
-	// NSTR-105: the federation authorize endpoint — Nestova acting as the
-	// identity provider Nestorage's own login redirects into. Constructed
-	// ONLY when the registered federation client is fully configured
-	// (cfg.Federation.Enabled), mirroring loginPasskeyHandlers' own
-	// optional-wiring pattern above: an install that has never paired with
-	// Nestorage registers no /federation/authorize route at all
-	// (federationHandlers stays nil, home.go). NSTR-110 extends the same
-	// struct with its own token-exchange dependencies.
-	var federationHandlers *authadapter.FederationHandlers
-	if cfg.Federation.Enabled() {
-		federationCodeRepo := authadapter.NewAuthorizationCodeRepository(pool)
-		federationHandlers = authadapter.NewFederationHandlers(cfg.Federation, sm, federationCodeRepo, logger)
-	}
-
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {
 		return fmt.Errorf("create oauth state signer: %w", err)
@@ -904,21 +888,6 @@ func runServer(logger *slog.Logger) error {
 	notifySettingsService := notifyapp.NewSettingsService(contactDirectory, preferenceRepo, householdRepo)
 	notifyWebHandlers := notifyadapter.NewNotifyWebHandlers(notifySettingsService, sm, logger)
 
-	// NSTR-106: federation instance link — an owner attaches a Nestorage
-	// instance from the settings page. Reuses tokenCipher (constructed
-	// above for calendar OAuth tokens and TOTP secrets) to encrypt the
-	// stored api key at rest, mirroring mfaService's own reuse of it.
-	// Named federationWebHandlers (not federationHandlers) to stay distinct
-	// from the NSTR-105 authadapter.FederationHandlers already bound to
-	// that name above, in the same function scope.
-	federationLinkRepo := federationadapter.NewInstanceLinkRepository(pool)
-	nestorageClient := federationadapter.NewNestorageClient()
-	federationLinkService, err := federationapp.NewLinkService(federationLinkRepo, tokenCipher, nestorageClient, logger)
-	if err != nil {
-		return fmt.Errorf("create federation link service: %w", err)
-	}
-	federationWebHandlers := federationadapter.NewFederationWebHandlers(federationLinkService, sm, logger)
-
 	kioskWebHandlers := kioskadapter.NewKioskWebHandlers(
 		kioskService, taskInstanceRepo, recurringTaskRepo, unifiedCalendarService,
 		plannerService, recipeRepo, shoppingListService, ingredientRepo,
@@ -948,11 +917,11 @@ func runServer(logger *slog.Logger) error {
 			kioskadapter.AuthenticateDevice(kioskService, logger),
 		},
 		Routes: func(mux *http.ServeMux) {
-			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, loginPasskeyHandlers, federationHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
+			registerWebRoutes(mux, logger, sm, authHandlers, loginMFAHandlers, loginPasskeyHandlers, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationWebHandlers, groceryWebHandlers, mealsWebHandlers, calendarWebHandlers)
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers, webauthnService, notifyWebHandlers, federationWebHandlers)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers, webauthnService, notifyWebHandlers)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},

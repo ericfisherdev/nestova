@@ -107,7 +107,7 @@ func buildCreateTaskHandler(
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

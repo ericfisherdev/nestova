@@ -165,7 +165,7 @@ func buildSettingsTestHandler(t *testing.T, hhRepo testHouseholdRepoWithQuietHou
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, newTestNotifyWebHandlers(hhRepo, sm, logger), newTestFederationWebHandlers(sm, logger))
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, newTestNotifyWebHandlers(hhRepo, sm, logger))
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm

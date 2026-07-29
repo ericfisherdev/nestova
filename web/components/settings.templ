@@ -82,12 +82,6 @@ type SettingsView struct {
 	// affect every member's SMS delivery timing household-wide.
 	ShowQuietHoursSection bool
 	QuietHours            QuietHoursSettingsView
-	// ShowFederationSection gates the Nestorage instance-link section
-	// (NSTR-106), true only for the household owner — mirrors
-	// ShowQuietHoursSection's gate, since attaching an external instance
-	// widens a stored credential's reach to member personal data.
-	ShowFederationSection bool
-	Federation            FederationSettingsView
 	// CSRFToken is shared by every form on the page (kiosk and MFA alike).
 	CSRFToken string
 }
@@ -112,9 +106,6 @@ templ SettingsPage(view SettingsView) {
 		}
 		if view.ShowKioskSection {
 			@kioskSection(view.Kiosk, view.CSRFToken)
-		}
-		if view.ShowFederationSection {
-			@federationSection(view.Federation)
 		}
 	</div>
 }
