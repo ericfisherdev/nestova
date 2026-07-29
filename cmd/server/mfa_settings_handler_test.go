@@ -377,6 +377,60 @@ func TestMFAConfirm_WrongCode_ShowsGenericInlineError(t *testing.T) {
 	}
 }
 
+func TestMFARegenerateRecoveryCodes_ValidCodeRevealsNewCodes(t *testing.T) {
+	adult := adminTestAdult()
+	hhRepo := newMultiMemberHouseholdRepo(adult)
+	handler, sm := buildSettingsTestHandler(t, hhRepo, newFakeMemberCredRepo())
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+	enrollRec := doForm(t, handler, http.MethodPost, "/settings/mfa/enroll", cookie, "csrf_token="+csrfToken)
+	secret := extractManualEntrySecret(enrollRec.Body.String())
+	if secret == "" {
+		t.Fatal("could not extract the enrollment secret")
+	}
+	doForm(t, handler, http.MethodPost, "/settings/mfa/confirm", cookie, "csrf_token="+csrfToken+"&code="+computeTOTPCode(t, secret))
+
+	regenRec := doForm(t, handler, http.MethodPost, "/settings/mfa/recovery-codes/regenerate", cookie,
+		"csrf_token="+csrfToken+"&code="+computeTOTPCode(t, secret))
+	if regenRec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/mfa/recovery-codes/regenerate: status = %d, want 200; body: %s", regenRec.Code, regenRec.Body.String())
+	}
+	if cc := regenRec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("regenerate response Cache-Control = %q, want no-store (it reveals recovery codes)", cc)
+	}
+	if !strings.Contains(regenRec.Body.String(), "Save these recovery codes") {
+		t.Error("regenerate response missing the recovery codes reveal panel")
+	}
+}
+
+func TestMFADisenroll_WrongCodeRejected(t *testing.T) {
+	adult := adminTestAdult()
+	hhRepo := newMultiMemberHouseholdRepo(adult)
+	handler, sm := buildSettingsTestHandler(t, hhRepo, newFakeMemberCredRepo())
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+	enrollRec := doForm(t, handler, http.MethodPost, "/settings/mfa/enroll", cookie, "csrf_token="+csrfToken)
+	secret := extractManualEntrySecret(enrollRec.Body.String())
+	if secret == "" {
+		t.Fatal("could not extract the enrollment secret")
+	}
+	doForm(t, handler, http.MethodPost, "/settings/mfa/confirm", cookie, "csrf_token="+csrfToken+"&code="+computeTOTPCode(t, secret))
+
+	disenrollRec := doForm(t, handler, http.MethodPost, "/settings/mfa/disenroll", cookie, "csrf_token="+csrfToken+"&totp_code=000000")
+	if disenrollRec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /settings/mfa/disenroll with a wrong code: status = %d, want 401; body: %s", disenrollRec.Code, disenrollRec.Body.String())
+	}
+	if !strings.Contains(disenrollRec.Body.String(), "could not be verified") {
+		t.Errorf("wrong-code disenroll response missing the inline error: %s", disenrollRec.Body.String())
+	}
+
+	// The enrollment must survive a rejected disenroll attempt.
+	afterRec := doForm(t, handler, http.MethodGet, "/settings", cookie, "")
+	if !strings.Contains(afterRec.Body.String(), "Your authenticator app is set up") {
+		t.Error("a rejected disenroll must not remove the member's enrollment")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // AC3: household owner reset (with owner re-auth); wrong password and
 // non-owner rejected.
