@@ -33,7 +33,6 @@ var allKeys = []string{
 	"NOTIFY_EMAIL_ENABLED", "SES_FROM_ADDRESS", "SES_REGION",
 	"SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY",
 	"CACHE_DIR",
-	"FEDERATION_CLIENT_ID", "FEDERATION_CLIENT_SECRET", "FEDERATION_REDIRECT_URL",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -61,11 +60,6 @@ const defaultSMSRetryMaxAttempts = 3
 // validSecret is a 32-byte secret distinct from the dev default, used by the
 // prod happy-path case.
 var validSecret = strings.Repeat("a", 32)
-
-// validFederationSecret is a 32-byte FEDERATION_CLIENT_SECRET satisfying
-// minSecretLen, distinct from validSecret so a test asserting on one cannot
-// accidentally pass by reusing the other's value.
-var validFederationSecret = strings.Repeat("f", 32)
 
 func setEnv(t *testing.T, env map[string]string) {
 	t.Helper()
@@ -693,49 +687,6 @@ func TestLoadValid(t *testing.T) {
 				},
 			},
 		},
-		{
-			// The federation client fully configured (NSTR-105/NSTR-110):
-			// Enabled() reports true and every field round-trips unchanged.
-			name: "federation client fully configured",
-			env: map[string]string{
-				"FEDERATION_CLIENT_ID":     "nestorage-household-1",
-				"FEDERATION_CLIENT_SECRET": validFederationSecret,
-				"FEDERATION_REDIRECT_URL":  "https://nestorage.example.ts.net/federation/callback",
-			},
-			want: config.Config{
-				Cache:   config.CacheConfig{Dir: devCacheDir},
-				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
-				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
-				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
-				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
-				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
-				Federation: config.FederationConfig{
-					ClientID: "nestorage-household-1", ClientSecret: validFederationSecret,
-					RedirectURL: "https://nestorage.example.ts.net/federation/callback",
-				},
-			},
-		},
-		{
-			// Regression test (mirrors "sms disabled ignores malformed and
-			// partial sms settings entirely" above): with every FEDERATION_*
-			// variable left unset, Load succeeds and Federation.Enabled()
-			// reports false — a deployment that never paired with Nestorage
-			// never has to set any of it.
-			name: "federation unset loads with the feature disabled",
-			env:  map[string]string{},
-			want: config.Config{
-				Cache:   config.CacheConfig{Dir: devCacheDir},
-				Env:     config.EnvDev,
-				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
-				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
-				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
-				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
-				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
-				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -750,32 +701,6 @@ func TestLoadValid(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("federation disabled by default", func(t *testing.T) {
-		setEnv(t, map[string]string{})
-		got, err := config.Load()
-		if err != nil {
-			t.Fatalf("Load() unexpected error: %v", err)
-		}
-		if got.Federation.Enabled() {
-			t.Error("Federation.Enabled() = true with every FEDERATION_* variable unset, want false")
-		}
-	})
-
-	t.Run("federation enabled when fully configured", func(t *testing.T) {
-		setEnv(t, map[string]string{
-			"FEDERATION_CLIENT_ID":     "nestorage-household-1",
-			"FEDERATION_CLIENT_SECRET": validFederationSecret,
-			"FEDERATION_REDIRECT_URL":  "https://nestorage.example.ts.net/federation/callback",
-		})
-		got, err := config.Load()
-		if err != nil {
-			t.Fatalf("Load() unexpected error: %v", err)
-		}
-		if !got.Federation.Enabled() {
-			t.Error("Federation.Enabled() = false with every FEDERATION_* variable set, want true")
-		}
-	})
 }
 
 // TestLoadInvalid covers configurations that must fail fast, asserting the
@@ -1150,38 +1075,6 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "non-boolean NOTIFY_EMAIL_ENABLED",
 			env:          map[string]string{"NOTIFY_EMAIL_ENABLED": "maybe"},
 			wantContains: []string{"NOTIFY_EMAIL_ENABLED"},
-		},
-		{
-			// Setting just the client id (NSTR-105/NSTR-110) — the one field
-			// that is genuinely PUBLIC — must still fail startup: a partially
-			// configured federation client can never complete the
-			// authorize-then-exchange round trip.
-			name:         "federation client id set alone",
-			env:          map[string]string{"FEDERATION_CLIENT_ID": "nestorage-household-1"},
-			wantContains: []string{"FEDERATION_CLIENT_SECRET", "FEDERATION_REDIRECT_URL"},
-		},
-		{
-			name: "federation missing redirect url",
-			env: map[string]string{
-				"FEDERATION_CLIENT_ID": "nestorage-household-1", "FEDERATION_CLIENT_SECRET": validFederationSecret,
-			},
-			wantContains: []string{"FEDERATION_REDIRECT_URL"},
-		},
-		{
-			name: "federation client secret too short",
-			env: map[string]string{
-				"FEDERATION_CLIENT_ID": "nestorage-household-1", "FEDERATION_CLIENT_SECRET": "too-short",
-				"FEDERATION_REDIRECT_URL": "https://nestorage.example.ts.net/federation/callback",
-			},
-			wantContains: []string{"FEDERATION_CLIENT_SECRET", "32"},
-		},
-		{
-			name: "federation redirect url not absolute http(s)",
-			env: map[string]string{
-				"FEDERATION_CLIENT_ID": "nestorage-household-1", "FEDERATION_CLIENT_SECRET": validFederationSecret,
-				"FEDERATION_REDIRECT_URL": "not-a-url",
-			},
-			wantContains: []string{"FEDERATION_REDIRECT_URL", "absolute http"},
 		},
 	}
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,14 +19,10 @@ import (
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
-	federationadapter "github.com/ericfisherdev/nestova/internal/federation/adapter"
-	federationapp "github.com/ericfisherdev/nestova/internal/federation/app"
-	federationdomain "github.com/ericfisherdev/nestova/internal/federation/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	notifyapp "github.com/ericfisherdev/nestova/internal/notify/app"
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
@@ -169,61 +164,6 @@ type testHouseholdRepoWithQuietHours interface {
 func newTestNotifyWebHandlers(households quietHoursCapableHouseholdRepo, sm *scs.SessionManager, logger *slog.Logger) *notifyadapter.NotifyWebHandlers {
 	settings := notifyapp.NewSettingsService(fakeContactDirectory{}, fakePreferenceRepository{}, households)
 	return notifyadapter.NewNotifyWebHandlers(settings, sm, logger)
-}
-
-// ---------------------------------------------------------------------------
-// NSTR-106: no-op federation fakes, for tests that register the shared
-// /settings page but do not themselves exercise the federation instance-link
-// section — composePage (cmd/server/home.go) builds it unconditionally on
-// every render, so a nil *federationadapter.FederationWebHandlers would
-// panic even a kiosk- or MFA-focused test.
-// ---------------------------------------------------------------------------
-
-// fakeInstanceLinkRepo is a no-op federationdomain.InstanceLinkRepository:
-// every household is unbound, and Create/DeleteByHousehold are no-ops.
-type fakeInstanceLinkRepo struct{}
-
-func (fakeInstanceLinkRepo) Create(_ context.Context, _ *federationdomain.InstanceLink) error {
-	return nil
-}
-
-func (fakeInstanceLinkRepo) GetByHousehold(_ context.Context, _ household.HouseholdID) (*federationdomain.InstanceLink, error) {
-	return nil, federationdomain.ErrLinkNotFound
-}
-
-func (fakeInstanceLinkRepo) GetByBaseURL(_ context.Context, _ string) (*federationdomain.InstanceLink, error) {
-	return nil, federationdomain.ErrLinkNotFound
-}
-
-func (fakeInstanceLinkRepo) DeleteByHousehold(_ context.Context, _ household.HouseholdID) error {
-	return nil
-}
-
-var _ federationdomain.InstanceLinkRepository = fakeInstanceLinkRepo{}
-
-// fakeInstanceVerifier is a no-op instance verifier: every credential
-// verifies successfully. No test wired through newTestFederationWebHandlers
-// exercises Attach, so this is never actually invoked; it exists only so
-// federationapp.NewLinkService's non-nil dependency check passes.
-type fakeInstanceVerifier struct{}
-
-func (fakeInstanceVerifier) Verify(_ context.Context, _, _ string, _ household.HouseholdID) error {
-	return nil
-}
-
-// newTestFederationWebHandlers builds a working FederationWebHandlers
-// backed by the no-op fakes above, for tests that register the shared
-// /settings page without exercising NSTR-106's own section.
-func newTestFederationWebHandlers(sm *scs.SessionManager, logger *slog.Logger) *federationadapter.FederationWebHandlers {
-	cipher, err := crypto.NewCipher([]byte("settings-test-harness-fed-cipher"))
-	if err != nil {
-		panic(fmt.Sprintf("newTestFederationWebHandlers: NewCipher: %v", err))
-	}
-	link, err := federationapp.NewLinkService(fakeInstanceLinkRepo{}, cipher, fakeInstanceVerifier{}, logger)
-	if err != nil {
-		panic(fmt.Sprintf("newTestFederationWebHandlers: NewLinkService: %v", err))
-	}
-	return federationadapter.NewFederationWebHandlers(link, sm, logger)
 }
 
 // testCredStore is a no-op credentialStore (EmailExists always false) for unit
@@ -405,7 +345,7 @@ func buildTestHandler() http.Handler {
 	groceryHandlers := newTestGroceryHandlers(repo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, nil, onboardingHandlers, repo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, taskInstanceRepo, repo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, repo, taskWebHandlers, newTestTradeHandlers(taskWebHandlers, taskInstanceRepo, repo, sm, logger), gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	// Apply the session middleware so CSRF tokens and member lookups work.
 	return sm.LoadAndSave(

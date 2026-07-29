@@ -159,7 +159,7 @@ func buildTradeTestHandler(
 	)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers, tradeWebHandlers, gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
 	return sm.LoadAndSave(
 		authadapter.Authenticate(sm, householdRepo)(mux),

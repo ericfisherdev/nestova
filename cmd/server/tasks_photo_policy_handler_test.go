@@ -130,7 +130,7 @@ func buildPhotoPolicyTestHandler(
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers,
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers,
 		newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger),
 		gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 
@@ -293,7 +293,7 @@ func TestTasksList_PhotoPolicy_BatchesProofPhotoLookupAcrossRows(t *testing.T) {
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 
 	mux := http.NewServeMux()
-	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers,
+	registerWebRoutes(mux, logger, sm, authHandlers, nil, nil, onboardingHandlers, householdRepo, taskWebHandlers,
 		newTestTradeHandlers(taskWebHandlers, instanceRepo, householdRepo, sm, logger),
 		gamificationHandlers, groceryHandlers, newTestMealsHandlers(sm, logger), newTestCalendarHandlers(sm, logger))
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, householdRepo)(mux))

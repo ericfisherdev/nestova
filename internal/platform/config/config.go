@@ -85,9 +85,6 @@ type Config struct {
 	Cache   CacheConfig
 	TLS     TLSConfig
 	HSTS    HSTSConfig
-	// Federation configures Nestova as the federation authorize/token
-	// identity provider for Nestorage (NSTR-105/NSTR-110).
-	Federation FederationConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
 }
@@ -283,38 +280,6 @@ type OAuthConfig struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
-}
-
-// FederationConfig registers the single confidential client (the household's
-// Nestorage instance) allowed to use Nestova's federation authorize/token
-// flow (NSTR-105: GET /federation/authorize; NSTR-110: POST /federation/token).
-// One client exists per install, so it is env configuration rather than a
-// client table — symmetric with NSTR-100, where Nestorage carries the same
-// credential pair in its own config. All three fields are validated together
-// even though ClientSecret is read only by NSTR-110's token exchange:
-// configuration is one unit, and a partially set federation client must fail
-// startup as a whole rather than boot with an authorize route that can never
-// be completed.
-type FederationConfig struct {
-	// ClientID is the registered client identifier. It is PUBLIC: it appears
-	// openly in the browser's GET /federation/authorize redirect (NSTR-100
-	// sends it that way from the Nestorage side), so it carries no
-	// confidentiality requirement of its own.
-	ClientID string
-	// ClientSecret authenticates NSTR-110's back-channel POST
-	// /federation/token exchange. It is never consulted on the authorize
-	// leg and is never logged.
-	ClientSecret string
-	// RedirectURL is the exact registered redirect target Authorize checks
-	// the request's redirect_uri against — an exact string match, not a
-	// prefix or pattern — before ever proceeding to authentication.
-	RedirectURL string
-}
-
-// Enabled reports whether a federation client is fully configured. False
-// means no federation route is registered at all (cmd/server/home.go).
-func (f FederationConfig) Enabled() bool {
-	return f.ClientID != "" && f.ClientSecret != "" && f.RedirectURL != ""
 }
 
 // CryptoConfig holds the at-rest encryption key used to protect stored secrets
@@ -749,15 +714,6 @@ func Load() (Config, error) {
 	// DATABASE_URL"; operators set it to the Supabase direct/session connection.
 	dbMigrateDSN := strings.TrimSpace(os.Getenv("MIGRATE_DATABASE_URL"))
 
-	// FEDERATION_* (NSTR-105/NSTR-110): the single registered Nestorage
-	// client. All three are optional as a unit — see FederationConfig's own
-	// doc — so none carry a dev-convenience default the way SESSION_SECRET
-	// does; an operator who has not paired with Nestorage yet leaves every
-	// one of them unset.
-	federationClientID := strings.TrimSpace(os.Getenv("FEDERATION_CLIENT_ID"))
-	federationClientSecret := strings.TrimSpace(os.Getenv("FEDERATION_CLIENT_SECRET"))
-	federationRedirectURL := strings.TrimSpace(os.Getenv("FEDERATION_REDIRECT_URL"))
-
 	// Supabase connects through a shared pooler, so default to a modest pool cap
 	// when the operator has not set one. Postgres keeps deferring to pgx (zero).
 	if dbProvider == DBProviderSupabase && maxConns == 0 {
@@ -793,11 +749,6 @@ func Load() (Config, error) {
 			GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 			GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 			GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
-		},
-		Federation: FederationConfig{
-			ClientID:     federationClientID,
-			ClientSecret: federationClientSecret,
-			RedirectURL:  federationRedirectURL,
 		},
 		Crypto: CryptoConfig{
 			EncryptionKey: strings.TrimSpace(getenv("ENCRYPTION_KEY", devEncryptionKey)),
@@ -1056,41 +1007,6 @@ func (c Config) validate() []error {
 			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an absolute http(s) URL, got %q", c.Server.PublicBaseURL))
 		case u.User != nil, u.Path != "", u.RawQuery != "", u.Fragment != "":
 			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an origin only (scheme + host, no user/path/query/fragment), got %q", c.Server.PublicBaseURL))
-		}
-	}
-
-	// FEDERATION_* (NSTR-105/NSTR-110) is optional as a UNIT — a deployment
-	// that has never paired with Nestorage leaves all three unset and boots
-	// with no federation route at all (Enabled() == false,
-	// cmd/server/home.go) — but ANY one of the three being set is the signal
-	// an operator intended to configure it, so every other one becomes
-	// required: a partially set client can never actually complete the
-	// authorize-then-exchange round trip, and would otherwise fail silently
-	// at first use instead of at startup.
-	federationAnySet := c.Federation.ClientID != "" || c.Federation.ClientSecret != "" || c.Federation.RedirectURL != ""
-	if federationAnySet {
-		if c.Federation.ClientID == "" {
-			errs = append(errs, errors.New("FEDERATION_CLIENT_ID is required when configuring federation"))
-		}
-		if c.Federation.ClientSecret == "" {
-			errs = append(errs, errors.New("FEDERATION_CLIENT_SECRET is required when configuring federation"))
-		}
-		if c.Federation.RedirectURL == "" {
-			errs = append(errs, errors.New("FEDERATION_REDIRECT_URL is required when configuring federation"))
-		}
-	}
-	// The secret's length is checked whenever it is present at all (not only
-	// when federationAnySet reports every field required), so a too-short
-	// secret is reported on its own terms rather than folded into the
-	// "missing" message above — mirroring SESSION_SECRET's identical
-	// standalone length check.
-	if c.Federation.ClientSecret != "" && len(c.Federation.ClientSecret) < minSecretLen {
-		errs = append(errs, fmt.Errorf("FEDERATION_CLIENT_SECRET must be at least %d bytes, got %d",
-			minSecretLen, len(c.Federation.ClientSecret)))
-	}
-	if c.Federation.RedirectURL != "" {
-		if u, err := url.Parse(c.Federation.RedirectURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			errs = append(errs, fmt.Errorf("FEDERATION_REDIRECT_URL must be an absolute http(s) URL, got %q", c.Federation.RedirectURL))
 		}
 	}
 
