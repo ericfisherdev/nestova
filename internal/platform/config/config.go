@@ -37,7 +37,7 @@ const (
 	// (NSTR-118); options carries search_path=nestova,public so Nestova's own
 	// connections resolve into its dedicated schema without any query being
 	// schema-qualified.
-	devDSN = "postgres://nestova:nestova@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic"
+	devDSN = "postgres://nestova:nestova@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic" // NOSONAR: fake dev-only credential, matches the docker-compose service (compose.yaml) and is never reachable outside a developer's own machine
 
 	// devSessionSecret is a known, insecure default used only in development.
 	// It satisfies the length check in dev but is rejected in prod, forcing a

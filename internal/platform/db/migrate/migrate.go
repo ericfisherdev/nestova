@@ -187,8 +187,12 @@ func connect(ctx context.Context, dsn string, poolerSafe bool) (*sql.DB, error) 
 	}
 	// goose creates its version table on first contact and fails if the
 	// schema it lives in does not exist yet — ensure it before any goose
-	// command (including the very first Up) runs.
-	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema); err != nil {
+	// command (including the very first Up) runs. Postgres has no
+	// parameterized-identifier syntax for DDL, so the schema name is
+	// sanitized (not interpolated raw) the same way dbtest and this
+	// package's own tests already sanitize database names before splicing
+	// them into CREATE DATABASE.
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create schema %s: %w", schema, err)
 	}
