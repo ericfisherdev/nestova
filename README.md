@@ -43,8 +43,8 @@ environment variables always take precedence over `.env`.
 | `APP_ENV` | no | `dev` | Deployment environment: `dev`, `test`, or `prod`. |
 | `PORT` | no | `8080` | HTTP listen port (a leading colon is tolerated). |
 | `TRUSTED_PROXIES` | no | `127.0.0.0/8,::1/128` | CIDRs whose `X-Forwarded-*` headers are trusted. Empty trusts none (see [HTTPS deployment](#https-deployment-reverse-proxy)). |
-| `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Override in prod. |
-| `MIGRATE_DATABASE_URL` | no | `DATABASE_URL` | Separate DSN for the migration tool; point at a session/direct connection for Supabase (see [Database migrations](#database-migrations)). |
+| `DATABASE_URL` | no in dev | docker-compose DSN | Postgres connection string. Must carry `options=-c search_path=nestova,public` (NSTR-118) — the server refuses to boot without it. Override in prod. |
+| `MIGRATE_DATABASE_URL` | no | `DATABASE_URL` | Separate DSN for the migration tool; point at a session/direct connection for Supabase (see [Database migrations](#database-migrations)). Needs the same `search_path` option — migration DDL is unqualified, so without it tables land in `public` instead of `nestova`. |
 | `DB_MAX_CONNS` | no | `0` (Supabase: `10`) | Connection pool cap. `0` lets the pool choose; with `DB_PROVIDER=supabase` it defaults to `10` behind the shared pooler. |
 | `DB_CONNECT_TIMEOUT` | no | `5s` | Bounds the startup connectivity check (Go duration). |
 | `DB_PROVIDER` | no | `postgres` | Database backend: `postgres` or `supabase` (see [Using Supabase](#using-supabase)). |
@@ -182,10 +182,15 @@ connection to `sslmode=verify-full`.
 DB_PROVIDER=supabase
 # Set transaction only when DATABASE_URL targets the :6543 pooler; otherwise session.
 DB_POOL_MODE=transaction
-DATABASE_URL=postgres://postgres.<ref>:<password>@<region>.pooler.supabase.com:6543/postgres?sslmode=require
+# options carries search_path=nestova,public (NSTR-118): Nestova's tables live in
+# the nestova schema of the shared database, and the server refuses to boot
+# without it.
+DATABASE_URL=postgres://postgres.<ref>:<password>@<region>.pooler.supabase.com:6543/postgres?sslmode=require&options=-csearch_path%3Dnestova%2Cpublic
 # DDL and goose version bookkeeping need a session connection, so point the
-# migration tool at the direct/session connection (port 5432):
-MIGRATE_DATABASE_URL=postgres://postgres.<ref>:<password>@<region>.pooler.supabase.com:5432/postgres?sslmode=require
+# migration tool at the direct/session connection (port 5432). It needs the
+# same options parameter: the migrations' DDL is unqualified, so without it
+# every table lands in public instead of nestova.
+MIGRATE_DATABASE_URL=postgres://postgres.<ref>:<password>@<region>.pooler.supabase.com:5432/postgres?sslmode=require&options=-csearch_path%3Dnestova%2Cpublic
 # Optional: verify the server certificate against Supabase's CA (enables verify-full):
 # DB_SSL_ROOT_CERT=/path/to/supabase-ca.crt
 ```
@@ -225,10 +230,11 @@ exercise the pooler-safe path locally — the **pooler** URL with
 ```sh
 DB_PROVIDER=supabase
 DB_POOL_MODE=transaction
-# Transaction pooler (port 54329 from config.toml):
-DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres?sslmode=require
-# Direct/session connection (port 54322) for migrations:
-MIGRATE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres?sslmode=require
+# Transaction pooler (port 54329 from config.toml); options carries
+# search_path=nestova,public (NSTR-118) — required, same as the hosted case above.
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres?sslmode=require&options=-csearch_path%3Dnestova%2Cpublic
+# Direct/session connection (port 54322) for migrations — needs the same option:
+MIGRATE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres?sslmode=require&options=-csearch_path%3Dnestova%2Cpublic
 ```
 
 > Nestova enforces TLS for `DB_PROVIDER=supabase` (it rejects `sslmode=disable`),
@@ -237,7 +243,8 @@ MIGRATE_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres?sslmo
 > the direct connection (port 54322) with `DB_POOL_MODE=session` instead; the
 > pooler-safe exec mode itself is also covered by the unit tests (NES-46/47). The
 > DB-gated suite can run against this stack by pointing `NESTOVA_TEST_DATABASE_URL`
-> at the direct DB URL.
+> at the direct DB URL, carrying the same `search_path` option described above
+> (see [`docs/testing.md`](docs/testing.md)).
 
 ### HTTPS deployment (reverse proxy)
 

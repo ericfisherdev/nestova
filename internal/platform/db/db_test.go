@@ -259,15 +259,21 @@ func TestNew_FailsWhenSearchPathMissing(t *testing.T) {
 		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the live Postgres integration test")
 	}
 
-	// Strip any options query parameter the base DSN carries so search_path
-	// falls back to the server default (public), not nestova — regardless
-	// of whether a nestova schema happens to exist in this database.
+	// Pin search_path to public rather than deleting the options parameter:
+	// with no options at all Postgres falls back to its default "$user",
+	// public, and "$user" resolves to the nestova schema whenever the test
+	// role happens to be named nestova — which would make New succeed and
+	// invert this test. An explicit search_path cannot be won by "$user".
+	// ensureSchema keeps the schema present, so the guard fails on the
+	// wrong-search_path branch and not on a missing schema.
+	ensureSchema(t, dsn)
+
 	u, err := url.Parse(dsn)
 	if err != nil {
 		t.Fatalf("parse NESTOVA_TEST_DATABASE_URL: %v", err)
 	}
 	q := u.Query()
-	q.Del("options")
+	q.Set("options", "-csearch_path=public")
 	u.RawQuery = q.Encode()
 
 	pool, err := New(context.Background(), config.DBConfig{DSN: u.String(), ConnTimeout: 5 * time.Second})

@@ -61,9 +61,7 @@ sudo -u postgres createdb --owner=nestova nest
 `nest` (not `nestova`) is deliberate: Nestova shares this one database with
 Nestorage and the identity schema, each in its own Postgres schema
 (NSTR-112/NSTR-118) — a naming decision, not a typo. `DATABASE_URL` below
-must carry a `search_path` option naming Nestova's schema; `make migrate-up`
-creates that schema on first run, so no manual `CREATE SCHEMA` step is
-needed here.
+must carry a `search_path` option naming Nestova's schema.
 
 Then create `/etc/nestova/server.env` with at least `DATABASE_URL`, plus
 the knobs from step 3:
@@ -72,7 +70,17 @@ the knobs from step 3:
 DATABASE_URL=postgres://nestova:<password>@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic
 ```
 
-It holds the database password, so lock it down:
+Then apply the migrations, which create the `nestova` schema and every
+table in it — no manual `CREATE SCHEMA` step is needed. This must happen
+**before** the service starts in step 1: the boot guard below refuses to
+run against a database whose `nestova` schema does not exist yet.
+
+```sh
+DATABASE_URL='postgres://nestova:<password>@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic' \
+  make migrate-up
+```
+
+`/etc/nestova/server.env` holds the database password, so lock it down:
 
 ```sh
 sudo touch /etc/nestova/server.env
@@ -240,12 +248,20 @@ Restart after editing: `sudo systemctl restart nestova-server.service`.
 
 ### Troubleshooting: "current schema is ... want nestova"
 
-The server fails to boot with this error when `DATABASE_URL` is missing the
-`options=-c search_path=nestova,public` parameter (or a copy-paste dropped
-it) — a forgotten search path must fail loudly here, not scatter new tables
-into `public` on the next migration. Add the option back and restart; no
-data is at risk, since the server refused to serve before running anything
-against the database.
+The server fails to boot with this error for one of two reasons — a
+forgotten search path must fail loudly here, not scatter new tables into
+`public` on the next migration:
+
+- **`DATABASE_URL` is missing the `options=-c search_path=nestova,public`
+  parameter** (or a copy-paste dropped it). Add it back and restart.
+- **The `nestova` schema does not exist yet**, because the migrations have
+  never run against this database. `current_schema()` skips schemas in
+  `search_path` that do not exist, so a perfectly correct DSN reports
+  `public` here — the error message names this case explicitly ("schema
+  ... does not exist"). Run `make migrate-up` (step 0 above) and restart.
+
+No data is at risk in either case: the server refused to serve before
+running anything against the database.
 
 ## 4. Verification
 
@@ -317,8 +333,10 @@ The rename carries `public.goose_db_version` along as `nestova.goose_db_version`
 automatically — no separate step moves goose's own bookkeeping.
 
 Dump just the renamed schema and restore it into the shared database (which
-must already have both extensions installed in `public` — a fresh
-`nest` created via `make migrate-up`, per step 0 above, already does):
+must already exist — `createdb`, per step 0 above, is what creates the
+database itself; `make migrate-up` only creates the `nestova` schema and
+its tables inside it — and must already have both extensions installed in
+`public`, which a `make migrate-up` run against that database provides):
 
 ```sh
 pg_dump --schema=nestova --format=custom "$OLD_DATABASE_URL" > nestova.dump

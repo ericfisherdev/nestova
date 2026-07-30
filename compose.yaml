@@ -6,6 +6,15 @@
 # mirroring the one-database/one-schema-per-app production layout. The
 # Nestorage consolidation ticket retires Nestorage's own separate compose
 # Postgres (127.0.0.1:5433) in favor of this one instance.
+#
+# ONE-TIME, for a volume created before NSTR-118: POSTGRES_DB below is only
+# honored when the entrypoint initializes an EMPTY data directory, so an
+# existing nestova-pgdata volume still holds "nestova" and no "nest", and the
+# server fails with 'database "nest" does not exist'. Either discard the dev
+# data (docker compose down -v && docker compose up -d) or keep it by
+# following "Moving existing data into the shared database" in
+# docs/deployment.md, creating the target database first:
+#   docker compose exec postgres createdb -U nestova nest
 services:
   postgres:
     image: postgres:17-alpine
