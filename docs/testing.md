@@ -27,9 +27,16 @@ until docker exec nestova-test-db pg_isready -U postgres -d nestova_test >/dev/n
   sleep 1
 done
 
-export NESTOVA_TEST_DATABASE_URL="postgres://postgres:test@localhost:55432/nestova_test?sslmode=disable"
+export NESTOVA_TEST_DATABASE_URL="postgres://postgres:test@localhost:55432/nestova_test?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic"
 make test-gated
 ```
+
+The `options` parameter carries `search_path=nestova,public` (NSTR-118):
+`migrate.Reset`/`Up` create the `nestova` schema and land every migrated
+object in it, exactly as production does, and `db.New`'s boot guard
+(`internal/platform/db`) refuses to connect without it — a DSN missing this
+option fails every gated adapter test with a `current schema` error naming
+the missing option.
 
 `make test-gated` names the gated packages explicitly. `go test ./...` with
 the variable set works too and runs everything; the explicit target exists

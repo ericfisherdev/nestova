@@ -229,6 +229,13 @@ func TestNewAndHealth(t *testing.T) {
 		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the live Postgres integration test")
 	}
 
+	// New's boot guard (NSTR-118) requires the schema named in the DSN's
+	// search_path to already exist. This test pings the base database
+	// directly without migrating it first (unlike the gated adapter tests,
+	// which go through dbtest.NewIsolatedPool), so it creates the schema
+	// itself — mirroring what migrate.Up/Reset does for every other caller.
+	ensureSchema(t, dsn)
+
 	pool, err := New(context.Background(), config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -239,5 +246,21 @@ func TestNewAndHealth(t *testing.T) {
 	defer cancel()
 	if err := Health(ctx, pool); err != nil {
 		t.Errorf("Health() error: %v", err)
+	}
+}
+
+// ensureSchema creates requiredSchema against dsn directly, for tests that
+// connect without going through migrate.Up/Reset first.
+func ensureSchema(t *testing.T, dsn string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to create schema %s: %v", requiredSchema, err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+requiredSchema); err != nil {
+		t.Fatalf("create schema %s: %v", requiredSchema, err)
 	}
 }

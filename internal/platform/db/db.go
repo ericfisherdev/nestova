@@ -40,6 +40,12 @@ const (
 	healthCheckPeriod = time.Minute
 )
 
+// requiredSchema is the Postgres schema every Nestova connection must resolve
+// to via its DSN's search_path (NSTR-118). Mirrored as its own literal in
+// internal/platform/db/migrate (goose's version-table schema), since that
+// package must not depend on this one.
+const requiredSchema = "nestova"
+
 // New builds a pgx connection pool from cfg, verifies connectivity with a
 // bounded Ping, and returns the ready-to-use pool. A bad DSN or unreachable
 // database fails fast with a descriptive error. The caller owns the pool and
@@ -66,7 +72,29 @@ func New(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
 		pool.Close()
 		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}
+	if err := verifySchema(pingCtx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return pool, nil
+}
+
+// verifySchema fails loudly when the connection's search_path does not
+// resolve to requiredSchema — a forgotten search_path option in the DSN must
+// surface at boot, not scatter new tables into public on the next migration.
+func verifySchema(ctx context.Context, pool *pgxpool.Pool) error {
+	var got string
+	if err := pool.QueryRow(ctx, "SELECT current_schema()").Scan(&got); err != nil {
+		return fmt.Errorf("verify current schema: %w", err)
+	}
+	if got != requiredSchema {
+		return fmt.Errorf(
+			"current schema is %q, want %q: DATABASE_URL is missing the search_path option "+
+				"(add options=-c search_path=%s,public to the DSN)",
+			got, requiredSchema, requiredSchema,
+		)
+	}
+	return nil
 }
 
 // Health verifies live connectivity by acquiring a connection and pinging it.

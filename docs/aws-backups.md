@@ -29,6 +29,26 @@ intentionally NOT the photo bucket (`S3_BUCKET`, `docs/storage.md`):
 backups get lifecycle rules (Glacier transition, ~400-day expiry) that
 must never collide with photo retention.
 
+## Shared database (NSTR-118)
+
+`PGDATABASE` in `/etc/nestova/backup.env` now names the ONE shared database
+(`nest`) that Nestova, Nestorage, and the identity schema all live in
+(NSTR-112). `pg_dump` with no `--schema` flag, as used below, already dumps
+every schema in the target database — so this nightly backup, unchanged in
+its own mechanics, now covers all three in a single archive.
+
+Two consequences, stated explicitly:
+
+- **Nestorage must NOT configure a second, parallel nightly dump of the same
+  database.** Its own consolidation ticket must point `PGDATABASE` at `nest`
+  too rather than adding a second backup timer — two independent dumps of
+  one database waste the S3 spend budget for no additional safety.
+- **A restore now affects both apps.** The quarterly drill and any real
+  recovery restores Nestova, Nestorage, and every household's shared
+  identity (accounts, sessions) together — there is no way to restore one
+  app's data in isolation from a `nest` dump. Plan restore drills and any
+  real recovery with that widened blast radius in mind.
+
 ## Provisioning the bucket
 
 One-time, from an admin credential (never the appliance's). The

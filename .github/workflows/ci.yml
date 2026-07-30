@@ -116,8 +116,13 @@ jobs:
       - name: Test (race detector + coverage)
         # Set here (not job-wide) so only this step's gated adapter tests run
         # against the service above -- see the services: block's own comment.
+        # The options parameter carries search_path=nestova,public (NSTR-118):
+        # migrate.Reset/Up creates the nestova schema and land every migrated
+        # object in it, so the DSN must resolve there the same way production
+        # does, or db.New's boot guard (internal/platform/db) fails every
+        # gated adapter test.
         env:
-          NESTOVA_TEST_DATABASE_URL: postgres://postgres:test@localhost:55432/nestova_test?sslmode=disable
+          NESTOVA_TEST_DATABASE_URL: postgres://postgres:test@localhost:55432/nestova_test?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic
         run: make test
 
       - name: Report coverage

@@ -55,11 +55,24 @@ and orders itself after `postgresql.service`:
 sudo apt install -y postgresql
 sudo systemctl enable --now postgresql
 sudo -u postgres createuser --pwprompt nestova
-sudo -u postgres createdb --owner=nestova nestova
+sudo -u postgres createdb --owner=nestova nest
 ```
 
+`nest` (not `nestova`) is deliberate: Nestova shares this one database with
+Nestorage and the identity schema, each in its own Postgres schema
+(NSTR-112/NSTR-118) — a naming decision, not a typo. `DATABASE_URL` below
+must carry a `search_path` option naming Nestova's schema; `make migrate-up`
+creates that schema on first run, so no manual `CREATE SCHEMA` step is
+needed here.
+
 Then create `/etc/nestova/server.env` with at least `DATABASE_URL`, plus
-the knobs from step 3. It holds the database password, so lock it down:
+the knobs from step 3:
+
+```sh
+DATABASE_URL=postgres://nestova:<password>@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic
+```
+
+It holds the database password, so lock it down:
 
 ```sh
 sudo touch /etc/nestova/server.env
@@ -225,6 +238,15 @@ is a recovery-time hazard rather than a cosmetic change. See
 
 Restart after editing: `sudo systemctl restart nestova-server.service`.
 
+### Troubleshooting: "current schema is ... want nestova"
+
+The server fails to boot with this error when `DATABASE_URL` is missing the
+`options=-c search_path=nestova,public` parameter (or a copy-paste dropped
+it) — a forgotten search path must fail loudly here, not scatter new tables
+into `public` on the next migration. Add the option back and restart; no
+data is at risk, since the server refused to serve before running anything
+against the database.
+
 ## 4. Verification
 
 Do all of it; several failure modes only appear on one path.
@@ -267,6 +289,53 @@ answers `/healthz` with `ok` while every real request fails.
 is enabled — but verify rather than assume. A serve config that does not
 survive a power cut turns a five-second outage into a silent one lasting
 until someone notices the phone app stopped working.
+
+## Moving existing data into the shared database (NSTR-118)
+
+A one-time recipe for a database that predates the shared `nest` database
+(NSTR-112) — its Nestova tables sit directly in `public` of their own
+private database. Run this once per environment (dev, then the Pi, in that
+order) before pointing `DATABASE_URL` at the shared database.
+
+In the OLD database, move `public` (Nestova's tables, plus the `pgcrypto`
+and `citext` extension objects the rename drags along) into a `nestova`
+schema, then restore a fresh empty `public` and return the extensions to
+it — later `citext` column and `gen_random_uuid()` references resolve
+through `search_path`'s trailing `public` entry, not a schema-qualified
+name, so they must live there and not in `nestova`:
+
+```sh
+psql "$OLD_DATABASE_URL" <<'SQL'
+ALTER SCHEMA public RENAME TO nestova;
+CREATE SCHEMA public;
+ALTER EXTENSION citext SET SCHEMA public;
+ALTER EXTENSION pgcrypto SET SCHEMA public;
+SQL
+```
+
+The rename carries `public.goose_db_version` along as `nestova.goose_db_version`
+automatically — no separate step moves goose's own bookkeeping.
+
+Dump just the renamed schema and restore it into the shared database (which
+must already have both extensions installed in `public` — a fresh
+`nest` created via `make migrate-up`, per step 0 above, already does):
+
+```sh
+pg_dump --schema=nestova --format=custom "$OLD_DATABASE_URL" > nestova.dump
+pg_restore --dbname="$SHARED_DATABASE_URL" nestova.dump
+```
+
+Verify nothing was dropped before cutting `DATABASE_URL` over, comparing
+row counts per table (and `goose_db_version`'s row count, proving its
+migration history moved too) between `information_schema.tables` on the old
+database and the same query against the `nestova` schema of the new one.
+
+### Nestorage: do not run this a second time
+
+Nestorage's own consolidation ticket runs the equivalent move for its
+schema into the same shared database. Once done, a single dump command
+against `nest` covers Nestova, Nestorage, and identity together — see
+[`aws-backups.md`](aws-backups.md).
 
 ## Replacing the Pi
 

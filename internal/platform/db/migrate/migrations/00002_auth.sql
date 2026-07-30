@@ -1,7 +1,10 @@
 -- +goose Up
 -- citext provides case-insensitive text type used for email storage so lookups
 -- are case-insensitive without explicit lower() calls.
-CREATE EXTENSION IF NOT EXISTS citext;
+-- Schema-qualified for the same reason as pgcrypto in 00001_baseline.sql
+-- (NSTR-118): search_path resolves nestova before public, so an unqualified
+-- CREATE EXTENSION would install into nestova instead.
+CREATE EXTENSION IF NOT EXISTS citext SCHEMA public;
 
 -- Add optional login credentials to member. Both columns are nullable so
 -- members without login are unaffected; the CHECK keeps them consistent — a

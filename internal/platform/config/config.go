@@ -33,7 +33,11 @@ const (
 
 	// devDSN is the default database DSN, matching the docker-compose service
 	// (NES-16) so the dev happy-path boots without any environment setup.
-	devDSN = "postgres://nestova:nestova@localhost:5432/nestova?sslmode=disable"
+	// "nest" is the shared database Nestova, Nestorage, and identity live in
+	// (NSTR-118); options carries search_path=nestova,public so Nestova's own
+	// connections resolve into its dedicated schema without any query being
+	// schema-qualified.
+	devDSN = "postgres://nestova:nestova@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic"
 
 	// devSessionSecret is a known, insecure default used only in development.
 	// It satisfies the length check in dev but is rejected in prod, forcing a
