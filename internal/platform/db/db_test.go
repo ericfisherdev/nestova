@@ -249,6 +249,37 @@ func TestNewAndHealth(t *testing.T) {
 	}
 }
 
+// TestNew_FailsWhenSearchPathMissing is the gated regression guard for the
+// boot guard (NSTR-118): a DSN whose search_path does not resolve to
+// requiredSchema must fail New with a descriptive error naming the missing
+// option, not silently connect against the wrong schema.
+func TestNew_FailsWhenSearchPathMissing(t *testing.T) {
+	dsn := os.Getenv("NESTOVA_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the live Postgres integration test")
+	}
+
+	// Strip any options query parameter the base DSN carries so search_path
+	// falls back to the server default (public), not nestova — regardless
+	// of whether a nestova schema happens to exist in this database.
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse NESTOVA_TEST_DATABASE_URL: %v", err)
+	}
+	q := u.Query()
+	q.Del("options")
+	u.RawQuery = q.Encode()
+
+	pool, err := New(context.Background(), config.DBConfig{DSN: u.String(), ConnTimeout: 5 * time.Second})
+	if err == nil {
+		pool.Close()
+		t.Fatal("New() = nil error, want an error naming the missing search_path option")
+	}
+	if !strings.Contains(err.Error(), "search_path") {
+		t.Errorf("error = %q, want it to mention search_path", err.Error())
+	}
+}
+
 // ensureSchema creates requiredSchema against dsn directly, for tests that
 // connect without going through migrate.Up/Reset first.
 func ensureSchema(t *testing.T, dsn string) {
