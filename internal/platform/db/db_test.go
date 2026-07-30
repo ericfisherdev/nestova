@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -284,6 +285,86 @@ func TestNew_FailsWhenSearchPathMissing(t *testing.T) {
 	if !strings.Contains(err.Error(), "search_path") {
 		t.Errorf("error = %q, want it to mention search_path", err.Error())
 	}
+}
+
+// TestNew_FailsWhenSchemaDoesNotExist is the other rejection branch
+// verifySchema distinguishes (NSTR-118): a correct search_path is not
+// enough if the migrations have never run, and that case must be reported
+// distinctly from "the DSN is wrong" — it needs a fresh scratch database
+// rather than the shared base test database, since other tests in this
+// package (TestNewAndHealth, TestNew_FailsWhenSearchPathMissing) already
+// create requiredSchema there via ensureSchema.
+func TestNew_FailsWhenSchemaDoesNotExist(t *testing.T) {
+	baseDSN := os.Getenv("NESTOVA_TEST_DATABASE_URL")
+	if baseDSN == "" {
+		t.Skip("set NESTOVA_TEST_DATABASE_URL to run the live Postgres integration test")
+	}
+
+	dsn := createScratchDatabase(t, baseDSN)
+
+	pool, err := New(context.Background(), config.DBConfig{DSN: dsn, ConnTimeout: 5 * time.Second})
+	if err == nil {
+		pool.Close()
+		t.Fatal("New() = nil error on an unmigrated database, want an error naming the missing schema")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error = %q, want it to mention the schema does not exist", err.Error())
+	}
+	if !strings.Contains(err.Error(), "migrate-up") {
+		t.Errorf("error = %q, want it to mention make migrate-up", err.Error())
+	}
+}
+
+// createScratchDatabase creates a brand-new, throwaway database on the same
+// server as baseDSN and returns its DSN (every other option preserved
+// unchanged) — for tests that need requiredSchema to definitely not exist
+// yet, which the shared base test database cannot guarantee once any other
+// test has called ensureSchema against it. Drops the database on cleanup:
+// unlike dbtest's derived databases, there is no reason to keep this one
+// warm between runs.
+func createScratchDatabase(t *testing.T, baseDSN string) string {
+	t.Helper()
+	cfg, err := pgx.ParseConfig(baseDSN)
+	if err != nil {
+		t.Fatalf("parse NESTOVA_TEST_DATABASE_URL: %v", err)
+	}
+	name := strings.ToLower(cfg.Database) + "_scratch_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	adminCfg := cfg.Copy()
+	adminCfg.Database = "postgres"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := pgx.ConnectConfig(ctx, adminCfg)
+	if err != nil {
+		t.Fatalf("connect to maintenance database: %v", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatalf("create scratch database %q: %v", name, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCleanup()
+		conn, err := pgx.ConnectConfig(cleanupCtx, adminCfg)
+		if err != nil {
+			t.Logf("cleanup: connect to maintenance database: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close(cleanupCtx) }()
+		if _, err := conn.Exec(cleanupCtx, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()); err != nil {
+			t.Logf("cleanup: drop scratch database %q: %v", name, err)
+		}
+	})
+
+	// Swap only the database name on the original DSN — re-rendering from a
+	// parsed config would drop options pgx folds into the connection, same
+	// reason dbtest.rewriteDatabase and migrate_test.isolatedDSN do this.
+	u, err := url.Parse(baseDSN)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		t.Fatalf("NESTOVA_TEST_DATABASE_URL must be a postgres:// URL to derive a scratch database")
+	}
+	u.Path = "/" + name
+	return u.String()
 }
 
 // ensureSchema creates requiredSchema against dsn directly, for tests that
