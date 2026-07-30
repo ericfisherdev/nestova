@@ -82,12 +82,32 @@ func New(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
 // verifySchema fails loudly when the connection's search_path does not
 // resolve to requiredSchema — a forgotten search_path option in the DSN must
 // surface at boot, not scatter new tables into public on the next migration.
+//
+// current_schema() returns the first EXISTING schema in search_path, silently
+// skipping any that do not exist yet — so a perfectly correct DSN against an
+// unmigrated database (requiredSchema not created yet) also lands here, and
+// must be told apart from an actually-wrong DSN: the two point an operator at
+// different fixes (run the migrations vs. fix the option). exists is also why
+// got is read via COALESCE — a search_path naming only nonexistent schemas
+// makes current_schema() return NULL, which Scan(&got) alone cannot decode
+// into a string.
 func verifySchema(ctx context.Context, pool *pgxpool.Pool) error {
 	var got string
-	if err := pool.QueryRow(ctx, "SELECT current_schema()").Scan(&got); err != nil {
+	var exists bool
+	if err := pool.QueryRow(ctx,
+		"SELECT COALESCE(current_schema(), ''), to_regnamespace($1::text) IS NOT NULL",
+		requiredSchema,
+	).Scan(&got, &exists); err != nil {
 		return fmt.Errorf("verify current schema: %w", err)
 	}
 	if got != requiredSchema {
+		if !exists {
+			return fmt.Errorf(
+				"schema %q does not exist in the target database (current schema is %q): "+
+					"run the migrations first (make migrate-up), which creates it",
+				requiredSchema, got,
+			)
+		}
 		return fmt.Errorf(
 			"current schema is %q, want %q: DATABASE_URL is missing the search_path option "+
 				"(add options=-c search_path=%s,public to the DSN)",

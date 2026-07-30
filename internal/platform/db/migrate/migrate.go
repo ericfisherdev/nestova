@@ -198,6 +198,25 @@ func connect(ctx context.Context, dsn string, poolerSafe bool) (*sql.DB, error) 
 		_ = db.Close()
 		return nil, fmt.Errorf("create schema %s: %w", schema, err)
 	}
+	// Every migration's DDL is unqualified, so it lands wherever search_path
+	// resolves — the default "$user", public only reaches schema when the
+	// connecting role happens to share its name. Without this check, a DSN
+	// missing the search_path option would still write versionTable
+	// (recording every migration as applied) while scattering the actual
+	// tables into public, leaving a database no later Up can repair.
+	var current string
+	if err := db.QueryRowContext(ctx, "SELECT COALESCE(current_schema(), '')").Scan(&current); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("verify current schema: %w", err)
+	}
+	if current != schema {
+		_ = db.Close()
+		return nil, fmt.Errorf(
+			"current schema is %q, want %q: the migration DSN is missing the search_path option "+
+				"(add options=-c search_path=%s,public to MIGRATE_DATABASE_URL, or to DATABASE_URL when no override is set)",
+			current, schema, schema,
+		)
+	}
 	return db, nil
 }
 

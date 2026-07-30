@@ -201,6 +201,12 @@ func TestUpDownRoundTrip(t *testing.T) {
 		if !tableExists(t, dsn, table) {
 			t.Errorf("after Up, table %q does not exist", table)
 		}
+		// A schema-blind check would pass just as well if these tables landed
+		// in public instead of nestova — proving the negative is what actually
+		// establishes the schema-consolidation property this ticket exists for.
+		if tableExistsInSchema(t, dsn, "public", table) {
+			t.Errorf("after Up, table %q exists in public (want it only in nestova)", table)
+		}
 	}
 
 	if err := Reset(ctx, dsn); err != nil {
@@ -210,6 +216,52 @@ func TestUpDownRoundTrip(t *testing.T) {
 		if tableExists(t, dsn, table) {
 			t.Errorf("after Reset, table %q still exists", table)
 		}
+	}
+}
+
+// TestUp_FailsWhenSearchPathMissing is the migration-side counterpart of
+// db.New's boot guard (NSTR-118): a migration DSN whose search_path does not
+// resolve to schema must fail Up with a descriptive error, not silently
+// record every migration as applied while its DDL lands in public.
+func TestUp_FailsWhenSearchPathMissing(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+
+	if err := Reset(ctx, dsn); err != nil {
+		t.Fatalf("initial Reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := Reset(ctx, dsn); err != nil {
+			t.Logf("cleanup Reset failed: %v", err)
+		}
+	})
+
+	// Pin search_path to public explicitly rather than deleting the options
+	// parameter: with none at all Postgres falls back to "$user", public,
+	// and "$user" would resolve to schema whenever the connecting role
+	// happens to share its name — the same false-pass this guard exists to
+	// catch, so the test must not depend on it not occurring.
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	q := u.Query()
+	q.Set("options", "-csearch_path=public")
+	u.RawQuery = q.Encode()
+
+	if err := Up(ctx, u.String()); err == nil {
+		t.Fatal("Up() = nil error, want an error naming the missing search_path option")
+	} else if !strings.Contains(err.Error(), "search_path") {
+		t.Errorf("Up() error = %q, want it to mention search_path", err.Error())
+	}
+
+	// The rejection must happen before any migration SQL runs, not merely
+	// report an error while still scattering tables into public.
+	if tableExistsInSchema(t, dsn, "public", "household") {
+		t.Error("Up() rejected the DSN but still created household in public")
+	}
+	if tableExists(t, dsn, "household") {
+		t.Error("Up() rejected the DSN but still created household in nestova")
 	}
 }
 
@@ -441,7 +493,17 @@ func appliedVersion(t *testing.T, dsn string) int64 {
 	return v
 }
 
+// tableExists reports whether table exists in the nestova schema (NSTR-118).
 func tableExists(t *testing.T, dsn, table string) bool {
+	t.Helper()
+	return tableExistsInSchema(t, dsn, "nestova", table)
+}
+
+// tableExistsInSchema reports whether table exists in schema, so a test can
+// assert BOTH that migrated tables land in nestova AND that none of them
+// scatter into public (NSTR-118) — a schema-blind tableExists would pass
+// just as happily on a database with the tables in the wrong schema.
+func tableExistsInSchema(t *testing.T, dsn, schema, table string) bool {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -449,10 +511,9 @@ func tableExists(t *testing.T, dsn, table string) bool {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Migrated tables live in the nestova schema (NSTR-118), not public.
 	var name *string
-	if err := db.QueryRow(`SELECT to_regclass('nestova.' || $1)`, table).Scan(&name); err != nil {
-		t.Fatalf("query to_regclass(%q): %v", table, err)
+	if err := db.QueryRow(`SELECT to_regclass($1 || '.' || $2)`, schema, table).Scan(&name); err != nil {
+		t.Fatalf("query to_regclass(%q.%q): %v", schema, table, err)
 	}
 	return name != nil
 }
