@@ -1,7 +1,11 @@
 -- +goose Up
 -- Baseline foundation schema: household, member, and the cross-cutting
 -- notification outbox. gen_random_uuid() requires pgcrypto.
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Schema-qualified (not left to search_path resolution): NSTR-118 sets
+-- search_path to nestova,public, and CREATE SCHEMA IF NOT EXISTS nestova runs
+-- before this migration, so an unqualified CREATE EXTENSION would otherwise
+-- install into nestova instead of public.
+CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public;
 
 CREATE TABLE household (
     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),

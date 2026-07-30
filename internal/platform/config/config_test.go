@@ -40,7 +40,7 @@ const validEncryptionKey = "0101010101010101010101010101010101010101010101010101
 
 // devDSN mirrors the package default; declared here so black-box assertions do
 // not hard-code the literal in many places.
-const devDSN = "postgres://nestova:nestova@localhost:5432/nestova?sslmode=disable"
+const devDSN = "postgres://nestova:nestova@localhost:5432/nest?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic"
 
 // devSecret mirrors the package's dev default session secret.
 const devSecret = "dev-only-insecure-session-secret-change-me"

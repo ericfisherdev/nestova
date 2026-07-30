@@ -1,5 +1,11 @@
 # Local development services. Start with: docker compose up -d
 # The default DATABASE_URL in internal/platform/config matches this service.
+#
+# postgres is the dev SHARED database instance (NSTR-118): "nest" holds
+# Nestova's own nestova schema plus (once each lands) nestorage and identity,
+# mirroring the one-database/one-schema-per-app production layout. The
+# Nestorage consolidation ticket retires Nestorage's own separate compose
+# Postgres (127.0.0.1:5433) in favor of this one instance.
 services:
   postgres:
     image: postgres:17-alpine
@@ -9,7 +15,7 @@ services:
       # environment. Production must supply DATABASE_URL with real credentials.
       POSTGRES_USER: nestova
       POSTGRES_PASSWORD: nestova
-      POSTGRES_DB: nestova
+      POSTGRES_DB: nest
     ports:
       # Bind to loopback only — this dev service has fixed local credentials and
       # must not be reachable from other hosts on the network.
@@ -17,7 +23,7 @@ services:
     volumes:
       - nestova-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nestova -d nestova"]
+      test: ["CMD-SHELL", "pg_isready -U nestova -d nest"]
       interval: 5s
       timeout: 5s
       retries: 5

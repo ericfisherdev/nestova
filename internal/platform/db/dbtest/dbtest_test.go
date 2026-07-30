@@ -80,6 +80,22 @@ func TestDeriveDSN_PreservesEscapedPassword(t *testing.T) {
 	}
 }
 
+// TestDeriveDSN_PreservesSearchPathOption is the specific regression guard
+// NSTR-118 calls for: every gated package's derived DSN must carry the same
+// options=-c search_path=nestova,public parameter as NESTOVA_TEST_DATABASE_URL,
+// or db.New's boot guard rejects the connection for every derived database.
+func TestDeriveDSN_PreservesSearchPathOption(t *testing.T) {
+	base := "postgres://u:p@localhost:5432/nestova_test?sslmode=disable&options=-csearch_path%3Dnestova%2Cpublic"
+	dsn, _ := deriveDSN(t, base, "search_path_check")
+
+	if !strings.Contains(dsn, "options=-csearch_path%3Dnestova%2Cpublic") {
+		t.Errorf("derived DSN dropped the search_path option: %q", dsn)
+	}
+	if !strings.Contains(dsn, "/nestova_test_search_path_check?") {
+		t.Errorf("derived DSN missing the derived database name: %q", dsn)
+	}
+}
+
 func TestDeriveDSN_AcceptsBareTestDatabaseName(t *testing.T) {
 	dsn, name := deriveDSN(t, "postgres://u:p@localhost:5432/test?sslmode=disable", "authx")
 	if name != "test_authx" {

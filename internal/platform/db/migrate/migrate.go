@@ -27,16 +27,25 @@ const (
 	dialect = "postgres"
 	// dir is the migrations directory within the embedded filesystem.
 	dir = "migrations"
+	// schema is the dedicated Postgres schema Nestova's tables and goose's own
+	// bookkeeping live in, inside the "nest" database shared with Nestorage and
+	// the identity schema (NSTR-118). Mirrored as its own literal in
+	// internal/platform/db (the boot-guard check) rather than exported from
+	// here, since that package must not depend on the migration runner.
+	schema = "nestova"
+	// versionTable is goose's schema-qualified bookkeeping table name.
+	versionTable = schema + ".goose_db_version"
 )
 
-// goose's base FS and dialect are process-global, so configure them once. The
-// dialect is a compile-time constant, so SetDialect cannot fail in practice; a
-// failure here is a programming error.
+// goose's base FS, dialect, and version-table name are process-global, so
+// configure them once. The dialect is a compile-time constant, so SetDialect
+// cannot fail in practice; a failure here is a programming error.
 func init() {
 	goose.SetBaseFS(migrationsFS)
 	if err := goose.SetDialect(dialect); err != nil {
 		panic(fmt.Sprintf("migrate: invalid goose dialect %q: %v", dialect, err))
 	}
+	goose.SetTableName(versionTable)
 }
 
 // options configures how a migration command connects.
@@ -175,6 +184,13 @@ func connect(ctx context.Context, dsn string, poolerSafe bool) (*sql.DB, error) 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	// goose creates its version table on first contact and fails if the
+	// schema it lives in does not exist yet — ensure it before any goose
+	// command (including the very first Up) runs.
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create schema %s: %w", schema, err)
 	}
 	return db, nil
 }

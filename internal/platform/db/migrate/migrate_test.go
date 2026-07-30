@@ -449,8 +449,9 @@ func tableExists(t *testing.T, dsn, table string) bool {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Migrated tables live in the nestova schema (NSTR-118), not public.
 	var name *string
-	if err := db.QueryRow(`SELECT to_regclass('public.' || $1)`, table).Scan(&name); err != nil {
+	if err := db.QueryRow(`SELECT to_regclass('nestova.' || $1)`, table).Scan(&name); err != nil {
 		t.Fatalf("query to_regclass(%q): %v", table, err)
 	}
 	return name != nil
