@@ -97,7 +97,6 @@ GATED_TEST_PACKAGES := \
 	./cmd/storage/... \
 	./internal/auth/adapter/... \
 	./internal/calendar/adapter/... \
-	./internal/federation/adapter/... \
 	./internal/household/adapter/... \
 	./internal/kiosk/adapter/... \
 	./internal/meals/adapter/... \
