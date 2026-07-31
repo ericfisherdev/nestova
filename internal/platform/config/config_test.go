@@ -720,6 +720,24 @@ func TestLoadValid(t *testing.T) {
 				Peer:    config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"},
 			},
 		},
+		{
+			// Regression case: left untrimmed, a trailing slash would reach
+			// probe's "{baseURL}/healthz" concatenation as "//healthz" —
+			// see the TrimRight call site's own doc.
+			name: "PEER_NESTORAGE_URL is trimmed of a trailing slash",
+			env:  map[string]string{"PEER_NESTORAGE_URL": "https://nestorage.tailnet.ts.net/"},
+			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+				Peer:    config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -893,6 +911,11 @@ func TestLoadInvalid(t *testing.T) {
 		{
 			name:         "PEER_NESTORAGE_URL with a fragment is rejected",
 			env:          map[string]string{"PEER_NESTORAGE_URL": "https://nestorage.tailnet.ts.net#section"},
+			wantContains: []string{"PEER_NESTORAGE_URL", "origin only"},
+		},
+		{
+			name:         "PEER_NESTORAGE_URL with userinfo is rejected",
+			env:          map[string]string{"PEER_NESTORAGE_URL": "https://user:pass@nestorage.tailnet.ts.net"},
 			wantContains: []string{"PEER_NESTORAGE_URL", "origin only"},
 		},
 		{

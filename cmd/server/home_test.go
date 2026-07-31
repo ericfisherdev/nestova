@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -486,11 +487,37 @@ func TestShellPeer_ConfiguredAndUnreachable(t *testing.T) {
 // TestNewPeerProbe covers the extraction described in newPeerProbe's own
 // doc: it always returns a usable prober, even for an empty PeerConfig
 // (main.go's run() relies on that — see newPeerProbe's doc for why).
-func TestNewPeerProbe(t *testing.T) {
+// TestNewPeerProbe_ProbesTheConfiguredOrigin verifies the actual wiring
+// risk in a composition function like this one: NOT a nil check (NewProber
+// has no path that returns nil), but that peerCfg.NestorageURL genuinely
+// reaches the constructed Prober's baseURL — a swapped-for-"" argument
+// would compile and return non-nil while probing nothing forever.
+func TestNewPeerProbe_ProbesTheConfiguredOrigin(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			hits.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := newPeerProbe(config.PeerConfig{NestorageURL: srv.URL})
+	if !p.Reachable(context.Background()) {
+		t.Error("newPeerProbe(...).Reachable() = false, want true against a healthy peer")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("healthz hits = %d, want 1 (the configured origin should be the one probed)", got)
+	}
+}
+
+// TestNewPeerProbe_UnconfiguredStillReturnsUsableProber covers main.go's
+// own reliance on this: run() always constructs a Prober, even when
+// PEER_NESTORAGE_URL is unset, so its dependency stays non-nil like every
+// other one it wires — shellPeer's own empty-NestorageURL check is what
+// keeps that Prober from ever being consulted.
+func TestNewPeerProbe_UnconfiguredStillReturnsUsableProber(t *testing.T) {
 	if p := newPeerProbe(config.PeerConfig{}); p == nil {
 		t.Error("newPeerProbe(PeerConfig{}) = nil, want a non-nil Prober")
-	}
-	if p := newPeerProbe(config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"}); p == nil {
-		t.Error("newPeerProbe(...) = nil, want a non-nil Prober")
 	}
 }
