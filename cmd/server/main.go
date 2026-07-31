@@ -44,7 +44,6 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	"github.com/ericfisherdev/nestova/internal/platform/metrics"
-	"github.com/ericfisherdev/nestova/internal/platform/peer"
 	"github.com/ericfisherdev/nestova/internal/platform/totp"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	subscriptionsapp "github.com/ericfisherdev/nestova/internal/subscriptions/app"
@@ -896,14 +895,9 @@ func runServer(logger *slog.Logger) error {
 		cfg.Session.Secure, deepLinkSigner, cfg.Server.PublicBaseURL, nil,
 	)
 
-	// NSTR-124's cross-app nav: peerProbe is always constructed, even when
-	// PEER_NESTORAGE_URL is unset, so every registerXxxPages call below gets
-	// a non-nil dependency like every other one — dashboardShell's own
-	// shellPeer helper short-circuits on an empty cfg.Peer.NestorageURL
-	// before ever calling Reachable, so an unconfigured install issues no
-	// probe traffic despite the Prober existing (see that function's own
-	// doc).
-	peerProbe := peer.NewProber(&http.Client{}, cfg.Peer.NestorageURL, peer.DefaultProbeTimeout, peer.DefaultVerdictTTL)
+	// NSTR-124's cross-app nav: newPeerProbe (cmd/server/home.go) is a
+	// directly-tested extraction of this construction — see its own doc.
+	peerProbe := newPeerProbe(cfg.Peer)
 
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger: logger,

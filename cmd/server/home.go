@@ -19,6 +19,7 @@ import (
 	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
+	"github.com/ericfisherdev/nestova/internal/platform/peer"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
@@ -991,4 +992,15 @@ func shellPeer(ctx context.Context, peerCfg config.PeerConfig, peerProbe shellPe
 		URL:       peerCfg.NestorageURL,
 		Reachable: peerProbe.Reachable(ctx),
 	}
+}
+
+// newPeerProbe constructs the prober shellPeer consults, extracted out of
+// main.go's run() (whose own composition-root wiring this codebase does not
+// unit test — see run's own coverage) so the construction itself stays
+// directly testable. It is always called, even when PEER_NESTORAGE_URL is
+// unset, so run()'s dependency stays non-nil like every other one it wires;
+// shellPeer's own empty-NestorageURL check (above) is what keeps an
+// unconfigured install from ever calling Reachable on the result.
+func newPeerProbe(peerCfg config.PeerConfig) *peer.Prober {
+	return peer.NewProber(&http.Client{}, peerCfg.NestorageURL, peer.DefaultProbeTimeout, peer.DefaultVerdictTTL)
 }

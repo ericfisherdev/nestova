@@ -13,6 +13,7 @@ import (
 
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+	"github.com/ericfisherdev/nestova/web/components"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/alexedwards/scs/v2/memstore"
@@ -440,5 +441,56 @@ func TestPrimaryNavActive(t *testing.T) {
 		if item.Active {
 			t.Errorf("no item should be active for empty selection, got %q", item.Href)
 		}
+	}
+}
+
+// fakePeerChecker is a test double for shellPeerReachabilityChecker, so
+// shellPeer's own logic can be tested without a real network call.
+type fakePeerChecker struct {
+	reachable bool
+}
+
+func (f fakePeerChecker) Reachable(context.Context) bool {
+	return f.reachable
+}
+
+// TestShellPeer_NoPeerConfiguredReturnsNil covers NSTR-124's own AC: with no
+// PEER_NESTORAGE_URL set, the sidebar renders no cross-app control at all —
+// checked here by asserting peerProbe is never even consulted (a nil
+// peerProbe would panic if shellPeer touched it).
+func TestShellPeer_NoPeerConfiguredReturnsNil(t *testing.T) {
+	got := shellPeer(context.Background(), config.PeerConfig{}, nil)
+	if got != nil {
+		t.Errorf("shellPeer() = %+v, want nil when NestorageURL is unset", got)
+	}
+}
+
+func TestShellPeer_ConfiguredAndReachable(t *testing.T) {
+	cfg := config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"}
+	got := shellPeer(context.Background(), cfg, fakePeerChecker{reachable: true})
+	want := &components.PeerLink{Name: nestoragePeerName, URL: cfg.NestorageURL, Reachable: true}
+	if got == nil || *got != *want {
+		t.Errorf("shellPeer() = %+v, want %+v", got, want)
+	}
+}
+
+func TestShellPeer_ConfiguredAndUnreachable(t *testing.T) {
+	cfg := config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"}
+	got := shellPeer(context.Background(), cfg, fakePeerChecker{reachable: false})
+	want := &components.PeerLink{Name: nestoragePeerName, URL: cfg.NestorageURL, Reachable: false}
+	if got == nil || *got != *want {
+		t.Errorf("shellPeer() = %+v, want %+v", got, want)
+	}
+}
+
+// TestNewPeerProbe covers the extraction described in newPeerProbe's own
+// doc: it always returns a usable prober, even for an empty PeerConfig
+// (main.go's run() relies on that — see newPeerProbe's doc for why).
+func TestNewPeerProbe(t *testing.T) {
+	if p := newPeerProbe(config.PeerConfig{}); p == nil {
+		t.Error("newPeerProbe(PeerConfig{}) = nil, want a non-nil Prober")
+	}
+	if p := newPeerProbe(config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"}); p == nil {
+		t.Error("newPeerProbe(...) = nil, want a non-nil Prober")
 	}
 }
