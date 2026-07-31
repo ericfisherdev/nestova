@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,6 +18,7 @@ import (
 	mealsadapter "github.com/ericfisherdev/nestova/internal/meals/adapter"
 	mediaadapter "github.com/ericfisherdev/nestova/internal/media/adapter"
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
+	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/render"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
@@ -86,6 +88,8 @@ func registerWebRoutes(
 	groceryHandlers *trackingadapter.WebHandlers,
 	mealsHandlers *mealsadapter.WebHandlers,
 	calendarHandlers *calendaradapter.WebHandlers,
+	peerCfg config.PeerConfig,
+	peerProbe shellPeerReachabilityChecker,
 ) {
 	// Auth routes — public.
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
@@ -142,12 +146,12 @@ func registerWebRoutes(
 	// Add-member routes — RequireMember-gated.
 	mux.Handle("GET /members/new", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, _ := authadapter.CurrentMember(r.Context())
-		props, nav := dashboardShell(r, sm, member, households, logger, "")
+		props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 		onboardingHandlers.NewMemberPage(w, r, props, nav)
 	})))
 	mux.Handle("POST /members", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, _ := authadapter.CurrentMember(r.Context())
-		props, nav := dashboardShell(r, sm, member, households, logger, "")
+		props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 		onboardingHandlers.AddMember(w, r, props, nav)
 	})))
 
@@ -155,7 +159,7 @@ func registerWebRoutes(
 	// to /login?next=/ before the handler runs.
 	mux.Handle("GET /{$}", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, _ := authadapter.CurrentMember(r.Context())
-		props, nav := dashboardShell(r, sm, member, households, logger, "")
+		props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 		layout := func(c templ.Component) templ.Component {
 			return components.Layout(props, nav, c)
 		}
@@ -185,7 +189,7 @@ func registerWebRoutes(
 	mux.Handle("GET /tasks", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -194,7 +198,7 @@ func registerWebRoutes(
 	mux.Handle("GET /tasks/new", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -203,7 +207,7 @@ func registerWebRoutes(
 	mux.Handle("POST /tasks", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -230,7 +234,7 @@ func registerWebRoutes(
 	mux.Handle("GET /tasks/{id}/propose-trade", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -239,7 +243,7 @@ func registerWebRoutes(
 	mux.Handle("POST /trades", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks")
+				props, nav := dashboardShell(r, sm, member, households, logger, "/tasks", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -251,7 +255,7 @@ func registerWebRoutes(
 	mux.Handle("GET /trades/history", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "")
+				props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -264,7 +268,7 @@ func registerWebRoutes(
 	mux.Handle("GET /rewards", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref)
+				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -273,7 +277,7 @@ func registerWebRoutes(
 	mux.Handle("POST /rewards/{id}/redeem", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref)
+				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -295,7 +299,7 @@ func registerWebRoutes(
 	rewardAdminLayoutFn := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref)
+				props, nav := dashboardShell(r, sm, member, households, logger, rewardsNavHref, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -341,7 +345,7 @@ func registerWebRoutes(
 	mux.Handle("GET /groceries", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, groceriesNavHref)
+				props, nav := dashboardShell(r, sm, member, households, logger, groceriesNavHref, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -371,7 +375,7 @@ func registerWebRoutes(
 	mux.Handle("GET /meals", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, mealsNavHref)
+				props, nav := dashboardShell(r, sm, member, households, logger, mealsNavHref, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -380,7 +384,7 @@ func registerWebRoutes(
 	mux.Handle("POST /meals/finder", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		layoutFn := func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, mealsNavHref)
+				props, nav := dashboardShell(r, sm, member, households, logger, mealsNavHref, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -410,12 +414,14 @@ func registerCalendarSubscriptionPages(
 	households household.HouseholdRepository,
 	calendarView *calendaradapter.ViewHandlers,
 	subscriptionHandlers *subscriptionsadapter.WebHandlers,
+	peerCfg config.PeerConfig,
+	peerProbe shellPeerReachabilityChecker,
 ) {
 	requireMember := authadapter.RequireMember(sm)
 	layoutFor := func(r *http.Request, active string) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, active)
+				props, nav := dashboardShell(r, sm, member, households, logger, active, peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -445,12 +451,14 @@ func registerMediaPages(
 	sm *scs.SessionManager,
 	households household.HouseholdRepository,
 	mediaHandlers *mediaadapter.WebHandlers,
+	peerCfg config.PeerConfig,
+	peerProbe shellPeerReachabilityChecker,
 ) {
 	requireMember := authadapter.RequireMember(sm)
 	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "/photos")
+				props, nav := dashboardShell(r, sm, member, households, logger, "/photos", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -520,6 +528,8 @@ func registerSettingsPage(
 	webauthnHandlers *authadapter.WebAuthnWebHandlers,
 	webauthnService *authapp.WebAuthnService,
 	notifyHandlers *notifyadapter.NotifyWebHandlers,
+	peerCfg config.PeerConfig,
+	peerProbe shellPeerReachabilityChecker,
 ) {
 	const settingsPath = "/settings"
 	requireMember := authadapter.RequireMember(sm)
@@ -542,7 +552,7 @@ func registerSettingsPage(
 	layoutFor := func(r *http.Request) func(member *household.Member) func(templ.Component) templ.Component {
 		return func(member *household.Member) func(templ.Component) templ.Component {
 			return func(c templ.Component) templ.Component {
-				props, nav := dashboardShell(r, sm, member, households, logger, "")
+				props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 				return components.Layout(props, nav, c)
 			}
 		}
@@ -920,6 +930,13 @@ func registerDeepLinkPages(mux *http.ServeMux, sm *scs.SessionManager, deepLinkH
 // page. It loads the household member list from the database so the sidebar
 // Family section reflects real persisted members. On error it falls back to an
 // empty member list rather than failing the entire request.
+//
+// peerCfg/peerProbe back NSTR-124's own cross-app nav entry (see shellPeer's
+// own doc): peerCfg names the configured peer (empty NestorageURL means
+// none), peerProbe is the reachability check consulted ONLY when peerCfg
+// says a peer is actually configured — a nil peerProbe is therefore safe
+// whenever no test call site sets PEER_NESTORAGE_URL, since Reachable is
+// then never called on it.
 func dashboardShell(
 	r *http.Request,
 	sm *scs.SessionManager,
@@ -927,6 +944,8 @@ func dashboardShell(
 	households household.HouseholdRepository,
 	logger *slog.Logger,
 	activeNav string,
+	peerCfg config.PeerConfig,
+	peerProbe shellPeerReachabilityChecker,
 ) (components.ShellProps, []components.NavItem) {
 	var memberViews []components.MemberView
 	if currentMember != nil {
@@ -940,6 +959,36 @@ func dashboardShell(
 	props := components.ShellProps{
 		Members:   memberViews,
 		CSRFToken: authadapter.GetCSRFToken(r.Context(), sm),
+		Peer:      shellPeer(r.Context(), peerCfg, peerProbe),
 	}
 	return props, primaryNav(activeNav)
+}
+
+// shellPeerReachabilityChecker is the narrow port (ISP) dashboardShell
+// depends on to know whether the configured peer app (Nestorage) currently
+// answers its own /healthz, satisfied by *peer.Prober (a superset, via
+// Reachable) — kept as a local interface rather than importing peer.Prober
+// directly so dashboardShell depends on an abstraction, not that package's
+// concretion.
+type shellPeerReachabilityChecker interface {
+	Reachable(ctx context.Context) bool
+}
+
+// nestoragePeerName is the peer app's display name in the sidebar entry.
+const nestoragePeerName = "Nestorage"
+
+// shellPeer returns the sidebar's cross-app nav entry (NSTR-124), or nil
+// when no peer app is configured. The nil case is checked FIRST, before
+// touching peerProbe at all: an unconfigured install must issue zero probe
+// traffic (NSTR-124's own AC), not merely render nothing while still
+// probing in the background.
+func shellPeer(ctx context.Context, peerCfg config.PeerConfig, peerProbe shellPeerReachabilityChecker) *components.PeerLink {
+	if peerCfg.NestorageURL == "" {
+		return nil
+	}
+	return &components.PeerLink{
+		Name:      nestoragePeerName,
+		URL:       peerCfg.NestorageURL,
+		Reachable: peerProbe.Reachable(ctx),
+	}
 }
