@@ -124,3 +124,28 @@ func TestReachable_ReprobesAfterTTLExpires(t *testing.T) {
 		t.Errorf("healthz hits = %d, want exactly 2 (ttl expired between calls)", got)
 	}
 }
+
+// TestNewProber_NilClientPanics covers NewProber's own documented
+// requirement: a nil *http.Client is a construction-time programmer error,
+// caught immediately rather than surfacing as a nil-pointer panic on the
+// first Reachable call.
+func TestNewProber_NilClientPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("NewProber(nil, ...) did not panic, want a panic on a nil *http.Client")
+		}
+	}()
+	peer.NewProber(nil, "https://nestorage.tailnet.ts.net", time.Second, longTTL)
+}
+
+// TestReachable_MalformedBaseURLReturnsFalse covers probe's own
+// request-construction failure path: a baseURL that fails to parse into an
+// http.Request (e.g. an embedded control character) must report
+// unreachable rather than panicking or leaking that error to the caller.
+func TestReachable_MalformedBaseURLReturnsFalse(t *testing.T) {
+	p := peer.NewProber(http.DefaultClient, "http://nestorage.tailnet.ts.net/\x7f", time.Second, longTTL)
+
+	if p.Reachable(context.Background()) {
+		t.Error("Reachable() = true, want false for a baseURL that fails to build a request")
+	}
+}
