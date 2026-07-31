@@ -714,7 +714,11 @@ func Load() (Config, error) {
 
 	// PEER_NESTORAGE_URL (NSTR-124): the sibling Nestorage install's origin,
 	// consulted only when set (see PeerConfig.NestorageURL's own doc).
-	peerNestorageURL := strings.TrimSpace(os.Getenv("PEER_NESTORAGE_URL"))
+	// TrimRight of a trailing slash mirrors PUBLIC_BASE_URL's own trim
+	// above: left untrimmed, a trailing slash would survive into probe's
+	// "{baseURL}/healthz" concatenation as "//healthz", which only
+	// resolves today by accident of net/http.ServeMux's path cleaning.
+	peerNestorageURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PEER_NESTORAGE_URL")), "/")
 
 	// The dev DSN convenience default applies only in dev. test and prod
 	// require an explicit DATABASE_URL: an empty value is left empty so
@@ -1039,18 +1043,22 @@ func (c Config) validate() []error {
 	// probe's own {baseURL}/healthz base — a looser check than
 	// PUBLIC_BASE_URL's (path allowed, no user/query/fragment) since this
 	// value is never used as a WebAuthn origin, only navigated to and
-	// concatenated with "/healthz". u may be nil when err != nil, so the
-	// second case is only ever reached once the first has already ruled
-	// that out (a switch, not independent ifs, so u is never dereferenced
-	// unparsed) — the same shape PUBLIC_BASE_URL's check above already
-	// uses.
+	// concatenated with "/healthz". The path allowance is deliberate (a
+	// peer reachable only behind a path-stripping reverse proxy), unlike
+	// userinfo: a credential embedded here would render verbatim into the
+	// sidebar anchor's href on every authenticated page, so u.User is
+	// rejected the same way PUBLIC_BASE_URL's own check rejects it above.
+	// u may be nil when err != nil, so the second case is only ever
+	// reached once the first has already ruled that out (a switch, not
+	// independent ifs, so u is never dereferenced unparsed) — the same
+	// shape PUBLIC_BASE_URL's check above already uses.
 	if c.Peer.NestorageURL != "" {
 		u, err := url.Parse(c.Peer.NestorageURL)
 		switch {
 		case err != nil, u.Scheme != "http" && u.Scheme != "https", u.Host == "":
 			errs = append(errs, fmt.Errorf("PEER_NESTORAGE_URL must be an absolute http(s) URL, got %q", c.Peer.NestorageURL))
-		case u.RawQuery != "" || u.Fragment != "":
-			errs = append(errs, fmt.Errorf("PEER_NESTORAGE_URL must be an origin only (no query or fragment), got %q", c.Peer.NestorageURL))
+		case u.User != nil, u.RawQuery != "", u.Fragment != "":
+			errs = append(errs, fmt.Errorf("PEER_NESTORAGE_URL must be an origin only (no user, query, or fragment), got %q", c.Peer.NestorageURL))
 		}
 	}
 

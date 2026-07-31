@@ -96,6 +96,56 @@ func TestLayoutRendersShell(t *testing.T) {
 			t.Errorf("layout missing %q", want)
 		}
 	}
+
+	// NSTR-124's own AC: with props.Peer nil (no PEER_NESTORAGE_URL
+	// configured), the sidebar must render no cross-app control at all.
+	if strings.Contains(out, "Open Nestorage") || strings.Contains(out, "Not reachable right now") {
+		t.Errorf("layout with a nil Peer should render no cross-app entry, got %q", out)
+	}
+}
+
+// TestLayoutRendersReachablePeer covers NSTR-124's AC that a configured,
+// reachable peer renders as a plain full-page anchor to the configured
+// URL — asserted on the rendered HTML, not just the *PeerLink shellPeer
+// returns: a wrong field binding in the templ source would leave
+// shellPeer's own tests green while this stayed broken.
+func TestLayoutRendersReachablePeer(t *testing.T) {
+	props := components.ShellProps{
+		CSRFToken: "csrf-test-token",
+		Peer:      &components.PeerLink{Name: "Nestorage", URL: "https://nestorage.example", Reachable: true},
+	}
+	out := renderString(t, components.Layout(props, nil, templ.Raw(`<p id="body">hi</p>`)))
+
+	if !strings.Contains(out, `href="https://nestorage.example"`) {
+		t.Errorf("reachable peer entry missing its href: %q", out)
+	}
+	if !strings.Contains(out, "Nestorage") {
+		t.Errorf("reachable peer entry missing its name: %q", out)
+	}
+	if strings.Contains(out, "Not reachable right now") {
+		t.Errorf("reachable peer entry should not render the disabled status line: %q", out)
+	}
+}
+
+// TestLayoutRendersUnreachablePeer covers the complementary AC: the entry
+// stays visible but disabled — no link to the peer — with a plain status
+// line, rather than disappearing.
+func TestLayoutRendersUnreachablePeer(t *testing.T) {
+	props := components.ShellProps{
+		CSRFToken: "csrf-test-token",
+		Peer:      &components.PeerLink{Name: "Nestorage", URL: "https://nestorage.example", Reachable: false},
+	}
+	out := renderString(t, components.Layout(props, nil, templ.Raw(`<p id="body">hi</p>`)))
+
+	if strings.Contains(out, `href="https://nestorage.example"`) {
+		t.Errorf("unreachable peer entry must not link to the peer: %q", out)
+	}
+	if !strings.Contains(out, "Nestorage") {
+		t.Errorf("unreachable peer entry missing its name: %q", out)
+	}
+	if !strings.Contains(out, "Not reachable right now") {
+		t.Errorf("unreachable peer entry missing its status line: %q", out)
+	}
 }
 
 func TestDashboardRendersCards(t *testing.T) {

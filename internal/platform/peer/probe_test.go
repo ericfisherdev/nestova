@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,5 +148,72 @@ func TestReachable_MalformedBaseURLReturnsFalse(t *testing.T) {
 
 	if p.Reachable(context.Background()) {
 		t.Error("Reachable() = true, want false for a baseURL that fails to build a request")
+	}
+}
+
+// TestReachable_CanceledCallerContextDoesNotPoisonCache covers a real
+// regression: the verdict is process-wide cached state shared via
+// singleflight, so ONE caller's context being canceled mid-probe (a
+// browser navigating away, a kiosk tab closing) must not record
+// "unreachable" and serve that to every OTHER render for the rest of ttl.
+// probe's own context.WithoutCancel is what this asserts.
+func TestReachable_CanceledCallerContextDoesNotPoisonCache(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := peer.NewProber(srv.Client(), srv.URL, time.Second, longTTL)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if !p.Reachable(canceled) {
+		t.Fatal("Reachable(canceled) = false, want true — a canceled CALLER context must not fail the underlying probe")
+	}
+	if !p.Reachable(context.Background()) {
+		t.Error("Reachable() = false after a canceled-context call, want true (cache must not be poisoned by caller cancellation)")
+	}
+}
+
+// TestReachable_ConcurrentMissesCollapseIntoOneRequest covers
+// DefaultVerdictTTL's own documented guarantee: N sidebar renders landing
+// at the same instant (a cold start, or right after the previous ttl
+// window expired) must still issue at most one /healthz request between
+// them, via Prober's singleflight coalescing. The handler blocks until the
+// test itself has confirmed every concurrent caller has had a chance to
+// miss the cache and pile onto the single in-flight request, then releases
+// it — bounding the test to that one deterministic handshake rather than
+// probe's own real timeout.
+func TestReachable_ConcurrentMissesCollapseIntoOneRequest(t *testing.T) {
+	var hits atomic.Int32
+	entered := make(chan struct{})
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		close(entered)
+		<-block
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := peer.NewProber(srv.Client(), srv.URL, time.Second, longTTL)
+
+	const concurrency = 20
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for range concurrency {
+		go func() {
+			defer wg.Done()
+			p.Reachable(context.Background())
+		}()
+	}
+
+	<-entered    // the single in-flight request has started...
+	close(block) // ...now let it (and every coalesced waiter) complete.
+	wg.Wait()
+
+	if got := hits.Load(); got != 1 {
+		t.Errorf("healthz hits = %d, want exactly 1 (concurrent misses must coalesce)", got)
 	}
 }
