@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
@@ -168,7 +169,7 @@ func buildNotifySettingsTestHandler(t *testing.T, hhRepo *multiMemberHouseholdRe
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, notifyHandlers)
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, notifyHandlers, config.PeerConfig{}, nil)
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm, contacts, prefs

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
@@ -177,7 +178,7 @@ func buildWebAuthnSettingsTestHandler(t *testing.T) (http.Handler, *scs.SessionM
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("login mfa page"))
 	})
-	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, webauthnHandlers, webauthnService, newTestNotifyWebHandlers(hhRepo, sm, logger))
+	registerSettingsPage(mux, logger, sm, hhRepo, settingsHandlers, mfaHandlers, mfaService, webauthnHandlers, webauthnService, newTestNotifyWebHandlers(hhRepo, sm, logger), config.PeerConfig{}, nil)
 
 	handler := sm.LoadAndSave(authadapter.Authenticate(sm, hhRepo)(mux))
 	return handler, sm, webauthnRepo, hhRepo, mfaService

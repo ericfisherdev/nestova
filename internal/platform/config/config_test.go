@@ -33,6 +33,7 @@ var allKeys = []string{
 	"NOTIFY_EMAIL_ENABLED", "SES_FROM_ADDRESS", "SES_REGION",
 	"SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY",
 	"CACHE_DIR",
+	"PEER_NESTORAGE_URL",
 }
 
 // validEncryptionKey is a 64-char hex string (32 bytes) for prod test cases.
@@ -687,6 +688,38 @@ func TestLoadValid(t *testing.T) {
 				},
 			},
 		},
+		{
+			// NSTR-124: a fresh install needs zero configuration for this
+			// AC ("with no peer URL configured, neither app renders any
+			// cross-app control") — PeerConfig defaults empty with no error.
+			name: "PEER_NESTORAGE_URL unset defaults to no peer configured",
+			env:  map[string]string{},
+			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+			},
+		},
+		{
+			name: "PEER_NESTORAGE_URL valid origin is accepted",
+			env:  map[string]string{"PEER_NESTORAGE_URL": "https://nestorage.tailnet.ts.net"},
+			want: config.Config{
+				Cache:   config.CacheConfig{Dir: devCacheDir},
+				Env:     config.EnvDev,
+				Server:  config.ServerConfig{Addr: ":8080", RequestTimeout: 120 * time.Second},
+				DB:      config.DBConfig{DSN: devDSN, MaxConns: 0, ConnTimeout: 5 * time.Second, Provider: config.DBProviderPostgres, PoolMode: config.DBPoolModeSession},
+				Session: config.SessionConfig{Secret: devSecret, Secure: false, Lifetime: 12 * time.Hour},
+				Crypto:  config.CryptoConfig{EncryptionKey: devEncKey},
+				Media:   config.MediaConfig{Root: "./.localdata/media", MaxUploadBytes: 25 << 20, ChoreProofFreshnessWindow: 60 * time.Minute, Backend: config.MediaStorageBackendLocal, S3: config.S3Config{PresignTTL: 15 * time.Minute}},
+				SMS:     config.SMSConfig{RetryMaxAttempts: defaultSMSRetryMaxAttempts},
+				Peer:    config.PeerConfig{NestorageURL: "https://nestorage.tailnet.ts.net"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -836,6 +869,31 @@ func TestLoadInvalid(t *testing.T) {
 			name:         "PUBLIC_BASE_URL with a fragment is rejected",
 			env:          map[string]string{"PUBLIC_BASE_URL": "https://nestova.tailnet.ts.net#section"},
 			wantContains: []string{"PUBLIC_BASE_URL", "origin only"},
+		},
+		{
+			name:         "malformed PEER_NESTORAGE_URL",
+			env:          map[string]string{"PEER_NESTORAGE_URL": "://not-a-url"},
+			wantContains: []string{"PEER_NESTORAGE_URL", "absolute"},
+		},
+		{
+			name:         "relative PEER_NESTORAGE_URL is rejected",
+			env:          map[string]string{"PEER_NESTORAGE_URL": "/nestorage"},
+			wantContains: []string{"PEER_NESTORAGE_URL", "absolute"},
+		},
+		{
+			name:         "non-http(s) PEER_NESTORAGE_URL scheme is rejected",
+			env:          map[string]string{"PEER_NESTORAGE_URL": "ftp://nestorage.tailnet.ts.net"},
+			wantContains: []string{"PEER_NESTORAGE_URL", "absolute"},
+		},
+		{
+			name:         "PEER_NESTORAGE_URL with a query string is rejected",
+			env:          map[string]string{"PEER_NESTORAGE_URL": "https://nestorage.tailnet.ts.net?foo=bar"},
+			wantContains: []string{"PEER_NESTORAGE_URL", "origin only"},
+		},
+		{
+			name:         "PEER_NESTORAGE_URL with a fragment is rejected",
+			env:          map[string]string{"PEER_NESTORAGE_URL": "https://nestorage.tailnet.ts.net#section"},
+			wantContains: []string{"PEER_NESTORAGE_URL", "origin only"},
 		},
 		{
 			name:         "PUBLIC_BASE_URL with userinfo is rejected",

@@ -15,6 +15,22 @@ type ShellProps struct {
 	Members []MemberView
 	// CSRFToken authorizes the sidebar logout form.
 	CSRFToken string
+	// Peer is NSTR-124's cross-app nav entry (the sibling Nestorage
+	// install), or nil when PEER_NESTORAGE_URL is unset — a nil Peer
+	// renders nothing at all in the sidebar's bottom cluster, not a
+	// disabled entry.
+	Peer *PeerLink
+}
+
+// PeerLink is the sidebar's cross-app nav entry (NSTR-124): the sibling
+// app's display name, the full-page navigation target, and whether it
+// currently answers its own /healthz (cached — see
+// internal/platform/peer.Prober's own doc). Reachable false keeps the
+// entry rendered but disabled, never removes it.
+type PeerLink struct {
+	Name      string
+	URL       string
+	Reachable bool
 }
 
 // Layout renders the A · Hearth app shell — a fixed left sidebar plus the main
@@ -165,16 +181,58 @@ templ sidebar(props ShellProps, nav []NavItem) {
 				}
 			</div>
 		}
-		<form method="post" action="/logout" class="mt-auto">
-			<input type="hidden" name="csrf_token" value={ props.CSRFToken }/>
-			<button
-				type="submit"
-				class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-left font-medium text-ink-secondary transition-colors hover:bg-surface-warm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage"
-			>
-				Log out
-			</button>
-		</form>
+		<!-- mt-auto pins NSTR-124's cross-app entry and the logout form to the
+		     sidebar's bottom cluster together, regardless of how much the
+		     sections above grow, keeping both visually separated from
+		     primary nav. -->
+		<div class="mt-auto flex flex-col gap-2">
+			if props.Peer != nil {
+				@peerLink(*props.Peer)
+			}
+			<form method="post" action="/logout">
+				<input type="hidden" name="csrf_token" value={ props.CSRFToken }/>
+				<button
+					type="submit"
+					class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-left font-medium text-ink-secondary transition-colors hover:bg-surface-warm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage"
+				>
+					Log out
+				</button>
+			</form>
+		</div>
 	</aside>
+}
+
+// peerLink renders NSTR-124's cross-app nav entry: a plain full-page anchor
+// (no HTMX boost across origins, no scripted window opening — see the
+// ticket's own "plain full-page anchor" requirement) to the peer app's
+// configured origin, wearing a small chip in the PEER's own palette
+// (--color-peer-accent, declared in input.css) while everything else stays
+// native to this shell. Reachable false swaps the anchor for a disabled
+// <div> with a plain status line — the entry stays visible and recovers on
+// its own once the cached probe next succeeds, rather than disappearing.
+templ peerLink(p PeerLink) {
+	if p.Reachable {
+		<a
+			href={ templ.SafeURL(p.URL) }
+			class="flex items-center gap-2 rounded-control border border-sidebar-border bg-surface px-3 py-2 font-medium text-ink-secondary transition-colors hover:bg-surface-warm"
+		>
+			<span class="h-2 w-2 flex-none rounded-full bg-peer-accent" aria-hidden="true"></span>
+			<span class="flex-1">Open { p.Name }</span>
+			<span aria-hidden="true">&#8599;</span>
+		</a>
+	} else {
+		<div
+			class="flex flex-col gap-0.5 rounded-control border border-sidebar-border bg-surface px-3 py-2 text-ink-faint"
+			aria-disabled="true"
+		>
+			<div class="flex items-center gap-2">
+				<span class="h-2 w-2 flex-none rounded-full bg-peer-accent opacity-40" aria-hidden="true"></span>
+				<span class="flex-1 font-medium">{ p.Name }</span>
+				<span aria-hidden="true">&#8599;</span>
+			</div>
+			<span class="text-xs">Not reachable right now</span>
+		</div>
+	}
 }
 
 // miniMonth is a static placeholder calendar widget; it is wired to real data in

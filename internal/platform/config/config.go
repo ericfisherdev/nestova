@@ -89,8 +89,21 @@ type Config struct {
 	Cache   CacheConfig
 	TLS     TLSConfig
 	HSTS    HSTSConfig
+	// Peer configures the sidebar's cross-app nav control (NSTR-124) — the
+	// sibling Nestorage install, if any.
+	Peer PeerConfig
 	// Env is the deployment environment: one of EnvDev, EnvTest, EnvProd.
 	Env string
+}
+
+// PeerConfig configures the sidebar's cross-app nav control (NSTR-124): the
+// origin of the sibling app (Nestorage) it links to.
+type PeerConfig struct {
+	// NestorageURL is PEER_NESTORAGE_URL, optional. When unset, Nestorage is
+	// not installed on this appliance and no cross-app nav control renders
+	// at all (see components.PeerLink's own doc) — a bare "not configured"
+	// state, not an error.
+	NestorageURL string
 }
 
 // HSTSConfig configures the HTTP Strict-Transport-Security response header
@@ -699,6 +712,10 @@ func Load() (Config, error) {
 	// (".../go/..." would otherwise become ".../.../go/...").
 	publicBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "/")
 
+	// PEER_NESTORAGE_URL (NSTR-124): the sibling Nestorage install's origin,
+	// consulted only when set (see PeerConfig.NestorageURL's own doc).
+	peerNestorageURL := strings.TrimSpace(os.Getenv("PEER_NESTORAGE_URL"))
+
 	// The dev DSN convenience default applies only in dev. test and prod
 	// require an explicit DATABASE_URL: an empty value is left empty so
 	// validation rejects it, rather than silently connecting a non-dev run to
@@ -808,6 +825,9 @@ func Load() (Config, error) {
 			MaxAgeSet:         hstsMaxAgeSet,
 			IncludeSubdomains: hstsIncludeSubdomains,
 			Preload:           hstsPreload,
+		},
+		Peer: PeerConfig{
+			NestorageURL: peerNestorageURL,
 		},
 	}
 
@@ -1011,6 +1031,26 @@ func (c Config) validate() []error {
 			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an absolute http(s) URL, got %q", c.Server.PublicBaseURL))
 		case u.User != nil, u.Path != "", u.RawQuery != "", u.Fragment != "":
 			errs = append(errs, fmt.Errorf("PUBLIC_BASE_URL must be an origin only (scheme + host, no user/path/query/fragment), got %q", c.Server.PublicBaseURL))
+		}
+	}
+
+	// PEER_NESTORAGE_URL (NSTR-124): must be an absolute http(s) URL so it
+	// can be used directly as a full-page navigation target and as the
+	// probe's own {baseURL}/healthz base — a looser check than
+	// PUBLIC_BASE_URL's (path allowed, no user/query/fragment) since this
+	// value is never used as a WebAuthn origin, only navigated to and
+	// concatenated with "/healthz". u may be nil when err != nil, so the
+	// second case is only ever reached once the first has already ruled
+	// that out (a switch, not independent ifs, so u is never dereferenced
+	// unparsed) — the same shape PUBLIC_BASE_URL's check above already
+	// uses.
+	if c.Peer.NestorageURL != "" {
+		u, err := url.Parse(c.Peer.NestorageURL)
+		switch {
+		case err != nil, u.Scheme != "http" && u.Scheme != "https", u.Host == "":
+			errs = append(errs, fmt.Errorf("PEER_NESTORAGE_URL must be an absolute http(s) URL, got %q", c.Peer.NestorageURL))
+		case u.RawQuery != "" || u.Fragment != "":
+			errs = append(errs, fmt.Errorf("PEER_NESTORAGE_URL must be an origin only (no query or fragment), got %q", c.Peer.NestorageURL))
 		}
 	}
 

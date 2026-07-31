@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
@@ -437,7 +438,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, newTestNotifyWebHandlers(householdRepo, sm, logger))
+	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, newTestNotifyWebHandlers(householdRepo, sm, logger), config.PeerConfig{}, nil)
 	registerKioskPages(mux, kioskHandlers)
 
 	handler := sm.LoadAndSave(
