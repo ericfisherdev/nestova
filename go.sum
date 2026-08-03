@@ -126,8 +126,8 @@ github.com/elazarl/goproxy v1.7.2 h1:Y2o6urb7Eule09PjlhQRGNsqRfPmYI3KKQLFpCAV3+o
 github.com/elazarl/goproxy v1.7.2/go.mod h1:82vkLNir0ALaW14Rc399OTTjyNREgmdL2cVoIbS6XaE=
 github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
 github.com/emirpasic/gods v1.18.1/go.mod h1:8tpGGwCnJ5H4r6BWwaV6OrWmMoPhUl5jm/FMNAnJvWQ=
-github.com/ericfisherdev/nestcore v0.2.1-0.20260803025615-6533cbebbc36 h1:0Quf0zq5dnhC9nFqgrASaDf79v1D+T6JitIIxmbkOqo=
-github.com/ericfisherdev/nestcore v0.2.1-0.20260803025615-6533cbebbc36/go.mod h1:n74FUQe8UQZZMvRACJY3G0QVrWoD4niWwv9iRSDlvg4=
+github.com/ericfisherdev/nestcore v0.2.1-0.20260803130738-f3c6a840c1e7 h1:FDdj3OUkyVnj7F0ZNMQ0rrcl3ZMRVe2E8pQ9uE8zN80=
+github.com/ericfisherdev/nestcore v0.2.1-0.20260803130738-f3c6a840c1e7/go.mod h1:n74FUQe8UQZZMvRACJY3G0QVrWoD4niWwv9iRSDlvg4=
 github.com/evilmartians/lefthook v1.13.6 h1:uzuFWpgmqCUg3FoLz0CBkiOHUS/vU3nhB92zReyR09U=
 github.com/evilmartians/lefthook v1.13.6/go.mod h1:rZdqvPtTVFe+3syrRiY10tG3L6O5+4dz9ZuAMQ5JYn0=
 github.com/fatih/color v1.18.0 h1:S8gINlzdQ840/4pfAwic/ZE0djQEH3wM94VfqLTZcOM=
