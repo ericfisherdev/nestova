@@ -86,11 +86,23 @@ func Up(ctx context.Context, dsn string, opts ...Option) error {
 	return run(ctx, "up", dsn, opts...)
 }
 
-// identityUp applies nestcore's identity-schema migrations, translating
-// this package's own Option (poolerSafe) into nestcore's db/migrate
-// equivalent so a Supabase transaction-pooler DSN is handled identically
-// for both schemas.
+// identityUp applies nestcore's identity-schema migrations.
 func identityUp(ctx context.Context, dsn string, opts ...Option) error {
+	runner, err := identitymigrate.New()
+	if err != nil {
+		return fmt.Errorf("build identity migration runner: %w", err)
+	}
+	if err := runner.Up(ctx, dsn, coreOptions(opts...)...); err != nil {
+		return fmt.Errorf("apply identity schema migrations: %w", err)
+	}
+	return nil
+}
+
+// coreOptions translates this package's own Option (poolerSafe) into
+// nestcore's db/migrate equivalent, shared by identityUp and identityReset
+// so a Supabase transaction-pooler DSN is handled identically for both
+// schemas and any future Option is translated in exactly one place.
+func coreOptions(opts ...Option) []coredbmigrate.Option {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -99,15 +111,7 @@ func identityUp(ctx context.Context, dsn string, opts ...Option) error {
 	if o.poolerSafe {
 		coreOpts = append(coreOpts, coredbmigrate.PoolerSafe())
 	}
-
-	runner, err := identitymigrate.New()
-	if err != nil {
-		return fmt.Errorf("build identity migration runner: %w", err)
-	}
-	if err := runner.Up(ctx, dsn, coreOpts...); err != nil {
-		return fmt.Errorf("apply identity schema migrations: %w", err)
-	}
-	return nil
+	return coreOpts
 }
 
 // Down rolls back the most recently applied migration.
@@ -145,23 +149,13 @@ func Reset(ctx context.Context, dsn string, opts ...Option) error {
 	return identityReset(ctx, dsn, opts...)
 }
 
-// identityReset rolls back nestcore's identity-schema migrations, mirroring
-// identityUp's Option translation.
+// identityReset rolls back nestcore's identity-schema migrations.
 func identityReset(ctx context.Context, dsn string, opts ...Option) error {
-	var o options
-	for _, opt := range opts {
-		opt(&o)
-	}
-	var coreOpts []coredbmigrate.Option
-	if o.poolerSafe {
-		coreOpts = append(coreOpts, coredbmigrate.PoolerSafe())
-	}
-
 	runner, err := identitymigrate.New()
 	if err != nil {
 		return fmt.Errorf("build identity migration runner: %w", err)
 	}
-	if err := runner.Reset(ctx, dsn, coreOpts...); err != nil {
+	if err := runner.Reset(ctx, dsn, coreOptions(opts...)...); err != nil {
 		return fmt.Errorf("reset identity schema migrations: %w", err)
 	}
 	return nil

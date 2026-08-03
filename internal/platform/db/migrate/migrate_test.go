@@ -226,6 +226,15 @@ func TestUpDownRoundTrip(t *testing.T) {
 	if tableExists(t, dsn, "notification") {
 		t.Error("after Reset, table \"notification\" still exists")
 	}
+	// Reset tears down identity too (see its own doc comment): the gated
+	// suite reuses one physical database per package across every test
+	// function, so leftover identity.household/identity.member rows would
+	// otherwise leak from one test into the next.
+	for _, table := range []string{"household", "member"} {
+		if tableExistsInSchema(t, dsn, "identity", table) {
+			t.Errorf("after Reset, identity.%s still exists", table)
+		}
+	}
 }
 
 // TestUp_FailsWhenSearchPathMissing is the migration-side counterpart of

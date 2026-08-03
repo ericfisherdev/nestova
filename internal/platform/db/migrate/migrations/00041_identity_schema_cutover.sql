@@ -12,8 +12,6 @@
 -- live, so local dev databases are disposable — reset and recreate local
 -- dev accounts after this cutover via onboarding, documented in
 -- docs/deployment.md.
---
--- +goose StatementBegin
 
 -- nestova.member_profile: color_key is presentation, not identity — the
 -- 5-member Hearth palette is Nestova's own design system (Nestorage has a
@@ -78,6 +76,7 @@ CREATE TABLE notification_quiet_hours (
 -- and member_credential are excluded: both are dropped a few statements
 -- below, so repointing their own household_id/member FKs here first would
 -- be pure churn.
+-- +goose StatementBegin
 DO $$
 DECLARE
     fk RECORD;
@@ -143,7 +142,6 @@ BEGIN
         );
     END LOOP;
 END $$;
-
 -- +goose StatementEnd
 
 -- Drop in dependency order: recovery codes reference member_mfa; both
@@ -158,7 +156,6 @@ DROP TABLE IF EXISTS member;
 DROP TABLE IF EXISTS household;
 
 -- +goose Down
--- +goose StatementBegin
 
 CREATE TABLE household (
     id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -248,6 +245,7 @@ CREATE INDEX sessions_expiry_idx ON sessions (expiry);
 -- identity.household/identity.member — those belong to nestcore, not
 -- nestova, and must never be touched by this migration in either
 -- direction.
+-- +goose StatementBegin
 DO $$
 DECLARE
     fk RECORD;
@@ -324,7 +322,6 @@ BEGIN
         );
     END LOOP;
 END $$;
-
 -- +goose StatementEnd
 
 DROP TABLE IF EXISTS notification_quiet_hours;
