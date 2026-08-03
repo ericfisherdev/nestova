@@ -179,6 +179,15 @@ func (r *PostgresRepository) getMemberRow(ctx context.Context, id domain.MemberI
 // since provisioning only ever happens once per member in this app's
 // lifetime and this codebase has no existing per-request cache to hang that
 // off of.
+//
+// The used-colors read and the insert run inside a transaction holding the
+// SAME household-scoped advisory lock AddMember's sibling guards use
+// (identity/adapter's memberTxBeginner doc, nestcore, documents why the lock
+// must be its own statement strictly before the guarded read): without it,
+// two members in the same household provisioned concurrently could both read
+// the same "unused" color set and both assign the household's Nth color,
+// since member_profile has no per-household color-uniqueness constraint to
+// catch that at the database level.
 func (r *PostgresRepository) EnsureMemberProfile(ctx context.Context, id domain.MemberID) (*domain.Member, error) {
 	m, hadProfile, err := r.getMemberRow(ctx, id)
 	if err != nil {
@@ -188,45 +197,60 @@ func (r *PostgresRepository) EnsureMemberProfile(ctx context.Context, id domain.
 		return m, nil
 	}
 
+	beginner, ok := r.dbtx.(memberTxBeginner)
+	if !ok {
+		return nil, errors.New("ensure member profile: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ensure member profile: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, m.HouseholdID.String()); err != nil {
+		return nil, fmt.Errorf("ensure member profile: lock household: %w", err)
+	}
+
 	const usedColorsQ = `
 		SELECT p.color_key
 		  FROM member_profile p
 		  JOIN identity.member hm ON hm.id = p.member_id
 		 WHERE hm.household_id = $1`
-	rows, err := r.dbtx.Query(ctx, usedColorsQ, m.HouseholdID.String())
+	rows, err := tx.Query(ctx, usedColorsQ, m.HouseholdID.String())
 	if err != nil {
 		return nil, fmt.Errorf("ensure member profile: used colors: %w", err)
 	}
+	defer rows.Close()
 	used := make([]domain.MemberColor, 0)
 	for rows.Next() {
 		var colorStr string
 		if err := rows.Scan(&colorStr); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("ensure member profile: scan color: %w", err)
 		}
 		color, err := domain.ParseMemberColor(colorStr)
 		if err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("ensure member profile: parse color: %w", err)
 		}
 		used = append(used, color)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, fmt.Errorf("ensure member profile: used colors: %w", err)
 	}
-	rows.Close()
 
 	const insertProfile = `
 		INSERT INTO member_profile (member_id, color_key) VALUES ($1, $2)
 		ON CONFLICT (member_id) DO NOTHING`
-	if _, err := r.dbtx.Exec(ctx, insertProfile, m.ID.String(), domain.NextColor(used).String()); err != nil {
+	if _, err := tx.Exec(ctx, insertProfile, m.ID.String(), domain.NextColor(used).String()); err != nil {
 		return nil, fmt.Errorf("ensure member profile: insert: %w", err)
 	}
 
-	// Re-fetch rather than trust this call's own NextColor: a concurrent
-	// request racing the same missing-profile member may have inserted
-	// first, and ON CONFLICT DO NOTHING keeps whichever row landed first.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("ensure member profile: commit: %w", err)
+	}
+
+	// Re-fetch outside the transaction: the advisory lock already
+	// serialized the used-colors read and insert against other members of
+	// this household, so the committed row's color is final by this point.
 	m, _, err = r.getMemberRow(ctx, id)
 	if err != nil {
 		return nil, err
