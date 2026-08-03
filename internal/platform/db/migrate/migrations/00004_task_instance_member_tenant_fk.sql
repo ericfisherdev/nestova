@@ -18,10 +18,16 @@ ALTER TABLE task_instance
         REFERENCES member (household_id, id) ON DELETE SET NULL (completed_by);
 
 -- +goose Down
+-- NOT VALID (NSTR-115): a full Reset rolls back 00041's identity-schema
+-- cutover before reaching this migration, which recreates `member` as a
+-- brand-new EMPTY table — a fully-validated ADD CONSTRAINT here would
+-- reject every pre-existing task_instance row against that empty table.
+-- Down is a dev/test rollback convenience, never a preserved-data path;
+-- new writes are still constrained normally.
 ALTER TABLE task_instance
     DROP CONSTRAINT task_instance_assignee_fk,
     DROP CONSTRAINT task_instance_completed_by_fk,
     ADD CONSTRAINT task_instance_assignee_id_fkey
-        FOREIGN KEY (assignee_id) REFERENCES member (id) ON DELETE SET NULL,
+        FOREIGN KEY (assignee_id) REFERENCES member (id) ON DELETE SET NULL NOT VALID,
     ADD CONSTRAINT task_instance_completed_by_fkey
-        FOREIGN KEY (completed_by) REFERENCES member (id) ON DELETE SET NULL;
+        FOREIGN KEY (completed_by) REFERENCES member (id) ON DELETE SET NULL NOT VALID;

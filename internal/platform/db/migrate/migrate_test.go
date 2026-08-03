@@ -197,7 +197,7 @@ func TestUpDownRoundTrip(t *testing.T) {
 	if err := Up(ctx, dsn); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	for _, table := range []string{"household", "member", "notification"} {
+	for _, table := range []string{"notification"} {
 		if !tableExists(t, dsn, table) {
 			t.Errorf("after Up, table %q does not exist", table)
 		}
@@ -208,14 +208,23 @@ func TestUpDownRoundTrip(t *testing.T) {
 			t.Errorf("after Up, table %q exists in public (want it only in nestova)", table)
 		}
 	}
+	// NSTR-115: household and member no longer live in nestova at all — the
+	// full cutover (00041) drops them here in favor of the shared identity
+	// schema, which Up() ensures is migrated first (identityUp).
+	for _, table := range []string{"household", "member"} {
+		if tableExists(t, dsn, table) {
+			t.Errorf("after Up, table %q still exists in nestova (want it dropped in favor of identity.%s)", table, table)
+		}
+		if !tableExistsInSchema(t, dsn, "identity", table) {
+			t.Errorf("after Up, identity.%s does not exist", table)
+		}
+	}
 
 	if err := Reset(ctx, dsn); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
-	for _, table := range []string{"household", "member", "notification"} {
-		if tableExists(t, dsn, table) {
-			t.Errorf("after Reset, table %q still exists", table)
-		}
+	if tableExists(t, dsn, "notification") {
+		t.Error("after Reset, table \"notification\" still exists")
 	}
 }
 

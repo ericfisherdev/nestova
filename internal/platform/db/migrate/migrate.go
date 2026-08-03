@@ -18,6 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver + OpenDB
 	"github.com/pressly/goose/v3"
+
+	coredbmigrate "github.com/ericfisherdev/nestcore/db/migrate"
+	identitymigrate "github.com/ericfisherdev/nestcore/identity/migrate"
 )
 
 //go:embed migrations/*.sql
@@ -68,8 +71,44 @@ type Option func(*options)
 // pointing the DSN at a direct/session connection over enabling this.
 func PoolerSafe() Option { return func(o *options) { o.poolerSafe = true } }
 
-// Up applies all pending migrations.
-func Up(ctx context.Context, dsn string, opts ...Option) error { return run(ctx, "up", dsn, opts...) }
+// Up applies all pending migrations. It first ensures nestcore's identity
+// schema (identity.household, identity.member, and the rest of the tables
+// NSTR-115's cutover repoints Nestova's own FKs onto) is migrated against
+// the same database — a prerequisite this schema's own migration
+// (00041_identity_schema_cutover.sql) depends on — since two independently
+// versioned binaries share the identity schema and nestcore's own
+// migration is additive-only and safe to apply repeatedly (goose no-ops
+// once it is already current).
+func Up(ctx context.Context, dsn string, opts ...Option) error {
+	if err := identityUp(ctx, dsn, opts...); err != nil {
+		return err
+	}
+	return run(ctx, "up", dsn, opts...)
+}
+
+// identityUp applies nestcore's identity-schema migrations, translating
+// this package's own Option (poolerSafe) into nestcore's db/migrate
+// equivalent so a Supabase transaction-pooler DSN is handled identically
+// for both schemas.
+func identityUp(ctx context.Context, dsn string, opts ...Option) error {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	var coreOpts []coredbmigrate.Option
+	if o.poolerSafe {
+		coreOpts = append(coreOpts, coredbmigrate.PoolerSafe())
+	}
+
+	runner, err := identitymigrate.New()
+	if err != nil {
+		return fmt.Errorf("build identity migration runner: %w", err)
+	}
+	if err := runner.Up(ctx, dsn, coreOpts...); err != nil {
+		return fmt.Errorf("apply identity schema migrations: %w", err)
+	}
+	return nil
+}
 
 // Down rolls back the most recently applied migration.
 func Down(ctx context.Context, dsn string, opts ...Option) error {
@@ -81,9 +120,51 @@ func Status(ctx context.Context, dsn string, opts ...Option) error {
 	return run(ctx, "status", dsn, opts...)
 }
 
-// Reset rolls back every applied migration. Intended for tests and local resets.
+// Reset rolls back every applied migration, INCLUDING nestcore's identity
+// schema — necessary for the gated test suite's isolation contract
+// (dbtest.NewIsolatedPool): every gated adapter test package derives one
+// shared physical database reused across every test function in that
+// package, resetting between them. identity.household/identity.member
+// (NSTR-115) are exactly as much test-seeded data as any of nestova's own
+// tables now, so a Reset that left them untouched would leak rows from one
+// test into the next. Nestova's own reset runs FIRST: 00041's Down needs
+// identity.household/identity.member to still exist while it repoints
+// FKs back onto the freshly recreated local tables, so identity cannot be
+// torn down before that runs.
+//
+// This mirrors Up's identityUp pairing and carries the same production
+// caveat: Reset is a dev/test-only operation (never called from a running
+// server, and cmd/migrate's own "reset" is a manual operator action) —
+// resetting the schema Nestorage may also depend on is an accepted
+// tradeoff for local, disposable dev databases per NSTR-115's decision
+// record, not something that ever touches a live deployment.
 func Reset(ctx context.Context, dsn string, opts ...Option) error {
-	return run(ctx, "reset", dsn, opts...)
+	if err := run(ctx, "reset", dsn, opts...); err != nil {
+		return err
+	}
+	return identityReset(ctx, dsn, opts...)
+}
+
+// identityReset rolls back nestcore's identity-schema migrations, mirroring
+// identityUp's Option translation.
+func identityReset(ctx context.Context, dsn string, opts ...Option) error {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	var coreOpts []coredbmigrate.Option
+	if o.poolerSafe {
+		coreOpts = append(coreOpts, coredbmigrate.PoolerSafe())
+	}
+
+	runner, err := identitymigrate.New()
+	if err != nil {
+		return fmt.Errorf("build identity migration runner: %w", err)
+	}
+	if err := runner.Reset(ctx, dsn, coreOpts...); err != nil {
+		return fmt.Errorf("reset identity schema migrations: %w", err)
+	}
+	return nil
 }
 
 // UpTo applies migrations up to and including the given goose version — the
