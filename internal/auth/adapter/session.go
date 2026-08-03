@@ -9,14 +9,11 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/alexedwards/scs/pgxstore"
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 )
 
@@ -46,25 +43,11 @@ type sessionContextKey int
 // currentMemberKey stores the authenticated Member in the request context.
 const currentMemberKey sessionContextKey = iota
 
-// NewSessionManager constructs an scs.SessionManager backed by Postgres using
-// the pgxpool shared with the rest of the application. Cookie settings are
-// derived from cfg: Secure follows the resolved SESSION_COOKIE_SECURE policy
-// (auto → prod-only, or forced true/false), Lifetime from SESSION_LIFETIME.
-func NewSessionManager(pool *pgxpool.Pool, cfg config.SessionConfig) *scs.SessionManager {
-	sm := scs.New()
-	sm.Store = pgxstore.New(pool)
-	sm.Lifetime = cfg.Lifetime
-	// Expire idle sessions at half the absolute lifetime: active users are kept
-	// signed in (each request refreshes idle time) while abandoned sessions are
-	// reclaimed well before the hard Lifetime cap.
-	sm.IdleTimeout = cfg.Lifetime / 2
-	sm.Cookie.HttpOnly = true
-	sm.Cookie.SameSite = http.SameSiteLaxMode
-	sm.Cookie.Secure = cfg.Secure
-	sm.Cookie.Path = "/"
-	sm.Cookie.Persist = true
-	return sm
-}
+// The session manager itself is now constructed via nestcore's
+// identity/session.NewManager (NSTR-115, cmd/server/main.go) rather than a
+// Nestova-owned constructor: real cross-app SSO needs the literal shared
+// session store, cookie name, and identity.sessions table both apps write
+// to, not merely an equivalent one built independently in each app.
 
 // lookupMember resolves the session's member_id to a Member. When the id is
 // malformed or the member no longer exists, the stale session key is removed so

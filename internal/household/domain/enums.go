@@ -1,46 +1,30 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
 
-// Role is a member's role within a household. Stored as text, validated here.
-type Role string
-
-// Member roles.
-const (
-	RoleOwner Role = "owner"
-	RoleAdult Role = "adult"
-	RoleChild Role = "child"
+	identity "github.com/ericfisherdev/nestcore/identity/domain"
 )
 
-// Valid reports whether r is a known role.
-func (r Role) Valid() bool {
-	switch r {
-	case RoleOwner, RoleAdult, RoleChild:
-		return true
-	default:
-		return false
-	}
-}
+// Role is an alias for nestcore's shared identity Role (NSTR-115): the
+// unified owner/adult/child vocabulary now lives on identity.member,
+// shared by both apps — see identity.Role's own doc. Aliasing (rather than
+// redeclaring) means Role's method set — Valid, String, and
+// CanAdminister (the owner-or-adult parent-privilege check that replaces
+// this package's former IsParent) — comes directly from identity.Role with
+// no risk of the two vocabularies drifting apart.
+type Role = identity.Role
 
-// IsParent reports whether r carries household-parent privileges (owner or
-// adult) — the role gate shared by chore-trade history (NES-122), reward
-// admin (NES-126), and redemption fulfillment (NES-127) across every bounded
-// context that needs to distinguish a parent from a child member.
-func (r Role) IsParent() bool {
-	return r == RoleOwner || r == RoleAdult
-}
-
-// String returns the role's stored value.
-func (r Role) String() string { return string(r) }
+// Member roles, re-exported so existing household.RoleOwner/RoleAdult/
+// RoleChild call sites across the codebase keep compiling unchanged.
+const (
+	RoleOwner = identity.RoleOwner
+	RoleAdult = identity.RoleAdult
+	RoleChild = identity.RoleChild
+)
 
 // ParseRole validates and returns a Role, or an error for an unknown value.
-func ParseRole(s string) (Role, error) {
-	r := Role(s)
-	if !r.Valid() {
-		return "", fmt.Errorf("invalid role %q", s)
-	}
-	return r, nil
-}
+func ParseRole(s string) (Role, error) { return identity.ParseRole(s) }
 
 // MemberColor is one of the five A · Hearth palette keys. The value matches the
 // Tailwind member-color token infix (see web/static/css/input.css), so a member

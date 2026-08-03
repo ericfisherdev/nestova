@@ -273,7 +273,7 @@ func (s *RewardService) notifyParentsOfRedemption(
 
 	redemptionUUID := uuid.UUID(redemptionID)
 	for _, m := range members {
-		if !m.Role.IsParent() {
+		if !m.Role.CanAdminister() {
 			continue
 		}
 		parentID := m.ID

@@ -54,7 +54,7 @@ func NewCredentialRepository(dbtx db.TX) *CredentialRepository {
 func (r *CredentialRepository) FindByEmail(ctx context.Context, email string) (*authdomain.Credential, error) {
 	const q = `
 		SELECT id, password_hash
-		  FROM member
+		  FROM identity.member
 		 WHERE email = $1
 		   AND password_hash IS NOT NULL`
 
@@ -86,7 +86,7 @@ func (r *CredentialRepository) FindByEmail(ctx context.Context, email string) (*
 func (r *CredentialRepository) FindByMemberID(ctx context.Context, memberID household.MemberID) (*authdomain.Credential, error) {
 	const q = `
 		SELECT password_hash
-		  FROM member
+		  FROM identity.member
 		 WHERE id = $1
 		   AND password_hash IS NOT NULL`
 
@@ -110,7 +110,7 @@ func (r *CredentialRepository) FindByMemberID(ctx context.Context, memberID hous
 // "already in use" message before attempting a write; the unique constraint
 // remains the authoritative guard against the residual race.
 func (r *CredentialRepository) EmailExists(ctx context.Context, email string) (bool, error) {
-	const q = `SELECT EXISTS(SELECT 1 FROM member WHERE email = $1)`
+	const q = `SELECT EXISTS(SELECT 1 FROM identity.member WHERE email = $1)`
 	var exists bool
 	if err := r.dbtx.QueryRow(ctx, q, email).Scan(&exists); err != nil {
 		return false, fmt.Errorf("email exists: %w", err)
@@ -129,7 +129,7 @@ func (r *CredentialRepository) EmailExists(ctx context.Context, email string) (b
 // together, per 00002_auth's own CHECK, so "no email" and "no
 // credentials" are the same state).
 func (r *CredentialRepository) ResolveEmail(ctx context.Context, memberID household.MemberID) (string, error) {
-	const q = `SELECT email FROM member WHERE id = $1 AND email IS NOT NULL`
+	const q = `SELECT email FROM identity.member WHERE id = $1 AND email IS NOT NULL`
 	var email string
 	if err := r.dbtx.QueryRow(ctx, q, memberID.String()).Scan(&email); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,7 +146,7 @@ func (r *CredentialRepository) ResolveEmail(ctx context.Context, memberID househ
 // already assigned to another member.
 func (r *CredentialRepository) SetPassword(ctx context.Context, memberID household.MemberID, email, passwordHash string) error {
 	const q = `
-		UPDATE member
+		UPDATE identity.member
 		   SET email         = $2,
 		       password_hash = $3,
 		       updated_at    = now()
