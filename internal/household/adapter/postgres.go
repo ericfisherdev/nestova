@@ -147,18 +147,89 @@ func (r *PostgresRepository) AddMember(ctx context.Context, m *domain.Member) er
 
 // GetMember returns the member, or domain.ErrMemberNotFound.
 func (r *PostgresRepository) GetMember(ctx context.Context, id domain.MemberID) (*domain.Member, error) {
+	m, _, err := r.getMemberRow(ctx, id)
+	return m, err
+}
+
+// getMemberRow is GetMember's shared implementation, additionally reporting
+// whether a member_profile row already existed — EnsureMemberProfile needs
+// that signal to decide whether provisioning is necessary; GetMember itself
+// discards it.
+func (r *PostgresRepository) getMemberRow(ctx context.Context, id domain.MemberID) (*domain.Member, bool, error) {
 	const q = `
 		SELECT m.id, m.household_id, m.display_name, m.role,
-		       COALESCE(p.color_key, $2)
+		       COALESCE(p.color_key, $2), p.color_key IS NOT NULL
 		  FROM identity.member m
 		  LEFT JOIN member_profile p ON p.member_id = m.id
 		 WHERE m.id = $1`
-	m, err := scanMember(r.dbtx.QueryRow(ctx, q, id.String(), string(defaultMemberColor)))
+	m, hadProfile, err := scanMemberRow(r.dbtx.QueryRow(ctx, q, id.String(), string(defaultMemberColor)))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrMemberNotFound
+			return nil, false, domain.ErrMemberNotFound
 		}
-		return nil, fmt.Errorf("get member: %w", err)
+		return nil, false, fmt.Errorf("get member: %w", err)
+	}
+	return m, hadProfile, nil
+}
+
+// EnsureMemberProfile implements domain.HouseholdRepository.EnsureMemberProfile.
+// It is idempotent: a member with an existing profile row is returned
+// unchanged, at the cost of one extra (cheap, indexed) query per call — a
+// deliberate simplicity trade-off over caching "already provisioned" state,
+// since provisioning only ever happens once per member in this app's
+// lifetime and this codebase has no existing per-request cache to hang that
+// off of.
+func (r *PostgresRepository) EnsureMemberProfile(ctx context.Context, id domain.MemberID) (*domain.Member, error) {
+	m, hadProfile, err := r.getMemberRow(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if hadProfile {
+		return m, nil
+	}
+
+	const usedColorsQ = `
+		SELECT p.color_key
+		  FROM member_profile p
+		  JOIN identity.member hm ON hm.id = p.member_id
+		 WHERE hm.household_id = $1`
+	rows, err := r.dbtx.Query(ctx, usedColorsQ, m.HouseholdID.String())
+	if err != nil {
+		return nil, fmt.Errorf("ensure member profile: used colors: %w", err)
+	}
+	used := make([]domain.MemberColor, 0)
+	for rows.Next() {
+		var colorStr string
+		if err := rows.Scan(&colorStr); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("ensure member profile: scan color: %w", err)
+		}
+		color, err := domain.ParseMemberColor(colorStr)
+		if err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("ensure member profile: parse color: %w", err)
+		}
+		used = append(used, color)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("ensure member profile: used colors: %w", err)
+	}
+	rows.Close()
+
+	const insertProfile = `
+		INSERT INTO member_profile (member_id, color_key) VALUES ($1, $2)
+		ON CONFLICT (member_id) DO NOTHING`
+	if _, err := r.dbtx.Exec(ctx, insertProfile, m.ID.String(), domain.NextColor(used).String()); err != nil {
+		return nil, fmt.Errorf("ensure member profile: insert: %w", err)
+	}
+
+	// Re-fetch rather than trust this call's own NextColor: a concurrent
+	// request racing the same missing-profile member may have inserted
+	// first, and ON CONFLICT DO NOTHING keeps whichever row landed first.
+	m, _, err = r.getMemberRow(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	return m, nil
 }
@@ -179,7 +250,7 @@ func (r *PostgresRepository) HasAnyHousehold(ctx context.Context) (bool, error) 
 func (r *PostgresRepository) ListMembers(ctx context.Context, householdID domain.HouseholdID) ([]*domain.Member, error) {
 	const q = `
 		SELECT m.id, m.household_id, m.display_name, m.role,
-		       COALESCE(p.color_key, $2)
+		       COALESCE(p.color_key, $2), p.color_key IS NOT NULL
 		  FROM identity.member m
 		  LEFT JOIN member_profile p ON p.member_id = m.id
 		 WHERE m.household_id = $1
@@ -192,7 +263,7 @@ func (r *PostgresRepository) ListMembers(ctx context.Context, householdID domain
 
 	members := make([]*domain.Member, 0)
 	for rows.Next() {
-		m, err := scanMember(rows)
+		m, _, err := scanMemberRow(rows)
 		if err != nil {
 			return nil, fmt.Errorf("list members: scan: %w", err)
 		}
@@ -225,36 +296,37 @@ func scanHousehold(r row) (*domain.Household, error) {
 	return &h, nil
 }
 
-// scanMember expects id, household_id, display_name, role, color_key (in
-// that order) — GetMember/ListMembers' shared column shape after the
-// identity.member/member_profile join. created_at/updated_at intentionally
-// are NOT part of this shape: they come back through identity.member's own
-// RETURNING clause on write (AddMember), never re-read here, since neither
-// GetMember nor ListMembers currently exposes them.
-func scanMember(r row) (*domain.Member, error) {
+// scanMemberRow expects id, household_id, display_name, role, color_key,
+// had_profile (in that order) — GetMember/ListMembers/EnsureMemberProfile's
+// shared column shape after the identity.member/member_profile join.
+// created_at/updated_at intentionally are NOT part of this shape: they come
+// back through identity.member's own RETURNING clause on write (AddMember),
+// never re-read here, since none of these callers currently exposes them.
+func scanMemberRow(r row) (*domain.Member, bool, error) {
 	var (
 		m                          domain.Member
 		idStr, hidStr, role, color string
+		hadProfile                 bool
 	)
-	if err := r.Scan(&idStr, &hidStr, &m.DisplayName, &role, &color); err != nil {
-		return nil, err
+	if err := r.Scan(&idStr, &hidStr, &m.DisplayName, &role, &color, &hadProfile); err != nil {
+		return nil, false, err
 	}
 	id, err := domain.ParseMemberID(idStr)
 	if err != nil {
-		return nil, fmt.Errorf("scan member: %w", err)
+		return nil, false, fmt.Errorf("scan member: %w", err)
 	}
 	hid, err := domain.ParseHouseholdID(hidStr)
 	if err != nil {
-		return nil, fmt.Errorf("scan member: %w", err)
+		return nil, false, fmt.Errorf("scan member: %w", err)
 	}
 	parsedRole, err := domain.ParseRole(role)
 	if err != nil {
-		return nil, fmt.Errorf("scan member: %w", err)
+		return nil, false, fmt.Errorf("scan member: %w", err)
 	}
 	parsedColor, err := domain.ParseMemberColor(color)
 	if err != nil {
-		return nil, fmt.Errorf("scan member: %w", err)
+		return nil, false, fmt.Errorf("scan member: %w", err)
 	}
 	m.ID, m.HouseholdID, m.Role, m.Color = id, hid, parsedRole, parsedColor
-	return &m, nil
+	return &m, hadProfile, nil
 }

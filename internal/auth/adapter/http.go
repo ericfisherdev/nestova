@@ -15,6 +15,7 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	identitysession "github.com/ericfisherdev/nestcore/identity/session"
 	"github.com/ericfisherdev/nestcore/render"
 
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
@@ -25,7 +26,10 @@ import (
 
 const (
 	// sessionKeyMemberID is the session key storing the authenticated MemberID.
-	sessionKeyMemberID = "member_id"
+	// It aliases nestcore's identity/session.KeyMemberID (NSTR-117) rather than
+	// its own private literal: Nestorage must read the SAME key for a shared
+	// session to carry a real cross-app login, not just a shared cookie/store.
+	sessionKeyMemberID = identitysession.KeyMemberID
 	// sessionKeyCSRF is the session key storing the per-session CSRF token.
 	sessionKeyCSRF = "csrf_token"
 	// sessionKeyMFAPendingMemberID stores the MemberID awaiting a login MFA
