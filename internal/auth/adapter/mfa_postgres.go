@@ -42,7 +42,7 @@ func NewMFARepository(dbtx db.TX) *MFARepository {
 func (r *MFARepository) GetEnrollment(ctx context.Context, memberID household.MemberID) (*authdomain.MFAEnrollment, error) {
 	const q = `
 		SELECT household_id, totp_secret_enc, confirmed_at, last_totp_step, created_at, updated_at
-		  FROM member_mfa
+		  FROM identity.member_mfa
 		 WHERE member_id = $1`
 
 	var (
@@ -107,12 +107,12 @@ func (r *MFARepository) BeginEnrollment(ctx context.Context, memberID household.
 		existingHouseholdID string
 		confirmedAt         *time.Time
 	)
-	lookupErr := tx.QueryRow(ctx, `SELECT household_id, confirmed_at FROM member_mfa WHERE member_id = $1 FOR UPDATE`, memberID.String()).
+	lookupErr := tx.QueryRow(ctx, `SELECT household_id, confirmed_at FROM identity.member_mfa WHERE member_id = $1 FOR UPDATE`, memberID.String()).
 		Scan(&existingHouseholdID, &confirmedAt)
 	switch {
 	case errors.Is(lookupErr, pgx.ErrNoRows):
 		const insert = `
-			INSERT INTO member_mfa (member_id, household_id, totp_secret_enc, confirmed_at)
+			INSERT INTO identity.member_mfa (member_id, household_id, totp_secret_enc, confirmed_at)
 			VALUES ($1, $2, $3, NULL)`
 		if _, err := tx.Exec(ctx, insert, memberID.String(), householdID.String(), secretEnc); err != nil {
 			var pgErr *pgconn.PgError
@@ -132,7 +132,7 @@ func (r *MFARepository) BeginEnrollment(ctx context.Context, memberID household.
 		return authdomain.ErrMFAAlreadyEnrolled
 	default:
 		const update = `
-			UPDATE member_mfa
+			UPDATE identity.member_mfa
 			   SET totp_secret_enc = $2,
 			       confirmed_at    = NULL,
 			       updated_at      = now()
@@ -168,7 +168,7 @@ func (r *MFARepository) ConfirmEnrollmentWithCodes(ctx context.Context, memberID
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var confirmedAt *time.Time
-	lookupErr := tx.QueryRow(ctx, `SELECT confirmed_at FROM member_mfa WHERE member_id = $1 FOR UPDATE`, memberID.String()).Scan(&confirmedAt)
+	lookupErr := tx.QueryRow(ctx, `SELECT confirmed_at FROM identity.member_mfa WHERE member_id = $1 FOR UPDATE`, memberID.String()).Scan(&confirmedAt)
 	switch {
 	case errors.Is(lookupErr, pgx.ErrNoRows):
 		return authdomain.ErrMFANotEnrolled
@@ -180,14 +180,14 @@ func (r *MFARepository) ConfirmEnrollmentWithCodes(ctx context.Context, memberID
 		return authdomain.ErrMFAAlreadyEnrolled
 	}
 
-	if _, err := tx.Exec(ctx, `UPDATE member_mfa SET confirmed_at = now(), updated_at = now() WHERE member_id = $1`, memberID.String()); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE identity.member_mfa SET confirmed_at = now(), updated_at = now() WHERE member_id = $1`, memberID.String()); err != nil {
 		return fmt.Errorf("confirm mfa enrollment: confirm: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM member_recovery_code WHERE member_id = $1`, memberID.String()); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM identity.member_recovery_code WHERE member_id = $1`, memberID.String()); err != nil {
 		return fmt.Errorf("confirm mfa enrollment: delete existing recovery codes: %w", err)
 	}
 	const insert = `
-		INSERT INTO member_recovery_code (id, member_id, code_hash)
+		INSERT INTO identity.member_recovery_code (id, member_id, code_hash)
 		VALUES ($1, $2, $3)`
 	for _, hash := range recoveryCodeHashes {
 		id := authdomain.NewRecoveryCodeID()
@@ -207,7 +207,7 @@ func (r *MFARepository) ConfirmEnrollmentWithCodes(ctx context.Context, memberID
 // tenant check. Returns authdomain.ErrMFANotEnrolled when no row exists in
 // that household.
 func (r *MFARepository) DeleteEnrollment(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID) error {
-	const q = `DELETE FROM member_mfa WHERE member_id = $1 AND household_id = $2`
+	const q = `DELETE FROM identity.member_mfa WHERE member_id = $1 AND household_id = $2`
 
 	tag, err := r.dbtx.Exec(ctx, q, memberID.String(), householdID.String())
 	if err != nil {
@@ -235,12 +235,12 @@ func (r *MFARepository) ReplaceRecoveryCodes(ctx context.Context, memberID house
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `DELETE FROM member_recovery_code WHERE member_id = $1`, memberID.String()); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM identity.member_recovery_code WHERE member_id = $1`, memberID.String()); err != nil {
 		return fmt.Errorf("replace recovery codes: delete existing: %w", err)
 	}
 
 	const insert = `
-		INSERT INTO member_recovery_code (id, member_id, code_hash)
+		INSERT INTO identity.member_recovery_code (id, member_id, code_hash)
 		VALUES ($1, $2, $3)`
 	for _, hash := range hashes {
 		id := authdomain.NewRecoveryCodeID()
@@ -260,7 +260,7 @@ func (r *MFARepository) ReplaceRecoveryCodes(ctx context.Context, memberID house
 func (r *MFARepository) ListUnusedRecoveryCodes(ctx context.Context, memberID household.MemberID) ([]authdomain.RecoveryCode, error) {
 	const q = `
 		SELECT id, code_hash, created_at
-		  FROM member_recovery_code
+		  FROM identity.member_recovery_code
 		 WHERE member_id = $1
 		   AND used_at IS NULL
 		 ORDER BY created_at`
@@ -296,7 +296,7 @@ func (r *MFARepository) ListUnusedRecoveryCodes(ctx context.Context, memberID ho
 
 // MarkRecoveryCodeUsed sets used_at = now() on codeID.
 func (r *MFARepository) MarkRecoveryCodeUsed(ctx context.Context, codeID authdomain.RecoveryCodeID) error {
-	const q = `UPDATE member_recovery_code SET used_at = now() WHERE id = $1 AND used_at IS NULL`
+	const q = `UPDATE identity.member_recovery_code SET used_at = now() WHERE id = $1 AND used_at IS NULL`
 
 	tag, err := r.dbtx.Exec(ctx, q, codeID.String())
 	if err != nil {
@@ -317,7 +317,7 @@ func (r *MFARepository) MarkRecoveryCodeUsed(ctx context.Context, codeID authdom
 // or an out-of-order step).
 func (r *MFARepository) RecordLoginStep(ctx context.Context, memberID household.MemberID, step int64) error {
 	const q = `
-		UPDATE member_mfa
+		UPDATE identity.member_mfa
 		   SET last_totp_step = $2,
 		       updated_at     = now()
 		 WHERE member_id = $1

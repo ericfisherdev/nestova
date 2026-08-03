@@ -6,11 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
@@ -21,28 +19,36 @@ const (
 	uniqueViolation = "23505"
 	// foreignKeyViolation is the PostgreSQL SQLSTATE for a foreign-key violation.
 	foreignKeyViolation = "23503"
-	// memberHouseholdFK is the auto-named FK constraint member.household_id ->
-	// household.id (NES-17 baseline). Only this FK maps to ErrHouseholdNotFound.
+	// memberHouseholdFK is the auto-named FK constraint identity.member.household_id ->
+	// identity.household.id. Only this FK maps to ErrHouseholdNotFound.
 	memberHouseholdFK = "member_household_id_fkey"
 	// memberNameUniqueIndex is the unique index enforcing per-household display
-	// name uniqueness (the NES-17 baseline migration). Only this constraint maps
-	// to ErrDuplicateMember; other unique violations (e.g. the PK) surface as-is.
+	// name uniqueness on identity.member. Only this constraint maps to
+	// ErrDuplicateMember; other unique violations (e.g. the PK) surface as-is.
 	memberNameUniqueIndex = "member_household_name_uniq"
+	// defaultMemberColor is used when a member has no nestova.member_profile
+	// row yet (NSTR-115): identity owns member/household, nestova owns only
+	// the presentation-layer color, so a member visible through identity
+	// before its profile row exists (a narrow window during provisioning)
+	// still renders with a valid palette color instead of an empty one.
+	defaultMemberColor = domain.ColorSage
 )
 
 // PostgresRepository is the pgx-backed HouseholdRepository. UUIDs are passed and
 // scanned as text, so no pgx UUID codec registration is required.
+//
+// household and member rows live in the shared identity schema (NSTR-115,
+// identity.household / identity.member), owned and migrated by nestcore —
+// this repository queries them cross-schema rather than owning them, and
+// joins nestova's own nestova.member_profile table (color_key) alongside
+// identity.member, since presentation color is app-specific and identity
+// must stay app-agnostic.
 type PostgresRepository struct {
 	dbtx db.TX
 }
 
 // Compile-time assurance the adapter satisfies the port.
 var _ domain.HouseholdRepository = (*PostgresRepository)(nil)
-
-// Compile-time assurance the adapter also satisfies the narrower
-// quiet-hours write port (NES-139) — see that interface's own doc for why
-// it is separate from HouseholdRepository.
-var _ domain.QuietHoursWriter = (*PostgresRepository)(nil)
 
 // NewPostgresRepository constructs the repository with an injected query
 // executor. The executor is a db.TX, satisfied by both *pgxpool.Pool (the
@@ -60,7 +66,7 @@ func (r *PostgresRepository) CreateHousehold(ctx context.Context, h *domain.Hous
 	if h == nil {
 		return errors.New("adapter: create household: nil household")
 	}
-	const q = `INSERT INTO household (id, name) VALUES ($1, $2) RETURNING created_at, updated_at`
+	const q = `INSERT INTO identity.household (id, name) VALUES ($1, $2) RETURNING created_at, updated_at`
 	if err := r.dbtx.QueryRow(ctx, q, h.ID.String(), h.Name).Scan(&h.CreatedAt, &h.UpdatedAt); err != nil {
 		return fmt.Errorf("create household: %w", err)
 	}
@@ -70,8 +76,8 @@ func (r *PostgresRepository) CreateHousehold(ctx context.Context, h *domain.Hous
 // GetHousehold returns the household, or domain.ErrHouseholdNotFound.
 func (r *PostgresRepository) GetHousehold(ctx context.Context, id domain.HouseholdID) (*domain.Household, error) {
 	const q = `
-		SELECT id, name, quiet_hours_start, quiet_hours_end, created_at, updated_at
-		FROM household WHERE id = $1`
+		SELECT id, name, created_at, updated_at
+		FROM identity.household WHERE id = $1`
 	h, err := scanHousehold(r.dbtx.QueryRow(ctx, q, id.String()))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -82,60 +88,38 @@ func (r *PostgresRepository) GetHousehold(ctx context.Context, id domain.Househo
 	return h, nil
 }
 
-// SetQuietHours updates householdID's quiet-hours window (NES-139).
-// Passing nil for both start and end disables quiet hours. Returns an
-// error when exactly one of start/end is nil — domain.Household's own doc
-// states both nil means disabled, so a half-set pair has no defined
-// meaning; the repository is the last line of defense for this invariant
-// (the HTTP handler already validates it, but a future caller — a test, a
-// service, admin tooling — may not). Returns domain.ErrHouseholdNotFound
-// when householdID is unknown.
-func (r *PostgresRepository) SetQuietHours(ctx context.Context, householdID domain.HouseholdID, start, end *time.Duration) error {
-	if (start == nil) != (end == nil) {
-		return fmt.Errorf("set quiet hours: start and end must both be set or both be nil")
-	}
-	const q = `UPDATE household SET quiet_hours_start = $2, quiet_hours_end = $3, updated_at = now() WHERE id = $1`
-	tag, err := r.dbtx.Exec(ctx, q, householdID.String(), durationToPgTime(start), durationToPgTime(end))
-	if err != nil {
-		return fmt.Errorf("set quiet hours: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return domain.ErrHouseholdNotFound
-	}
-	return nil
+// memberTxBeginner is the slice of a pgx executor AddMember needs to open
+// its own transaction (mirroring authadapter.mfaTxBeginner): a new member
+// requires two atomic inserts — identity.member (owned by nestcore) and
+// this app's own nestova.member_profile row for color — so a failure
+// partway through must not leave an identity.member row with no profile.
+type memberTxBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
 }
 
-// durationToPgTime converts a duration-since-midnight to the pgtype.Time
-// wire representation Postgres' time column expects, or an invalid
-// (NULL-bound) pgtype.Time when d is nil.
-func durationToPgTime(d *time.Duration) pgtype.Time {
-	if d == nil {
-		return pgtype.Time{}
-	}
-	return pgtype.Time{Microseconds: d.Microseconds(), Valid: true}
-}
-
-// pgTimeToDuration converts a scanned pgtype.Time back to a
-// duration-since-midnight, or nil when the column was NULL.
-func pgTimeToDuration(t pgtype.Time) *time.Duration {
-	if !t.Valid {
-		return nil
-	}
-	d := time.Duration(t.Microseconds) * time.Microsecond
-	return &d
-}
-
-// AddMember inserts a member, returning domain.ErrDuplicateMember when the
-// display name collides within the household.
+// AddMember inserts a member (identity.member) and its nestova-owned
+// profile row (nestova.member_profile, for color) in one transaction,
+// returning domain.ErrDuplicateMember when the display name collides
+// within the household.
 func (r *PostgresRepository) AddMember(ctx context.Context, m *domain.Member) error {
 	if m == nil {
 		return errors.New("adapter: add member: nil member")
 	}
-	const q = `
-		INSERT INTO member (id, household_id, display_name, role, color_key)
-		VALUES ($1, $2, $3, $4, $5)
+	beginner, ok := r.dbtx.(memberTxBeginner)
+	if !ok {
+		return errors.New("add member: executor does not support transactions")
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("add member: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	const insertMember = `
+		INSERT INTO identity.member (id, household_id, display_name, role)
+		VALUES ($1, $2, $3, $4)
 		RETURNING created_at, updated_at`
-	err := r.dbtx.QueryRow(ctx, q, m.ID.String(), m.HouseholdID.String(), m.DisplayName, m.Role.String(), m.Color.String()).
+	err = tx.QueryRow(ctx, insertMember, m.ID.String(), m.HouseholdID.String(), m.DisplayName, m.Role.String()).
 		Scan(&m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -149,15 +133,27 @@ func (r *PostgresRepository) AddMember(ctx context.Context, m *domain.Member) er
 		}
 		return fmt.Errorf("add member: %w", err)
 	}
+
+	const insertProfile = `INSERT INTO member_profile (member_id, color_key) VALUES ($1, $2)`
+	if _, err := tx.Exec(ctx, insertProfile, m.ID.String(), m.Color.String()); err != nil {
+		return fmt.Errorf("add member: profile: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("add member: commit: %w", err)
+	}
 	return nil
 }
 
 // GetMember returns the member, or domain.ErrMemberNotFound.
 func (r *PostgresRepository) GetMember(ctx context.Context, id domain.MemberID) (*domain.Member, error) {
 	const q = `
-		SELECT id, household_id, display_name, role, color_key, created_at, updated_at
-		FROM member WHERE id = $1`
-	m, err := scanMember(r.dbtx.QueryRow(ctx, q, id.String()))
+		SELECT m.id, m.household_id, m.display_name, m.role,
+		       COALESCE(p.color_key, $2)
+		  FROM identity.member m
+		  LEFT JOIN member_profile p ON p.member_id = m.id
+		 WHERE m.id = $1`
+	m, err := scanMember(r.dbtx.QueryRow(ctx, q, id.String(), string(defaultMemberColor)))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrMemberNotFound
@@ -171,7 +167,7 @@ func (r *PostgresRepository) GetMember(ctx context.Context, id domain.MemberID) 
 // database. It is used by the onboarding flow to decide whether the
 // first-run setup page should be shown or whether to redirect to /login.
 func (r *PostgresRepository) HasAnyHousehold(ctx context.Context) (bool, error) {
-	const q = `SELECT EXISTS(SELECT 1 FROM household)`
+	const q = `SELECT EXISTS(SELECT 1 FROM identity.household)`
 	var exists bool
 	if err := r.dbtx.QueryRow(ctx, q).Scan(&exists); err != nil {
 		return false, fmt.Errorf("has any household: %w", err)
@@ -182,9 +178,13 @@ func (r *PostgresRepository) HasAnyHousehold(ctx context.Context) (bool, error) 
 // ListMembers returns the household's members ordered by creation.
 func (r *PostgresRepository) ListMembers(ctx context.Context, householdID domain.HouseholdID) ([]*domain.Member, error) {
 	const q = `
-		SELECT id, household_id, display_name, role, color_key, created_at, updated_at
-		FROM member WHERE household_id = $1 ORDER BY created_at, id`
-	rows, err := r.dbtx.Query(ctx, q, householdID.String())
+		SELECT m.id, m.household_id, m.display_name, m.role,
+		       COALESCE(p.color_key, $2)
+		  FROM identity.member m
+		  LEFT JOIN member_profile p ON p.member_id = m.id
+		 WHERE m.household_id = $1
+		 ORDER BY m.created_at, m.id`
+	rows, err := r.dbtx.Query(ctx, q, householdID.String(), string(defaultMemberColor))
 	if err != nil {
 		return nil, fmt.Errorf("list members: %w", err)
 	}
@@ -211,11 +211,10 @@ type row interface {
 
 func scanHousehold(r row) (*domain.Household, error) {
 	var (
-		h                    domain.Household
-		idStr                string
-		quietStart, quietEnd pgtype.Time
+		h     domain.Household
+		idStr string
 	)
-	if err := r.Scan(&idStr, &h.Name, &quietStart, &quietEnd, &h.CreatedAt, &h.UpdatedAt); err != nil {
+	if err := r.Scan(&idStr, &h.Name, &h.CreatedAt, &h.UpdatedAt); err != nil {
 		return nil, err
 	}
 	id, err := domain.ParseHouseholdID(idStr)
@@ -223,17 +222,21 @@ func scanHousehold(r row) (*domain.Household, error) {
 		return nil, fmt.Errorf("scan household: %w", err)
 	}
 	h.ID = id
-	h.QuietHoursStart = pgTimeToDuration(quietStart)
-	h.QuietHoursEnd = pgTimeToDuration(quietEnd)
 	return &h, nil
 }
 
+// scanMember expects id, household_id, display_name, role, color_key (in
+// that order) — GetMember/ListMembers' shared column shape after the
+// identity.member/member_profile join. created_at/updated_at intentionally
+// are NOT part of this shape: they come back through identity.member's own
+// RETURNING clause on write (AddMember), never re-read here, since neither
+// GetMember nor ListMembers currently exposes them.
 func scanMember(r row) (*domain.Member, error) {
 	var (
 		m                          domain.Member
 		idStr, hidStr, role, color string
 	)
-	if err := r.Scan(&idStr, &hidStr, &m.DisplayName, &role, &color, &m.CreatedAt, &m.UpdatedAt); err != nil {
+	if err := r.Scan(&idStr, &hidStr, &m.DisplayName, &role, &color); err != nil {
 		return nil, err
 	}
 	id, err := domain.ParseMemberID(idStr)

@@ -63,7 +63,7 @@ func NewSettingsWebHandlers(kiosk *app.KioskService, sm *scs.SessionManager, log
 // embed, non-nil only in the same response as a successful
 // CreateActivationCode call.
 func (h *SettingsWebHandlers) SectionView(ctx context.Context, member *household.Member, reveal *components.KioskActivationReveal) (view components.KioskSettingsView, show bool, err error) {
-	if !member.Role.IsParent() {
+	if !member.Role.CanAdminister() {
 		return components.KioskSettingsView{}, false, nil
 	}
 	devices, err := h.kiosk.ListByHousehold(ctx, member.HouseholdID)
@@ -180,7 +180,7 @@ func (h *SettingsWebHandlers) requireParent(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return nil, false
 	}
-	if !member.Role.IsParent() {
+	if !member.Role.CanAdminister() {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return nil, false
 	}

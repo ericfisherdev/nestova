@@ -60,7 +60,7 @@ func (r *WebAuthnCredentialRepository) ListByMember(ctx context.Context, memberI
 	const q = `
 		SELECT id, household_id, credential_id, public_key, sign_count, transports,
 		       aaguid, nickname, user_handle, created_at, last_used_at
-		  FROM member_credential
+		  FROM identity.member_credential
 		 WHERE member_id = $1
 		 ORDER BY created_at, id`
 
@@ -109,7 +109,7 @@ func (r *WebAuthnCredentialRepository) ListByMember(ctx context.Context, memberI
 // householdID (FK violations).
 func (r *WebAuthnCredentialRepository) Create(ctx context.Context, householdID household.HouseholdID, cred *authdomain.WebAuthnCredential) error {
 	const q = `
-		INSERT INTO member_credential
+		INSERT INTO identity.member_credential
 			(id, household_id, member_id, credential_id, public_key, sign_count,
 			 transports, aaguid, nickname, user_handle)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
@@ -150,7 +150,7 @@ func mapWebAuthnCredentialFKViolation(err error) error {
 // when no row matches all three.
 func (r *WebAuthnCredentialRepository) Rename(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, id authdomain.WebAuthnCredentialID, nickname string) error {
 	const q = `
-		UPDATE member_credential
+		UPDATE identity.member_credential
 		   SET nickname = $4
 		 WHERE id = $1 AND member_id = $2 AND household_id = $3`
 
@@ -168,7 +168,7 @@ func (r *WebAuthnCredentialRepository) Rename(ctx context.Context, householdID h
 // householdID. Returns authdomain.ErrWebAuthnCredentialNotFound when no row
 // matches all three.
 func (r *WebAuthnCredentialRepository) Delete(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, id authdomain.WebAuthnCredentialID) error {
-	const q = `DELETE FROM member_credential WHERE id = $1 AND member_id = $2 AND household_id = $3`
+	const q = `DELETE FROM identity.member_credential WHERE id = $1 AND member_id = $2 AND household_id = $3`
 
 	tag, err := r.dbtx.Exec(ctx, q, id.String(), memberID.String(), householdID.String())
 	if err != nil {
@@ -188,7 +188,7 @@ func (r *WebAuthnCredentialRepository) FindByUserHandle(ctx context.Context, han
 	const q = `
 		SELECT id, household_id, member_id, credential_id, public_key, sign_count, transports,
 		       aaguid, nickname, user_handle, created_at, last_used_at
-		  FROM member_credential
+		  FROM identity.member_credential
 		 WHERE user_handle = $1
 		 ORDER BY created_at, id`
 
@@ -270,7 +270,7 @@ func (r *WebAuthnCredentialRepository) FindByUserHandle(ctx context.Context, han
 // would have regressed stored state backward in time.
 func (r *WebAuthnCredentialRepository) UpdateAfterAssertion(ctx context.Context, credentialID []byte, signCount uint32, usedAt time.Time) error {
 	const q = `
-		UPDATE member_credential
+		UPDATE identity.member_credential
 		   SET sign_count = $2, last_used_at = $3
 		 WHERE credential_id = $1
 		   AND (last_used_at IS NULL OR last_used_at <= $3)`
@@ -283,7 +283,7 @@ func (r *WebAuthnCredentialRepository) UpdateAfterAssertion(ctx context.Context,
 		return nil
 	}
 
-	const existsQ = `SELECT EXISTS (SELECT 1 FROM member_credential WHERE credential_id = $1)`
+	const existsQ = `SELECT EXISTS (SELECT 1 FROM identity.member_credential WHERE credential_id = $1)`
 	var exists bool
 	if err := r.dbtx.QueryRow(ctx, existsQ, credentialID).Scan(&exists); err != nil {
 		return fmt.Errorf("update webauthn credential after assertion: check existence: %w", err)
