@@ -319,6 +319,36 @@ func TestDownAndStatus(t *testing.T) {
 	}
 }
 
+// TestUpTo_BootstrapsIdentityOnFreshDatabase pins UpTo's identity-schema
+// prerequisite (NSTR-115): 00041_identity_schema_cutover.sql assumes
+// identity.household/identity.member already exist, and UpTo reaches that
+// migration by the same goose path Up does — it must bootstrap identity
+// itself rather than relying on a prior Up call, or a target version at or
+// past 41 dies inside the migration's DO block on a database that has
+// never had Up called against it.
+func TestUpTo_BootstrapsIdentityOnFreshDatabase(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+
+	if err := Reset(ctx, dsn); err != nil {
+		t.Fatalf("initial Reset: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := Reset(ctx, dsn); err != nil {
+			t.Logf("cleanup Reset failed: %v", err)
+		}
+	})
+
+	if err := UpTo(ctx, dsn, 41); err != nil {
+		t.Fatalf("UpTo(41) on a freshly reset database: %v", err)
+	}
+	for _, table := range []string{"household", "member"} {
+		if !tableExistsInSchema(t, dsn, "identity", table) {
+			t.Errorf("after UpTo(41), identity.%s does not exist", table)
+		}
+	}
+}
+
 // TestDownTo_RollsBackToTheGivenVersion exercises DownTo directly, mirroring
 // TestDownAndStatus: it must land on exactly the requested version rather
 // than a fixed number of steps, and must be reversible.
