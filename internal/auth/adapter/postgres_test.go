@@ -187,7 +187,7 @@ func TestCredentialColumnsArePaired(t *testing.T) {
 
 	// The member_credentials_complete CHECK forbids an email without a password
 	// (and vice versa), so an inconsistent credential state cannot exist.
-	if _, err := pool.Exec(testCtx(t), `UPDATE member SET password_hash = NULL WHERE id = $1`, memberID.String()); err == nil {
+	if _, err := pool.Exec(testCtx(t), `UPDATE identity.member SET password_hash = NULL WHERE id = $1`, memberID.String()); err == nil {
 		t.Error("nulling password_hash while email is set should violate the credentials CHECK constraint")
 	}
 }

@@ -76,18 +76,26 @@ func (testHouseholdRepo) HasAnyHousehold(_ context.Context) (bool, error) {
 	return false, nil
 }
 
-// SetQuietHours is a no-op stub (NES-139) — testHouseholdRepo carries no
-// real quiet-hours state; a test that needs to observe it back writes its
-// own dedicated fake instead.
+// Compile-time assertion.
+var _ household.HouseholdRepository = testHouseholdRepo{}
+
+// GetQuietHours and SetQuietHours are no-op stubs (NES-139, rehomed to
+// notify by NSTR-115) — testHouseholdRepo carries no real quiet-hours
+// state; a test that needs to observe it back writes its own dedicated
+// fake instead.
+func (testHouseholdRepo) GetQuietHours(_ context.Context, id household.HouseholdID) (notifydomain.QuietHours, error) {
+	return notifydomain.QuietHours{HouseholdID: id}, nil
+}
+
 func (testHouseholdRepo) SetQuietHours(_ context.Context, _ household.HouseholdID, _, _ *time.Duration) error {
 	return nil
 }
 
 // Compile-time assertion.
-var _ household.HouseholdRepository = testHouseholdRepo{}
-
-// Compile-time assertion.
-var _ household.QuietHoursWriter = testHouseholdRepo{}
+var (
+	_ notifydomain.QuietHoursReader = testHouseholdRepo{}
+	_ notifydomain.QuietHoursWriter = testHouseholdRepo{}
+)
 
 // ---------------------------------------------------------------------------
 // NES-139: no-op notify fakes, for tests that register the shared
@@ -141,24 +149,25 @@ var _ notifydomain.PreferenceRepository = fakePreferenceRepository{}
 
 // quietHoursCapableHouseholdRepo mirrors notifyapp's own unexported
 // quietHoursStore interface structurally — cmd/server cannot reference
-// that type by name (it is unexported), but any household repo satisfying
-// both household.HouseholdRepository's GetHousehold and the separate
-// household.QuietHoursWriter (both exported) satisfies this too, and
-// therefore satisfies notifyapp.NewSettingsService's own parameter the
-// same way, via Go's ordinary structural interface typing.
+// that type by name (it is unexported), but any value satisfying both
+// notifydomain.QuietHoursReader and notifydomain.QuietHoursWriter (both
+// exported) satisfies this too, and therefore satisfies
+// notifyapp.NewSettingsService's own parameter the same way, via Go's
+// ordinary structural interface typing.
 type quietHoursCapableHouseholdRepo interface {
-	household.QuietHoursWriter
-	GetHousehold(ctx context.Context, id household.HouseholdID) (*household.Household, error)
+	notifydomain.QuietHoursReader
+	notifydomain.QuietHoursWriter
 }
 
 // testHouseholdRepoWithQuietHours is the fuller combination a settings-page
 // test harness needs: every method household.HouseholdRepository requires
-// (auth/MFA wiring), plus household.QuietHoursWriter (NES-139's notify
+// (auth/MFA wiring), plus the notify quiet-hours ports (NES-139's notify
 // settings section, rendered unconditionally by composePage). Any value
 // satisfying this also satisfies quietHoursCapableHouseholdRepo above.
 type testHouseholdRepoWithQuietHours interface {
 	household.HouseholdRepository
-	household.QuietHoursWriter
+	notifydomain.QuietHoursReader
+	notifydomain.QuietHoursWriter
 }
 
 // newTestNotifyWebHandlers builds a working NotifyWebHandlers backed by the

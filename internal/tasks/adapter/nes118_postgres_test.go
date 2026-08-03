@@ -298,7 +298,7 @@ func TestClaimWarnings_OrphanedClaimExcluded(t *testing.T) {
 	}
 	asOf := claimed.ClaimExpiresAt.Add(-90 * time.Minute)
 
-	if _, err := pool.Exec(testCtx(t), "DELETE FROM member WHERE id = $1", m1.String()); err != nil {
+	if _, err := pool.Exec(testCtx(t), "DELETE FROM identity.member WHERE id = $1", m1.String()); err != nil {
 		t.Fatalf("delete member: %v", err)
 	}
 

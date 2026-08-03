@@ -22,6 +22,7 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	kioskadapter "github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	kioskapp "github.com/ericfisherdev/nestova/internal/kiosk/app"
+	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
 	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	"github.com/ericfisherdev/nestova/internal/platform/totp"
 )
@@ -68,20 +69,25 @@ func (r *multiMemberHouseholdRepo) ListMembers(_ context.Context, householdID ho
 	return out, nil
 }
 
-// GetHousehold overrides testHouseholdRepo's always-not-found stub: NES-139's
-// quiet-hours settings section (rendered unconditionally by composePage for
-// an owner-role member) needs a real household to load, and every test in
+// GetHousehold overrides testHouseholdRepo's always-not-found stub: some
+// settings-page flows need a real household to load, and every test in
 // this file that authenticates as the owner has a genuinely existing
-// household by construction (settingsTestOwner's HouseholdID). Quiet hours
-// default to disabled (nil, nil) unless SetQuietHours has been called for
-// id, which quietHours below tracks statefully — needed so
-// notify_settings_handler_test.go can exercise a real set-then-read round
-// trip, not just a fixed stub.
+// household by construction (settingsTestOwner's HouseholdID).
 func (r *multiMemberHouseholdRepo) GetHousehold(_ context.Context, id household.HouseholdID) (*household.Household, error) {
-	if bounds, ok := r.quietHours[id]; ok {
-		return &household.Household{ID: id, QuietHoursStart: bounds[0], QuietHoursEnd: bounds[1]}, nil
-	}
 	return &household.Household{ID: id}, nil
+}
+
+// GetQuietHours overrides testHouseholdRepo's disabled-by-default stub:
+// NES-139's quiet-hours settings section (rendered unconditionally by
+// composePage for an owner-role member) needs to reflect back whatever
+// SetQuietHours below has recorded, keyed by household id (rehomed to
+// notify by NSTR-115) — needed so notify_settings_handler_test.go can
+// exercise a real set-then-read round trip, not just a fixed stub.
+func (r *multiMemberHouseholdRepo) GetQuietHours(_ context.Context, id household.HouseholdID) (notifydomain.QuietHours, error) {
+	if bounds, ok := r.quietHours[id]; ok {
+		return notifydomain.QuietHours{HouseholdID: id, Start: bounds[0], End: bounds[1]}, nil
+	}
+	return notifydomain.QuietHours{HouseholdID: id}, nil
 }
 
 // SetQuietHours overrides testHouseholdRepo's no-op stub with real
@@ -94,7 +100,11 @@ func (r *multiMemberHouseholdRepo) SetQuietHours(_ context.Context, id household
 	return nil
 }
 
-var _ household.HouseholdRepository = (*multiMemberHouseholdRepo)(nil)
+var (
+	_ household.HouseholdRepository = (*multiMemberHouseholdRepo)(nil)
+	_ notifydomain.QuietHoursReader = (*multiMemberHouseholdRepo)(nil)
+	_ notifydomain.QuietHoursWriter = (*multiMemberHouseholdRepo)(nil)
+)
 
 // fakeMemberCredRepo is an in-memory authdomain.CredentialRepository keyed by
 // member id, used for the owner-reauth flow's password verification.

@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,8 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
-	"github.com/ericfisherdev/nestova/internal/platform/config"
+	nestcoreconfig "github.com/ericfisherdev/nestcore/config"
+	identitysession "github.com/ericfisherdev/nestcore/identity/session"
+
 	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 
@@ -60,7 +62,11 @@ func TestSessionStorePoolerSafe(t *testing.T) {
 	// (LIFO): the pool is closed before the final schema reset opens its own
 	// handle.
 	pool := newExecModePool(t, dsn)
-	sm := authadapter.NewSessionManager(pool, config.SessionConfig{Lifetime: time.Hour})
+	sm, stop := identitysession.NewManager(pool, nestcoreconfig.SessionConfig{
+		Secret:   strings.Repeat("x", 32),
+		Lifetime: time.Hour,
+	})
+	t.Cleanup(stop)
 
 	// pgxstore.PostgresStore implements the plain scs.Store methods
 	// (Find/Commit/Delete/All) only as panic("missing context arg") stubs
@@ -110,7 +116,7 @@ func TestSessionStorePoolerSafe(t *testing.T) {
 	// Asserted against the row itself rather than by waiting out real
 	// expiries.
 	var storedExpiry time.Time
-	if err := pool.QueryRow(ctx, "SELECT expiry FROM sessions WHERE token = $1", token).Scan(&storedExpiry); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT expiry FROM identity.sessions WHERE token = $1", token).Scan(&storedExpiry); err != nil {
 		t.Fatalf("read stored expiry: %v", err)
 	}
 	if !storedExpiry.After(expiry) {

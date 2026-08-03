@@ -133,7 +133,7 @@ func TestMFAServiceBeginEnrollment_SecretNotStoredInPlaintext(t *testing.T) {
 	}
 
 	var storedEnc []byte
-	err = pool.QueryRow(testCtx(t), `SELECT totp_secret_enc FROM member_mfa WHERE member_id = $1`, memberID.String()).Scan(&storedEnc)
+	err = pool.QueryRow(testCtx(t), `SELECT totp_secret_enc FROM identity.member_mfa WHERE member_id = $1`, memberID.String()).Scan(&storedEnc)
 	if err != nil {
 		t.Fatalf("query stored totp_secret_enc: %v", err)
 	}

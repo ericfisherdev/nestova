@@ -146,7 +146,7 @@ func integrationTestCtx(t *testing.T) context.Context {
 func seedIntegrationHousehold(t *testing.T, pool *pgxpool.Pool) household.HouseholdID {
 	t.Helper()
 	id := household.NewHouseholdID()
-	if _, err := pool.Exec(integrationTestCtx(t), `INSERT INTO household (id, name) VALUES ($1, $2)`, id.String(), "Storage Integration Test"); err != nil {
+	if _, err := pool.Exec(integrationTestCtx(t), `INSERT INTO identity.household (id, name) VALUES ($1, $2)`, id.String(), "Storage Integration Test"); err != nil {
 		t.Fatalf("seed household: %v", err)
 	}
 	return id
@@ -226,7 +226,7 @@ func TestIntegrationMigrateVerifyLifecycle(t *testing.T) {
 	// t.Cleanup(cancel) so it runs first (t.Cleanup is LIFO) while ctx is
 	// still valid.
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM household WHERE id = $1`, hh.String())
+		_, _ = pool.Exec(context.Background(), `DELETE FROM identity.household WHERE id = $1`, hh.String())
 	})
 
 	rowA := putLocalAndCreateAlbumRow(ctx, t, local, photos, hh, testJPEGBytes(t, 10))

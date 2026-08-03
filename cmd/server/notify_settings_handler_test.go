@@ -415,12 +415,12 @@ func TestNotifySettings_QuietHours_OwnerSetsValidWindow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /settings/notify/quiet-hours (valid window): status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	got, err := hhRepo.GetHousehold(context.Background(), owner.HouseholdID)
+	got, err := hhRepo.GetQuietHours(context.Background(), owner.HouseholdID)
 	if err != nil {
-		t.Fatalf("GetHousehold: %v", err)
+		t.Fatalf("GetQuietHours: %v", err)
 	}
-	if got.QuietHoursStart == nil || got.QuietHoursEnd == nil {
-		t.Fatalf("quiet hours = (%v, %v), want both set", got.QuietHoursStart, got.QuietHoursEnd)
+	if got.Start == nil || got.End == nil {
+		t.Fatalf("quiet hours = (%v, %v), want both set", got.Start, got.End)
 	}
 }
 
@@ -452,11 +452,11 @@ func TestNotifySettings_QuietHours_OwnerDisables(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST /settings/notify/quiet-hours (disable): status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	got, err := hhRepo.GetHousehold(context.Background(), owner.HouseholdID)
+	got, err := hhRepo.GetQuietHours(context.Background(), owner.HouseholdID)
 	if err != nil {
-		t.Fatalf("GetHousehold: %v", err)
+		t.Fatalf("GetQuietHours: %v", err)
 	}
-	if got.QuietHoursStart != nil || got.QuietHoursEnd != nil {
-		t.Errorf("quiet hours = (%v, %v), want both nil after disabling", got.QuietHoursStart, got.QuietHoursEnd)
+	if got.Start != nil || got.End != nil {
+		t.Errorf("quiet hours = (%v, %v), want both nil after disabling", got.Start, got.End)
 	}
 }
