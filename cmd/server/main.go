@@ -17,6 +17,9 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	nestcoreconfig "github.com/ericfisherdev/nestcore/config"
+	identitysession "github.com/ericfisherdev/nestcore/identity/session"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
@@ -282,8 +285,18 @@ func runServer(logger *slog.Logger) error {
 		appCache = badgerCache
 	}
 
-	// NES-23: session manager backed by Postgres (scs + pgxstore).
-	sm := authadapter.NewSessionManager(pool, cfg.Session)
+	// NES-23 / NSTR-115: session manager backed by nestcore's shared
+	// identity/session package, over identity.sessions — the literal store
+	// (hashed token, default "session" cookie name) both Nestova and
+	// Nestorage must share for real cross-app SSO (see that package's own
+	// doc). stop terminates pgxstore's background cleanup goroutine; safe
+	// to defer here since main returns only at process shutdown.
+	sm, stopSessionCleanup := identitysession.NewManager(pool, nestcoreconfig.SessionConfig{
+		Secret:   cfg.Session.Secret,
+		Secure:   cfg.Session.Secure,
+		Lifetime: cfg.Session.Lifetime,
+	})
+	defer stopSessionCleanup()
 
 	// NES-23: auth bounded context wiring. authHandlers itself is
 	// constructed further below (NES-135), once the MFA service and the
@@ -370,6 +383,10 @@ func runServer(logger *slog.Logger) error {
 	// SAME repository.
 	contactDirectory := notifyadapter.NewPostgresContactDirectory(pool)
 	preferenceRepo := notifyadapter.NewPostgresPreferenceRepository(pool)
+	// NSTR-115: quiet hours rehomed from the household context (which no
+	// longer owns a row to attach columns to — household lives in the
+	// shared identity schema) into notify's own schema/adapter.
+	quietHoursRepo := notifyadapter.NewQuietHoursRepository(pool)
 
 	// NES-139: wires the SMS channel into the dispatcher at last —
 	// AWSEndUserMessagingSender/NoopSMSSender (NES-138) is the raw
@@ -438,13 +455,12 @@ func runServer(logger *slog.Logger) error {
 	}
 
 	// NES-139: routingEnqueuer decorates outboxRepo with per-member,
-	// per-event-type channel resolution and household quiet-hours
-	// deferral (see that type's own doc) — every scheduler/service below
-	// that raises a member-addressed, preference-routable notification is
-	// wired against THIS, not outboxRepo directly. householdRepo already
-	// satisfies routing's narrow household-quiet-hours read port
-	// structurally (see householdReader's own doc), so no separate
-	// adapter is needed here.
+	// per-event-type channel resolution and quiet-hours deferral (see that
+	// type's own doc) — every scheduler/service below that raises a
+	// member-addressed, preference-routable notification is wired against
+	// THIS, not outboxRepo directly. quietHoursRepo satisfies routing's
+	// narrow quiet-hours read port (NSTR-115: quiet hours moved into
+	// notify's own schema/adapter, keyed by the identity household id).
 	//
 	// The auth context's own notification producers (webauthnService,
 	// loginMFAHandlers, further below) stay wired directly to outboxRepo,
@@ -452,7 +468,7 @@ func runServer(logger *slog.Logger) error {
 	// notifications, not preference-routable event types), and
 	// routingEnqueuer would be a safe no-op passthrough for them anyway
 	// (their notifications carry no EventType).
-	routingEnqueuer := notifyapp.NewRoutingEnqueuer(outboxRepo, preferenceRepo, contactDirectory, householdRepo, logger)
+	routingEnqueuer := notifyapp.NewRoutingEnqueuer(outboxRepo, preferenceRepo, contactDirectory, quietHoursRepo, logger)
 
 	// NES-31: task scheduler wiring.
 	recurringTaskRepo := tasksadapter.NewRecurringTaskRepository(pool)
@@ -881,11 +897,10 @@ func runServer(logger *slog.Logger) error {
 	settingsWebHandlers := kioskadapter.NewSettingsWebHandlers(kioskService, sm, logger)
 
 	// NES-139: SMS notification settings — phone entry/opt-in, per-event-type
-	// preferences, and (owner-only) household quiet hours. householdRepo
-	// satisfies quietHoursStore structurally (GetHousehold + SetQuietHours),
-	// so no separate adapter is needed here, mirroring routingEnqueuer's own
-	// reuse of it above.
-	notifySettingsService := notifyapp.NewSettingsService(contactDirectory, preferenceRepo, householdRepo)
+	// preferences, and (owner-only) quiet hours. quietHoursRepo satisfies
+	// quietHoursStore (GetQuietHours + SetQuietHours), mirroring
+	// routingEnqueuer's own reuse of it above.
+	notifySettingsService := notifyapp.NewSettingsService(contactDirectory, preferenceRepo, quietHoursRepo)
 	notifyWebHandlers := notifyadapter.NewNotifyWebHandlers(notifySettingsService, sm, logger)
 
 	kioskWebHandlers := kioskadapter.NewKioskWebHandlers(
