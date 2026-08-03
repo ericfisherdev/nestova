@@ -34,7 +34,7 @@ type RoutingEnqueuer struct {
 	next        domain.Enqueuer
 	preferences domain.PreferenceRepository
 	contacts    domain.ContactDirectory
-	households  householdReader
+	quietHours  domain.QuietHoursReader
 	logger      *slog.Logger
 }
 
@@ -47,7 +47,7 @@ func NewRoutingEnqueuer(
 	next domain.Enqueuer,
 	preferences domain.PreferenceRepository,
 	contacts domain.ContactDirectory,
-	households householdReader,
+	quietHours domain.QuietHoursReader,
 	logger *slog.Logger,
 ) *RoutingEnqueuer {
 	if next == nil {
@@ -59,13 +59,13 @@ func NewRoutingEnqueuer(
 	if contacts == nil {
 		panic("app: NewRoutingEnqueuer requires a non-nil ContactDirectory")
 	}
-	if households == nil {
-		panic("app: NewRoutingEnqueuer requires a non-nil household reader")
+	if quietHours == nil {
+		panic("app: NewRoutingEnqueuer requires a non-nil quiet hours reader")
 	}
 	if logger == nil {
 		panic("app: NewRoutingEnqueuer requires a non-nil logger")
 	}
-	return &RoutingEnqueuer{next: next, preferences: preferences, contacts: contacts, households: households, logger: logger}
+	return &RoutingEnqueuer{next: next, preferences: preferences, contacts: contacts, quietHours: quietHours, logger: logger}
 }
 
 // Enqueue resolves n's Channel from member preference (when routable —
@@ -98,28 +98,28 @@ func (e *RoutingEnqueuer) route(ctx context.Context, n *domain.Notification) {
 		return
 	}
 
-	hh, err := e.households.GetHousehold(ctx, n.HouseholdID)
+	qh, err := e.quietHours.GetQuietHours(ctx, n.HouseholdID)
 	if err != nil {
 		// Falling back to in-app here (not leaving Channel=SMS with no
 		// deferral check) matters specifically because the failure happens
 		// AFTER Channel was already resolved to SMS above: without a
-		// household to consult, there is no way to know whether
-		// ScheduledFor falls inside quiet hours, and sending SMS anyway
-		// risks exactly the "notification generated at 2am" case the
-		// deferral exists to prevent (NES-139 AC). Every other lookup
-		// failure in this type (resolveChannel's own preference/contact
-		// errors) already falls back the same way by simply never setting
-		// Channel to SMS in the first place; this is the one path where
-		// Channel must be explicitly reset.
-		e.logger.ErrorContext(ctx, "routing: load household for quiet hours failed, falling back to in-app",
+		// quiet-hours window to consult, there is no way to know whether
+		// ScheduledFor falls inside it, and sending SMS anyway risks
+		// exactly the "notification generated at 2am" case the deferral
+		// exists to prevent (NES-139 AC). Every other lookup failure in
+		// this type (resolveChannel's own preference/contact errors)
+		// already falls back the same way by simply never setting Channel
+		// to SMS in the first place; this is the one path where Channel
+		// must be explicitly reset.
+		e.logger.ErrorContext(ctx, "routing: load quiet hours failed, falling back to in-app",
 			"household_id", n.HouseholdID.String(),
 			"error", err,
 		)
 		n.Channel = domain.ChannelInApp
 		return
 	}
-	if hh.InQuietHours(n.ScheduledFor) {
-		n.ScheduledFor = hh.QuietHoursEndAfter(n.ScheduledFor)
+	if qh.InQuietHours(n.ScheduledFor) {
+		n.ScheduledFor = qh.EndAfter(n.ScheduledFor)
 	}
 }
 

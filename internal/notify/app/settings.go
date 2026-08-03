@@ -11,12 +11,12 @@ import (
 )
 
 // quietHoursStore is the narrow read+write port SettingsService needs onto
-// a household's quiet hours (ISP): householdReader for display, plus the
-// household package's own QuietHoursWriter for the owner-only mutation.
-// household.PostgresRepository satisfies this structurally.
+// a household's quiet hours (ISP): domain.QuietHoursReader for display,
+// plus domain.QuietHoursWriter for the owner-only mutation.
+// adapter.QuietHoursRepository satisfies this structurally.
 type quietHoursStore interface {
-	householdReader
-	household.QuietHoursWriter
+	domain.QuietHoursReader
+	domain.QuietHoursWriter
 }
 
 // deliverablePreferenceChannels is the set of channels
@@ -195,11 +195,11 @@ func (s *SettingsService) SetPreferences(
 // QuietHours returns householdID's current quiet-hours window — both nil
 // when disabled.
 func (s *SettingsService) QuietHours(ctx context.Context, householdID household.HouseholdID) (start, end *time.Duration, err error) {
-	hh, err := s.households.GetHousehold(ctx, householdID)
+	qh, err := s.households.GetQuietHours(ctx, householdID)
 	if err != nil {
 		return nil, nil, err
 	}
-	return hh.QuietHoursStart, hh.QuietHoursEnd, nil
+	return qh.Start, qh.End, nil
 }
 
 // SetQuietHours updates householdID's quiet-hours window. Passing nil for

@@ -85,12 +85,12 @@ func (f *fakeContactDirectory) SetOptedIn(_ context.Context, _ household.MemberI
 	return nil
 }
 
-// fakeHouseholdReader satisfies notify/app's own narrow householdReader
-// port AND household.QuietHoursWriter — used both as a bare
-// householdReader (routing tests) and as a full quietHoursStore
+// fakeQuietHoursReader satisfies notify/app's own quietHoursStore port
+// (domain.QuietHoursReader + domain.QuietHoursWriter) — used both as a bare
+// domain.QuietHoursReader (routing tests) and as a full quietHoursStore
 // (settings_test.go), via Go's ordinary structural interface typing.
-type fakeHouseholdReader struct {
-	household  *household.Household
+type fakeQuietHoursReader struct {
+	quietHours *domain.QuietHours
 	getErr     error
 	setErr     error
 	setCalls   int
@@ -99,17 +99,17 @@ type fakeHouseholdReader struct {
 	lastCalled household.HouseholdID
 }
 
-func (f *fakeHouseholdReader) GetHousehold(_ context.Context, id household.HouseholdID) (*household.Household, error) {
+func (f *fakeQuietHoursReader) GetQuietHours(_ context.Context, id household.HouseholdID) (domain.QuietHours, error) {
 	if f.getErr != nil {
-		return nil, f.getErr
+		return domain.QuietHours{}, f.getErr
 	}
-	if f.household != nil {
-		return f.household, nil
+	if f.quietHours != nil {
+		return *f.quietHours, nil
 	}
-	return &household.Household{ID: id}, nil
+	return domain.QuietHours{HouseholdID: id}, nil
 }
 
-func (f *fakeHouseholdReader) SetQuietHours(_ context.Context, id household.HouseholdID, start, end *time.Duration) error {
+func (f *fakeQuietHoursReader) SetQuietHours(_ context.Context, id household.HouseholdID, start, end *time.Duration) error {
 	f.setCalls++
 	f.lastStart, f.lastEnd, f.lastCalled = start, end, id
 	return f.setErr
@@ -144,7 +144,7 @@ func newRoutedNotification(memberID household.MemberID, eventType domain.EventTy
 
 func TestRoutingEnqueuer_NoMemberID_PassesThroughUnchanged(t *testing.T) {
 	outbox := &fakeOutbox{}
-	e := app.NewRoutingEnqueuer(outbox, &fakePreferenceRepo{}, &fakeContactDirectory{}, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, &fakePreferenceRepo{}, &fakeContactDirectory{}, &fakeQuietHoursReader{}, silentLogger())
 
 	n := &domain.Notification{
 		ID:          domain.NewNotificationID(),
@@ -172,7 +172,7 @@ func TestRoutingEnqueuer_NoEventType_PassesThroughUnchanged(t *testing.T) {
 	prefs := &fakePreferenceRepo{prefs: map[string]domain.Channel{
 		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelSMS,
 	}}
-	e := app.NewRoutingEnqueuer(outbox, prefs, &fakeContactDirectory{contact: readySMSContact(memberID)}, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, prefs, &fakeContactDirectory{contact: readySMSContact(memberID)}, &fakeQuietHoursReader{}, silentLogger())
 
 	n := newRoutedNotification(memberID, "", time.Now())
 	if err := e.Enqueue(context.Background(), n); err != nil {
@@ -186,7 +186,7 @@ func TestRoutingEnqueuer_NoEventType_PassesThroughUnchanged(t *testing.T) {
 func TestRoutingEnqueuer_NoPreference_DefaultsToInApp(t *testing.T) {
 	outbox := &fakeOutbox{}
 	memberID := household.NewMemberID()
-	e := app.NewRoutingEnqueuer(outbox, &fakePreferenceRepo{}, &fakeContactDirectory{}, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, &fakePreferenceRepo{}, &fakeContactDirectory{}, &fakeQuietHoursReader{}, silentLogger())
 
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
 	if err := e.Enqueue(context.Background(), n); err != nil {
@@ -204,7 +204,7 @@ func TestRoutingEnqueuer_SMSPreference_MemberReady_RoutesToSMS(t *testing.T) {
 		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelSMS,
 	}}
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeQuietHoursReader{}, silentLogger())
 
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
 	if err := e.Enqueue(context.Background(), n); err != nil {
@@ -229,7 +229,7 @@ func TestRoutingEnqueuer_EmailPreference_RoutesToEmail(t *testing.T) {
 		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelEmail,
 	}}
 	contacts := &fakeContactDirectory{}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeQuietHoursReader{}, silentLogger())
 
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
 	if err := e.Enqueue(context.Background(), n); err != nil {
@@ -261,7 +261,7 @@ func TestRoutingEnqueuer_SMSPreference_MemberNotReady_FallsBackToInApp(t *testin
 			prefs := &fakePreferenceRepo{prefs: map[string]domain.Channel{
 				prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelSMS,
 			}}
-			e := app.NewRoutingEnqueuer(outbox, prefs, &fakeContactDirectory{contact: tt.contact}, &fakeHouseholdReader{}, silentLogger())
+			e := app.NewRoutingEnqueuer(outbox, prefs, &fakeContactDirectory{contact: tt.contact}, &fakeQuietHoursReader{}, silentLogger())
 
 			n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
 			if err := e.Enqueue(context.Background(), n); err != nil {
@@ -286,9 +286,9 @@ func TestRoutingEnqueuer_SMSPreference_InsideQuietHours_ShiftsScheduledFor(t *te
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
 
 	start, end := 22*time.Hour, 7*time.Hour
-	hh := &household.Household{QuietHoursStart: &start, QuietHoursEnd: &end}
-	households := &fakeHouseholdReader{household: hh}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, households, silentLogger())
+	qh := &domain.QuietHours{Start: &start, End: &end}
+	quietHours := &fakeQuietHoursReader{quietHours: qh}
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
 
 	scheduledFor := time.Date(2026, time.July, 19, 23, 0, 0, 0, time.UTC) // inside 22:00-07:00
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, scheduledFor)
@@ -298,7 +298,7 @@ func TestRoutingEnqueuer_SMSPreference_InsideQuietHours_ShiftsScheduledFor(t *te
 	if n.Channel != domain.ChannelSMS {
 		t.Fatalf("Channel = %v, want ChannelSMS", n.Channel)
 	}
-	want := hh.QuietHoursEndAfter(scheduledFor)
+	want := qh.EndAfter(scheduledFor)
 	if !n.ScheduledFor.Equal(want) {
 		t.Errorf("ScheduledFor = %v, want %v (shifted to quiet-hours end)", n.ScheduledFor, want)
 	}
@@ -316,9 +316,9 @@ func TestRoutingEnqueuer_SMSPreference_OutsideQuietHours_NoShift(t *testing.T) {
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
 
 	start, end := 22*time.Hour, 7*time.Hour
-	hh := &household.Household{QuietHoursStart: &start, QuietHoursEnd: &end}
-	households := &fakeHouseholdReader{household: hh}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, households, silentLogger())
+	qh := &domain.QuietHours{Start: &start, End: &end}
+	quietHours := &fakeQuietHoursReader{quietHours: qh}
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
 
 	scheduledFor := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC) // midday, outside 22:00-07:00
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, scheduledFor)
@@ -334,7 +334,7 @@ func TestRoutingEnqueuer_PreferenceLookupError_KeepsDefaultChannel(t *testing.T)
 	outbox := &fakeOutbox{}
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{getErr: errors.New("db unavailable")}
-	e := app.NewRoutingEnqueuer(outbox, prefs, &fakeContactDirectory{}, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, prefs, &fakeContactDirectory{}, &fakeQuietHoursReader{}, silentLogger())
 
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
 	if err := e.Enqueue(context.Background(), n); err != nil {
@@ -352,7 +352,7 @@ func TestRoutingEnqueuer_ContactLookupError_KeepsDefaultChannel(t *testing.T) {
 		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelSMS,
 	}}
 	contacts := &fakeContactDirectory{getErr: errors.New("db unavailable")}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, &fakeQuietHoursReader{}, silentLogger())
 
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, time.Now())
 	if err := e.Enqueue(context.Background(), n); err != nil {
@@ -363,21 +363,21 @@ func TestRoutingEnqueuer_ContactLookupError_KeepsDefaultChannel(t *testing.T) {
 	}
 }
 
-// TestRoutingEnqueuer_HouseholdLookupError_FallsBackToInApp is the
-// regression test for CodeRabbit round 3 (major finding #1): a household
+// TestRoutingEnqueuer_QuietHoursLookupError_FallsBackToInApp is the
+// regression test for CodeRabbit round 3 (major finding #1): a quiet-hours
 // lookup failure must reset Channel to ChannelInApp, not leave it on SMS
 // with the quiet-hours check simply skipped — the earlier behavior risked
 // sending SMS at any hour, including inside quiet hours, whenever the
-// household lookup happened to fail.
-func TestRoutingEnqueuer_HouseholdLookupError_FallsBackToInApp(t *testing.T) {
+// lookup happened to fail.
+func TestRoutingEnqueuer_QuietHoursLookupError_FallsBackToInApp(t *testing.T) {
 	outbox := &fakeOutbox{}
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{prefs: map[string]domain.Channel{
 		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelSMS,
 	}}
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
-	households := &fakeHouseholdReader{getErr: errors.New("db unavailable")}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, households, silentLogger())
+	quietHours := &fakeQuietHoursReader{getErr: errors.New("db unavailable")}
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
 
 	scheduledFor := time.Now()
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, scheduledFor)
@@ -385,7 +385,7 @@ func TestRoutingEnqueuer_HouseholdLookupError_FallsBackToInApp(t *testing.T) {
 		t.Fatalf("Enqueue: %v, want nil", err)
 	}
 	if n.Channel != domain.ChannelInApp {
-		t.Errorf("Channel = %v, want ChannelInApp (the household lookup failure must fall back, not leave Channel on SMS with no deferral check)", n.Channel)
+		t.Errorf("Channel = %v, want ChannelInApp (the quiet-hours lookup failure must fall back, not leave Channel on SMS with no deferral check)", n.Channel)
 	}
 	if !n.ScheduledFor.Equal(scheduledFor) {
 		t.Errorf("ScheduledFor = %v, want unchanged %v (no deferral is applied on the in-app fallback path)", n.ScheduledFor, scheduledFor)
@@ -394,7 +394,7 @@ func TestRoutingEnqueuer_HouseholdLookupError_FallsBackToInApp(t *testing.T) {
 
 func TestRoutingEnqueuer_NilNotification_PassesThrough(t *testing.T) {
 	outbox := &fakeOutbox{}
-	e := app.NewRoutingEnqueuer(outbox, &fakePreferenceRepo{}, &fakeContactDirectory{}, &fakeHouseholdReader{}, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, &fakePreferenceRepo{}, &fakeContactDirectory{}, &fakeQuietHoursReader{}, silentLogger())
 
 	if err := e.Enqueue(context.Background(), nil); err != nil {
 		t.Fatalf("Enqueue(nil): %v", err)
@@ -405,18 +405,18 @@ func TestNewRoutingEnqueuer_NilDependencies_Panic(t *testing.T) {
 	outbox := &fakeOutbox{}
 	prefs := &fakePreferenceRepo{}
 	contacts := &fakeContactDirectory{}
-	households := &fakeHouseholdReader{}
+	quietHours := &fakeQuietHoursReader{}
 	logger := silentLogger()
 
 	tests := []struct {
 		name string
 		fn   func()
 	}{
-		{"nil next", func() { app.NewRoutingEnqueuer(nil, prefs, contacts, households, logger) }},
-		{"nil preferences", func() { app.NewRoutingEnqueuer(outbox, nil, contacts, households, logger) }},
-		{"nil contacts", func() { app.NewRoutingEnqueuer(outbox, prefs, nil, households, logger) }},
-		{"nil households", func() { app.NewRoutingEnqueuer(outbox, prefs, contacts, nil, logger) }},
-		{"nil logger", func() { app.NewRoutingEnqueuer(outbox, prefs, contacts, households, nil) }},
+		{"nil next", func() { app.NewRoutingEnqueuer(nil, prefs, contacts, quietHours, logger) }},
+		{"nil preferences", func() { app.NewRoutingEnqueuer(outbox, nil, contacts, quietHours, logger) }},
+		{"nil contacts", func() { app.NewRoutingEnqueuer(outbox, prefs, nil, quietHours, logger) }},
+		{"nil quiet hours", func() { app.NewRoutingEnqueuer(outbox, prefs, contacts, nil, logger) }},
+		{"nil logger", func() { app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, nil) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

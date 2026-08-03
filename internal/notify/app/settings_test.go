@@ -36,7 +36,7 @@ func (s *contactSpy) SetOptedIn(_ context.Context, _ household.MemberID, optIn b
 	return s.setOptedInErr
 }
 
-func newSettingsService(contacts domain.ContactDirectory, prefs domain.PreferenceRepository, households *fakeHouseholdReader) *app.SettingsService {
+func newSettingsService(contacts domain.ContactDirectory, prefs domain.PreferenceRepository, households *fakeQuietHoursReader) *app.SettingsService {
 	return app.NewSettingsService(contacts, prefs, households)
 }
 
@@ -46,7 +46,7 @@ func newSettingsService(contacts domain.ContactDirectory, prefs domain.Preferenc
 
 func TestSettingsService_UpdatePhone_Valid(t *testing.T) {
 	contacts := &contactSpy{}
-	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	if err := svc.UpdatePhone(context.Background(), household.NewMemberID(), "+15551234567"); err != nil {
 		t.Fatalf("UpdatePhone: %v", err)
@@ -62,7 +62,7 @@ func TestSettingsService_UpdatePhone_Valid(t *testing.T) {
 
 func TestSettingsService_UpdatePhone_BlankClears(t *testing.T) {
 	contacts := &contactSpy{}
-	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	if err := svc.UpdatePhone(context.Background(), household.NewMemberID(), "   "); err != nil {
 		t.Fatalf("UpdatePhone: %v", err)
@@ -74,7 +74,7 @@ func TestSettingsService_UpdatePhone_BlankClears(t *testing.T) {
 
 func TestSettingsService_UpdatePhone_InvalidFormat(t *testing.T) {
 	contacts := &contactSpy{}
-	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	err := svc.UpdatePhone(context.Background(), household.NewMemberID(), "not-a-phone-number")
 	if !errors.Is(err, domain.ErrInvalidPhoneFormat) {
@@ -91,7 +91,7 @@ func TestSettingsService_UpdatePhone_InvalidFormat(t *testing.T) {
 
 func TestSettingsService_SetOptIn_PassesThrough(t *testing.T) {
 	contacts := &contactSpy{}
-	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	if err := svc.SetOptIn(context.Background(), household.NewMemberID(), true); err != nil {
 		t.Fatalf("SetOptIn: %v", err)
@@ -103,7 +103,7 @@ func TestSettingsService_SetOptIn_PassesThrough(t *testing.T) {
 
 func TestSettingsService_SetOptIn_PropagatesPhoneRequiredError(t *testing.T) {
 	contacts := &contactSpy{setOptedInErr: domain.ErrPhoneRequiredForOptIn}
-	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	err := svc.SetOptIn(context.Background(), household.NewMemberID(), true)
 	if !errors.Is(err, domain.ErrPhoneRequiredForOptIn) {
@@ -121,7 +121,7 @@ func TestSettingsService_SetPreference_NonSMSChannel_NoContactCheck(t *testing.T
 	// A contact directory that would ERROR if consulted — proves the
 	// in-app path never calls it.
 	contacts := &fakeContactDirectory{getErr: errors.New("must not be called")}
-	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, prefs, &fakeQuietHoursReader{})
 
 	err := svc.SetPreference(context.Background(), household.NewHouseholdID(), memberID, domain.EventTypeClaimExpiring, domain.ChannelInApp)
 	if err != nil {
@@ -137,7 +137,7 @@ func TestSettingsService_SetPreference_SMSChannel_MemberReady_Succeeds(t *testin
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
-	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, prefs, &fakeQuietHoursReader{})
 
 	if err := svc.SetPreference(context.Background(), household.NewHouseholdID(), memberID, domain.EventTypeClaimExpiring, domain.ChannelSMS); err != nil {
 		t.Fatalf("SetPreference: %v", err)
@@ -152,7 +152,7 @@ func TestSettingsService_SetPreference_SMSChannel_MemberNotReady_Rejected(t *tes
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
 	contacts := &fakeContactDirectory{} // no phone, not opted in
-	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, prefs, &fakeQuietHoursReader{})
 
 	err := svc.SetPreference(context.Background(), household.NewHouseholdID(), memberID, domain.EventTypeClaimExpiring, domain.ChannelSMS)
 	if !errors.Is(err, domain.ErrMemberNotSMSReady) {
@@ -164,7 +164,7 @@ func TestSettingsService_SetPreference_SMSChannel_MemberNotReady_Rejected(t *tes
 }
 
 func TestSettingsService_SetPreference_InvalidChannel_Rejected(t *testing.T) {
-	svc := newSettingsService(&fakeContactDirectory{}, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(&fakeContactDirectory{}, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	err := svc.SetPreference(context.Background(), household.NewHouseholdID(), household.NewMemberID(), domain.EventTypeClaimExpiring, domain.Channel("carrier_pigeon"))
 	if err == nil {
@@ -180,7 +180,7 @@ func TestSettingsService_SetPreferences_MultipleSMSRows_ChecksReadinessOnce(t *t
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
-	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, prefs, &fakeQuietHoursReader{})
 
 	updates := map[domain.EventType]domain.Channel{
 		domain.EventTypeClaimExpiring:     domain.ChannelSMS,
@@ -204,7 +204,7 @@ func TestSettingsService_SetPreferences_MultipleSMSRows_ChecksReadinessOnce(t *t
 func TestSettingsService_SetPreferences_NoSMSRows_NeverCallsGetContact(t *testing.T) {
 	memberID := household.NewMemberID()
 	contacts := &fakeContactDirectory{getErr: errors.New("must not be called")}
-	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, &fakePreferenceRepo{}, &fakeQuietHoursReader{})
 
 	updates := map[domain.EventType]domain.Channel{
 		domain.EventTypeClaimExpiring: domain.ChannelInApp,
@@ -222,7 +222,7 @@ func TestSettingsService_SetPreferences_NotReady_RejectsWholeBatch(t *testing.T)
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
 	contacts := &fakeContactDirectory{} // no phone, not opted in
-	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, prefs, &fakeQuietHoursReader{})
 
 	updates := map[domain.EventType]domain.Channel{
 		domain.EventTypeClaimExpiring: domain.ChannelInApp,
@@ -242,7 +242,7 @@ func TestSettingsService_SetPreferences_NotReady_RejectsWholeBatch(t *testing.T)
 func TestSettingsService_SetPreferences_InvalidChannel_RejectsWholeBatch(t *testing.T) {
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
-	svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeQuietHoursReader{})
 
 	updates := map[domain.EventType]domain.Channel{
 		domain.EventTypeClaimExpiring: domain.ChannelInApp,
@@ -272,7 +272,7 @@ func TestSettingsService_SetPreferences_UndeliverableChannel_Rejected(t *testing
 		t.Run(channel.String(), func(t *testing.T) {
 			memberID := household.NewMemberID()
 			prefs := &fakePreferenceRepo{}
-			svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeHouseholdReader{})
+			svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeQuietHoursReader{})
 
 			updates := map[domain.EventType]domain.Channel{domain.EventTypeClaimExpiring: channel}
 			err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), memberID, updates)
@@ -302,7 +302,7 @@ func TestSettingsService_SetPreferences_UndeliverableChannel_IsAValidChannel(t *
 func TestSettingsService_SetPreferences_UndeliverableChannel_MixedWithValid_RejectsWholeBatch(t *testing.T) {
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
-	svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(&fakeContactDirectory{}, prefs, &fakeQuietHoursReader{})
 
 	updates := map[domain.EventType]domain.Channel{
 		domain.EventTypeClaimExpiring: domain.ChannelInApp,
@@ -327,7 +327,7 @@ func TestSettingsService_SetPreferences_EmailChannel_Accepted(t *testing.T) {
 	memberID := household.NewMemberID()
 	prefs := &fakePreferenceRepo{}
 	contacts := &fakeContactDirectory{}
-	svc := newSettingsService(contacts, prefs, &fakeHouseholdReader{})
+	svc := newSettingsService(contacts, prefs, &fakeQuietHoursReader{})
 
 	updates := map[domain.EventType]domain.Channel{domain.EventTypeClaimExpiring: domain.ChannelEmail}
 	if err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), memberID, updates); err != nil {
@@ -349,9 +349,9 @@ func TestSettingsService_SetPreferences_EmailChannel_Accepted(t *testing.T) {
 // QuietHours / SetQuietHours
 // ----------------------------------------------------------------------------
 
-func TestSettingsService_QuietHours_ReturnsHouseholdBounds(t *testing.T) {
+func TestSettingsService_QuietHours_ReturnsStoredBounds(t *testing.T) {
 	start, end := 22*time.Hour, 7*time.Hour
-	households := &fakeHouseholdReader{household: &household.Household{QuietHoursStart: &start, QuietHoursEnd: &end}}
+	households := &fakeQuietHoursReader{quietHours: &domain.QuietHours{Start: &start, End: &end}}
 	svc := newSettingsService(&fakeContactDirectory{}, &fakePreferenceRepo{}, households)
 
 	gotStart, gotEnd, err := svc.QuietHours(context.Background(), household.NewHouseholdID())
@@ -364,7 +364,7 @@ func TestSettingsService_QuietHours_ReturnsHouseholdBounds(t *testing.T) {
 }
 
 func TestSettingsService_SetQuietHours_PassesThrough(t *testing.T) {
-	households := &fakeHouseholdReader{}
+	households := &fakeQuietHoursReader{}
 	svc := newSettingsService(&fakeContactDirectory{}, &fakePreferenceRepo{}, households)
 
 	start, end := 22*time.Hour, 7*time.Hour
@@ -384,7 +384,7 @@ func TestSettingsService_SetQuietHours_PassesThrough(t *testing.T) {
 }
 
 func TestSettingsService_SetQuietHours_NilDisables(t *testing.T) {
-	households := &fakeHouseholdReader{}
+	households := &fakeQuietHoursReader{}
 	svc := newSettingsService(&fakeContactDirectory{}, &fakePreferenceRepo{}, households)
 
 	if err := svc.SetQuietHours(context.Background(), household.NewHouseholdID(), nil, nil); err != nil {
@@ -402,7 +402,7 @@ func TestSettingsService_SetQuietHours_NilDisables(t *testing.T) {
 func TestNewSettingsService_NilDependencies_Panic(t *testing.T) {
 	contacts := &fakeContactDirectory{}
 	prefs := &fakePreferenceRepo{}
-	households := &fakeHouseholdReader{}
+	households := &fakeQuietHoursReader{}
 
 	tests := []struct {
 		name string
