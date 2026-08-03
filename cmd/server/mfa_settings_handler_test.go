@@ -61,6 +61,14 @@ func (r *multiMemberHouseholdRepo) GetMember(_ context.Context, id household.Mem
 	return m, nil
 }
 
+// EnsureMemberProfile overrides testHouseholdRepo's always-not-found stub:
+// Go embedding does not dispatch virtually, so without this override the
+// embedded EnsureMemberProfile would call testHouseholdRepo's own GetMember
+// (not this type's) and every authenticated request would 401.
+func (r *multiMemberHouseholdRepo) EnsureMemberProfile(ctx context.Context, id household.MemberID) (*household.Member, error) {
+	return r.GetMember(ctx, id)
+}
+
 func (r *multiMemberHouseholdRepo) ListMembers(_ context.Context, householdID household.HouseholdID) ([]*household.Member, error) {
 	var out []*household.Member
 	for _, m := range r.members {

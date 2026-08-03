@@ -50,24 +50,30 @@ const currentMemberKey sessionContextKey = iota
 // session store, cookie name, and identity.sessions table both apps write
 // to, not merely an equivalent one built independently in each app.
 
-// lookupMember resolves the session's member_id to a Member. When the id is
-// malformed or the member no longer exists, the stale session key is removed so
-// subsequent requests do not repeat the failed lookup, and it reports ok=false
-// (the request proceeds anonymously).
+// lookupMember resolves the session's member_id to a Member, provisioning
+// this app's member_profile row on the spot when it doesn't exist yet
+// (EnsureMemberProfile) — the create-if-missing step for a member whose
+// identity.member the session names but who has never been seen by this app
+// before: a first visit to Nestova via a session an SSO-carried cookie
+// already authenticated through Nestorage (NSTR-117), not a local login this
+// app ever ran itself. When the id is malformed or the member no longer
+// exists, the stale session key is removed so subsequent requests do not
+// repeat the failed lookup, and it reports ok=false (the request proceeds
+// anonymously).
 func lookupMember(ctx context.Context, sm *scs.SessionManager, members household.HouseholdRepository, memberIDStr string) (*household.Member, bool) {
 	memberID, err := household.ParseMemberID(memberIDStr)
 	if err != nil {
 		// A malformed id can never become valid, so clear it.
-		sm.Remove(ctx, "member_id")
+		sm.Remove(ctx, sessionKeyMemberID)
 		return nil, false
 	}
-	member, err := members.GetMember(ctx, memberID)
+	member, err := members.EnsureMemberProfile(ctx, memberID)
 	if err != nil {
 		// Only clear the key when the member is genuinely gone; a transient
 		// error (DB/network) must not log the user out — proceed anonymous for
 		// just this request and keep the session for a later retry.
 		if errors.Is(err, household.ErrMemberNotFound) {
-			sm.Remove(ctx, "member_id")
+			sm.Remove(ctx, sessionKeyMemberID)
 		}
 		return nil, false
 	}
@@ -89,7 +95,7 @@ func CurrentMember(ctx context.Context) (*household.Member, bool) {
 func Authenticate(sm *scs.SessionManager, members household.HouseholdRepository) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			memberIDStr := sm.GetString(r.Context(), "member_id")
+			memberIDStr := sm.GetString(r.Context(), sessionKeyMemberID)
 			if memberIDStr != "" {
 				if member, ok := lookupMember(r.Context(), sm, members, memberIDStr); ok {
 					r = r.WithContext(context.WithValue(r.Context(), currentMemberKey, member))

@@ -54,6 +54,9 @@ var (
 //     a wrapped error, not a sentinel.
 //   - HasAnyHousehold returns (false, nil) on an empty database and (true, nil)
 //     once at least one household row exists. It never returns a sentinel error.
+//   - EnsureMemberProfile returns ErrMemberNotFound when id is unknown, exactly
+//     like GetMember; otherwise it is idempotent and never returns
+//     ErrDuplicateMember (it never touches identity.member).
 type HouseholdRepository interface {
 	CreateHousehold(ctx context.Context, h *Household) error
 	GetHousehold(ctx context.Context, id HouseholdID) (*Household, error)
@@ -64,4 +67,13 @@ type HouseholdRepository interface {
 	// used by the onboarding flow to gate the first-run setup page and to block
 	// a second call to the public POST /onboarding route (open-registration guard).
 	HasAnyHousehold(ctx context.Context) (bool, error)
+	// EnsureMemberProfile behaves like GetMember, but additionally creates the
+	// member's nestova.member_profile row (color assigned via NextColor
+	// against colors already used in the household) when one does not exist
+	// yet. This is the create-if-missing step for a member authenticated
+	// through a session this app did not originate — first login on this app
+	// via a session carried over from Nestorage (NSTR-117) — so a member
+	// already provisioned in one app gets a real profile row in the other on
+	// first arrival, rather than only ever rendering a display-time default.
+	EnsureMemberProfile(ctx context.Context, id MemberID) (*Member, error)
 }

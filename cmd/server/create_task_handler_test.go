@@ -67,6 +67,10 @@ func (r authedHouseholdRepo) GetMember(_ context.Context, _ household.MemberID) 
 	return nil, household.ErrMemberNotFound
 }
 
+func (r authedHouseholdRepo) EnsureMemberProfile(ctx context.Context, id household.MemberID) (*household.Member, error) {
+	return r.GetMember(ctx, id)
+}
+
 func (r authedHouseholdRepo) ListMembers(_ context.Context, _ household.HouseholdID) ([]*household.Member, error) {
 	if r.member != nil {
 		return []*household.Member{r.member}, nil

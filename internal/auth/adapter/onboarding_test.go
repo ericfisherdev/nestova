@@ -50,6 +50,10 @@ func (r *fakeHouseholdRepo) GetMember(_ context.Context, _ household.MemberID) (
 	return nil, household.ErrMemberNotFound
 }
 
+func (r *fakeHouseholdRepo) EnsureMemberProfile(ctx context.Context, id household.MemberID) (*household.Member, error) {
+	return r.GetMember(ctx, id)
+}
+
 func (r *fakeHouseholdRepo) ListMembers(_ context.Context, _ household.HouseholdID) ([]*household.Member, error) {
 	return nil, nil
 }

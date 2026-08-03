@@ -206,3 +206,82 @@ func TestGetMember_NoProfileRow_DefaultsColor(t *testing.T) {
 		t.Errorf("GetMember color = %v, want the default %v (no profile row)", got.Color, domain.ColorSage)
 	}
 }
+
+// TestEnsureMemberProfile_CreatesRowViaNextColor is the NSTR-117
+// create-if-missing proof: a member visible through identity.member (as it
+// would be for a member provisioned by Nestorage, arriving here for the
+// first time over a shared session) but with no nestova.member_profile row
+// gets one created via NextColor against colors already used in the
+// household, not merely a display-time default.
+func TestEnsureMemberProfile_CreatesRowViaNextColor(t *testing.T) {
+	pool := dbtest.NewIsolatedPool(t, "household")
+	repo := adapter.NewPostgresRepository(pool)
+	h := seedHousehold(t, repo)
+
+	// Two members already have profile rows using sage and clay.
+	first := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Maya", Role: domain.RoleAdult, Color: domain.ColorSage}
+	if err := repo.AddMember(testCtx(t), first); err != nil {
+		t.Fatalf("AddMember(first): %v", err)
+	}
+	second := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Daniel", Role: domain.RoleAdult, Color: domain.ColorClay}
+	if err := repo.AddMember(testCtx(t), second); err != nil {
+		t.Fatalf("AddMember(second): %v", err)
+	}
+
+	// A third member exists in identity.member (as if provisioned by
+	// Nestorage) but has no nestova.member_profile row yet.
+	crossApp := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Ivy", Role: domain.RoleAdult, Color: domain.ColorOchre}
+	if err := repo.AddMember(testCtx(t), crossApp); err != nil {
+		t.Fatalf("AddMember(crossApp): %v", err)
+	}
+	if _, err := pool.Exec(testCtx(t), "DELETE FROM member_profile WHERE member_id = $1", crossApp.ID.String()); err != nil {
+		t.Fatalf("delete profile row: %v", err)
+	}
+
+	got, err := repo.EnsureMemberProfile(testCtx(t), crossApp.ID)
+	if err != nil {
+		t.Fatalf("EnsureMemberProfile: %v", err)
+	}
+	if got.Color != domain.ColorOchre {
+		t.Errorf("EnsureMemberProfile color = %v, want %v (first unused color in the household)", got.Color, domain.ColorOchre)
+	}
+
+	var persisted string
+	if err := pool.QueryRow(testCtx(t), "SELECT color_key FROM member_profile WHERE member_id = $1", crossApp.ID.String()).Scan(&persisted); err != nil {
+		t.Fatalf("query persisted profile row: %v", err)
+	}
+	if persisted != domain.ColorOchre.String() {
+		t.Errorf("persisted color_key = %q, want %q", persisted, domain.ColorOchre.String())
+	}
+}
+
+// TestEnsureMemberProfile_ExistingRowIsUnchanged verifies idempotence: a
+// member who already has a profile row is returned exactly as stored,
+// without EnsureMemberProfile reassigning a new color.
+func TestEnsureMemberProfile_ExistingRowIsUnchanged(t *testing.T) {
+	repo := newTestRepo(t)
+	h := seedHousehold(t, repo)
+
+	m := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Maya", Role: domain.RoleAdult, Color: domain.ColorPlum}
+	if err := repo.AddMember(testCtx(t), m); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	got, err := repo.EnsureMemberProfile(testCtx(t), m.ID)
+	if err != nil {
+		t.Fatalf("EnsureMemberProfile: %v", err)
+	}
+	if got.Color != domain.ColorPlum {
+		t.Errorf("EnsureMemberProfile color = %v, want unchanged %v", got.Color, domain.ColorPlum)
+	}
+}
+
+// TestEnsureMemberProfile_UnknownMember verifies the documented error
+// contract: an unknown member id reports ErrMemberNotFound, exactly like
+// GetMember.
+func TestEnsureMemberProfile_UnknownMember(t *testing.T) {
+	repo := newTestRepo(t)
+	if _, err := repo.EnsureMemberProfile(testCtx(t), domain.NewMemberID()); !errors.Is(err, domain.ErrMemberNotFound) {
+		t.Errorf("EnsureMemberProfile(unknown) error = %v, want ErrMemberNotFound", err)
+	}
+}
