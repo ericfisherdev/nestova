@@ -173,7 +173,18 @@ func identityReset(ctx context.Context, dsn string, opts ...Option) error {
 // handles pre-existing rows correctly — coverage a plain Reset+Up cannot
 // provide, since that always starts from an empty database where a backfill
 // UPDATE trivially matches zero rows.
+//
+// Applies nestcore's identity migrations first, unconditionally, mirroring
+// Up's own identityUp call: a target version at or past 00041 needs
+// identity.household/identity.member to already exist (see that migration's
+// own doc), and nestcore's migrations are additive-only and no-op once
+// current, so applying them regardless of version is safe even when the
+// target is well below 41.
 func UpTo(ctx context.Context, dsn string, version int64, opts ...Option) error {
+	if err := identityUp(ctx, dsn, opts...); err != nil {
+		return err
+	}
+
 	var o options
 	for _, opt := range opts {
 		opt(&o)
