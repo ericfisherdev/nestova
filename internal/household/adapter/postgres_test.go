@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -283,5 +284,53 @@ func TestEnsureMemberProfile_UnknownMember(t *testing.T) {
 	repo := newTestRepo(t)
 	if _, err := repo.EnsureMemberProfile(testCtx(t), domain.NewMemberID()); !errors.Is(err, domain.ErrMemberNotFound) {
 		t.Errorf("EnsureMemberProfile(unknown) error = %v, want ErrMemberNotFound", err)
+	}
+}
+
+// TestEnsureMemberProfile_ConcurrentDifferentMembers_NoColorCollision proves
+// the household advisory lock actually closes the race a naive
+// read-then-insert would have: two DIFFERENT profile-less members of the
+// SAME household, provisioned concurrently, must not both land on the same
+// "first unused" color — member_profile has no per-household color
+// uniqueness constraint to catch that at the database level, so this is the
+// only thing that would.
+func TestEnsureMemberProfile_ConcurrentDifferentMembers_NoColorCollision(t *testing.T) {
+	pool := dbtest.NewIsolatedPool(t, "household")
+	repo := adapter.NewPostgresRepository(pool)
+	h := seedHousehold(t, repo)
+
+	a := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "A", Role: domain.RoleAdult, Color: domain.ColorSage}
+	if err := repo.AddMember(testCtx(t), a); err != nil {
+		t.Fatalf("AddMember(a): %v", err)
+	}
+	b := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "B", Role: domain.RoleAdult, Color: domain.ColorClay}
+	if err := repo.AddMember(testCtx(t), b); err != nil {
+		t.Fatalf("AddMember(b): %v", err)
+	}
+	for _, m := range []*domain.Member{a, b} {
+		if _, err := pool.Exec(testCtx(t), "DELETE FROM member_profile WHERE member_id = $1", m.ID.String()); err != nil {
+			t.Fatalf("delete profile row(%s): %v", m.DisplayName, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	results := make([]*domain.Member, 2)
+	errs := make([]error, 2)
+	for i, m := range []*domain.Member{a, b} {
+		wg.Add(1)
+		go func(i int, id domain.MemberID) {
+			defer wg.Done()
+			results[i], errs[i] = repo.EnsureMemberProfile(testCtx(t), id)
+		}(i, m.ID)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("EnsureMemberProfile(%d): %v", i, err)
+		}
+	}
+	if results[0].Color == results[1].Color {
+		t.Errorf("both concurrently provisioned members got color %v, want two distinct colors", results[0].Color)
 	}
 }
