@@ -35,7 +35,7 @@ func testCtx(t *testing.T) context.Context {
 func seedHousehold(t *testing.T, pool *pgxpool.Pool) household.HouseholdID {
 	t.Helper()
 	id := household.NewHouseholdID()
-	if _, err := pool.Exec(testCtx(t), `INSERT INTO household (id, name) VALUES ($1, $2)`, id.String(), "The Fishers"); err != nil {
+	if _, err := pool.Exec(testCtx(t), `INSERT INTO identity.household (id, name) VALUES ($1, $2)`, id.String(), "The Fishers"); err != nil {
 		t.Fatalf("seed household: %v", err)
 	}
 	return id

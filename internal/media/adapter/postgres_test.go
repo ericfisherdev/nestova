@@ -66,7 +66,7 @@ func testCtx(t *testing.T) context.Context {
 func seedHousehold(t *testing.T, pool *pgxpool.Pool) household.HouseholdID {
 	t.Helper()
 	id := household.NewHouseholdID()
-	if _, err := pool.Exec(testCtx(t), `INSERT INTO household (id, name) VALUES ($1, $2)`, id.String(), "The Fishers"); err != nil {
+	if _, err := pool.Exec(testCtx(t), `INSERT INTO identity.household (id, name) VALUES ($1, $2)`, id.String(), "The Fishers"); err != nil {
 		t.Fatalf("seed household: %v", err)
 	}
 	return id
@@ -76,9 +76,14 @@ func seedMember(t *testing.T, pool *pgxpool.Pool, hh household.HouseholdID, name
 	t.Helper()
 	id := household.NewMemberID()
 	if _, err := pool.Exec(testCtx(t),
-		`INSERT INTO member (id, household_id, display_name, role, color_key) VALUES ($1, $2, $3, 'owner', 'sage')`,
+		`INSERT INTO identity.member (id, household_id, display_name, role) VALUES ($1, $2, $3, 'owner')`,
 		id.String(), hh.String(), name); err != nil {
 		t.Fatalf("seed member: %v", err)
+	}
+	if _, err := pool.Exec(testCtx(t),
+		`INSERT INTO member_profile (member_id, color_key) VALUES ($1, 'sage')`,
+		id.String()); err != nil {
+		t.Fatalf("seed member profile: %v", err)
 	}
 	return id
 }

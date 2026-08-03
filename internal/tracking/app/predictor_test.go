@@ -149,7 +149,7 @@ func TestRecomputePersistsViaRepository(t *testing.T) {
 	predictor := mustPredictor(t, eventRepo, predRepo)
 
 	hh := household.NewHouseholdID()
-	if _, err := pool.Exec(ctx, `INSERT INTO household (id, name) VALUES ($1, $2)`, hh.String(), "H"); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.household (id, name) VALUES ($1, $2)`, hh.String(), "H"); err != nil {
 		t.Fatalf("seed household: %v", err)
 	}
 	itemID := domain.NewTrackedItemID()

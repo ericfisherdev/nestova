@@ -29,7 +29,7 @@ func seedHousehold(t *testing.T, pool *pgxpool.Pool) household.HouseholdID {
 	id := household.NewHouseholdID()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := pool.Exec(ctx, `INSERT INTO household (id, name) VALUES ($1, $2)`, id.String(), "The Fishers"); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO identity.household (id, name) VALUES ($1, $2)`, id.String(), "The Fishers"); err != nil {
 		t.Fatalf("seed household: %v", err)
 	}
 	return id

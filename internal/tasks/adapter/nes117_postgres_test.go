@@ -748,7 +748,7 @@ func TestSweepExpiredClaims_OrphanedClaimAfterMemberDeletion(t *testing.T) {
 	// Delete the claimant directly (no repository method exists for member
 	// deletion yet). This must succeed without violating
 	// task_instance_claim_consistency or task_instance_claim_expiry_requires_claim.
-	if _, err := pool.Exec(testCtx(t), "DELETE FROM member WHERE id = $1", m1.String()); err != nil {
+	if _, err := pool.Exec(testCtx(t), "DELETE FROM identity.member WHERE id = $1", m1.String()); err != nil {
 		t.Fatalf("delete claimant member: %v (must not violate a task_instance claim CHECK constraint)", err)
 	}
 
