@@ -18,7 +18,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2 v1.31.1
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.2
 	github.com/aws/aws-sdk-go-v2/service/sesv2 v1.63.1
-	github.com/ericfisherdev/nestcore v0.2.1-0.20260803025615-6533cbebbc36
+	github.com/ericfisherdev/nestcore v0.2.1-0.20260803130738-f3c6a840c1e7
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
