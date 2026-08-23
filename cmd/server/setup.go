@@ -45,6 +45,13 @@ const (
 	// setupSessionLifetime bounds the in-memory setup session, which exists only
 	// to back the wizard's CSRF token.
 	setupSessionLifetime = time.Hour
+	// setupRequestTimeout is the per-request budget for the wizard's own HTTP
+	// server. Setup mode does not run config.Load, so this Config is built by
+	// hand and must set RequestTimeout explicitly: httpserver.New derives the
+	// per-request context deadline as RequestTimeout minus requestTimeoutMargin
+	// (5s), so a zero value yields an ALREADY-EXPIRED deadline and every page
+	// renders empty. The wizard's slowest request is the connect + migrate POST.
+	setupRequestTimeout = 120 * time.Second
 )
 
 // runSetup serves the first-run setup wizard until the operator completes it
@@ -64,7 +71,10 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 		// applied), then closing it, so the wizard validates exactly the
 		// connectivity the server will use.
 		pingerFunc(func(ctx context.Context, conn setup.Conn) error {
-			pool, err := db.New(ctx, dbConfigForConn(conn))
+			// NewUnverified, not New: the wizard pings BEFORE running the
+			// migrations that create the required schema, so New's schema guard
+			// would reject every genuinely fresh database.
+			pool, err := db.NewUnverified(ctx, dbConfigForConn(conn))
 			if err != nil {
 				return err
 			}
@@ -97,10 +107,7 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 
 	// A minimal config is enough for the HTTP layer: setup mode serves plain HTTP
 	// (TLS terminates at a proxy if any), with no readiness check or HSTS.
-	cfg := config.Config{
-		Env:    config.EnvProd,
-		Server: config.ServerConfig{Addr: config.ServerAddrFromEnv(), TrustedProxies: "127.0.0.0/8,::1/128"},
-	}
+	cfg := setupServerConfig()
 	srv := httpserver.New(cfg, httpserver.Deps{
 		Logger:     logger,
 		Middleware: []middleware.Middleware{sm.LoadAndSave},
@@ -134,6 +141,23 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+// setupServerConfig is the minimal configuration the wizard's HTTP layer needs.
+// Setup mode serves plain HTTP (TLS terminates at a proxy if any), with no
+// readiness check and no HSTS. RequestTimeout must be set explicitly: setup mode
+// never runs config.Load, and httpserver.New derives its per-request context
+// deadline from this field, so leaving it zero yields an already-expired
+// deadline and an empty response body on every wizard page.
+func setupServerConfig() config.Config {
+	return config.Config{
+		Env: config.EnvProd,
+		Server: config.ServerConfig{
+			Addr:           config.ServerAddrFromEnv(),
+			TrustedProxies: "127.0.0.0/8,::1/128",
+			RequestTimeout: setupRequestTimeout,
+		},
+	}
 }
 
 // dbConfigForConn maps a setup.Conn to the DBConfig the server builds at boot,
