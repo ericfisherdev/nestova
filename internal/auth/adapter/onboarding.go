@@ -9,10 +9,11 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/crypto"
+	"github.com/ericfisherdev/nestcore/render"
+
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	"github.com/ericfisherdev/nestova/web/components"
 )
 

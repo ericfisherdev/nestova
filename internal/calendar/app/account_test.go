@@ -10,10 +10,11 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/ericfisherdev/nestcore/crypto"
+
 	"github.com/ericfisherdev/nestova/internal/calendar/app"
 	calendardomain "github.com/ericfisherdev/nestova/internal/calendar/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 )
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

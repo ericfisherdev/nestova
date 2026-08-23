@@ -12,11 +12,12 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	"github.com/ericfisherdev/nestcore/render"
+
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	"github.com/ericfisherdev/nestova/web/components"
 )
 

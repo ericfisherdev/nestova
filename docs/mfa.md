@@ -66,7 +66,7 @@ those is that ticket's own scope.
 TOTP is a shared-secret-plus-time protocol: the server and every enrolled
 member's authenticator app must agree on the current time to within the
 ±1-period (30-second) skew window this codebase tolerates
-(`internal/platform/totp`). A server clock that has drifted further than
+(`github.com/ericfisherdev/nestcore/totp`). A server clock that has drifted further than
 that will reject **every** member's correct code, indistinguishably from a
 wrong one — there is no separate error path, so this failure mode looks
 identical to "MFA is broken" from a support perspective.

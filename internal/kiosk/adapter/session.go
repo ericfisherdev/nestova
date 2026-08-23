@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/kiosk/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 )
 
 // CookieName is the kiosk device's bearer-token cookie. Unlike the member

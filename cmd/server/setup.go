@@ -18,12 +18,13 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
+
 	"github.com/ericfisherdev/nestova/internal/platform/bootstrap"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 	dbmigrate "github.com/ericfisherdev/nestova/internal/platform/db/migrate"
 	"github.com/ericfisherdev/nestova/internal/platform/httpserver"
-	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	"github.com/ericfisherdev/nestova/internal/platform/setup"
 )
 

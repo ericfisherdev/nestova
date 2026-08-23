@@ -12,11 +12,12 @@ import (
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/render"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/media/app"
 	"github.com/ericfisherdev/nestova/internal/media/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	"github.com/ericfisherdev/nestova/web/components"
 )
 

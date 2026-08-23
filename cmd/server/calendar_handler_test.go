@@ -10,11 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
+
 	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
 	"golang.org/x/oauth2"
+
+	"github.com/ericfisherdev/nestcore/crypto"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
@@ -22,7 +25,6 @@ import (
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	calendardomain "github.com/ericfisherdev/nestova/internal/calendar/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 )

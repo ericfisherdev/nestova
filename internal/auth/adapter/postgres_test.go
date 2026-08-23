@@ -8,11 +8,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ericfisherdev/nestcore/crypto"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	householdadapter "github.com/ericfisherdev/nestova/internal/household/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	"github.com/ericfisherdev/nestova/internal/platform/db/dbtest"
 )
 

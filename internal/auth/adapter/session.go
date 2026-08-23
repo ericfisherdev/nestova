@@ -12,9 +12,10 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
+
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 )
 
 // stepUpFreshnessWindow bounds how recently a session must have completed

@@ -5,12 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
+
+	"github.com/ericfisherdev/nestcore/crypto"
 
 	"github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 )
 
 // fakeRepo is an in-memory CredentialRepository used for hermetic unit tests.

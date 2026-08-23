@@ -10,11 +10,12 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/kiosk/app"
 	"github.com/ericfisherdev/nestova/internal/kiosk/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	"github.com/ericfisherdev/nestova/web/components"
 )
 

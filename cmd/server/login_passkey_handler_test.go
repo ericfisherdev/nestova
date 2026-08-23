@@ -16,19 +16,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/ericfisherdev/nestcore/crypto"
+	"github.com/ericfisherdev/nestcore/totp"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	notifydomain "github.com/ericfisherdev/nestova/internal/notify/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
-	"github.com/ericfisherdev/nestova/internal/platform/totp"
 )
 
 // ---------------------------------------------------------------------------
