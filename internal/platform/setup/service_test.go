@@ -101,7 +101,7 @@ func TestApply_RespectsOperatorProvidedSecrets(t *testing.T) {
 
 	store := &fakeStore{}
 	svc := newService(&fakePinger{}, &fakeMigrator{}, store)
-	if err := svc.Apply(context.Background(), Input{RawDSN: "postgres://u@h:5432/db"}); err != nil {
+	if err := svc.Apply(context.Background(), Input{RawDSN: "postgres://u@h:5432/db?options=-c+search_path%3Dnestova%2Cpublic"}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	// When the operator set the env vars, no secret is persisted (env wins at load).
@@ -169,9 +169,9 @@ func TestBuildDSN(t *testing.T) {
 		},
 		{
 			name: "raw dsn passthrough",
-			in:   Input{RawDSN: "postgresql://u:p@h:6543/db?sslmode=require"},
+			in:   Input{RawDSN: "postgresql://u:p@h:6543/db?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require"},
 			check: func(t *testing.T, dsn string) {
-				if dsn != "postgresql://u:p@h:6543/db?sslmode=require" {
+				if dsn != "postgresql://u:p@h:6543/db?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require" {
 					t.Fatalf("raw DSN altered: %q", dsn)
 				}
 			},
@@ -182,8 +182,8 @@ func TestBuildDSN(t *testing.T) {
 		{name: "bad sslmode", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "bogus"}, wantErr: true},
 		{name: "raw dsn wrong scheme", in: Input{RawDSN: "mysql://h/db"}, wantErr: true},
 		{name: "raw dsn missing database", in: Input{RawDSN: "postgres://u@h:5432"}, wantErr: true},
-		{name: "raw dsn database via dbname param", in: Input{RawDSN: "postgres://u@h:5432?dbname=app"}, check: func(t *testing.T, dsn string) {
-			if dsn != "postgres://u@h:5432?dbname=app" {
+		{name: "raw dsn database via dbname param", in: Input{RawDSN: "postgres://u@h:5432?dbname=app&options=-c+search_path%3Dnestova%2Cpublic"}, check: func(t *testing.T, dsn string) {
+			if dsn != "postgres://u@h:5432?dbname=app&options=-c+search_path%3Dnestova%2Cpublic" {
 				t.Fatalf("raw DSN altered: %q", dsn)
 			}
 		}},
@@ -310,11 +310,11 @@ func TestBuildConn(t *testing.T) {
 		{name: "supabase rejects non-enforcing sslmode prefer", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "prefer", Provider: "supabase"}, wantErr: true},
 		{
 			name: "supabase raw dsn infers transaction from 6543",
-			in:   Input{RawDSN: "postgres://u:p@db.supabase.co:6543/postgres?sslmode=require", Provider: "supabase"},
-			want: Conn{DSN: "postgres://u:p@db.supabase.co:6543/postgres?sslmode=require", Provider: "supabase", PoolMode: "transaction"},
+			in:   Input{RawDSN: "postgres://u:p@db.supabase.co:6543/postgres?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require", Provider: "supabase"},
+			want: Conn{DSN: "postgres://u:p@db.supabase.co:6543/postgres?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require", Provider: "supabase", PoolMode: "transaction"},
 		},
-		{name: "supabase raw dsn rejects sslmode disable", in: Input{RawDSN: "postgres://u:p@db.supabase.co:5432/postgres?sslmode=disable", Provider: "supabase"}, wantErr: true},
-		{name: "supabase raw dsn rejects absent sslmode", in: Input{RawDSN: "postgres://u:p@db.supabase.co:5432/postgres", Provider: "supabase"}, wantErr: true},
+		{name: "supabase raw dsn rejects sslmode disable", in: Input{RawDSN: "postgres://u:p@db.supabase.co:5432/postgres?options=-c+search_path%3Dnestova%2Cpublic&sslmode=disable", Provider: "supabase"}, wantErr: true},
+		{name: "supabase raw dsn rejects absent sslmode", in: Input{RawDSN: "postgres://u:p@db.supabase.co:5432/postgres?options=-c+search_path%3Dnestova%2Cpublic", Provider: "supabase"}, wantErr: true},
 		// The wizard accepts only URL-form DSNs (validatePostgresDSN requires the
 		// postgres:// scheme), so a keyword/value DSN is rejected before the
 		// provider checks regardless of its sslmode.
@@ -359,11 +359,29 @@ func TestBuildDSN_SetsSearchPathOption(t *testing.T) {
 	}
 }
 
+// A raw DSN is used verbatim, so it must already resolve to Nestova's schema.
+// Rejecting it in buildDSN keeps the operator on the form, where the message can
+// name the field, instead of dead-ending inside migrate.connect with advice about
+// env vars setup mode never reads (NES-164).
+func TestBuildDSN_RawDSNRequiresSearchPath(t *testing.T) {
+	tests := map[string]string{
+		"no options parameter":   "postgres://u:p@localhost:5432/nest?sslmode=disable",
+		"different schema first": "postgres://u:p@localhost:5432/nest?options=-c+search_path%3Dpublic%2Cnestova",
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := buildDSN(Input{RawDSN: raw}); err == nil {
+				t.Fatalf("buildDSN(%q) error = nil, want a search_path rejection", raw)
+			}
+		})
+	}
+}
+
 // A raw DSN is passed through verbatim, so the operator supplies their own
 // options; the built path must not be the only one that works, but it must not
 // rewrite what was pasted either.
 func TestBuildDSN_RawDSNIsNotRewritten(t *testing.T) {
-	const raw = "postgres://u:p@localhost:5432/nest?sslmode=disable"
+	const raw = "postgres://u:p@localhost:5432/nest?options=-c+search_path%3Dnestova%2Cpublic&sslmode=disable"
 	dsn, err := buildDSN(Input{RawDSN: raw})
 	if err != nil {
 		t.Fatalf("buildDSN() error = %v, want nil", err)
