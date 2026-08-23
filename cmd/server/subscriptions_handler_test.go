@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
 
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"

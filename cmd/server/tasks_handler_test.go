@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
+
 	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"

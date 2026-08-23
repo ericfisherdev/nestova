@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
+
+	"github.com/ericfisherdev/nestcore/crypto"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
@@ -24,7 +26,6 @@ import (
 	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
 	deeplinkdomain "github.com/ericfisherdev/nestova/internal/deeplink/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 )

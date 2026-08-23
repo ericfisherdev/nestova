@@ -7,9 +7,10 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/render"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	"github.com/ericfisherdev/nestova/internal/calendar/app"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 )
 
 // postConnectRedirect is where the member lands after the OAuth round trip. It

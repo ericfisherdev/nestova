@@ -15,6 +15,10 @@ import (
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
+	"github.com/ericfisherdev/nestcore/qrcode"
+	"github.com/ericfisherdev/nestcore/render"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	calendarapp "github.com/ericfisherdev/nestova/internal/calendar/app"
 	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
@@ -26,9 +30,6 @@ import (
 	mealsdomain "github.com/ericfisherdev/nestova/internal/meals/domain"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
 	mediadomain "github.com/ericfisherdev/nestova/internal/media/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
-	"github.com/ericfisherdev/nestova/internal/platform/qrcode"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 	trackingapp "github.com/ericfisherdev/nestova/internal/tracking/app"
 	trackingdomain "github.com/ericfisherdev/nestova/internal/tracking/domain"

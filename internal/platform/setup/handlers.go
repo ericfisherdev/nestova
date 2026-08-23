@@ -12,7 +12,8 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
-	"github.com/ericfisherdev/nestova/internal/platform/render"
+	"github.com/ericfisherdev/nestcore/render"
+
 	"github.com/ericfisherdev/nestova/web/components"
 )
 

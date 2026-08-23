@@ -9,6 +9,8 @@ import (
 	"github.com/a-h/templ"
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/render"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	calendaradapter "github.com/ericfisherdev/nestova/internal/calendar/adapter"
@@ -20,7 +22,6 @@ import (
 	notifyadapter "github.com/ericfisherdev/nestova/internal/notify/adapter"
 	"github.com/ericfisherdev/nestova/internal/platform/config"
 	"github.com/ericfisherdev/nestova/internal/platform/peer"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	subscriptionsadapter "github.com/ericfisherdev/nestova/internal/subscriptions/adapter"
 	tasksadapter "github.com/ericfisherdev/nestova/internal/tasks/adapter"
 	trackingadapter "github.com/ericfisherdev/nestova/internal/tracking/adapter"

@@ -18,9 +18,10 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/ericfisherdev/nestcore/cache"
+
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/meals/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/cache"
 	tracking "github.com/ericfisherdev/nestova/internal/tracking/domain"
 )
 

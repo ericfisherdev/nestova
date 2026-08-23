@@ -24,11 +24,12 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/render"
+
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	deeplinkapp "github.com/ericfisherdev/nestova/internal/deeplink/app"
 	deeplinkdomain "github.com/ericfisherdev/nestova/internal/deeplink/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/render"
 	tasksapp "github.com/ericfisherdev/nestova/internal/tasks/app"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 	"github.com/ericfisherdev/nestova/web/components"

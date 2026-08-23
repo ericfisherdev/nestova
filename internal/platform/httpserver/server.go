@@ -15,8 +15,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
+
 	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/httpserver/middleware"
 	"github.com/ericfisherdev/nestova/internal/platform/metrics"
 	"github.com/ericfisherdev/nestova/web"
 	"github.com/ericfisherdev/nestova/web/components"

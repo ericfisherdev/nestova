@@ -10,10 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
+
 	"github.com/ericfisherdev/nestova/internal/platform/config"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
+
+	"github.com/ericfisherdev/nestcore/crypto"
+	"github.com/ericfisherdev/nestcore/totp"
 
 	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
@@ -28,8 +32,6 @@ import (
 	mealsapp "github.com/ericfisherdev/nestova/internal/meals/app"
 	mediaapp "github.com/ericfisherdev/nestova/internal/media/app"
 	mediadomain "github.com/ericfisherdev/nestova/internal/media/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/crypto"
-	"github.com/ericfisherdev/nestova/internal/platform/totp"
 	subscriptionsdomain "github.com/ericfisherdev/nestova/internal/subscriptions/domain"
 	tasksdomain "github.com/ericfisherdev/nestova/internal/tasks/domain"
 	trackingapp "github.com/ericfisherdev/nestova/internal/tracking/app"

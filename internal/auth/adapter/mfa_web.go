@@ -9,10 +9,11 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/qrcode"
+
 	authapp "github.com/ericfisherdev/nestova/internal/auth/app"
 	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
-	"github.com/ericfisherdev/nestova/internal/platform/qrcode"
 	"github.com/ericfisherdev/nestova/web/components"
 )
 

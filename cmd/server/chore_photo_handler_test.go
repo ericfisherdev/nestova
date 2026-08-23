@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ericfisherdev/nestova/internal/platform/crypto/cryptotest"
+	"github.com/ericfisherdev/nestcore/crypto/cryptotest"
 
 	"github.com/alexedwards/scs/v2"
 
