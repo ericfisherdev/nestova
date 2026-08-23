@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ericfisherdev/nestova/internal/platform/setup"
 )
@@ -95,5 +96,20 @@ func TestMigrationDSN_AppliesSSLRootCertAndForcesVerifyFull(t *testing.T) {
 	}
 	if u.Query().Get("sslrootcert") != "/etc/ssl/ca.crt" || u.Query().Get("sslmode") != "verify-full" {
 		t.Fatalf("SSL settings not applied: %s", got)
+	}
+}
+
+// The wizard builds its own config.Config because setup mode never runs
+// config.Load. httpserver.New subtracts a 5s margin from RequestTimeout to get
+// the per-request context deadline, so a zero (or too small) value leaves every
+// wizard request with an already-expired context and an empty response body —
+// the NES-164 blank-setup-page regression.
+func TestSetupServerConfig_RequestTimeoutLeavesAUsableDeadline(t *testing.T) {
+	const httpserverRequestTimeoutMargin = 5 * time.Second
+
+	cfg := setupServerConfig()
+	if cfg.Server.RequestTimeout <= httpserverRequestTimeoutMargin {
+		t.Fatalf("setupServerConfig().Server.RequestTimeout = %s, want more than the %s httpserver margin",
+			cfg.Server.RequestTimeout, httpserverRequestTimeoutMargin)
 	}
 }

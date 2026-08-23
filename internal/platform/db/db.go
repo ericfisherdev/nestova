@@ -51,6 +51,22 @@ const requiredSchema = "nestova"
 // database fails fast with a descriptive error. The caller owns the pool and
 // must Close it.
 func New(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
+	return newPool(ctx, cfg, true)
+}
+
+// NewUnverified builds and pings a pool exactly as New does but SKIPS the
+// requiredSchema check. It exists for the one caller that must connect BEFORE
+// the schema can possibly exist: the first-run setup wizard validates
+// connectivity against an empty database and only then runs the migrations
+// that create requiredSchema. Every other caller must use New, whose schema
+// guard catches a DSN missing its search_path option at boot.
+func NewUnverified(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
+	return newPool(ctx, cfg, false)
+}
+
+// newPool is the shared implementation behind New and NewUnverified;
+// verifySchemaOnConnect selects whether the requiredSchema guard runs.
+func newPool(ctx context.Context, cfg config.DBConfig, verifySchemaOnConnect bool) (*pgxpool.Pool, error) {
 	poolCfg, err := poolConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -72,9 +88,11 @@ func New(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
 		pool.Close()
 		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}
-	if err := verifySchema(pingCtx, pool); err != nil {
-		pool.Close()
-		return nil, err
+	if verifySchemaOnConnect {
+		if err := verifySchema(pingCtx, pool); err != nil {
+			pool.Close()
+			return nil, err
+		}
 	}
 	return pool, nil
 }

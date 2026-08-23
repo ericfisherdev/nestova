@@ -227,7 +227,7 @@ func TestApply_Supabase_PersistsProviderAndPoolMode(t *testing.T) {
 	// The provider/pooler/TLS settings — including the SSL root cert — must reach
 	// the ping and migrate steps so the wizard validates the path the server uses.
 	wantConn := Conn{
-		DSN:         "postgres://postgres:pw@db.supabase.co:6543/postgres?sslmode=require",
+		DSN:         "postgres://postgres:pw@db.supabase.co:6543/postgres?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require",
 		Provider:    "supabase",
 		PoolMode:    "transaction",
 		SSLRootCert: "/etc/ssl/ca.crt",
@@ -287,22 +287,22 @@ func TestBuildConn(t *testing.T) {
 		{
 			name: "postgres has no override",
 			in:   Input{Host: "h", Database: "d", User: "u", Provider: "postgres"},
-			want: Conn{DSN: "postgres://u:@h:5432/d?sslmode=disable"},
+			want: Conn{DSN: "postgres://u:@h:5432/d?options=-c+search_path%3Dnestova%2Cpublic&sslmode=disable"},
 		},
 		{
 			name: "empty provider defaults to postgres",
 			in:   Input{Host: "h", Database: "d", User: "u"},
-			want: Conn{DSN: "postgres://u:@h:5432/d?sslmode=disable"},
+			want: Conn{DSN: "postgres://u:@h:5432/d?options=-c+search_path%3Dnestova%2Cpublic&sslmode=disable"},
 		},
 		{
 			name: "supabase defaults to session pooler",
 			in:   Input{Host: "h", Database: "d", User: "u", SSLMode: "require", Provider: "supabase"},
-			want: Conn{DSN: "postgres://u:@h:5432/d?sslmode=require", Provider: "supabase", PoolMode: "session"},
+			want: Conn{DSN: "postgres://u:@h:5432/d?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require", Provider: "supabase", PoolMode: "session"},
 		},
 		{
 			name: "supabase port 6543 infers transaction pooler",
 			in:   Input{Host: "h", Port: "6543", Database: "d", User: "u", SSLMode: "require", Provider: "supabase"},
-			want: Conn{DSN: "postgres://u:@h:6543/d?sslmode=require", Provider: "supabase", PoolMode: "transaction"},
+			want: Conn{DSN: "postgres://u:@h:6543/d?options=-c+search_path%3Dnestova%2Cpublic&sslmode=require", Provider: "supabase", PoolMode: "transaction"},
 		},
 		{name: "supabase port 6543 rejects session mode", in: Input{Host: "h", Port: "6543", Database: "d", User: "u", SSLMode: "require", Provider: "supabase", PoolMode: "session"}, wantErr: true},
 		{name: "supabase port 5432 rejects transaction mode", in: Input{Host: "h", Database: "d", User: "u", SSLMode: "require", Provider: "supabase", PoolMode: "transaction"}, wantErr: true},
@@ -338,5 +338,37 @@ func TestBuildConn(t *testing.T) {
 				t.Fatalf("buildConn = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// buildDSN must pin the search_path to Nestova's schema: the migration runner
+// and db.New's boot guard both require the connection to resolve to it, so a
+// DSN without the option makes the wizard's own migration step fail and would
+// persist a DATABASE_URL the restarted server refuses (NES-164).
+func TestBuildDSN_SetsSearchPathOption(t *testing.T) {
+	dsn, err := buildDSN(Input{Host: "localhost", Port: "5432", Database: "nest", User: "nestova", Password: "secret"})
+	if err != nil {
+		t.Fatalf("buildDSN() error = %v, want nil", err)
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn %q: %v", dsn, err)
+	}
+	if got, want := u.Query().Get("options"), "-c search_path="+appSchema+",public"; got != want {
+		t.Errorf("options = %q, want %q", got, want)
+	}
+}
+
+// A raw DSN is passed through verbatim, so the operator supplies their own
+// options; the built path must not be the only one that works, but it must not
+// rewrite what was pasted either.
+func TestBuildDSN_RawDSNIsNotRewritten(t *testing.T) {
+	const raw = "postgres://u:p@localhost:5432/nest?sslmode=disable"
+	dsn, err := buildDSN(Input{RawDSN: raw})
+	if err != nil {
+		t.Fatalf("buildDSN() error = %v, want nil", err)
+	}
+	if dsn != raw {
+		t.Errorf("buildDSN() = %q, want the raw DSN %q unchanged", dsn, raw)
 	}
 }

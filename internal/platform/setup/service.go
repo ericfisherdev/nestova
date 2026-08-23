@@ -176,6 +176,12 @@ const (
 	providerSupabase = "supabase"
 )
 
+// appSchema is the Postgres schema every Nestova connection must resolve to
+// (NSTR-118). It is mirrored here rather than imported from platform/db so the
+// wizard stays independent of the pool package, matching how
+// platform/db/migrate carries its own copy of the same literal.
+const appSchema = "nestova"
+
 // allowedPoolModes is the set of Supabase pooler modes the wizard accepts.
 var allowedPoolModes = map[string]struct{}{
 	"session":     {},
@@ -311,6 +317,11 @@ func buildDSN(in Input) (string, error) {
 	}
 	q := url.Values{}
 	q.Set("sslmode", sslMode)
+	// Pin the search_path to Nestova's own schema (NSTR-118). Both the migration
+	// runner and db.New's boot guard require the connection to resolve to it;
+	// without this option the migrations would scatter their unqualified DDL
+	// into public and the post-setup restart would refuse to boot.
+	q.Set("options", "-c search_path="+appSchema+",public")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
