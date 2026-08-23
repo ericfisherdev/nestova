@@ -354,7 +354,10 @@ func TestBuildDSN_SetsSearchPathOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse dsn %q: %v", dsn, err)
 	}
-	if got, want := u.Query().Get("options"), "-c search_path="+appSchema+",public"; got != want {
+	// The literal is deliberate: appSchema is a hand-maintained copy of the
+	// same value in platform/db and platform/db/migrate, so an expectation
+	// built FROM appSchema would move with a rename and prove nothing.
+	if got, want := u.Query().Get("options"), "-c search_path=nestova,public"; got != want {
 		t.Errorf("options = %q, want %q", got, want)
 	}
 }
