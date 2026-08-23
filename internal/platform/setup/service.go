@@ -283,6 +283,14 @@ func buildDSN(in Input) (string, error) {
 		if err := validatePostgresDSN(raw); err != nil {
 			return "", err
 		}
+		// A raw DSN is used verbatim, so it must already carry the search_path
+		// option the migration runner and db.New's boot guard both require.
+		// Reject it here, where the message can name the form field, rather
+		// than failing two layers down with advice about env vars setup mode
+		// never reads.
+		if err := validateSearchPath(raw); err != nil {
+			return "", err
+		}
 		return raw, nil
 	}
 
@@ -324,6 +332,31 @@ func buildDSN(in Input) (string, error) {
 	q.Set("options", "-c search_path="+appSchema+",public")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// validateSearchPath rejects a raw DSN whose options do not put appSchema first
+// in search_path. current_schema() — what both migrate.connect and db.New check
+// — resolves to the first EXISTING entry, so requiring appSchema first is what
+// actually makes those two guards pass.
+func validateSearchPath(dsn string) error {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("not a valid URL: %w", err)
+	}
+	var first string
+	for _, tok := range strings.Fields(u.Query().Get("options")) {
+		if v, ok := strings.CutPrefix(tok, "search_path="); ok {
+			first, _, _ = strings.Cut(v, ",")
+		}
+	}
+	if first != appSchema {
+		return fmt.Errorf(
+			"connection string is missing the search_path option: append "+
+				"?options=-c search_path=%s,public to it, so Nestova's tables "+
+				"resolve to the %s schema instead of public",
+			appSchema, appSchema)
+	}
+	return nil
 }
 
 // validatePostgresDSN checks that a raw DSN is an absolute postgres:// URL with a
