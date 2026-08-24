@@ -28,6 +28,17 @@ policies:
           - perf
           - style
           - revert
-        # Any scope is allowed (the project uses Jira keys, e.g. NES-8).
+        # The scope is the Jira issue key (NES-170). Anchored because conform
+        # matches scopes with MatchString, a SUBSTRING match, so an unanchored
+        # pattern would also accept "refs-NES-8-followup".
+        #
+        # This cannot make the key mandatory: conform's conventional check
+        # treats an empty scope as valid ("Scope is optional" in
+        # check_conventional_commit.go), so a scopeless commit passes here.
+        # The pr-title workflow's requireScope is what enforces presence.
+        #
+        # conform's own `jira` policy is deliberately unused: its regex wants a
+        # space before the key, so it rejects the scope form, and it needs an
+        # enumerated project list rather than a general pattern.
         scopes:
-          - .*
+          - ^[A-Z][A-Z0-9]+-[0-9]+$
