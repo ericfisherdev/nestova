@@ -174,6 +174,73 @@ func recoveryCodeIDFromInt(n int) authdomain.RecoveryCodeID {
 // Compile-time assertion.
 var _ authdomain.MFARepository = (*fakeMFARepo)(nil)
 
+// fakePINRepo is an in-memory authdomain.PINRepository shared by every
+// /settings test harness that only needs registerSettingsPage's PIN section
+// to build without error, plus the handful of PIN-specific tests that
+// exercise real set/clear/enrolled-members behavior (NES-165).
+type fakePINRepo struct {
+	hashes map[household.MemberID]string
+	// households tracks which household each hash was set under, so a
+	// SetPIN call for a member/household pair that don't match can be
+	// rejected exactly like the real composite tenant FK does.
+	households map[household.MemberID]household.HouseholdID
+}
+
+func newFakePINRepo() *fakePINRepo {
+	return &fakePINRepo{
+		hashes:     make(map[household.MemberID]string),
+		households: make(map[household.MemberID]household.HouseholdID),
+	}
+}
+
+func (f *fakePINRepo) SetPIN(_ context.Context, memberID household.MemberID, householdID household.HouseholdID, pinHash string) error {
+	f.hashes[memberID] = pinHash
+	f.households[memberID] = householdID
+	return nil
+}
+
+func (f *fakePINRepo) GetPINHash(_ context.Context, memberID household.MemberID) (string, error) {
+	hash, ok := f.hashes[memberID]
+	if !ok {
+		return "", authdomain.ErrPINNotEnrolled
+	}
+	return hash, nil
+}
+
+func (f *fakePINRepo) ClearPIN(_ context.Context, memberID household.MemberID, householdID household.HouseholdID) error {
+	// Mirrors the real DELETE's predicate: member_id AND household_id.
+	if _, ok := f.hashes[memberID]; !ok || f.households[memberID] != householdID {
+		return authdomain.ErrPINNotEnrolled
+	}
+	delete(f.hashes, memberID)
+	delete(f.households, memberID)
+	return nil
+}
+
+func (f *fakePINRepo) EnrolledMembers(_ context.Context, householdID household.HouseholdID) ([]household.MemberID, error) {
+	var ids []household.MemberID
+	for memberID, hhID := range f.households {
+		if hhID == householdID {
+			ids = append(ids, memberID)
+		}
+	}
+	return ids, nil
+}
+
+// Compile-time assertion.
+var _ authdomain.PINRepository = (*fakePINRepo)(nil)
+
+// newTestPINHandlers wires a PINWebHandlers against a fresh fakePINRepo, for
+// /settings test harnesses that only need the PIN section to compose
+// without error.
+func newTestPINHandlers(hhRepo household.HouseholdRepository, sm *scs.SessionManager, logger *slog.Logger) *authadapter.PINWebHandlers {
+	pinService, err := authapp.NewPINService(newFakePINRepo(), cryptotest.Hasher(), time.Now, logger)
+	if err != nil {
+		panic("newTestPINHandlers: " + err.Error())
+	}
+	return authadapter.NewPINWebHandlers(pinService, hhRepo, sm, logger)
+}
+
 // ---------------------------------------------------------------------------
 // Fakes local to the kiosk test harness (the calendar unified view's narrow
 // ports have no existing cmd/server fakes to reuse — /calendar isn't exercised
@@ -440,7 +507,7 @@ func buildKioskTestHandler(t *testing.T, member *household.Member, rewards ...ta
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)
-	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, nil, nil, newTestNotifyWebHandlers(householdRepo, sm, logger), config.PeerConfig{}, nil)
+	registerSettingsPage(mux, logger, sm, householdRepo, settingsHandlers, mfaHandlers, mfaService, newTestPINHandlers(householdRepo, sm, logger), nil, nil, newTestNotifyWebHandlers(householdRepo, sm, logger), config.PeerConfig{}, nil)
 	registerKioskPages(mux, kioskHandlers)
 
 	handler := sm.LoadAndSave(

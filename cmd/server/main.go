@@ -683,6 +683,18 @@ func runServer(logger *slog.Logger) error {
 	}
 	mfaWebHandlers := authadapter.NewMFAWebHandlers(mfaService, householdRepo, sm, logger)
 
+	// NES-165: per-member task PIN credential. It lands the credential,
+	// service, and settings enrolment UI only — AuthorizeTaskAction is
+	// unit-tested but not called by any task-mutating endpoint yet (that is
+	// the follow-up ticket NES-166). passwordHasher is reused unchanged:
+	// PINs are argon2id-hashed with the same scheme as passwords.
+	pinRepo := authadapter.NewPINRepository(pool)
+	pinService, err := authapp.NewPINService(pinRepo, passwordHasher, time.Now, logger)
+	if err != nil {
+		return fmt.Errorf("create pin service: %w", err)
+	}
+	pinWebHandlers := authadapter.NewPINWebHandlers(pinService, householdRepo, sm, logger)
+
 	// NES-136: WebAuthn passkey registration, and (NES-137) passkey login
 	// and step-up. wa (the third-party Relying Party instance) is
 	// constructed ONLY when Server.PublicBaseURL is configured: WebAuthn
@@ -941,7 +953,7 @@ func runServer(logger *slog.Logger) error {
 			registerCalendarSubscriptionPages(mux, logger, sm, householdRepo, calendarViewHandlers, subscriptionWebHandlers, cfg.Peer, peerProbe)
 			registerMediaPages(mux, logger, sm, householdRepo, mediaWebHandlers, cfg.Peer, peerProbe)
 			registerChoreProofPhotoRoutes(mux, sm, choreProofWebHandlers)
-			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, webauthnHandlers, webauthnService, notifyWebHandlers, cfg.Peer, peerProbe)
+			registerSettingsPage(mux, logger, sm, householdRepo, settingsWebHandlers, mfaWebHandlers, mfaService, pinWebHandlers, webauthnHandlers, webauthnService, notifyWebHandlers, cfg.Peer, peerProbe)
 			registerKioskPages(mux, kioskWebHandlers)
 			registerDeepLinkPages(mux, sm, deepLinkWebHandlers)
 		},
