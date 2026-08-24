@@ -261,6 +261,14 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: go tool conform enforce --base-branch="origin/${BASE_REF}"
 
+      - name: Require a Jira key in every commit scope
+        # The hard gate conform cannot provide (NES-170): its conventional
+        # check skips scope validation when the scope is empty. Same script the
+        # lefthook commit-msg hook runs, so local and CI cannot drift.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: scripts/check-commit-scope.sh --range "origin/${BASE_REF}"
+
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest

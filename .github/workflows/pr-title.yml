@@ -26,6 +26,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR title (Conventional Commits)
+        # Bot PRs are exempt: a dependency bump has no ticket to name, and
+        # Dependabot titles its PRs "build: bump x" with no scope. The step is
+        # skipped rather than the whole job so this check still reports a
+        # conclusion and cannot leave a required check pending forever.
+        if: github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.user.login != 'renovate[bot]'
         uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

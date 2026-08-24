@@ -12,6 +12,11 @@ commit-msg:
   jobs:
     - name: conventional-commit
       run: go tool conform enforce --commit-msg-file {1}
+    # conform cannot require the Jira key: it treats an empty scope as valid,
+    # so "feat: no key" passes the job above. This is the gate that rejects it
+    # (NES-170). CI runs the same script over the PR's commits.
+    - name: commit-scope
+      run: scripts/check-commit-scope.sh --file {1}
 
 # pre-commit runs the fast gates on staged changes, piped so it stops at the
 # first failure. Committing unformatted, stale-generated, lint-failing, or
