@@ -210,6 +210,19 @@ tailnet devices from anywhere — on the home LAN or over mobile data.
 
 Certificate renewal is automatic; there is no cron entry to add.
 
+### Nestorage SSO: one hostname, not two (NSTR-117)
+
+When Nestorage is installed on this same appliance, it must **not** get its
+own `tailscale set --hostname=...` — cookies are host-scoped and ignore
+port, which is exactly what lets one shared `identity.sessions` session
+cookie authenticate both apps. Route Nestorage onto this **same** hostname
+(a second `tailscale serve --bg` target on a different port or path), not a
+second hostname of its own. Running `tailscale set --hostname` a second time
+with a different value silently breaks SSO rather than failing loudly — see
+`nestorage/docs/sso-deployment-topology.md` for the full finding (as of this
+ticket, no appliance runs both apps yet, so this arrangement is not yet
+live-verified; re-verify it as part of the Sprint 9 deployment work).
+
 ## 3. Environment knobs
 
 In `/etc/nestova/server.env`:
