@@ -155,13 +155,27 @@ func (r *PostgresRepository) GetMember(ctx context.Context, id domain.MemberID) 
 // whether a member_profile row already existed — EnsureMemberProfile needs
 // that signal to decide whether provisioning is necessary; GetMember itself
 // discards it.
+//
+// A DEACTIVATED member (identity.member.active = false) resolves to
+// domain.ErrMemberNotFound rather than to a member. active is nestcore's
+// identity-level revocation switch: deactivation is modeled instead of
+// deletion because app tables FK-reference member and keep their history's
+// attribution, and nestcore's own guards read it that way (SetMemberActive
+// refuses to deactivate the last owner whose "other.role = 'owner' AND
+// other.active" test counts only active owners). Because this query backs
+// the Authenticate middleware's per-request member lookup, filtering here is
+// what makes a member deactivated in either app stop authenticating in this
+// one; lookupMember already maps ErrMemberNotFound to "clear the session key
+// and continue anonymously", which is the right outcome for a revoked
+// member. It also keeps EnsureMemberProfile from provisioning a profile row
+// for someone whose access was just revoked.
 func (r *PostgresRepository) getMemberRow(ctx context.Context, id domain.MemberID) (*domain.Member, bool, error) {
 	const q = `
 		SELECT m.id, m.household_id, m.display_name, m.role,
 		       COALESCE(p.color_key, $2), p.color_key IS NOT NULL
 		  FROM identity.member m
 		  LEFT JOIN member_profile p ON p.member_id = m.id
-		 WHERE m.id = $1`
+		 WHERE m.id = $1 AND m.active`
 	m, hadProfile, err := scanMemberRow(r.dbtx.QueryRow(ctx, q, id.String(), string(defaultMemberColor)))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -271,6 +285,19 @@ func (r *PostgresRepository) HasAnyHousehold(ctx context.Context) (bool, error) 
 }
 
 // ListMembers returns the household's members ordered by creation.
+// ListMembers deliberately does NOT filter on identity.member.active, unlike
+// getMemberRow. The two answer different questions: getMemberRow backs an
+// access decision, where a revoked member must disappear, while this is the
+// household roster, and deactivation-not-deletion exists precisely so a
+// member who is gone still renders with their name and color against the
+// history that references them. Hiding them here would blank out the
+// authorship of past chores and photos.
+//
+// The consequence is that a deactivated member still appears in surfaces
+// built from the roster, including the new-chore rotation-pool picker, so a
+// chore can still be assigned to someone with no access. That is tracked
+// separately rather than fixed by a filter here, since the fix belongs on
+// the assignment surfaces, not on the roster query.
 func (r *PostgresRepository) ListMembers(ctx context.Context, householdID domain.HouseholdID) ([]*domain.Member, error) {
 	const q = `
 		SELECT m.id, m.household_id, m.display_name, m.role,

@@ -334,3 +334,92 @@ func TestEnsureMemberProfile_ConcurrentDifferentMembers_NoColorCollision(t *test
 		t.Errorf("both concurrently provisioned members got color %v, want two distinct colors", results[0].Color)
 	}
 }
+
+// TestGetMember_DeactivatedMemberIsNotFound pins the revocation contract:
+// identity.member.active is the shared deactivation switch, and this repo's
+// member lookup backs the Authenticate middleware, so a member deactivated
+// in either app must stop resolving here. Without the filter a revoked
+// member keeps authenticating on the next request.
+func TestGetMember_DeactivatedMemberIsNotFound(t *testing.T) {
+	pool := dbtest.NewIsolatedPool(t, "household")
+	repo := adapter.NewPostgresRepository(pool)
+	h := seedHousehold(t, repo)
+
+	m := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Revoked", Role: domain.RoleAdult, Color: domain.ColorSage}
+	if err := repo.AddMember(testCtx(t), m); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if _, err := pool.Exec(testCtx(t), "UPDATE identity.member SET active = false WHERE id = $1", m.ID.String()); err != nil {
+		t.Fatalf("deactivate member: %v", err)
+	}
+
+	if _, err := repo.GetMember(testCtx(t), m.ID); !errors.Is(err, domain.ErrMemberNotFound) {
+		t.Errorf("GetMember(deactivated) error = %v, want ErrMemberNotFound", err)
+	}
+}
+
+// TestEnsureMemberProfile_DeactivatedMemberIsNotProvisioned covers the same
+// contract on the cross-app provisioning path: a session carried over for a
+// member who has since been deactivated must not mint a member_profile row
+// for them.
+func TestEnsureMemberProfile_DeactivatedMemberIsNotProvisioned(t *testing.T) {
+	pool := dbtest.NewIsolatedPool(t, "household")
+	repo := adapter.NewPostgresRepository(pool)
+	h := seedHousehold(t, repo)
+
+	m := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Revoked Cross App", Role: domain.RoleAdult, Color: domain.ColorClay}
+	if err := repo.AddMember(testCtx(t), m); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	// Profile-less, as a member provisioned only in the other app would be.
+	if _, err := pool.Exec(testCtx(t), "DELETE FROM member_profile WHERE member_id = $1", m.ID.String()); err != nil {
+		t.Fatalf("delete profile row: %v", err)
+	}
+	if _, err := pool.Exec(testCtx(t), "UPDATE identity.member SET active = false WHERE id = $1", m.ID.String()); err != nil {
+		t.Fatalf("deactivate member: %v", err)
+	}
+
+	if _, err := repo.EnsureMemberProfile(testCtx(t), m.ID); !errors.Is(err, domain.ErrMemberNotFound) {
+		t.Errorf("EnsureMemberProfile(deactivated) error = %v, want ErrMemberNotFound", err)
+	}
+
+	var profiles int
+	if err := pool.QueryRow(testCtx(t), "SELECT count(*) FROM member_profile WHERE member_id = $1", m.ID.String()).Scan(&profiles); err != nil {
+		t.Fatalf("count profile rows: %v", err)
+	}
+	if profiles != 0 {
+		t.Errorf("member_profile rows for a deactivated member = %d, want 0", profiles)
+	}
+}
+
+// TestListMembers_IncludesDeactivatedMembers pins the deliberate opposite
+// choice on the roster query: deactivation replaces deletion, so a member
+// who is gone must still render against the history attributed to them.
+// Changing this should be a decision, not a silent side effect.
+func TestListMembers_IncludesDeactivatedMembers(t *testing.T) {
+	pool := dbtest.NewIsolatedPool(t, "household")
+	repo := adapter.NewPostgresRepository(pool)
+	h := seedHousehold(t, repo)
+
+	m := &domain.Member{ID: domain.NewMemberID(), HouseholdID: h.ID, DisplayName: "Still Listed", Role: domain.RoleAdult, Color: domain.ColorSage}
+	if err := repo.AddMember(testCtx(t), m); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if _, err := pool.Exec(testCtx(t), "UPDATE identity.member SET active = false WHERE id = $1", m.ID.String()); err != nil {
+		t.Fatalf("deactivate member: %v", err)
+	}
+
+	members, err := repo.ListMembers(testCtx(t), h.ID)
+	if err != nil {
+		t.Fatalf("ListMembers: %v", err)
+	}
+	var found bool
+	for _, got := range members {
+		if got.ID == m.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListMembers omitted a deactivated member; the roster is documented to include them")
+	}
+}

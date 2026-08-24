@@ -61,7 +61,15 @@ type HouseholdRepository interface {
 	CreateHousehold(ctx context.Context, h *Household) error
 	GetHousehold(ctx context.Context, id HouseholdID) (*Household, error)
 	AddMember(ctx context.Context, m *Member) error
+	// GetMember returns the member, or ErrMemberNotFound. A member
+	// deactivated at the identity level counts as not found: deactivation is
+	// the shared revocation switch for both apps, so a revoked member must
+	// stop resolving anywhere an access decision is made.
 	GetMember(ctx context.Context, id MemberID) (*Member, error)
+	// ListMembers returns the household roster, deliberately INCLUDING
+	// deactivated members, because deactivation replaces deletion and the
+	// history those members are attributed to still has to render their name
+	// and color. It is the one member read that is not an access decision.
 	ListMembers(ctx context.Context, householdID HouseholdID) ([]*Member, error)
 	// HasAnyHousehold reports whether at least one household row exists. It is
 	// used by the onboarding flow to gate the first-run setup page and to block
@@ -75,5 +83,8 @@ type HouseholdRepository interface {
 	// via a session carried over from Nestorage (NSTR-117) — so a member
 	// already provisioned in one app gets a real profile row in the other on
 	// first arrival, rather than only ever rendering a display-time default.
+	//
+	// It shares GetMember's contract for a deactivated member: ErrMemberNotFound,
+	// and no profile row is created for them.
 	EnsureMemberProfile(ctx context.Context, id MemberID) (*Member, error)
 }
