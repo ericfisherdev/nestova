@@ -115,6 +115,18 @@ func (r *PostgresRepository) AddMember(ctx context.Context, m *domain.Member) er
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The same household-scoped advisory lock EnsureMemberProfile takes, for
+	// the same reason: member_profile has no per-household color-uniqueness
+	// constraint, so the two writers of that table must not interleave their
+	// color choices. Taking it here closes the AddMember/EnsureMemberProfile
+	// half of that race. It does NOT close AddMember against another
+	// AddMember: the color this method persists is chosen by the caller
+	// (onboarding's handler reads ListMembers and derives NextColor) BEFORE
+	// this transaction opens, so that read still happens outside the lock.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, m.HouseholdID.String()); err != nil {
+		return fmt.Errorf("add member: lock household: %w", err)
+	}
+
 	const insertMember = `
 		INSERT INTO identity.member (id, household_id, display_name, role)
 		VALUES ($1, $2, $3, $4)
@@ -194,14 +206,19 @@ func (r *PostgresRepository) getMemberRow(ctx context.Context, id domain.MemberI
 // lifetime and this codebase has no existing per-request cache to hang that
 // off of.
 //
-// The used-colors read and the insert run inside a transaction holding the
-// SAME household-scoped advisory lock AddMember's sibling guards use
-// (identity/adapter's memberTxBeginner doc, nestcore, documents why the lock
-// must be its own statement strictly before the guarded read): without it,
-// two members in the same household provisioned concurrently could both read
-// the same "unused" color set and both assign the household's Nth color,
-// since member_profile has no per-household color-uniqueness constraint to
-// catch that at the database level.
+// The used-colors read and the insert run inside a transaction holding a
+// household-scoped advisory lock, which AddMember now takes as its own first
+// statement too (identity/adapter's memberTxBeginner doc, nestcore,
+// documents why the lock must be its own statement strictly before the
+// guarded read): without it, two members in the same household provisioned
+// concurrently could both read the same "unused" color set and both assign
+// the household's Nth color, since member_profile has no per-household
+// color-uniqueness constraint to catch that at the database level.
+//
+// What the lock covers, stated exactly: concurrent EnsureMemberProfile calls
+// for one household, and EnsureMemberProfile against a concurrent AddMember.
+// It does not cover two concurrent AddMember calls, whose colors are chosen
+// by the caller before either transaction opens — see AddMember.
 func (r *PostgresRepository) EnsureMemberProfile(ctx context.Context, id domain.MemberID) (*domain.Member, error) {
 	m, hadProfile, err := r.getMemberRow(ctx, id)
 	if err != nil {
