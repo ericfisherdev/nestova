@@ -66,6 +66,10 @@ type SettingsView struct {
 	ShowKioskSection bool
 	Kiosk            KioskSettingsView
 	MFA              MFASettingsView
+	// PIN is the per-member task-PIN section (NES-165): enrolment and
+	// management only — nothing reads this credential yet. Rendered for
+	// every member regardless of role, like MFA.
+	PIN PINSettingsView
 	// ShowWebAuthnSection gates the "Your devices" passkey section, false
 	// when the deployment has no Server.PublicBaseURL configured (WebAuthn
 	// requires a fixed, stable RP ID — see docs/webauthn.md) — the
@@ -97,6 +101,7 @@ templ SettingsPage(view SettingsView) {
 	<div class="mx-auto flex max-w-3xl flex-col gap-6 p-6">
 		<h1 class="text-2xl font-semibold text-ink">Settings</h1>
 		@mfaSection(view.MFA)
+		@pinSection(view.PIN)
 		if view.ShowWebAuthnSection {
 			@webauthnSection(view.WebAuthn)
 		}

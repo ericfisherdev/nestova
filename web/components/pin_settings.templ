@@ -1,0 +1,188 @@
+package components
+
+// PINMemberOption is one entry in the household owner/adult's member list
+// for setting or resetting a child's PIN (NES-165).
+type PINMemberOption struct {
+	ID          string
+	DisplayName string
+	// Enrolled reports whether this member already has a PIN set, so the
+	// admin form can offer "Set" vs "Change" wording and show/hide the
+	// reset control.
+	Enrolled bool
+	// LockedUntilLabel is the pre-formatted lockout expiry, empty unless
+	// this member is currently in the PIN attempt limiter's backoff
+	// window.
+	LockedUntilLabel string
+}
+
+// PINSettingsView is the view model for the /settings page's PIN section
+// (NES-165), rendered for every member regardless of role. The gate this
+// credential backs (AuthorizeTaskAction) is not wired into any surface
+// yet — this section is purely enrolment and management.
+type PINSettingsView struct {
+	// Enrolled reports whether the viewing member has a PIN set.
+	Enrolled bool
+	// LockedUntilLabel is the pre-formatted lockout expiry, empty unless
+	// the viewing member is currently in the backoff window.
+	LockedUntilLabel string
+	CSRFToken        string
+	// IsAdmin and OtherMembers gate and populate the admin set/reset
+	// sub-section, shown only to an owner or adult (household.Role.CanAdminister()).
+	IsAdmin      bool
+	OtherMembers []PINMemberOption
+	// Error is a generic, non-enumerating message re-shown inline after a
+	// failed set attempt on THIS page render.
+	Error string
+}
+
+templ pinSection(view PINSettingsView) {
+	@Card("Task PIN") {
+		<p class="mb-4 text-sm text-ink-secondary">
+			Set a short PIN so chores get credited to the right person on a
+			shared screen. This doesn't lock anything down yet — we'll let you
+			know here once completing or skipping a chore starts asking for it.
+		</p>
+		if view.Error != "" {
+			<p class="mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+				{ view.Error }
+			</p>
+		}
+		if view.LockedUntilLabel != "" {
+			<p class="mb-4 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" role="alert">
+				Too many incorrect attempts. Locked until { view.LockedUntilLabel }.
+			</p>
+		}
+		@pinSetForm(view.CSRFToken, view.Enrolled)
+		if view.Enrolled {
+			@pinClearForm(view.CSRFToken)
+		}
+	}
+	if view.IsAdmin && len(view.OtherMembers) > 0 {
+		@pinAdminSection(view)
+	}
+}
+
+templ pinSetForm(csrfToken string, enrolled bool) {
+	<form method="post" action="/settings/pin" class="mb-3 flex items-end gap-3">
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<div class="flex-1">
+			<label class="mb-1 block text-sm font-medium text-ink-secondary" for="pin-value">
+				if enrolled {
+					New PIN (4-8 digits)
+				} else {
+					Set a PIN (4-8 digits)
+				}
+			</label>
+			<input
+				id="pin-value"
+				type="password"
+				name="pin"
+				inputmode="numeric"
+				pattern="[0-9]{4,8}"
+				minlength="4"
+				maxlength="8"
+				autocomplete="off"
+				required
+				class="w-full rounded-control border border-sidebar-border px-3 py-2 font-mono"
+			/>
+		</div>
+		<button
+			type="submit"
+			class="min-h-[48px] rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm hover:bg-sage-dark"
+		>
+			if enrolled {
+				Change PIN
+			} else {
+				Set PIN
+			}
+		</button>
+	</form>
+}
+
+templ pinClearForm(csrfToken string) {
+	<form method="post" action="/settings/pin/clear">
+		<input type="hidden" name="csrf_token" value={ csrfToken }/>
+		<button
+			type="submit"
+			class="min-h-[48px] rounded-control border border-red-200 bg-red-50 px-4 py-2 font-medium text-red-700 hover:bg-red-100"
+		>
+			Remove PIN
+		</button>
+	</form>
+}
+
+// pinAdminSection is the owner/adult-only action to set or reset another
+// member's PIN, shown as its own card below the member's own PIN section.
+templ pinAdminSection(view PINSettingsView) {
+	@Card("Set a family member's PIN") {
+		<p class="mb-4 text-sm text-ink-secondary">
+			Set or change a PIN on behalf of a family member — useful for a
+			child who can't set their own yet. Resetting also clears any active
+			lockout.
+		</p>
+		<ul class="flex flex-col gap-3">
+			for _, m := range view.OtherMembers {
+				@pinMemberRow(m, view.CSRFToken)
+			}
+		</ul>
+	}
+}
+
+templ pinMemberRow(m PINMemberOption, csrfToken string) {
+	<li class="flex flex-col gap-2 rounded-control border border-sidebar-border bg-surface p-3">
+		<div class="flex items-center justify-between">
+			<p class="font-medium text-ink">{ m.DisplayName }</p>
+			if m.Enrolled {
+				<span class="text-sm text-ink-muted">PIN set</span>
+			} else {
+				<span class="text-sm text-ink-muted">No PIN</span>
+			}
+		</div>
+		if m.LockedUntilLabel != "" {
+			<p class="text-sm text-amber-800">Locked until { m.LockedUntilLabel }</p>
+		}
+		<div class="flex items-end gap-3">
+			<form method="post" action={ templ.SafeURL("/settings/members/" + m.ID + "/pin") } class="flex flex-1 items-end gap-3">
+				<input type="hidden" name="csrf_token" value={ csrfToken }/>
+				<div class="flex-1">
+					<label class="mb-1 block text-sm font-medium text-ink-secondary" for={ "pin-admin-" + m.ID }>
+						PIN (4-8 digits)
+					</label>
+					<input
+						id={ "pin-admin-" + m.ID }
+						type="password"
+						name="pin"
+						inputmode="numeric"
+						pattern="[0-9]{4,8}"
+						minlength="4"
+						maxlength="8"
+						autocomplete="off"
+						required
+						class="w-full rounded-control border border-sidebar-border px-3 py-2 font-mono"
+					/>
+				</div>
+				<button
+					type="submit"
+					class="min-h-[48px] rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink hover:bg-sidebar-border/20"
+				>
+					if m.Enrolled {
+						Change
+					} else {
+						Set
+					}
+				</button>
+			</form>
+			if m.Enrolled {
+				<form method="post" action={ templ.SafeURL("/settings/members/" + m.ID + "/pin/reset") }>
+					<input type="hidden" name="csrf_token" value={ csrfToken }/>
+					<button
+						type="submit"
+						class="min-h-[48px] rounded-control border border-red-200 bg-red-50 px-4 py-2 font-medium text-red-700 hover:bg-red-100"
+					>
+						Reset
+					</button>
+				</form>
+			}
+		</div>
+	</li>
+}
