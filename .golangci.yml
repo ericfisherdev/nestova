@@ -14,14 +14,27 @@ version: "2"
 
 linters:
   # Start from the curated standard set (errcheck, govet, ineffassign,
-  # staticcheck, unused) and add revive for style/lint rules. The
-  # depguard badger-isolation rule that used to live here (NES-140) was
-  # removed: internal/platform/cache (the only file allowed to import
-  # badger) moved to github.com/ericfisherdev/nestcore/cache, which owns
-  # that isolation boundary in its own lint config now.
+  # staticcheck, unused) and add revive for style/lint rules, plus
+  # depguard (NES-140) to enforce the badger import boundary below.
   default: standard
   enable:
     - revive
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # NES-140: badger is reached only through nestcore's cache.Cache
+        # port. internal/platform/cache — previously the one package
+        # allowed to import badger directly — now lives in
+        # github.com/ericfisherdev/nestcore/cache, so no file in THIS
+        # repo may import badger and the rule needs no exception glob.
+        # nestcore's own lint config guards its side of the boundary;
+        # it does not run against this module.
+        badger-isolation:
+          list-mode: original
+          deny:
+            - pkg: "github.com/dgraph-io/badger"
+              desc: "NES-140: badger is reached only via nestcore's cache.Cache — do not import it directly"
   exclusions:
     # Skip files carrying the "// Code generated ... DO NOT EDIT." header
     # (e.g. templ's *_templ.go output) using the strict Go convention.
