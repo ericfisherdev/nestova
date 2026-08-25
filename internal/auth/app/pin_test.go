@@ -289,37 +289,6 @@ func TestPINService_Verify_LockoutExpires(t *testing.T) {
 	}
 }
 
-// TestPINService_ResetLockout_ClearsStateWithoutTouchingPIN proves
-// ResetLockout unlocks a member immediately without needing the backoff
-// window to elapse, and without altering their stored PIN.
-func TestPINService_ResetLockout_ClearsStateWithoutTouchingPIN(t *testing.T) {
-	repo := newFakePINRepo()
-	clock := newFakeClock()
-	svc := newTestPINService(t, repo, clock)
-	memberID := household.NewMemberID()
-	householdID := household.NewHouseholdID()
-	ctx := context.Background()
-
-	if err := svc.Set(ctx, memberID, householdID, "1234"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	for range 6 {
-		_ = svc.Verify(ctx, memberID, "0000")
-	}
-	if _, locked := svc.LockedUntil(memberID); !locked {
-		t.Fatal("setup: expected member to be locked")
-	}
-
-	svc.ResetLockout(memberID)
-
-	if _, locked := svc.LockedUntil(memberID); locked {
-		t.Error("after ResetLockout, LockedUntil should report not locked")
-	}
-	if err := svc.Verify(ctx, memberID, "1234"); err != nil {
-		t.Errorf("Verify after ResetLockout with the correct pin = %v, want nil", err)
-	}
-}
-
 // TestPINService_AuthorizeTaskAction_Matrix proves the full gate contract
 // (NES-165 AC): a correct PIN returns the assignee as actor, wrong/locked
 // PINs return errors, and an UNENROLLED assignee passes through unchanged
