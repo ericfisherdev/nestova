@@ -39,3 +39,6 @@ go.work.sum
 
 # Compiled server binary (build artifact)
 /server
+
+# Runtime dev data the server writes (media uploads, badger cache).
+.localdata/

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -1665,4 +1666,35 @@ func idsOf(instances []*domain.TaskInstance) []domain.TaskInstanceID {
 		ids[i] = inst.ID
 	}
 	return ids
+}
+
+// TestRecurringTask_TitleLengthConstraint proves the schema itself bounds the
+// title (NES-172), not just tasks/domain's ValidateTitle. The domain guard is
+// what produces a readable error for a user; this constraint is the backstop
+// for a caller that bypasses it, which is the whole reason the cap exists in
+// two places. The insert goes through the repository with an over-length
+// title, so it exercises the same statement production code uses.
+func TestRecurringTask_TitleLengthConstraint(t *testing.T) {
+	pool := newTestPool(t)
+	repo := adapter.NewRecurringTaskRepository(pool)
+
+	h, m1, _ := seedHousehold(t, pool)
+
+	rt := &domain.RecurringTask{
+		ID:             domain.NewRecurringTaskID(),
+		HouseholdID:    h.ID,
+		Title:          strings.Repeat("a", domain.MaxTitleLength+1),
+		Category:       domain.ChoreCategory,
+		Cadence:        newWeeklyCadence(),
+		RotationPolicy: domain.RotationFixed,
+		Active:         true,
+	}
+
+	err := repo.CreateWithRotation(testCtx(t), rt, []household.MemberID{m1})
+	if err == nil {
+		t.Fatal("CreateWithRotation with an over-length title succeeded; the recurring_task_title_length CHECK must reject it")
+	}
+	if !strings.Contains(err.Error(), "recurring_task_title_length") {
+		t.Errorf("error = %v, want it to name the recurring_task_title_length constraint", err)
+	}
 }
