@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
@@ -125,4 +127,30 @@ type TaskInstance struct {
 	// UpdatedAt is refreshed on every status transition (claim, complete, skip,
 	// overdue sweep, claim expiry); the NES-29 adapter maintains it.
 	UpdatedAt time.Time
+}
+
+// MaxTitleLength bounds a recurring task's title, counted in runes rather than
+// bytes so a multi-byte title is neither truncated mid-character nor rejected
+// early for spending its budget on UTF-8 continuation bytes.
+//
+// 200 is chosen to be longer than any real chore name while still rendering in
+// a single list row. The recurring_task.title CHECK constraint added in
+// 00042_recurring_task_title_length.sql carries the same number, so a caller
+// that bypasses this validation still cannot write an unbounded title.
+const MaxTitleLength = 200
+
+// ValidateTitle reports whether title is an acceptable recurring-task title:
+// non-empty after trimming, and no longer than MaxTitleLength runes. It
+// returns ErrTitleRequired or ErrTitleTooLong so the caller can map the
+// failure to its own presentation, rather than returning a formatted string.
+func ValidateTitle(title string) error {
+	trimmed := strings.TrimSpace(title)
+	switch {
+	case trimmed == "":
+		return ErrTitleRequired
+	case utf8.RuneCountInString(trimmed) > MaxTitleLength:
+		return ErrTitleTooLong
+	default:
+		return nil
+	}
 }

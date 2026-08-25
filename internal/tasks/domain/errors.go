@@ -8,6 +8,16 @@ var (
 	// requested RecurringTaskID does not exist.
 	ErrTaskNotFound = errors.New("tasks: recurring task not found")
 
+	// ErrTitleRequired is returned by ValidateTitle when a recurring task's
+	// title is empty after trimming surrounding whitespace.
+	ErrTitleRequired = errors.New("tasks: task title is required")
+
+	// ErrTitleTooLong is returned by ValidateTitle when a recurring task's
+	// title exceeds MaxTitleLength runes. Every user-entered text field in
+	// this schema was previously unbounded (NES-172); this is the guard for
+	// recurring_task.title, mirrored by that column's CHECK constraint.
+	ErrTitleTooLong = errors.New("tasks: task title is too long")
+
 	// ErrInstanceNotFound is returned by TaskInstanceRepository.Get when the
 	// requested TaskInstanceID does not exist.
 	ErrInstanceNotFound = errors.New("tasks: task instance not found")

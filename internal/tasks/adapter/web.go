@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -733,8 +734,12 @@ func (h *WebHandlers) parseCreateForm(
 		SelectedMemberIDs: rawPool,
 	}
 
-	if rawTitle == "" {
-		form.Error = "Title is required."
+	if err := domain.ValidateTitle(rawTitle); err != nil {
+		if errors.Is(err, domain.ErrTitleTooLong) {
+			form.Error = fmt.Sprintf("Title must be %d characters or fewer.", domain.MaxTitleLength)
+		} else {
+			form.Error = "Title is required."
+		}
 		return nil, nil, form, form.Error
 	}
 
