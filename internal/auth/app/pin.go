@@ -19,9 +19,7 @@ var pinFormat = regexp.MustCompile(`^[0-9]{4,8}$`)
 // PINService orchestrates per-member PIN enrolment, strike-limited
 // verification with a visible and resettable lockout, and
 // AuthorizeTaskAction — the single gate the tasks adapter and the deeplink
-// adapter will call in the follow-up ticket "require a member PIN to
-// complete or skip a chore" (NES-166). Nothing calls AuthorizeTaskAction
-// yet; it is fully unit-tested here regardless.
+// adapter call before crediting a chore completion or skip (NES-166).
 type PINService struct {
 	repo    authdomain.PINRepository
 	hasher  passwordHasher
@@ -154,8 +152,8 @@ func (s *PINService) Verify(ctx context.Context, memberID household.MemberID, pi
 }
 
 // AuthorizeTaskAction is the single authorization gate a task-mutating
-// endpoint calls before crediting a completion/skip to an actor (NES-166,
-// not wired yet): it verifies submittedPIN against assigneeID's own PIN and
+// endpoint calls before crediting a completion/skip to an actor (NES-166):
+// it verifies submittedPIN against assigneeID's own PIN and
 // reports who actually performed the action.
 //
 //   - A correct PIN returns assigneeID itself as the actor, with a nil
@@ -163,9 +161,9 @@ func (s *PINService) Verify(ctx context.Context, memberID household.MemberID, pi
 //   - An assignee with NO PIN enrolled is a nil-gate: (household.MemberID{},
 //     nil) — the caller must leave its actor unchanged (whatever it already
 //     resolved, e.g. the currently signed-in member), since there is
-//     nothing to verify against. This is what lets NES-165 ship the gate
-//     unused: every existing caller path has no assignee enrolled yet, so
-//     AuthorizeTaskAction is a no-op until a member actually sets a PIN.
+//     nothing to verify against. This is the upgrade path: an existing
+//     household has no assignee enrolled, so the gate is a no-op until a
+//     member actually sets a PIN.
 //   - A wrong or locked PIN returns (household.MemberID{},
 //     authdomain.ErrPINMismatch / authdomain.ErrPINLocked) — the caller
 //     must refuse the action, not fall back to any other actor.

@@ -7,10 +7,9 @@ import (
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
 
-// PIN domain errors (NES-165). AuthorizeTaskAction, the single
-// authorization gate these back, lands unused here — wiring it into the
-// complete/skip surfaces is the follow-up ticket "require a member PIN to
-// complete or skip a chore" (NES-166).
+// PIN domain errors (NES-165). They back AuthorizeTaskAction, the single
+// authorization gate the chore complete/skip surfaces and the complete-task
+// deep link call before crediting an action (NES-166).
 var (
 	// ErrPINNotEnrolled is returned by GetPINHash and ClearPIN when the
 	// member has no PIN row on file. Consumers must collapse it with

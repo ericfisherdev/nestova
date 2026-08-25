@@ -539,13 +539,25 @@ func runServer(logger *slog.Logger) error {
 	proofPhotoRepo := mediaadapter.NewTaskInstancePhotoRepository(pool, mediabootstrap.StorageBackend(cfg.Media.Backend))
 	proofPhotoChecker := tasksadapter.NewProofPhotoChecker(proofPhotoRepo)
 
+	// NES-165: per-member task PIN credential (argon2id-hashed with the same
+	// passwordHasher as passwords). Constructed here, ahead of the tasks and
+	// deep-link handlers, because NES-166 gates chore completion and skipping
+	// on it: both inbound adapters take it as their narrow TaskPINAuthorizer
+	// port. The settings enrolment UI (pinWebHandlers) is wired further down,
+	// alongside the other credential sections of /settings.
+	pinRepo := authadapter.NewPINRepository(pool)
+	pinService, err := authapp.NewPINService(pinRepo, passwordHasher, time.Now, logger)
+	if err != nil {
+		return fmt.Errorf("create pin service: %w", err)
+	}
+
 	// NES-32: task UI wiring — TaskService + HTTP handlers for the tasks list
 	// and the three mutation actions (complete, skip, claim).
 	taskService, err := tasksapp.NewTaskService(recurringTaskRepo, taskInstanceRepo, proofPhotoChecker)
 	if err != nil {
 		return fmt.Errorf("create task service: %w", err)
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringTaskRepo, taskInstanceRepo, householdRepo, sm, logger, proofPhotoChecker)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringTaskRepo, taskInstanceRepo, householdRepo, pinService, sm, logger, proofPhotoChecker)
 
 	// NES-122: chore trade UI wiring — TradeService (web-facing instance, see
 	// choreTradeRepo's comment above) + HTTP handlers for the propose-trade
@@ -683,16 +695,6 @@ func runServer(logger *slog.Logger) error {
 	}
 	mfaWebHandlers := authadapter.NewMFAWebHandlers(mfaService, householdRepo, sm, logger)
 
-	// NES-165: per-member task PIN credential. It lands the credential,
-	// service, and settings enrolment UI only — AuthorizeTaskAction is
-	// unit-tested but not called by any task-mutating endpoint yet (that is
-	// the follow-up ticket NES-166). passwordHasher is reused unchanged:
-	// PINs are argon2id-hashed with the same scheme as passwords.
-	pinRepo := authadapter.NewPINRepository(pool)
-	pinService, err := authapp.NewPINService(pinRepo, passwordHasher, time.Now, logger)
-	if err != nil {
-		return fmt.Errorf("create pin service: %w", err)
-	}
 	pinWebHandlers := authadapter.NewPINWebHandlers(pinService, householdRepo, sm, logger)
 
 	// NES-136: WebAuthn passkey registration, and (NES-137) passkey login
@@ -893,7 +895,7 @@ func runServer(logger *slog.Logger) error {
 	}
 	deepLinkWebHandlers := deeplinkadapter.NewWebHandlers(
 		deepLinkSigner, taskService, recurringTaskRepo, taskInstanceRepo,
-		rewardService, rewardRepo, sm, logger, nil,
+		rewardService, rewardRepo, pinService, sm, logger, nil,
 	)
 
 	// NES-128: kiosk device auth + the touch-first kiosk shell. The kiosk

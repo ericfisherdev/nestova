@@ -19,6 +19,15 @@ type DeepLinkConfirmView struct {
 	// authorized this GET also authorizes the POST that acts on it.
 	FormAction string
 	CSRFToken  string
+	// RequiresPIN is true when the action is gated on the chore assignee's
+	// PIN (NES-166), so the confirm form renders a numeric PIN field. False
+	// for every action whose target has no assignee, no PIN enrolled, or no
+	// gate at all (claim, redeem, add-chore).
+	RequiresPIN bool
+	// Error is a form-level message shown above the confirm button after a
+	// refused submission — today only a refused PIN, whose text never
+	// discloses whether a member is enrolled.
+	Error string
 }
 
 // DeepLinkConfirmPage is a standalone, phone-sized document (not the member
@@ -42,6 +51,24 @@ templ DeepLinkConfirmPage(view DeepLinkConfirmView) {
 					<p class="mb-6 text-ink-muted">{ view.Description }</p>
 					<form method="POST" action={ templ.SafeURL(view.FormAction) }>
 						<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+						if view.RequiresPIN {
+							<label class="mb-1 block text-left text-sm font-medium text-ink-secondary" for="deeplink-pin">PIN</label>
+							<input
+								id="deeplink-pin"
+								type="password"
+								name="pin"
+								inputmode="numeric"
+								pattern="[0-9]*"
+								minlength="4"
+								maxlength="8"
+								autocomplete="one-time-code"
+								data-testid="deeplink-pin-input"
+								class="mb-4 min-h-[48px] w-full rounded-control border border-sidebar-border px-3 py-2 text-center font-mono"
+							/>
+						}
+						if view.Error != "" {
+							<p role="alert" data-testid="deeplink-error" class="mb-4 text-sm text-red-600">{ view.Error }</p>
+						}
 						@Button(view.ConfirmLabel, ButtonPrimary, "submit")
 					</form>
 				</div>

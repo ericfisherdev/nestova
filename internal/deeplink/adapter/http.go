@@ -41,10 +41,34 @@ import (
 // used as an oracle to probe which failure occurred (mirroring
 // KioskWebHandlers.Activate's "never distinguishing which of the three
 // applies" precedent for activation codes).
+// pinFormField is the form field the confirm screen submits a member's PIN
+// under (NES-166) — the same name the /tasks chore row uses.
+const pinFormField = "pin"
+
 const (
 	rescanHeading = "This link isn't valid anymore"
 	rescanMessage = "Please rescan the QR code from the kiosk to get a fresh one."
 )
+
+// TaskPINAuthorizer is the narrow port onto the auth context's per-member
+// PIN gate this confirm flow depends on (NES-166). The complete-task deep
+// link reaches TaskService by a different route than the chore list does,
+// so it must apply the same gate — otherwise a notification link would be a
+// way around the PIN the /tasks row demands. It needs one method less than
+// the tasks adapter's port of the same name: this screen confirms exactly
+// one instance, so a single-member IsEnrolled replaces the whole-household
+// enrolment lookup a list render needs.
+type TaskPINAuthorizer interface {
+	// AuthorizeTaskAction verifies submittedPIN against assigneeID's own
+	// PIN, returning assigneeID as the actor on success, the zero MemberID
+	// with a nil error when the assignee has no PIN enrolled, and
+	// authdomain.ErrPINMismatch/ErrPINLocked when the action must be
+	// refused.
+	AuthorizeTaskAction(ctx context.Context, assigneeID household.MemberID, submittedPIN string) (household.MemberID, error)
+	// IsEnrolled reports whether memberID has a PIN on file, so the confirm
+	// screen renders a PIN field on exactly the links that will be gated.
+	IsEnrolled(ctx context.Context, memberID household.MemberID) (bool, error)
+}
 
 // WebHandlers serves the /go/{action}/{id} deep-link confirm screens and
 // their POST actions. It depends directly on each target bounded context's
@@ -59,6 +83,7 @@ type WebHandlers struct {
 	taskInstances  tasksdomain.TaskInstanceRepository
 	rewardSvc      *tasksapp.RewardService
 	rewards        tasksdomain.RewardRepository
+	pin            TaskPINAuthorizer
 	sm             *scs.SessionManager
 	logger         *slog.Logger
 	now            func() time.Time
@@ -75,6 +100,7 @@ func NewWebHandlers(
 	taskInstances tasksdomain.TaskInstanceRepository,
 	rewardSvc *tasksapp.RewardService,
 	rewards tasksdomain.RewardRepository,
+	pin TaskPINAuthorizer,
 	sm *scs.SessionManager,
 	logger *slog.Logger,
 	now func() time.Time,
@@ -92,6 +118,8 @@ func NewWebHandlers(
 		panic("deeplink/adapter: NewWebHandlers requires a non-nil RewardService")
 	case rewards == nil:
 		panic("deeplink/adapter: NewWebHandlers requires a non-nil RewardRepository")
+	case pin == nil:
+		panic("deeplink/adapter: NewWebHandlers requires a non-nil TaskPINAuthorizer")
 	case sm == nil:
 		panic("deeplink/adapter: NewWebHandlers requires a non-nil session manager")
 	case logger == nil:
@@ -102,7 +130,7 @@ func NewWebHandlers(
 	}
 	return &WebHandlers{
 		signer: signer, taskSvc: taskSvc, recurringTasks: recurringTasks, taskInstances: taskInstances,
-		rewardSvc: rewardSvc, rewards: rewards, sm: sm, logger: logger, now: now,
+		rewardSvc: rewardSvc, rewards: rewards, pin: pin, sm: sm, logger: logger, now: now,
 		limiter: newPerKeyLimiter(confirmRateEvery, confirmRateBurst),
 	}
 }
@@ -264,6 +292,16 @@ func (h *WebHandlers) buildConfirmView(
 		} else {
 			view.Heading = "Mark this chore complete?"
 			view.ConfirmLabel = "Mark complete"
+			// NES-166: the completion is PIN-gated whenever the instance's
+			// assignee has one enrolled, so the confirm screen must offer
+			// the field the POST will be refused without.
+			if inst.AssigneeID != nil {
+				enrolled, err := h.pin.IsEnrolled(ctx, *inst.AssigneeID)
+				if err != nil {
+					return components.DeepLinkConfirmView{}, err
+				}
+				view.RequiresPIN = enrolled
+			}
 		}
 		view.Description = title
 		return view, nil
@@ -421,6 +459,11 @@ func (h *WebHandlers) confirmClaim(w http.ResponseWriter, r *http.Request, membe
 	http.Redirect(w, r, doneURL(deeplinkdomain.ActionClaimTask), http.StatusSeeOther)
 }
 
+// NES-166: the completion is gated on the assignee's PIN exactly as the
+// /tasks chore row is (see authorizeComplete) — following the signed link
+// alone still never completes anything, and now neither does confirming it
+// without the assignee's PIN.
+//
 // confirmComplete performs the completion, then PRG-redirects (303) to the
 // shared "done" page — see confirmClaim's doc for the general PRG
 // rationale. As with claim, this is UX consistency rather than a
@@ -433,11 +476,83 @@ func (h *WebHandlers) confirmComplete(w http.ResponseWriter, r *http.Request, me
 		http.Error(w, "invalid chore id", http.StatusBadRequest)
 		return
 	}
-	if err := h.taskSvc.CompleteInstance(r.Context(), member.HouseholdID, instanceID, member.ID, h.now()); err != nil {
+	by, ok := h.authorizeComplete(w, r, member, instanceID)
+	if !ok {
+		return
+	}
+	if err := h.taskSvc.CompleteInstance(r.Context(), member.HouseholdID, instanceID, by, h.now()); err != nil {
 		h.respondTaskMutationError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, doneURL(deeplinkdomain.ActionCompleteTask), http.StatusSeeOther)
+}
+
+// authorizeComplete applies the NES-166 PIN gate to a complete-task confirm
+// POST: the same rules the tasks adapter enforces on POST /tasks/{id}/complete
+// — no assignee or an unenrolled assignee leaves the signed-in member as the
+// actor, an enrolled assignee's own PIN must verify and makes THAT member the
+// actor, and anything else refuses the action.
+//
+// A refusal re-renders this confirm screen (the member is on a phone, with a
+// field to retype into) at 403 with a form-level message that never
+// discloses whether a member is enrolled. ok=false means the response has
+// already been written and the caller must return without completing
+// anything.
+func (h *WebHandlers) authorizeComplete(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	instanceID tasksdomain.TaskInstanceID,
+) (household.MemberID, bool) {
+	inst, err := h.taskInstances.Get(r.Context(), member.HouseholdID, instanceID)
+	if err != nil {
+		h.respondTaskMutationError(w, r, err)
+		return household.MemberID{}, false
+	}
+	if inst.AssigneeID == nil {
+		return member.ID, true
+	}
+
+	actor, err := h.pin.AuthorizeTaskAction(r.Context(), *inst.AssigneeID, r.FormValue(pinFormField))
+	switch {
+	case err == nil && actor == (household.MemberID{}):
+		return member.ID, true
+	case err == nil:
+		return actor, true
+	}
+
+	msg, known := authadapter.PINVerificationMessage(err)
+	if !known {
+		h.logger.ErrorContext(r.Context(), "deeplink: authorize complete", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return household.MemberID{}, false
+	}
+	h.respondPINError(w, r, member, deeplinkdomain.ActionCompleteTask, instanceID.String(), msg)
+	return household.MemberID{}, false
+}
+
+// respondPINError re-renders the confirm screen at 403 with errMsg shown
+// under its PIN field, so a mistyped PIN is retried in place rather than
+// dead-ending on a message page. If the view cannot be rebuilt, it degrades
+// to the same message as plain text at the same status.
+func (h *WebHandlers) respondPINError(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	action deeplinkdomain.Action,
+	id string,
+	errMsg string,
+) {
+	view, err := h.buildConfirmView(r.Context(), member, action, id, r.URL.RequestURI())
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "deeplink: build confirm view after pin error", "error", err)
+		http.Error(w, errMsg, http.StatusForbidden)
+		return
+	}
+	view.Error = errMsg
+	if renderErr := render.Render(r.Context(), w, http.StatusForbidden, components.DeepLinkConfirmPage(view)); renderErr != nil {
+		h.logger.ErrorContext(r.Context(), "deeplink: render confirm page after pin error", "error", renderErr)
+	}
 }
 
 // respondTaskMutationError maps a claim/complete failure to an HTTP response.

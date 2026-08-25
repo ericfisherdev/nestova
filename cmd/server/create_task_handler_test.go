@@ -106,7 +106,7 @@ func buildCreateTaskHandler(
 		panic("buildCreateTaskHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(
-		taskService, taskRepo, instanceRepo, householdRepo, sm, logger, nil,
+		taskService, taskRepo, instanceRepo, householdRepo, newTestPINService(logger), sm, logger, nil,
 	)
 
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)

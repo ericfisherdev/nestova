@@ -69,6 +69,17 @@ type TaskRow struct {
 	// is never offerable, matching the trade domain's own rules exactly
 	// rather than re-deriving them here.
 	Tradeable bool
+	// RequiresPIN is true when the row's assignee has a PIN enrolled
+	// (NES-166), so the shared complete/skip form renders a numeric PIN
+	// field the assignee must fill in to act on the chore. False for an
+	// unassigned row, a non-actionable one, and — the upgrade path — every
+	// row in a household where nobody has enrolled a PIN yet.
+	RequiresPIN bool
+	// PinError is a friendly, non-empty message shown inline under the PIN
+	// field when a submitted PIN was refused (NES-166). It never
+	// distinguishes a wrong PIN from an unenrolled member — see
+	// authadapter.PINVerificationMessage.
+	PinError string
 	// PhotoPolicy is the parent recurring task's proof-photo requirement
 	// (NES-120): "none", "after_only", or "before_after". Empty for an
 	// archived/unresolvable parent (mirrors Title/Category's "(archived)"
@@ -252,26 +263,7 @@ templ TaskRowItem(row TaskRow) {
 					</form>
 				} else {
 					<!-- Assigned or current-member task: complete + skip -->
-					<form
-						method="post"
-						action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/complete", row.InstanceID)) }
-						hx-post={ fmt.Sprintf("/tasks/%s/complete", row.InstanceID) }
-						hx-target={ fmt.Sprintf("#task-%s", row.InstanceID) }
-						hx-swap="outerHTML"
-					>
-						<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
-						@Button("Done", ButtonPrimary, "submit")
-					</form>
-					<form
-						method="post"
-						action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/skip", row.InstanceID)) }
-						hx-post={ fmt.Sprintf("/tasks/%s/skip", row.InstanceID) }
-						hx-target={ fmt.Sprintf("#task-%s", row.InstanceID) }
-						hx-swap="outerHTML"
-					>
-						<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
-						@Button("Skip", ButtonSecondary, "submit")
-					</form>
+					@completeSkipForm(row)
 					if row.Mine && row.Tradeable {
 						<a
 							href={ templ.SafeURL(fmt.Sprintf("/tasks/%s/propose-trade", row.InstanceID)) }
@@ -286,6 +278,71 @@ templ TaskRowItem(row TaskRow) {
 			}
 		</div>
 		@proofPhotoSection(row)
+	</div>
+}
+
+// completeSkipForm renders the row's Done and Skip actions as ONE form
+// (NES-166). They were two separate forms until the PIN gate landed: a
+// gated row carries a single PIN field that both actions must submit, and
+// only one form can own that input. Each button therefore carries its own
+// formaction (the native, no-JavaScript fallback) alongside its own hx-post,
+// which htmx resolves per-button while including every input of the
+// enclosing form — so the single-request, swap-this-row contract every other
+// mutation follows is unchanged.
+templ completeSkipForm(row TaskRow) {
+	<form
+		method="post"
+		action={ templ.SafeURL(fmt.Sprintf("/tasks/%s/complete", row.InstanceID)) }
+		hx-target={ fmt.Sprintf("#task-%s", row.InstanceID) }
+		hx-swap="outerHTML"
+		class="flex flex-wrap items-center justify-end gap-2"
+	>
+		<input type="hidden" name="csrf_token" value={ row.CSRFToken }/>
+		if row.RequiresPIN {
+			@taskPINField(row)
+		}
+		<button
+			type="submit"
+			formaction={ templ.SafeURL(fmt.Sprintf("/tasks/%s/complete", row.InstanceID)) }
+			hx-post={ fmt.Sprintf("/tasks/%s/complete", row.InstanceID) }
+			class="inline-flex min-h-[48px] items-center justify-center rounded-control bg-sage px-4 py-2 font-medium text-white shadow-warm transition-colors hover:bg-sage-dark"
+		>Done</button>
+		<button
+			type="submit"
+			formaction={ templ.SafeURL(fmt.Sprintf("/tasks/%s/skip", row.InstanceID)) }
+			hx-post={ fmt.Sprintf("/tasks/%s/skip", row.InstanceID) }
+			class="inline-flex min-h-[48px] items-center justify-center rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink transition-colors hover:bg-surface-warm"
+		>Skip</button>
+	</form>
+}
+
+// taskPINField renders the numeric PIN entry the row's assignee fills in to
+// complete or skip their own chore (NES-166), plus any inline refusal
+// message. inputmode/pattern bring up the digit keypad on a phone and keep
+// the field touch-friendly on the 21-inch entryway screen;
+// autocomplete="one-time-code" keeps a browser from offering to save it as a
+// password. It is deliberately NOT marked required: an empty submission must
+// reach the server and be refused by the gate with the same non-disclosing
+// message a wrong PIN gets, rather than being turned away client-side.
+templ taskPINField(row TaskRow) {
+	<div class="flex flex-col items-end gap-1">
+		<label class="sr-only" for={ fmt.Sprintf("pin-%s", row.InstanceID) }>PIN for { row.AssigneeName }</label>
+		<input
+			id={ fmt.Sprintf("pin-%s", row.InstanceID) }
+			type="password"
+			name="pin"
+			inputmode="numeric"
+			pattern="[0-9]*"
+			minlength="4"
+			maxlength="8"
+			autocomplete="one-time-code"
+			placeholder="PIN"
+			data-testid="task-pin-input"
+			class="min-h-[48px] w-24 rounded-control border border-sidebar-border px-3 py-2 text-center font-mono"
+		/>
+		if row.PinError != "" {
+			<p role="alert" data-testid="task-pin-error" class="text-sm text-red-600">{ row.PinError }</p>
+		}
 	</div>
 }
 

@@ -316,7 +316,7 @@ func buildGamificationTestHandlerWithLedger(
 		panic("buildGamificationTestHandlerWithLedger: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(
-		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil,
+		taskService, recurringRepo, instanceRepo, householdRepo, newTestPINService(logger), sm, logger, nil,
 	)
 
 	rewardSvc := tasksapp.NewRewardService(rewardRepo, householdRepo, fakeEnqueuer{}, logger)

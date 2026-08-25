@@ -27,10 +27,41 @@ import (
 // materialised pending instance falls within this window.
 const listWindowDays = 14
 
+// pinFormField is the form field the chore row's shared complete/skip form
+// submits a member's PIN under (NES-166).
+const pinFormField = "pin"
+
 // LayoutFunc is the callback type home.go passes to List so the handler can
 // wrap its content in the full A·Hearth app shell. It mirrors the pattern used
 // by the dashboard handler: build ShellProps + nav, return a templ layout func.
 type LayoutFunc func(member *household.Member) func(templ.Component) templ.Component
+
+// TaskPINAuthorizer is the narrow port onto the auth context's per-member
+// PIN gate (NES-165) that this inbound adapter depends on (NES-166). It
+// deliberately exposes only the two methods the chore list and its
+// complete/skip actions need — the authorization gate itself, and the
+// enrolment lookup that decides whether a row renders a PIN field — rather
+// than the whole *authapp.PINService, whose enrolment and lockout-admin
+// methods belong to the settings page alone.
+//
+// The gate lives here, in the inbound adapter, and not in TaskService:
+// proving who is standing at the shared entryway screen is an
+// authentication concern of the transport, and TaskService stays
+// transport-agnostic (the scheduler and the deep-link flow reach the same
+// service by other routes).
+type TaskPINAuthorizer interface {
+	// AuthorizeTaskAction verifies submittedPIN against assigneeID's own
+	// PIN and reports who actually performed the action: assigneeID on
+	// success, the zero MemberID with a nil error when the assignee has no
+	// PIN enrolled (the gate is a no-op — the caller keeps whatever actor
+	// it already resolved), and authdomain.ErrPINMismatch/ErrPINLocked when
+	// the action must be refused.
+	AuthorizeTaskAction(ctx context.Context, assigneeID household.MemberID, submittedPIN string) (household.MemberID, error)
+	// EnrolledMembers returns every member id in householdID with a PIN on
+	// file, so the list can render a PIN field on exactly the rows whose
+	// assignee will be gated.
+	EnrolledMembers(ctx context.Context, householdID household.HouseholdID) ([]household.MemberID, error)
+}
 
 // WebHandlers holds the HTTP handler methods for the tasks read-side UI and the
 // three mutation actions (complete, skip, claim). All dependencies are injected
@@ -44,6 +75,7 @@ type WebHandlers struct {
 	taskRepo     domain.RecurringTaskRepository
 	instanceRepo domain.TaskInstanceRepository
 	households   household.HouseholdRepository
+	pin          TaskPINAuthorizer
 	sm           *scs.SessionManager
 	logger       *slog.Logger
 	photoChecker domain.ProofPhotoChecker
@@ -66,6 +98,7 @@ func NewWebHandlers(
 	taskRepo domain.RecurringTaskRepository,
 	instanceRepo domain.TaskInstanceRepository,
 	households household.HouseholdRepository,
+	pin TaskPINAuthorizer,
 	sm *scs.SessionManager,
 	logger *slog.Logger,
 	photoChecker domain.ProofPhotoChecker,
@@ -82,6 +115,9 @@ func NewWebHandlers(
 	if households == nil {
 		panic("tasks/adapter: NewWebHandlers requires a non-nil HouseholdRepository")
 	}
+	if pin == nil {
+		panic("tasks/adapter: NewWebHandlers requires a non-nil TaskPINAuthorizer")
+	}
 	if sm == nil {
 		panic("tasks/adapter: NewWebHandlers requires a non-nil session manager")
 	}
@@ -93,6 +129,7 @@ func NewWebHandlers(
 		taskRepo:     taskRepo,
 		instanceRepo: instanceRepo,
 		households:   households,
+		pin:          pin,
 		sm:           sm,
 		logger:       logger,
 		photoChecker: photoChecker,
@@ -149,7 +186,15 @@ func (h *WebHandlers) List(layoutFn LayoutFunc) http.HandlerFunc {
 //   - ErrBeforePhotoRequired/
 //     ErrAfterPhotoRequired        → 422, inline on the row for an HTMX
 //     request (see handleCompleteError); plain text otherwise
+//   - wrong/missing/locked PIN     → 422 inline on the row for an HTMX
+//     request, 403 plain text otherwise (see authorizeTaskAction)
 //   - other                        → 500
+//
+// NES-166: when the instance has an assignee with a PIN enrolled, the
+// submitted "pin" form value must verify against THAT ASSIGNEE'S PIN, and
+// the completion is credited to the assignee — so the point-ledger row
+// CompleteAndAward writes and the instance's completed-by agree on who
+// actually stood at the screen. See authorizeTaskAction.
 func (h *WebHandlers) Complete(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -170,7 +215,12 @@ func (h *WebHandlers) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.CompleteInstance(r.Context(), member.HouseholdID, id, member.ID, time.Now()); err != nil {
+	by, ok := h.authorizeTaskAction(w, r, member, id)
+	if !ok {
+		return
+	}
+
+	if err := h.svc.CompleteInstance(r.Context(), member.HouseholdID, id, by, time.Now()); err != nil {
 		h.handleCompleteError(w, r, member, id, err)
 		return
 	}
@@ -228,9 +278,99 @@ func (h *WebHandlers) handleCompleteError(
 	}
 }
 
+// authorizeTaskAction is the NES-166 PIN gate every chore-mutating action on
+// this adapter passes through. It re-reads the instance (household-scoped,
+// so a foreign id is indistinguishable from a missing one) and resolves who
+// is credited with the action:
+//
+//   - No assignee: nothing to impersonate, so the gate is skipped entirely
+//     and the signed-in member is the actor. Claiming is out of scope for
+//     the same reason — an unassigned instance belongs to nobody.
+//   - Assignee with NO PIN enrolled: exactly the pre-NES-166 path, the
+//     signed-in member is the actor. This is what keeps an existing
+//     household from being locked out by the upgrade; enforcement turns on
+//     per member, as each enrols.
+//   - Assignee WITH a PIN: the submitted "pin" form value must verify
+//     against that assignee's own PIN, and the assignee — not the session
+//     member — is the actor.
+//
+// A wrong, missing, or locked-out PIN writes the error response itself and
+// returns ok=false; the caller must return immediately without touching the
+// instance. The message never distinguishes a wrong PIN from an unenrolled
+// member (see authadapter.PINVerificationMessage).
+func (h *WebHandlers) authorizeTaskAction(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	id domain.TaskInstanceID,
+) (household.MemberID, bool) {
+	inst, err := h.instanceRepo.Get(r.Context(), member.HouseholdID, id)
+	if err != nil {
+		h.handleMutationError(w, r, err)
+		return household.MemberID{}, false
+	}
+	if inst.AssigneeID == nil {
+		return member.ID, true
+	}
+
+	actor, err := h.pin.AuthorizeTaskAction(r.Context(), *inst.AssigneeID, r.FormValue(pinFormField))
+	switch {
+	case err == nil && actor == (household.MemberID{}):
+		// The assignee has no PIN on file: nothing to verify against, so
+		// the actor stays whoever the session already resolved.
+		return member.ID, true
+	case err == nil:
+		return actor, true
+	}
+
+	msg, known := authadapter.PINVerificationMessage(err)
+	if !known {
+		h.logger.ErrorContext(r.Context(), "tasks: authorize task action", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return household.MemberID{}, false
+	}
+	h.respondPINError(w, r, member, id, msg)
+	return household.MemberID{}, false
+}
+
+// respondPINError reports a refused PIN verification. On an HTMX request it
+// re-renders the SAME chore row at 422 with msg set on PinError, riding the
+// exact mechanism NES-120's photo-policy rejection already uses (Layout's
+// htmx-config meta tag opts 422 into swapping), so the member retypes the
+// PIN in place with no page reload. A plain form POST — which never reads a
+// response body as anything but a document — gets 403 plain text instead,
+// the same status a failed CSRF check returns on these routes.
+func (h *WebHandlers) respondPINError(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	id domain.TaskInstanceID,
+	msg string,
+) {
+	if !render.IsHTMX(r) {
+		http.Error(w, msg, http.StatusForbidden)
+		return
+	}
+	row, err := h.buildInstanceRow(r, member, id)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: build row after pin error", "error", err)
+		http.Error(w, msg, http.StatusForbidden)
+		return
+	}
+	row.PinError = msg
+	if renderErr := render.Render(r.Context(), w, http.StatusUnprocessableEntity, components.TaskRowItem(row)); renderErr != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: render pin error", "error", renderErr)
+	}
+}
+
 // Skip handles POST /tasks/{id}/skip. It verifies the CSRF token, parses the
 // instance id, calls SkipInstance, and returns the updated row for an in-place
 // HTMX swap (or redirects to /tasks for a full navigation).
+//
+// It is gated by the same PIN check as Complete (NES-166) — skipping a
+// chore disposes of somebody else's responsibility just as completing it
+// does — but discards the resolved actor: SkipInstance awards no points and
+// records no attribution, so there is nothing for the actor to change.
 //
 // Error mapping: same as Complete.
 func (h *WebHandlers) Skip(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +390,10 @@ func (h *WebHandlers) Skip(w http.ResponseWriter, r *http.Request) {
 
 	id, ok := h.parseInstanceID(w, r)
 	if !ok {
+		return
+	}
+
+	if _, ok := h.authorizeTaskAction(w, r, member, id); !ok {
 		return
 	}
 
@@ -750,6 +894,13 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 	combined = append(combined, overdue...)
 	combined = append(combined, standing...)
 
+	// NES-166: ONE enrolment lookup per page render — the set of members
+	// whose chore rows must render a PIN field — rather than one per row.
+	pinEnrolled, err := h.pinEnrolledMembers(r.Context(), member.HouseholdID)
+	if err != nil {
+		return nil, err
+	}
+
 	// NES-120: one batched ProofPhotoChecker call for every actionable,
 	// photo-policy-requiring instance in the page, instead of one call per
 	// row — see batchProofPhotoIDs' own doc.
@@ -759,7 +910,7 @@ func (h *WebHandlers) buildTaskRows(r *http.Request, member *household.Member) (
 	for _, inst := range combined {
 		// taskMeta is keyed only by ACTIVE recurring tasks, so a missing entry
 		// (nil) is rendered as "(archived)" by instanceToRow.
-		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today, member.ID, photoIDs))
+		rows = append(rows, h.instanceToRow(r.Context(), inst, taskMeta[inst.RecurringTaskID], memberByID, csrfToken, today, member.ID, photoIDs, pinEnrolled))
 	}
 
 	sort.Slice(rows, func(i, j int) bool {
@@ -789,6 +940,7 @@ func (h *WebHandlers) instanceToRow(
 	today time.Time,
 	viewerID household.MemberID,
 	photoIDs map[domain.TaskInstanceID]domain.ProofPhotoIDs,
+	pinEnrolled map[household.MemberID]bool,
 ) components.TaskRow {
 	title, category := "(archived)", "chore"
 	if meta != nil {
@@ -862,6 +1014,7 @@ func (h *WebHandlers) instanceToRow(
 		CSRFToken:         csrfToken,
 		Mine:              inst.AssigneeID != nil && *inst.AssigneeID == viewerID,
 		Tradeable:         domain.IsInstanceTradeable(inst),
+		RequiresPIN:       actionable && inst.AssigneeID != nil && pinEnrolled[*inst.AssigneeID],
 		PhotoPolicy:       photoPolicy,
 		BeforePhotoRawURL: beforeURL,
 		AfterPhotoRawURL:  afterURL,
@@ -949,6 +1102,24 @@ func (h *WebHandlers) batchProofPhotoIDs(
 	return photoIDs
 }
 
+// pinEnrolledMembers resolves the household's PIN-enrolled member ids into a
+// set for O(1) per-row lookup (NES-166). Unlike batchProofPhotoIDs, a
+// failure here is NOT degraded to an empty map: a row that silently lost its
+// PIN field would let a member submit a completion that the gate then
+// refuses, which reads as a broken button rather than a missing credential.
+// The error propagates and the caller renders a 500.
+func (h *WebHandlers) pinEnrolledMembers(ctx context.Context, householdID household.HouseholdID) (map[household.MemberID]bool, error) {
+	ids, err := h.pin.EnrolledMembers(ctx, householdID)
+	if err != nil {
+		return nil, err
+	}
+	enrolled := make(map[household.MemberID]bool, len(ids))
+	for _, id := range ids {
+		enrolled[id] = true
+	}
+	return enrolled, nil
+}
+
 // buildInstanceRow re-reads one instance (after a mutation has committed) and
 // maps it to its row view model, so a complete/skip/claim action can return just
 // the updated row for an in-place HTMX swap.
@@ -987,7 +1158,11 @@ func (h *WebHandlers) buildInstanceRow(r *http.Request, member *household.Member
 	// batch, not a special case.
 	photoIDs := h.batchProofPhotoIDs(r.Context(), member.HouseholdID, []*domain.TaskInstance{inst},
 		map[domain.RecurringTaskID]*domain.RecurringTask{inst.RecurringTaskID: meta})
-	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today, member.ID, photoIDs), nil
+	pinEnrolled, err := h.pinEnrolledMembers(r.Context(), member.HouseholdID)
+	if err != nil {
+		return components.TaskRow{}, err
+	}
+	return h.instanceToRow(r.Context(), inst, meta, memberByID, csrfToken, today, member.ID, photoIDs, pinEnrolled), nil
 }
 
 // dueLabel renders a due date relative to the supplied reference date today

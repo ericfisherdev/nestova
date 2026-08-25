@@ -18,11 +18,9 @@ import (
 // genericPINError is the message shown for a PIN verification failure that
 // must not disclose whether the member has no PIN enrolled or entered the
 // wrong one (NES-165 AC: "Verification errors never disclose whether a
-// member is enrolled"). Nothing in this ticket calls
-// PINService.Verify/AuthorizeTaskAction from HTTP yet — this constant and
-// pinVerificationMessage below exist for the follow-up ticket (NES-166)
-// that wires AuthorizeTaskAction into the complete/skip surfaces, and are
-// unit-tested here regardless.
+// member is enrolled"). It is shown by this settings page and, through
+// PINVerificationMessage, by the chore complete/skip surfaces that call
+// PINService.AuthorizeTaskAction (NES-166).
 const genericPINError = "That PIN could not be verified. Please try again."
 
 // genericPINLockedError is shown while a member is in the PIN attempt
@@ -35,14 +33,17 @@ const genericPINLockedError = "Too many incorrect PINs. Please wait a few minute
 // pinInvalidFormatError is shown when a submitted PIN is not 4-8 digits.
 const pinInvalidFormatError = "PINs must be 4 to 8 digits."
 
-// pinVerificationMessage maps a PINService.Verify/AuthorizeTaskAction error
+// PINVerificationMessage maps a PINService.Verify/AuthorizeTaskAction error
 // to its user-facing message, collapsing authdomain.ErrPINMismatch and
 // ErrPINNotEnrolled into the same genericPINError so a failed verification
 // never discloses which member is enrolled; authdomain.ErrPINLocked is
 // reported distinctly since the lockout itself must stay visible. ok is
 // false for any error this function does not recognize (an internal error
-// the caller must log and surface as a 500, not show to the member).
-func pinVerificationMessage(err error) (msg string, ok bool) {
+// the caller must log and surface as a 500, not show to the member). It is
+// exported because the tasks and deeplink adapters gate their chore
+// complete/skip surfaces on the same errors (NES-166) and must render the
+// identical non-disclosing text this settings page does.
+func PINVerificationMessage(err error) (msg string, ok bool) {
 	switch {
 	case errors.Is(err, authdomain.ErrPINLocked):
 		return genericPINLockedError, true
@@ -59,11 +60,6 @@ func pinVerificationMessage(err error) (msg string, ok bool) {
 // it never writes an HTTP response for a mutation's success path — the
 // composition root (cmd/server/home.go's registerSettingsPage) does, after
 // calling SectionView here.
-//
-// It lands entirely unused by any task-mutating endpoint: wiring
-// PINService.AuthorizeTaskAction into the complete/skip surfaces is the
-// follow-up ticket "require a member PIN to complete or skip a chore"
-// (NES-166) — that ticket blocks on this one, not the other way around.
 type PINWebHandlers struct {
 	pin        *authapp.PINService
 	households household.HouseholdRepository
