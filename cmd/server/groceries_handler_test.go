@@ -357,7 +357,7 @@ func buildGroceriesTestHandler(
 		panic("buildGroceriesTestHandler: " + err.Error())
 	}
 	taskWebHandlers := tasksadapter.NewWebHandlers(
-		taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil,
+		taskService, recurringRepo, instanceRepo, householdRepo, newTestPINService(logger), sm, logger, nil,
 	)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := buildGroceryHandlers(fakes, householdRepo, sm, logger)

@@ -208,7 +208,7 @@ func buildTaskTestHandler(instanceRepo *fakeTaskInstanceRepo) http.Handler {
 	if err != nil {
 		panic("buildTaskTestHandler: " + err.Error())
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, nil)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, newTestPINService(logger), sm, logger, nil)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 

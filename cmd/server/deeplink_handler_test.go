@@ -307,6 +307,8 @@ type deepLinkFixture struct {
 	instances    *householdScopedTaskInstanceRepo
 	recurring    *seededRecurringTaskRepo
 	rewards      *householdScopedRewardRepo
+	pinRepo      *fakePINRepo
+	pinService   *authapp.PINService
 	credRepo     successCredRepo
 	authHandlers *authadapter.Handlers
 }
@@ -339,8 +341,11 @@ func buildDeepLinkFixture(t *testing.T, member *household.Member) *deepLinkFixtu
 		t.Fatalf("NewSigner: %v", err)
 	}
 
+	pinRepo := newFakePINRepo()
+	pinService := newTestPINServiceWithRepo(pinRepo, logger)
+
 	deepLinkHandlers := deeplinkadapter.NewWebHandlers(
-		signer, taskService, recurring, instances, rewardService, rewards, sm, logger, clock.Now,
+		signer, taskService, recurring, instances, rewardService, rewards, pinService, sm, logger, clock.Now,
 	)
 
 	credRepo := newSuccessCredRepo(t, member.ID, "member@example.com", "correct horse battery staple")
@@ -358,6 +363,7 @@ func buildDeepLinkFixture(t *testing.T, member *household.Member) *deepLinkFixtu
 	return &deepLinkFixture{
 		handler: handler, sm: sm, signer: signer, clock: clock,
 		instances: instances, recurring: recurring, rewards: rewards,
+		pinRepo: pinRepo, pinService: pinService,
 		credRepo: credRepo, authHandlers: authHandlers,
 	}
 }
@@ -1035,7 +1041,7 @@ func buildDeepLinkFixtureWithSharedStores(t *testing.T, member *household.Member
 
 	deepLinkHandlers := deeplinkadapter.NewWebHandlers(
 		shared.signer, taskService, shared.recurring, shared.instances, rewardService, shared.rewards,
-		sm, logger, shared.clock.Now,
+		shared.pinService, sm, logger, shared.clock.Now,
 	)
 
 	authHandlers := authadapter.NewHandlers(sm, authapp.New(shared.credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
@@ -1052,6 +1058,7 @@ func buildDeepLinkFixtureWithSharedStores(t *testing.T, member *household.Member
 	return &deepLinkFixture{
 		handler: handler, sm: sm, signer: shared.signer, clock: shared.clock,
 		instances: shared.instances, recurring: shared.recurring, rewards: shared.rewards,
+		pinRepo: shared.pinRepo, pinService: shared.pinService,
 		credRepo: shared.credRepo, authHandlers: authHandlers,
 	}
 }

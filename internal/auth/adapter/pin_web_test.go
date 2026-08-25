@@ -8,17 +8,17 @@ import (
 )
 
 // TestPINVerificationMessage_CollapsesMismatchAndNotEnrolled proves
-// pinVerificationMessage collapses authdomain.ErrPINMismatch and
+// PINVerificationMessage collapses authdomain.ErrPINMismatch and
 // ErrPINNotEnrolled into the identical genericPINError message (NES-165
 // AC: a submitted PIN's failure must never disclose whether the member is
 // enrolled), while reporting authdomain.ErrPINLocked distinctly, since a
 // lockout is deliberately visible rather than collapsed.
 func TestPINVerificationMessage_CollapsesMismatchAndNotEnrolled(t *testing.T) {
-	mismatchMsg, ok := pinVerificationMessage(authdomain.ErrPINMismatch)
+	mismatchMsg, ok := PINVerificationMessage(authdomain.ErrPINMismatch)
 	if !ok {
 		t.Fatal("ErrPINMismatch: ok = false, want true")
 	}
-	notEnrolledMsg, ok := pinVerificationMessage(authdomain.ErrPINNotEnrolled)
+	notEnrolledMsg, ok := PINVerificationMessage(authdomain.ErrPINNotEnrolled)
 	if !ok {
 		t.Fatal("ErrPINNotEnrolled: ok = false, want true")
 	}
@@ -29,7 +29,7 @@ func TestPINVerificationMessage_CollapsesMismatchAndNotEnrolled(t *testing.T) {
 		t.Errorf("message = %q, want genericPINError %q", mismatchMsg, genericPINError)
 	}
 
-	lockedMsg, ok := pinVerificationMessage(authdomain.ErrPINLocked)
+	lockedMsg, ok := PINVerificationMessage(authdomain.ErrPINLocked)
 	if !ok {
 		t.Fatal("ErrPINLocked: ok = false, want true")
 	}
@@ -45,7 +45,7 @@ func TestPINVerificationMessage_CollapsesMismatchAndNotEnrolled(t *testing.T) {
 // internal (non-sentinel) error is reported as unrecognized, so the caller
 // logs it and surfaces a 500 rather than showing it to the member.
 func TestPINVerificationMessage_UnrecognizedErrorReturnsNotOK(t *testing.T) {
-	if _, ok := pinVerificationMessage(errors.New("boom")); ok {
+	if _, ok := PINVerificationMessage(errors.New("boom")); ok {
 		t.Error("unrecognized error: ok = true, want false")
 	}
 }

@@ -357,7 +357,7 @@ func buildTestHandler() http.Handler {
 	if err != nil {
 		panic("buildTestHandler: " + err.Error())
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, taskRecurringRepo, taskInstanceRepo, repo, sm, logger, nil)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, taskRecurringRepo, taskInstanceRepo, repo, newTestPINService(logger), sm, logger, nil)
 	gamificationHandlers := newTestGamificationHandlers(taskInstanceRepo, repo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(repo, sm, logger)
 

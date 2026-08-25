@@ -127,7 +127,7 @@ func buildPhotoPolicyTestHandler(
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, photoChecker)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, newTestPINService(logger), sm, logger, photoChecker)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 
@@ -290,7 +290,7 @@ func TestTasksList_PhotoPolicy_BatchesProofPhotoLookupAcrossRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTaskService: %v", err)
 	}
-	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, sm, logger, photoChecker)
+	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instanceRepo, householdRepo, newTestPINService(logger), sm, logger, photoChecker)
 	gamificationHandlers := newTestGamificationHandlers(instanceRepo, householdRepo, sm, logger)
 	groceryHandlers := newTestGroceryHandlers(householdRepo, sm, logger)
 

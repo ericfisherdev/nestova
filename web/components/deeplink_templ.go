@@ -27,6 +27,15 @@ type DeepLinkConfirmView struct {
 	// authorized this GET also authorizes the POST that acts on it.
 	FormAction string
 	CSRFToken  string
+	// RequiresPIN is true when the action is gated on the chore assignee's
+	// PIN (NES-166), so the confirm form renders a numeric PIN field. False
+	// for every action whose target has no assignee, no PIN enrolled, or no
+	// gate at all (claim, redeem, add-chore).
+	RequiresPIN bool
+	// Error is a form-level message shown above the confirm button after a
+	// refused submission — today only a refused PIN, whose text never
+	// discloses whether a member is enrolled.
+	Error string
 }
 
 // DeepLinkConfirmPage is a standalone, phone-sized document (not the member
@@ -61,7 +70,7 @@ func DeepLinkConfirmPage(view DeepLinkConfirmView) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(view.Heading)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 34, Col: 24}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 43, Col: 24}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -74,7 +83,7 @@ func DeepLinkConfirmPage(view DeepLinkConfirmView) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(view.Heading)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 41, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 50, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -87,7 +96,7 @@ func DeepLinkConfirmPage(view DeepLinkConfirmView) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(view.Description)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 42, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 51, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -100,7 +109,7 @@ func DeepLinkConfirmPage(view DeepLinkConfirmView) templ.Component {
 		var templ_7745c5c3_Var5 templ.SafeURL
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(view.FormAction))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 43, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 52, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -113,21 +122,46 @@ func DeepLinkConfirmPage(view DeepLinkConfirmView) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(view.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 44, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 53, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\"> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
+		}
+		if view.RequiresPIN {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<label class=\"mb-1 block text-left text-sm font-medium text-ink-secondary\" for=\"deeplink-pin\">PIN</label> <input id=\"deeplink-pin\" type=\"password\" name=\"pin\" inputmode=\"numeric\" pattern=\"[0-9]*\" minlength=\"4\" maxlength=\"8\" autocomplete=\"one-time-code\" data-testid=\"deeplink-pin-input\" class=\"mb-4 min-h-[48px] w-full rounded-control border border-sidebar-border px-3 py-2 text-center font-mono\"> ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		if view.Error != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<p role=\"alert\" data-testid=\"deeplink-error\" class=\"mb-4 text-sm text-red-600\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var7 string
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(view.Error)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 70, Col: 98}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
 		templ_7745c5c3_Err = Button(view.ConfirmLabel, ButtonPrimary, "submit").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</form></div></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</form></div></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -163,51 +197,51 @@ func DeepLinkMessagePage(view DeepLinkMessageView) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var7 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var7 == nil {
-			templ_7745c5c3_Var7 = templ.NopComponent
+		templ_7745c5c3_Var8 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var8 == nil {
+			templ_7745c5c3_Var8 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var8 string
-		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(view.Heading)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 71, Col: 24}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, " – Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"flex min-h-screen items-center justify-center bg-sand p-4 font-sans text-ink\"><div class=\"w-full max-w-sm\"><div class=\"rounded-card bg-surface p-6 text-center shadow-warm\" data-testid=\"deeplink-message\"><h1 class=\"mb-2 text-xl font-semibold\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(view.Heading)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 78, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 98, Col: 24}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</h1><p class=\"text-ink-muted\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, " – Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"flex min-h-screen items-center justify-center bg-sand p-4 font-sans text-ink\"><div class=\"w-full max-w-sm\"><div class=\"rounded-card bg-surface p-6 text-center shadow-warm\" data-testid=\"deeplink-message\"><h1 class=\"mb-2 text-xl font-semibold\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var10 string
-		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(view.Message)
+		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(view.Heading)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 79, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 105, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</p></div></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "</h1><p class=\"text-ink-muted\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var11 string
+		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(view.Message)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/deeplink.templ`, Line: 106, Col: 45}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "</p></div></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
