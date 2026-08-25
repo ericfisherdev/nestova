@@ -43,6 +43,19 @@ func ParseFreq(s string) (Freq, error) {
 	return f, nil
 }
 
+// MaxCadenceInterval bounds a cadence's Interval from above (NES-173).
+//
+// The lower bound alone was not enough: an Interval of math.MaxInt64 passed
+// Validate and was stored, but NextAfter and OccurrencesBetween step forward by
+// Interval using time arithmetic, which overflows long before that. A task
+// saved that way has no computable next occurrence, so the generator can never
+// materialise an instance from it.
+//
+// 1000 comfortably contains every real cadence — every 3 days, every 2 weeks,
+// every 18 months — while keeping the arithmetic nowhere near an overflow at
+// any frequency.
+const MaxCadenceInterval = 1000
+
 // ErrInvalidCadence is returned by Cadence.Validate for a malformed cadence.
 var ErrInvalidCadence = errors.New("household: invalid cadence")
 
@@ -76,6 +89,9 @@ func (c Cadence) Validate() error {
 	}
 	if c.Interval < 1 {
 		return fmt.Errorf("%w: interval must be >= 1, got %d", ErrInvalidCadence, c.Interval)
+	}
+	if c.Interval > MaxCadenceInterval {
+		return fmt.Errorf("%w: interval must be <= %d, got %d", ErrInvalidCadence, MaxCadenceInterval, c.Interval)
 	}
 	if c.Anchor.IsZero() {
 		return fmt.Errorf("%w: anchor is required", ErrInvalidCadence)

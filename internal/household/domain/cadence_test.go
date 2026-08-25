@@ -2,6 +2,7 @@ package domain_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -71,6 +72,9 @@ func TestCadenceValidate(t *testing.T) {
 		{"valid monthly", domain.Cadence{Freq: domain.FreqMonthly, Interval: 1, Anchor: anchor}, true},
 		{"zero interval", domain.Cadence{Freq: domain.FreqDaily, Interval: 0, Anchor: anchor}, false},
 		{"negative interval", domain.Cadence{Freq: domain.FreqDaily, Interval: -1, Anchor: anchor}, false},
+		{"interval at the upper bound", domain.Cadence{Freq: domain.FreqDaily, Interval: domain.MaxCadenceInterval, Anchor: anchor}, true},
+		{"interval one over the upper bound", domain.Cadence{Freq: domain.FreqDaily, Interval: domain.MaxCadenceInterval + 1, Anchor: anchor}, false},
+		{"interval at MaxInt64 overflows the date math", domain.Cadence{Freq: domain.FreqDaily, Interval: math.MaxInt64, Anchor: anchor}, false},
 		{"unknown freq", domain.Cadence{Freq: domain.Freq("hourly"), Interval: 1, Anchor: anchor}, false},
 		{"weekday on daily", domain.Cadence{Freq: domain.FreqDaily, Interval: 1, ByWeekday: []time.Weekday{time.Monday}, Anchor: anchor}, false},
 		{"zero anchor", domain.Cadence{Freq: domain.FreqDaily, Interval: 1}, false},
