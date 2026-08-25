@@ -44,21 +44,35 @@ func NewPINRepository(dbtx db.TX) *PINRepository {
 // SELECT ... FOR UPDATE closes one.
 //
 // Returns household.ErrMemberNotFound when memberID does not belong to
-// householdID (a violation of the composite tenant FK).
+// householdID. On the INSERT path the composite tenant FK is what catches
+// that; the conflict path needs its own predicate, because Postgres
+// re-checks a referencing row's FK only when the key columns change, and
+// DO UPDATE rewrites neither household_id nor member_id. Without the WHERE
+// below, a re-set from a foreign household would update the row's hash and
+// leave a perfectly valid (member, original household) reference behind for
+// the FK to approve.
 func (r *PINRepository) SetPIN(ctx context.Context, memberID household.MemberID, householdID household.HouseholdID, pinHash string) error {
 	const q = `
 		INSERT INTO identity.member_pin (member_id, household_id, pin_hash)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (member_id) DO UPDATE
-			SET pin_hash = EXCLUDED.pin_hash, updated_at = now()`
+			SET pin_hash = EXCLUDED.pin_hash, updated_at = now()
+			WHERE identity.member_pin.household_id = EXCLUDED.household_id`
 
-	_, err := r.dbtx.Exec(ctx, q, memberID.String(), householdID.String(), pinHash)
+	tag, err := r.dbtx.Exec(ctx, q, memberID.String(), householdID.String(), pinHash)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation && pgErr.ConstraintName == pinMemberFK {
 			return household.ErrMemberNotFound
 		}
 		return fmt.Errorf("set pin: %w", err)
+	}
+	// A conflict whose existing row belongs to another household updates
+	// nothing, so a foreign member id stays indistinguishable from an
+	// unknown one — the same answer the INSERT path's FK gives, and the same
+	// shape ClearPIN uses.
+	if tag.RowsAffected() == 0 {
+		return household.ErrMemberNotFound
 	}
 	return nil
 }
@@ -85,8 +99,9 @@ func (r *PINRepository) ClearPIN(ctx context.Context, memberID household.MemberI
 	// household_id is part of the predicate, not just the row: member_id is
 	// this table's whole primary key, so an unscoped DELETE would let an
 	// admin of ANY household clear any member's PIN given only their id.
-	// SetPIN gets that protection from the composite tenant FK; a DELETE has
-	// no FK to lean on, so it states the tenant itself.
+	// SetPIN states its tenant too — via the composite FK on its INSERT path
+	// and an explicit predicate on its conflict path — and a DELETE has no FK
+	// to lean on at all, so it states the tenant itself.
 	const q = `DELETE FROM identity.member_pin WHERE member_id = $1 AND household_id = $2`
 
 	tag, err := r.dbtx.Exec(ctx, q, memberID.String(), householdID.String())
