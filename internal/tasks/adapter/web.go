@@ -756,8 +756,9 @@ func (h *WebHandlers) parseCreateForm(
 	interval := 1
 	if freq != household.FreqAsNeeded {
 		interval, err = strconv.Atoi(rawInterval)
-		if err != nil || interval < 1 {
-			form.Error = "Interval must be a whole number of 1 or more."
+		if err != nil || interval < 1 || interval > household.MaxCadenceInterval {
+			form.Error = fmt.Sprintf(
+				"Interval must be a whole number between 1 and %d.", household.MaxCadenceInterval)
 			return nil, nil, form, form.Error
 		}
 	}
