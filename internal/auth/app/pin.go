@@ -189,13 +189,6 @@ func (s *PINService) LockedUntil(memberID household.MemberID) (time.Time, bool) 
 	return s.limiter.lockedUntil(memberID.String(), s.now())
 }
 
-// ResetLockout clears memberID's strike state without touching their PIN,
-// letting a parent unlock a member immediately rather than waiting out
-// pinBackoffWindow.
-func (s *PINService) ResetLockout(memberID household.MemberID) {
-	s.limiter.resetLockout(memberID.String())
-}
-
 // setPIN validates, hashes, and persists pin for memberID, resetting any
 // lockout on success. logMsg distinguishes a self-service Set from a parent
 // SetForMember in the log line.
