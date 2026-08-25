@@ -160,3 +160,32 @@ func TestPINClearPIN_OtherHouseholdLeavesRowIntact(t *testing.T) {
 		t.Errorf("stored hash = %q, want it left intact at %q", hash, "a-hash")
 	}
 }
+
+// TestPINSetPIN_OtherHouseholdLeavesHashIntact pins the tenant scope on the
+// UPSERT's conflict path. The composite FK protects the INSERT, but Postgres
+// re-checks a referencing row's FK only when the key columns actually change,
+// and the DO UPDATE branch rewrites neither household_id nor member_id — so
+// without an explicit predicate a re-set from a foreign household would
+// silently overwrite an enrolled member's PIN. A foreign household must be
+// indistinguishable from an unknown member, exactly as it is on the INSERT
+// path. TestPINSetPIN_UnknownMemberReturnsErrMemberNotFound does not cover
+// this: an unknown member has no row, so it never reaches the conflict path.
+func TestPINSetPIN_OtherHouseholdLeavesHashIntact(t *testing.T) {
+	repo, householdID, memberID := newTestPINRepo(t)
+	if err := repo.SetPIN(testCtx(t), memberID, householdID, "a-hash"); err != nil {
+		t.Fatalf("SetPIN: %v", err)
+	}
+
+	err := repo.SetPIN(testCtx(t), memberID, household.NewHouseholdID(), "b-hash")
+	if !errors.Is(err, household.ErrMemberNotFound) {
+		t.Errorf("SetPIN from another household = %v, want household.ErrMemberNotFound", err)
+	}
+
+	hash, err := repo.GetPINHash(testCtx(t), memberID)
+	if err != nil {
+		t.Fatalf("GetPINHash after a cross-household SetPIN: %v", err)
+	}
+	if hash != "a-hash" {
+		t.Errorf("stored hash = %q, want it left intact at %q", hash, "a-hash")
+	}
+}
