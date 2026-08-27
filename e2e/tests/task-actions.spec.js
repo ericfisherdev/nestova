@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { execSync } = require('child_process');
+const { psql } = require('./db');
 
 // E2E coverage for the task instance actions (NES-32): complete / skip / claim.
 //
@@ -16,12 +16,6 @@ const titles = {
   skip: `E2E Skip ${TS}`,
   claim: `E2E Claim ${TS}`,
 };
-
-function psql(sql) {
-  return execSync('docker exec -i nestova-test-db psql -U nestova -d nestova_test -v ON_ERROR_STOP=1 -q', {
-    input: sql,
-  }).toString();
-}
 
 test.beforeAll(() => {
   psql(`
@@ -55,8 +49,11 @@ test.afterAll(() => {
 // taskRow finds the in-list instance row carrying a given title. The HTMX
 // actions swap this row (#task-{id}, outerHTML) in place, so re-querying after
 // an action returns the updated row.
+// Scoped INSIDE #task-groups: that wrapper's own id also starts with "task-",
+// so an unscoped [id^="task-"] matches the whole list and resolves to every
+// row's buttons at once.
 function taskRow(page, title) {
-  return page.locator('[id^="task-"]').filter({ hasText: title }).first();
+  return page.locator('#task-groups [id^="task-"]').filter({ hasText: title }).first();
 }
 
 test('completing a task marks the row Completed', async ({ page }) => {

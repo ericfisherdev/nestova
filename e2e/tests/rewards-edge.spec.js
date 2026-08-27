@@ -1,15 +1,16 @@
 const { test, expect } = require('@playwright/test');
-const { execSync } = require('child_process');
+const { psql: runSQL } = require('./db');
 
 // Edge case: reward redemption with seeded points (NES-37). The owner is granted
 // 50 points and given an affordable (20) and an unaffordable (1000) reward.
 // Redeeming the affordable one deducts the cost; the unaffordable one is rejected
 // with 409 and leaves the balance unchanged.
 
+// Delegates to the shared helper, which pins search_path to
+// nestova,identity,public — household and member live in the identity
+// schema, so an unpinned connection cannot see them.
 function psql(sql) {
-  return execSync('docker exec -i nestova-test-db psql -U nestova -d nestova_test -v ON_ERROR_STOP=1 -tA -F"|"', {
-    input: sql,
-  }).toString().trim();
+  return runSQL(sql).trim();
 }
 
 const TS = Date.now();

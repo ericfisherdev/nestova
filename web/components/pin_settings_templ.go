@@ -24,9 +24,9 @@ type PINMemberOption struct {
 }
 
 // PINSettingsView is the view model for the /settings page's PIN section
-// (NES-165), rendered for every member regardless of role. The gate this
-// credential backs (AuthorizeTaskAction) is not wired into any surface
-// yet — this section is purely enrolment and management.
+// (NES-165), rendered for every member regardless of role. Enrolling here is
+// what arms the chore gate (NES-166): completing or skipping an instance
+// assigned to an enrolled member asks for that member's PIN.
 type PINSettingsView struct {
 	// Enrolled reports whether the viewing member has a PIN set.
 	Enrolled bool
@@ -76,7 +76,7 @@ func pinSection(view PINSettingsView) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"mb-4 text-sm text-ink-secondary\">Set a short PIN so chores get credited to the right person on a shared screen. This doesn't lock anything down yet — we'll let you know here once completing or skipping a chore starts asking for it.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"mb-4 text-sm text-ink-secondary\">Set a short PIN so chores get credited to the right person on a shared screen. Once it's set, marking one of your chores done or skipped asks for it.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
