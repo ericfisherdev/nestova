@@ -136,9 +136,8 @@ async function setMemberPIN(page, { name, pin }) {
   const row = page.locator("li").filter({ hasText: name }).first();
   await row.locator('input[name="pin"]').fill(pin);
   await row.getByRole("button", { name: /^(Set|Change)$/ }).click();
-  await page.waitForURL((u) => new URL(u).pathname === "/settings", {
-    timeout: 15_000,
-  });
+  // The POST renders the settings page itself rather than redirecting, so the
+  // URL stays on the form action: wait on the re-rendered row, not a navigation.
   await expect(
     page.locator("li").filter({ hasText: name }).first(),
   ).toContainText("PIN set");

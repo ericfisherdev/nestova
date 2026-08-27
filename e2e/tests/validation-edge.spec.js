@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { execSync } = require('child_process');
+const { psql: runSQL } = require('./db');
 const { requireEnv } = require('./env');
 
 // Edge case: server-side validation boundaries. Several forms carry client-side
@@ -7,10 +7,11 @@ const { requireEnv } = require('./env');
 // sure the SERVER rejects bad input. A rejected mutation re-renders (422) rather
 // than 303-redirecting; with maxRedirects:0 a 303 means the value was accepted.
 
+// Delegates to the shared helper, which pins search_path to
+// nestova,identity,public — household and member live in the identity
+// schema, so an unpinned connection cannot see them.
 function psql(sql) {
-  return execSync('docker exec -i nestova-test-db psql -U nestova -d nestova_test -v ON_ERROR_STOP=1 -tA -q', {
-    input: sql,
-  }).toString().trim();
+  return runSQL(sql).trim();
 }
 
 // csrf navigates to a page carrying the action's form and returns its token.

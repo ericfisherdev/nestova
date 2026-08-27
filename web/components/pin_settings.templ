@@ -16,9 +16,9 @@ type PINMemberOption struct {
 }
 
 // PINSettingsView is the view model for the /settings page's PIN section
-// (NES-165), rendered for every member regardless of role. The gate this
-// credential backs (AuthorizeTaskAction) is not wired into any surface
-// yet — this section is purely enrolment and management.
+// (NES-165), rendered for every member regardless of role. Enrolling here is
+// what arms the chore gate (NES-166): completing or skipping an instance
+// assigned to an enrolled member asks for that member's PIN.
 type PINSettingsView struct {
 	// Enrolled reports whether the viewing member has a PIN set.
 	Enrolled bool
@@ -39,8 +39,8 @@ templ pinSection(view PINSettingsView) {
 	@Card("Task PIN") {
 		<p class="mb-4 text-sm text-ink-secondary">
 			Set a short PIN so chores get credited to the right person on a
-			shared screen. This doesn't lock anything down yet — we'll let you
-			know here once completing or skipping a chore starts asking for it.
+			shared screen. Once it's set, marking one of your chores done or
+			skipped asks for it.
 		</p>
 		if view.Error != "" {
 			<p class="mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">

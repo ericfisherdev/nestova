@@ -1,14 +1,15 @@
 const { test, expect } = require('@playwright/test');
-const { execSync } = require('child_process');
+const { psql: runSQL } = require('./db');
 
 // Edge case: tenant isolation. A second household owns a photo; the logged-in
 // household must not be able to read it via the raw endpoint or see it listed.
 // (NES-75: GET /photos/{id}/raw returns 404 when photo.HouseholdID != member's.)
 
+// Delegates to the shared helper, which pins search_path to
+// nestova,identity,public — household and member live in the identity
+// schema, so an unpinned connection cannot see them.
 function psql(sql) {
-  return execSync('docker exec -i nestova-test-db psql -U nestova -d nestova_test -v ON_ERROR_STOP=1 -tA', {
-    input: sql,
-  }).toString().trim();
+  return runSQL(sql).trim();
 }
 
 const HH2 = `Edge HH2 ${Date.now()}`;
@@ -18,10 +19,10 @@ let hh2PhotoId;
 test.beforeAll(() => {
   hh2PhotoId = psql(`
     WITH hh AS (INSERT INTO household (name) VALUES ('${HH2}') RETURNING id),
-         mem AS (INSERT INTO member (id, household_id, display_name, role, color_key)
-                 SELECT gen_random_uuid(), id, 'HH2 Owner', 'owner', 'clay' FROM hh RETURNING id, household_id)
-    INSERT INTO photo (id, household_id, storage_ref, caption, uploaded_by)
-    SELECT gen_random_uuid(), m.household_id, 'edge/secret.jpg', '${HH2_CAPTION}', m.id FROM mem m
+         mem AS (INSERT INTO member (id, household_id, display_name, role)
+                 SELECT gen_random_uuid(), id, 'HH2 Owner', 'owner' FROM hh RETURNING id, household_id)
+    INSERT INTO photo (id, household_id, storage_ref, caption, uploaded_by, size_bytes, content_type)
+    SELECT gen_random_uuid(), m.household_id, 'edge/secret.jpg', '${HH2_CAPTION}', m.id, 1024, 'image/jpeg' FROM mem m
     RETURNING id;
   `).split('\n')[0].trim();
 });
