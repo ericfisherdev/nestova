@@ -583,7 +583,7 @@ func pantryAddForm(units []UnitOption, csrfToken string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\"> <label class=\"text-xs font-medium text-ink-muted\" for=\"pantry-add-name\">Ingredient</label> <input id=\"pantry-add-name\" type=\"text\" name=\"name\" required placeholder=\"e.g. Olive oil\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"><div class=\"flex gap-2\"><div class=\"flex flex-1 flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"pantry-add-amount\">Amount</label> <input id=\"pantry-add-amount\" type=\"number\" name=\"amount\" min=\"0\" step=\"any\" required class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"pantry-add-unit\">Unit</label>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "\"> <label class=\"text-xs font-medium text-ink-muted\" for=\"pantry-add-name\">Ingredient</label> <input id=\"pantry-add-name\" type=\"text\" name=\"name\" required placeholder=\"e.g. Olive oil\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"><div class=\"flex gap-2\"><div class=\"flex min-w-0 flex-1 flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"pantry-add-amount\">Amount</label> <input id=\"pantry-add-amount\" type=\"number\" name=\"amount\" min=\"0\" step=\"any\" required class=\"w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></div><div class=\"flex min-w-0 shrink flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"pantry-add-unit\">Unit</label>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -789,7 +789,7 @@ func pantryQuantityForm(itemID, action, label, selectedUnit string, units []Unit
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "\" class=\"flex items-end gap-2\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 48, "\" class=\"flex flex-wrap items-end gap-2\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -802,14 +802,14 @@ func pantryQuantityForm(itemID, action, label, selectedUnit string, units []Unit
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "\"><div class=\"flex flex-1 flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "\"><div class=\"flex min-w-0 flex-1 flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("pantry-%s-%s-amount", action, itemID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 327, Col: 109}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 332, Col: 109}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var29)
 		if templ_7745c5c3_Err != nil {
@@ -822,7 +822,7 @@ func pantryQuantityForm(itemID, action, label, selectedUnit string, units []Unit
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 327, Col: 119}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 332, Col: 119}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
@@ -835,13 +835,13 @@ func pantryQuantityForm(itemID, action, label, selectedUnit string, units []Unit
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("pantry-%s-%s-amount", action, itemID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 329, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 334, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var31)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "\" type=\"number\" name=\"amount\" min=\"0\" step=\"any\" required class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 52, "\" type=\"number\" name=\"amount\" min=\"0\" step=\"any\" required class=\"w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -945,13 +945,13 @@ func shoppingAddForm(units []UnitOption, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var34 string
 		templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.ResolveAttributeValue(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 367, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 372, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var34)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "\"> <label class=\"text-xs font-medium text-ink-muted\" for=\"shopping-add-name\">Item</label> <input id=\"shopping-add-name\" type=\"text\" name=\"name\" required placeholder=\"e.g. Paper towels\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"><div class=\"flex gap-2\"><div class=\"flex flex-1 flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"shopping-add-amount\">Amount</label> <input id=\"shopping-add-amount\" type=\"number\" name=\"amount\" min=\"0\" step=\"any\" required class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"shopping-add-unit\">Unit</label>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 57, "\"> <label class=\"text-xs font-medium text-ink-muted\" for=\"shopping-add-name\">Item</label> <input id=\"shopping-add-name\" type=\"text\" name=\"name\" required placeholder=\"e.g. Paper towels\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"><div class=\"flex gap-2\"><div class=\"flex min-w-0 flex-1 flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"shopping-add-amount\">Amount</label> <input id=\"shopping-add-amount\" type=\"number\" name=\"amount\" min=\"0\" step=\"any\" required class=\"w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></div><div class=\"flex min-w-0 shrink flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\" for=\"shopping-add-unit\">Unit</label>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1004,7 +1004,7 @@ func shoppingStatusGroup(label string, items []ShoppingItemView, csrfToken strin
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 402, Col: 87}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 407, Col: 87}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 		if templ_7745c5c3_Err != nil {
@@ -1074,7 +1074,7 @@ func shoppingItemRow(item ShoppingItemView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var38 string
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(item.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 422, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 427, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 		if templ_7745c5c3_Err != nil {
@@ -1095,13 +1095,13 @@ func shoppingItemRow(item ShoppingItemView, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(item.QuantityLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 425, Col: 60}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 430, Col: 60}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "</span></div><div class=\"flex shrink-0 items-center gap-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 69, "</span></div><div class=\"flex flex-wrap items-center gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1160,7 +1160,7 @@ func shoppingStatusForm(itemID, status, label, csrfToken string) templ.Component
 		var templ_7745c5c3_Var41 templ.SafeURL
 		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(fmt.Sprintf("/groceries/shopping/%s/status", itemID)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 445, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 450, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var41))
 		if templ_7745c5c3_Err != nil {
@@ -1173,7 +1173,7 @@ func shoppingStatusForm(itemID, status, label, csrfToken string) templ.Component
 		var templ_7745c5c3_Var42 string
 		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("/groceries/shopping/%s/status", itemID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 446, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 451, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var42)
 		if templ_7745c5c3_Err != nil {
@@ -1186,7 +1186,7 @@ func shoppingStatusForm(itemID, status, label, csrfToken string) templ.Component
 		var templ_7745c5c3_Var43 string
 		templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.ResolveAttributeValue(csrfToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 448, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 453, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var43)
 		if templ_7745c5c3_Err != nil {
@@ -1199,7 +1199,7 @@ func shoppingStatusForm(itemID, status, label, csrfToken string) templ.Component
 		var templ_7745c5c3_Var44 string
 		templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.ResolveAttributeValue(status)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 449, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 454, Col: 51}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var44)
 		if templ_7745c5c3_Err != nil {
@@ -1250,7 +1250,7 @@ func sourceBadge(label string) templ.Component {
 		var templ_7745c5c3_Var46 string
 		templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 457, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 462, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 		if templ_7745c5c3_Err != nil {
@@ -1298,13 +1298,13 @@ func unitSelect(id string, units []UnitOption, selected string) templ.Component 
 		var templ_7745c5c3_Var48 string
 		templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.ResolveAttributeValue(id)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 469, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 474, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var48)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "\" name=\"unit\" aria-label=\"Unit\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 80, "\" name=\"unit\" aria-label=\"Unit\" class=\"min-w-0 rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1316,7 +1316,7 @@ func unitSelect(id string, units []UnitOption, selected string) templ.Component 
 			var templ_7745c5c3_Var49 string
 			templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.ResolveAttributeValue(u.Value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 475, Col: 26}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 480, Col: 26}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var49)
 			if templ_7745c5c3_Err != nil {
@@ -1339,7 +1339,7 @@ func unitSelect(id string, units []UnitOption, selected string) templ.Component 
 			var templ_7745c5c3_Var50 string
 			templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(u.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 475, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/groceries.templ`, Line: 480, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 			if templ_7745c5c3_Err != nil {
