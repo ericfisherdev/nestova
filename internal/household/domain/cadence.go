@@ -72,7 +72,8 @@ var ErrInvalidCadence = errors.New("household: invalid cadence")
 type Cadence struct {
 	// Freq is the base recurrence unit.
 	Freq Freq
-	// Interval is the number of Freq units between occurrences (every N); >= 1.
+	// Interval is the number of Freq units between occurrences (every N):
+	// at least 1 and at most [MaxCadenceInterval], which Validate enforces.
 	Interval int
 	// ByWeekday optionally restricts FreqWeekly occurrences to these weekdays.
 	ByWeekday []time.Weekday
