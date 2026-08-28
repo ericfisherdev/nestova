@@ -219,9 +219,16 @@ test.describe.serial("Chore PIN gate", () => {
       await expect(refused.getByRole("button", { name: "Done" })).toBeVisible();
       await expect(refused.getByText("Completed")).toHaveCount(0);
 
-      // Skipping is gated identically.
+      // Skipping is gated identically. Waiting on the refusal itself, not on
+      // the absence of "Skipped": the POST is asynchronous, so asserting the
+      // row immediately would pass even if the skip were about to succeed.
       await refused.locator('[data-testid="task-pin-input"]').fill("0000");
+      const skipRefused = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" && response.status() === 422,
+      );
       await refused.getByRole("button", { name: "Skip" }).click();
+      await skipRefused;
       await expect(
         taskRow(page, CHORES.gated.title).getByText("Skipped"),
       ).toHaveCount(0);

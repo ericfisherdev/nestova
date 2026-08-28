@@ -107,6 +107,35 @@ func (s *TaskService) CreateRecurringTask(
 	return nil
 }
 
+// ActionOption modifies a completion or skip. There is exactly one today —
+// [RequireAssignee] — and it exists because the PIN gate's guarantee is only
+// as good as the moment it is checked in; see that function's doc.
+type ActionOption func(*actionOptions)
+
+// actionOptions is the resolved option set. A nil assignee means "no assignee
+// constraint", which is the historical behaviour every caller but the PIN gate
+// still wants: with no PIN enrolled, any member may finish another's chore.
+type actionOptions struct {
+	assignee *household.MemberID
+}
+
+// RequireAssignee constrains the mutation to an instance still assigned to
+// member, atomically with the write itself (see
+// [domain.TaskInstanceRepository.CompleteAndAwardAsAssignee]). The caller gets
+// [domain.ErrAssigneeChanged] when a chore trade reassigned the instance after
+// the caller authorized against it.
+func RequireAssignee(member household.MemberID) ActionOption {
+	return func(o *actionOptions) { o.assignee = &member }
+}
+
+func resolveActionOptions(opts []ActionOption) actionOptions {
+	var resolved actionOptions
+	for _, opt := range opts {
+		opt(&resolved)
+	}
+	return resolved
+}
+
 // CompleteInstance transitions a task instance from pending or overdue to done,
 // recording the completing member (by) and the completion timestamp (at), and
 // atomically credits the completing member with the task's point award. An
@@ -157,12 +186,15 @@ func (s *TaskService) CreateRecurringTask(
 //   - Returns [domain.ErrBeforePhotoRequired] or [domain.ErrAfterPhotoRequired]
 //     when the parent task is ACTIVE and its PhotoPolicy requires a photo
 //     that has not been captured yet.
+//   - Returns [domain.ErrAssigneeChanged] when [RequireAssignee] was passed
+//     and the instance is no longer assigned to that member.
 func (s *TaskService) CompleteInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,
 	id domain.TaskInstanceID,
 	by household.MemberID,
 	at time.Time,
+	opts ...ActionOption,
 ) error {
 	inst, err := s.instanceRepo.Get(ctx, householdID, id)
 	if err != nil {
@@ -180,6 +212,13 @@ func (s *TaskService) CompleteInstance(
 		if err := s.requirePhotos(ctx, householdID, id, task.PhotoPolicy); err != nil {
 			return err
 		}
+	}
+
+	if assignee := resolveActionOptions(opts).assignee; assignee != nil {
+		if err := s.instanceRepo.CompleteAndAwardAsAssignee(ctx, householdID, id, *assignee, at); err != nil {
+			return fmt.Errorf("complete instance: %w", err)
+		}
+		return nil
 	}
 
 	if err := s.instanceRepo.CompleteAndAward(ctx, householdID, id, by, at); err != nil {
@@ -227,11 +266,21 @@ func (s *TaskService) requirePhotos(
 //     another household.
 //   - Returns [domain.ErrInstanceInTerminalState] when the instance is already
 //     done or skipped.
+//   - Returns [domain.ErrAssigneeChanged] when [RequireAssignee] was passed
+//     and the instance is no longer assigned to that member.
 func (s *TaskService) SkipInstance(
 	ctx context.Context,
 	householdID household.HouseholdID,
 	id domain.TaskInstanceID,
+	opts ...ActionOption,
 ) error {
+	if assignee := resolveActionOptions(opts).assignee; assignee != nil {
+		if err := s.instanceRepo.SkipAsAssignee(ctx, householdID, id, *assignee); err != nil {
+			return fmt.Errorf("skip instance: %w", err)
+		}
+		return nil
+	}
+
 	if err := s.instanceRepo.Skip(ctx, householdID, id); err != nil {
 		return fmt.Errorf("skip instance: %w", err)
 	}

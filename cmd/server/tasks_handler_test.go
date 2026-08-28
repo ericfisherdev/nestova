@@ -79,10 +79,15 @@ type fakeTaskInstanceRepo struct {
 	completeCalls int
 	skipCalls     int
 	claimCalls    int
-	getInst       *tasksdomain.TaskInstance
-	getErr        error
-	getCalls      int
-	getErrOnCall  int
+	// assigneeGuardedCalls counts the complete/skip calls that arrived on
+	// the assignee-guarded methods, so a test can assert the PIN gate
+	// re-asserts the assignee inside the mutation (NES-166) rather than
+	// trusting its own earlier read.
+	assigneeGuardedCalls int
+	getInst              *tasksdomain.TaskInstance
+	getErr               error
+	getCalls             int
+	getErrOnCall         int
 	// listByHousehold (NES-120), when non-nil, is filtered by status and
 	// returned by ListByHousehold — used by tests that render a full
 	// /tasks list of multiple instances (e.g. asserting a single batched
@@ -149,8 +154,20 @@ func (f *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, _ household.H
 	return f.completeErr
 }
 
+func (f *fakeTaskInstanceRepo) CompleteAndAwardAsAssignee(_ context.Context, _ household.HouseholdID, _ tasksdomain.TaskInstanceID, _ household.MemberID, _ time.Time) error {
+	f.completeCalls++
+	f.assigneeGuardedCalls++
+	return f.completeErr
+}
+
 func (f *fakeTaskInstanceRepo) Skip(_ context.Context, _ household.HouseholdID, _ tasksdomain.TaskInstanceID) error {
 	f.skipCalls++
+	return f.skipErr
+}
+
+func (f *fakeTaskInstanceRepo) SkipAsAssignee(_ context.Context, _ household.HouseholdID, _ tasksdomain.TaskInstanceID, _ household.MemberID) error {
+	f.skipCalls++
+	f.assigneeGuardedCalls++
 	return f.skipErr
 }
 

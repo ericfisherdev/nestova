@@ -362,6 +362,45 @@ func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID h
 	return domain.ErrInstanceNotFound
 }
 
+// CompleteAndAwardAsAssignee mirrors the adapter's guarded transition: the
+// instance must still be assigned to assignee, which is what makes the PIN
+// gate's authorization and its write one act rather than two (NES-166).
+func (r *fakeTaskInstanceRepo) CompleteAndAwardAsAssignee(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
+	if err := r.assertAssignee(householdID, id, assignee); err != nil {
+		return err
+	}
+	return r.CompleteAndAward(ctx, householdID, id, assignee, at)
+}
+
+// SkipAsAssignee is Skip under the same assignee condition.
+func (r *fakeTaskInstanceRepo) SkipAsAssignee(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
+	if err := r.assertAssignee(householdID, id, assignee); err != nil {
+		return err
+	}
+	return r.Skip(ctx, householdID, id)
+}
+
+// assertAssignee reports the sentinel the real adapter's UPDATE predicate
+// produces: ErrAssigneeChanged for an actionable instance held by anyone else
+// (or by nobody), and the ordinary lookup/terminal errors otherwise.
+func (r *fakeTaskInstanceRepo) assertAssignee(householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, inst := range r.instances {
+		if inst.ID != id || inst.HouseholdID != householdID {
+			continue
+		}
+		if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
+			return domain.ErrInstanceInTerminalState
+		}
+		if inst.AssigneeID == nil || *inst.AssigneeID != assignee {
+			return domain.ErrAssigneeChanged
+		}
+		return nil
+	}
+	return domain.ErrInstanceNotFound
+}
+
 // Skip transitions a pending instance to skipped. NES-116: skipping a
 // standing instance respawns its replacement, exactly like Complete and
 // CompleteAndAward — the "always exactly one open standing instance"

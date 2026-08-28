@@ -27,6 +27,17 @@ var (
 	// sentinel and treat it as a no-op or surface it to the user accordingly.
 	ErrInstanceInTerminalState = errors.New("tasks: instance is already in a terminal state")
 
+	// ErrAssigneeChanged is returned by
+	// TaskInstanceRepository.CompleteAndAwardAsAssignee and
+	// TaskInstanceRepository.SkipAsAssignee when the instance is still
+	// actionable but is no longer assigned to the member the caller
+	// authorized. It exists for the PIN gate (NES-166): authorization
+	// verifies a PIN against the CURRENT assignee, and a chore trade
+	// accepted between that check and the write would otherwise let the
+	// former assignee finish — and be credited for — a chore that is now
+	// somebody else's.
+	ErrAssigneeChanged = errors.New("tasks: instance assignee changed")
+
 	// ErrInstanceAlreadyClaimed is returned by TaskInstanceRepository.Claim when
 	// the target instance is already assigned to a member. Claiming is
 	// first-come, not reassignment: an already-assigned instance cannot be

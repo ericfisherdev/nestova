@@ -215,12 +215,14 @@ func (h *WebHandlers) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	by, ok := h.authorizeTaskAction(w, r, member, id)
+	auth, ok := h.authorizeTaskAction(w, r, member, id)
 	if !ok {
 		return
 	}
 
-	if err := h.svc.CompleteInstance(r.Context(), member.HouseholdID, id, by, time.Now()); err != nil {
+	if err := h.svc.CompleteInstance(
+		r.Context(), member.HouseholdID, id, auth.actor, time.Now(), auth.serviceOptions()...,
+	); err != nil {
 		h.handleCompleteError(w, r, member, id, err)
 		return
 	}
@@ -261,6 +263,9 @@ func (h *WebHandlers) handleCompleteError(
 	id domain.TaskInstanceID,
 	err error,
 ) {
+	if h.respondAssigneeChanged(w, r, member, id, err) {
+		return
+	}
 	msg := photoPolicyErrorMessage(err)
 	if msg == "" || !render.IsHTMX(r) {
 		h.handleMutationError(w, r, err)
@@ -276,6 +281,55 @@ func (h *WebHandlers) handleCompleteError(
 	if renderErr := render.Render(r.Context(), w, http.StatusUnprocessableEntity, components.TaskRowItem(row)); renderErr != nil {
 		h.logger.ErrorContext(r.Context(), "tasks: render photo policy error", "error", renderErr)
 	}
+}
+
+// assigneeChangedMessage is what a member sees when the atomic assignee check
+// refused the mutation (NES-166): the chore was traded away between typing the
+// PIN and submitting it. Deliberately concrete about what to do next — the row
+// on screen is stale, and only a reload shows the current list.
+const assigneeChangedMessage = "This chore was just reassigned to someone else. Refresh to see the current list."
+
+// handleSkipError maps a refused skip. Only the assignee-changed case gets the
+// inline treatment; everything else is a plain status, exactly as before.
+func (h *WebHandlers) handleSkipError(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	id domain.TaskInstanceID,
+	err error,
+) {
+	if h.respondAssigneeChanged(w, r, member, id, err) {
+		return
+	}
+	h.handleMutationError(w, r, err)
+}
+
+// respondAssigneeChanged re-renders the row inline at 422 when an HTMX request
+// lost the atomic assignee check, riding the same mechanism the PIN refusal and
+// the NES-120 photo gate already use. It reports whether it handled err, so
+// callers fall through to their ordinary mapping when it did not (a non-HTMX
+// request gets 409 from handleMutationError, the status a conflicting mutation
+// has always returned here).
+func (h *WebHandlers) respondAssigneeChanged(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	id domain.TaskInstanceID,
+	err error,
+) bool {
+	if !errors.Is(err, domain.ErrAssigneeChanged) || !render.IsHTMX(r) {
+		return false
+	}
+	row, buildErr := h.buildInstanceRow(r, member, id)
+	if buildErr != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: build row after assignee change", "error", buildErr)
+		return false
+	}
+	row.PinError = assigneeChangedMessage
+	if renderErr := render.Render(r.Context(), w, http.StatusUnprocessableEntity, components.TaskRowItem(row)); renderErr != nil {
+		h.logger.ErrorContext(r.Context(), "tasks: render assignee change", "error", renderErr)
+	}
+	return true
 }
 
 // authorizeTaskAction is the NES-166 PIN gate every chore-mutating action on
@@ -303,14 +357,14 @@ func (h *WebHandlers) authorizeTaskAction(
 	r *http.Request,
 	member *household.Member,
 	id domain.TaskInstanceID,
-) (household.MemberID, bool) {
+) (taskActionAuth, bool) {
 	inst, err := h.instanceRepo.Get(r.Context(), member.HouseholdID, id)
 	if err != nil {
 		h.handleMutationError(w, r, err)
-		return household.MemberID{}, false
+		return taskActionAuth{}, false
 	}
 	if inst.AssigneeID == nil {
-		return member.ID, true
+		return taskActionAuth{actor: member.ID}, true
 	}
 
 	actor, err := h.pin.AuthorizeTaskAction(r.Context(), *inst.AssigneeID, r.FormValue(pinFormField))
@@ -318,19 +372,43 @@ func (h *WebHandlers) authorizeTaskAction(
 	case err == nil && actor == (household.MemberID{}):
 		// The assignee has no PIN on file: nothing to verify against, so
 		// the actor stays whoever the session already resolved.
-		return member.ID, true
+		return taskActionAuth{actor: member.ID}, true
 	case err == nil:
-		return actor, true
+		return taskActionAuth{actor: actor, verifiedAgainstAssignee: true}, true
 	}
 
 	msg, known := authadapter.PINVerificationMessage(err)
 	if !known {
 		h.logger.ErrorContext(r.Context(), "tasks: authorize task action", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return household.MemberID{}, false
+		return taskActionAuth{}, false
 	}
 	h.respondPINError(w, r, member, id, msg)
-	return household.MemberID{}, false
+	return taskActionAuth{}, false
+}
+
+// taskActionAuth is what the gate resolved: who to credit, and whether that
+// answer came from verifying a PIN against the instance's assignee.
+type taskActionAuth struct {
+	actor household.MemberID
+	// verifiedAgainstAssignee is true only on the PIN-verified path. The
+	// mutation must then re-assert the assignee atomically, because the read
+	// the verification was based on is already stale by the time it runs:
+	// accepting a chore trade reassigns a pending instance, so without it a
+	// former assignee's correct PIN could complete — and be credited for — a
+	// chore that has since become somebody else's.
+	verifiedAgainstAssignee bool
+}
+
+// serviceOptions translates the resolved authorization into the options the
+// task service takes, which is nothing at all on the ungated paths: with no
+// PIN enrolled, any member may still finish another's chore exactly as before
+// NES-166.
+func (a taskActionAuth) serviceOptions() []app.ActionOption {
+	if !a.verifiedAgainstAssignee {
+		return nil
+	}
+	return []app.ActionOption{app.RequireAssignee(a.actor)}
 }
 
 // respondPINError reports a refused PIN verification. On an HTMX request it
@@ -393,12 +471,15 @@ func (h *WebHandlers) Skip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.authorizeTaskAction(w, r, member, id); !ok {
+	auth, ok := h.authorizeTaskAction(w, r, member, id)
+	if !ok {
 		return
 	}
 
-	if err := h.svc.SkipInstance(r.Context(), member.HouseholdID, id); err != nil {
-		h.handleMutationError(w, r, err)
+	if err := h.svc.SkipInstance(
+		r.Context(), member.HouseholdID, id, auth.serviceOptions()...,
+	); err != nil {
+		h.handleSkipError(w, r, member, id, err)
 		return
 	}
 
@@ -1293,6 +1374,11 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 	case errors.Is(err, domain.ErrInstanceInTerminalState),
 		errors.Is(err, domain.ErrInstanceAlreadyClaimed):
 		http.Error(w, "task already acted on", http.StatusConflict)
+	case errors.Is(err, domain.ErrAssigneeChanged):
+		// NES-166: the PIN verified against an assignee the instance no
+		// longer has. A conflict, not an authorization failure — the
+		// credential was right, the row moved.
+		http.Error(w, assigneeChangedMessage, http.StatusConflict)
 	case errors.Is(err, domain.ErrBeforePhotoRequired), errors.Is(err, domain.ErrAfterPhotoRequired):
 		// NES-120: reached for a photo-gated completion failure on a
 		// non-HTMX request (handleCompleteError's inline-row path only
