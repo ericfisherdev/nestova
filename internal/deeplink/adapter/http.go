@@ -41,14 +41,14 @@ import (
 // used as an oracle to probe which failure occurred (mirroring
 // KioskWebHandlers.Activate's "never distinguishing which of the three
 // applies" precedent for activation codes).
-// pinFormField is the form field the confirm screen submits a member's PIN
-// under (NES-166) — the same name the /tasks chore row uses.
-const pinFormField = "pin"
-
 const (
 	rescanHeading = "This link isn't valid anymore"
 	rescanMessage = "Please rescan the QR code from the kiosk to get a fresh one."
 )
+
+// pinFormField is the form field the confirm screen submits a member's PIN
+// under (NES-166) — the same name the /tasks chore row uses.
+const pinFormField = "pin"
 
 // TaskPINAuthorizer is the narrow port onto the auth context's per-member
 // PIN gate this confirm flow depends on (NES-166). The complete-task deep
