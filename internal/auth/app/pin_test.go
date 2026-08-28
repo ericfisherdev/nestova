@@ -262,6 +262,51 @@ func TestPINService_Verify_LockoutEngagesAfterThreshold(t *testing.T) {
 	}
 }
 
+// TestPINService_Verify_MalformedSubmissionCostsNoStrike proves a submission
+// that cannot be a guess never reaches the strike limiter. The chore row's PIN
+// field is deliberately not required and the shared screen renders every
+// member's Done button, so if an empty submission counted as a strike, six
+// clicks would lock the assignee out of their own chores without anyone typing
+// a digit. A non-empty wrong PIN must still lock, or the limiter would be
+// worthless.
+func TestPINService_Verify_MalformedSubmissionCostsNoStrike(t *testing.T) {
+	malformed := map[string]string{
+		"empty submission": "",
+		"too short":        "12",
+		"not digits":       "abcd",
+		"too long":         "123456789",
+	}
+
+	for name, pin := range malformed {
+		t.Run(name+" never locks", func(t *testing.T) {
+			repo := newFakePINRepo()
+			clock := newFakeClock()
+			svc := newTestPINService(t, repo, clock)
+			memberID := household.NewMemberID()
+			ctx := context.Background()
+
+			if err := svc.Set(ctx, memberID, household.NewHouseholdID(), "1234"); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+
+			// Well past the threshold the same number of wrong-but-plausible
+			// PINs would lock at (see TestPINService_Verify_LockoutEngagesAfterThreshold).
+			for range 10 {
+				if err := svc.Verify(ctx, memberID, pin); !errors.Is(err, authdomain.ErrPINMismatch) {
+					t.Fatalf("Verify(%q) = %v, want ErrPINMismatch", pin, err)
+				}
+			}
+			if _, locked := svc.LockedUntil(memberID); locked {
+				t.Errorf("member is locked after 10 %s submissions; a malformed PIN must not count as a strike", name)
+			}
+			// The credential still works, so the refusals cost the member nothing.
+			if err := svc.Verify(ctx, memberID, "1234"); err != nil {
+				t.Errorf("Verify with the correct pin = %v, want nil", err)
+			}
+		})
+	}
+}
+
 // TestPINService_Verify_LockoutExpires proves a member can verify again
 // once the backoff window has elapsed.
 func TestPINService_Verify_LockoutExpires(t *testing.T) {

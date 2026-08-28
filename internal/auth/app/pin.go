@@ -122,8 +122,16 @@ func (s *PINService) ResetForMember(ctx context.Context, targetMemberID househol
 // consulted), authdomain.ErrPINNotEnrolled when the member has no PIN on
 // file (this does NOT count as a strike — see AuthorizeTaskAction's
 // nil-gate, which relies on an unenrolled member never becoming
-// lockable), and authdomain.ErrPINMismatch when the submitted PIN is wrong
-// (this DOES count as a strike).
+// lockable), and authdomain.ErrPINMismatch when the submitted PIN is wrong.
+//
+// A wrong PIN counts as a strike only when it could have been a guess: a
+// submission that fails pinFormat — an empty field above all — is refused
+// identically but WITHOUT a strike. Nothing outside 4-8 digits can ever match
+// an enrolled PIN, so counting it buys no brute-force protection, while
+// counting it would let anyone lock a member out of their own chores: the
+// chore row's PIN field is deliberately not required and the shared entryway
+// screen shows every member's Done button, so six clicks and no typing would
+// otherwise reach the backoff window.
 func (s *PINService) Verify(ctx context.Context, memberID household.MemberID, pin string) error {
 	key := memberID.String()
 	now := s.now()
@@ -137,6 +145,14 @@ func (s *PINService) Verify(ctx context.Context, memberID household.MemberID, pi
 			return authdomain.ErrPINNotEnrolled
 		}
 		return fmt.Errorf("pin: get hash: %w", err)
+	}
+
+	// Refused before the hasher, but after the hash lookup: an unenrolled
+	// member must still surface ErrPINNotEnrolled so AuthorizeTaskAction's
+	// nil-gate is unchanged, and the caller must not be able to tell an
+	// unenrolled member from a malformed submission.
+	if !pinFormat.MatchString(pin) {
+		return authdomain.ErrPINMismatch
 	}
 
 	ok, err := s.hasher.Verify(pin, hash)
