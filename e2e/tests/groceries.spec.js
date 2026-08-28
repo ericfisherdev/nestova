@@ -85,6 +85,43 @@ test.describe('Groceries', () => {
     await expect(pantry.getByText(new RegExp(itemName, 'i'))).toBeVisible();
   });
 
+  // NES-187 regression. The consume/adjust mini-forms sit in a narrow grid
+  // column, and before the fix the row could not shrink below the number
+  // input's intrinsic width: it overflowed its card and was painted under the
+  // shopping-list section, so these two buttons were visible but unclickable.
+  // At Playwright's default 1280px viewport the overflow was 81px, so this
+  // click fails with "<section> intercepts pointer events" on the old markup —
+  // which is what makes it a guard rather than a formality.
+  test('consuming and topping up from a pantry row updates its quantity', async ({ page }) => {
+    const itemName = uniqueName('Basmati rice');
+
+    const pantry = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Pantry' }) });
+
+    await pantry.locator('#pantry-add-name').fill(itemName);
+    await pantry.locator('#pantry-add-amount').fill('500');
+    await pantry.locator('#pantry-add-unit').selectOption('g');
+    await pantry.getByRole('button', { name: 'Add to pantry' }).click();
+
+    const row = () => pantry.locator('li').filter({ hasText: new RegExp(itemName, 'i') }).first();
+    await expect(row()).toBeVisible();
+    await expect(row()).toContainText('500 g');
+
+    // Top up: the row's own "Add" button, not the section's "Add to pantry".
+    const adjust = row().locator('form[action$="/adjust"]');
+    await adjust.locator('input[name="amount"]').fill('250');
+    await adjust.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(page).toHaveURL(/\/groceries$/);
+    await expect(row()).toContainText('750 g');
+
+    const consume = row().locator('form[action$="/consume"]');
+    await consume.locator('input[name="amount"]').fill('200');
+    await consume.getByRole('button', { name: 'Consume' }).click();
+    await expect(page).toHaveURL(/\/groceries$/);
+    await expect(row()).toContainText('550 g');
+  });
+
   test('adding an ad-hoc shopping item shows it with a source badge', async ({ page }) => {
     const itemName = uniqueName('Paper towels');
 
