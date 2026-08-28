@@ -735,11 +735,7 @@ func (h *WebHandlers) parseCreateForm(
 	}
 
 	if err := domain.ValidateTitle(rawTitle); err != nil {
-		if errors.Is(err, domain.ErrTitleTooLong) {
-			form.Error = fmt.Sprintf("Title must be %d characters or fewer.", domain.MaxTitleLength)
-		} else {
-			form.Error = "Title is required."
-		}
+		form.Error = titleErrMessage(err)
 		return nil, nil, form, form.Error
 	}
 
@@ -857,9 +853,27 @@ func (h *WebHandlers) parseCreateForm(
 	return task, pool, form, ""
 }
 
+// titleErrMessage maps the title validation sentinels to their user-readable
+// message, or "" for any other error. Both the form parse and the service-layer
+// mapping below go through it, so a title rejected either side of the service
+// boundary shows the user the same wording.
+func titleErrMessage(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrTitleTooLong):
+		return fmt.Sprintf("Title must be %d characters or fewer.", domain.MaxTitleLength)
+	case errors.Is(err, domain.ErrTitleRequired):
+		return "Title is required."
+	default:
+		return ""
+	}
+}
+
 // createTaskErrMessage maps known service-layer errors to user-readable messages.
 // An empty string means the error is unexpected and should be treated as a 500.
 func createTaskErrMessage(err error) string {
+	if msg := titleErrMessage(err); msg != "" {
+		return msg
+	}
 	switch {
 	case errors.Is(err, household.ErrInvalidCadence):
 		return "The cadence configuration is invalid. Please check the frequency, interval, and starting date."

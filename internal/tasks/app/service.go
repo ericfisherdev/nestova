@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -63,6 +64,9 @@ func NewTaskService(
 //   - For [domain.RotationClaimable], pool is ignored (may be nil or empty).
 //
 // Error contracts:
+//   - Returns [domain.ErrTitleRequired] when task.Title is empty after
+//     trimming, and [domain.ErrTitleTooLong] when it exceeds
+//     [domain.MaxTitleLength] runes (NES-172). The title is stored trimmed.
 //   - Returns [domain.ErrAsNeededRequiresClaimable] when task.Cadence.Freq is
 //     household.FreqAsNeeded and task.RotationPolicy is not
 //     [domain.RotationClaimable] (NES-116).
@@ -79,6 +83,13 @@ func (s *TaskService) CreateRecurringTask(
 ) error {
 	if task == nil {
 		return errors.New("create recurring task: task is nil")
+	}
+	// Validate the title here, not only in the handler: the recurring_task.title
+	// CHECK exists for a caller that bypasses the handler, and reaching it
+	// produces a raw constraint error rather than a message anyone can act on.
+	task.Title = strings.TrimSpace(task.Title)
+	if err := domain.ValidateTitle(task.Title); err != nil {
+		return fmt.Errorf("create recurring task: %w", err)
 	}
 	if err := task.Cadence.Validate(); err != nil {
 		return fmt.Errorf("create recurring task: %w", err)
