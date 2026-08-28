@@ -90,12 +90,21 @@ func (r *householdScopedTaskInstanceRepo) Claim(_ context.Context, householdID h
 func (r *householdScopedTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID household.HouseholdID, id tasksdomain.TaskInstanceID, by household.MemberID, at time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.completeLocked(householdID, id, by, at, nil)
+}
+
+// completeLocked performs the transition with r.mu already held. A non-nil
+// requireAssignee adds the guarded form's assignee predicate.
+func (r *householdScopedTaskInstanceRepo) completeLocked(householdID household.HouseholdID, id tasksdomain.TaskInstanceID, by household.MemberID, at time.Time, requireAssignee *household.MemberID) error {
 	inst, ok := r.instances[id]
 	if !ok || inst.HouseholdID != householdID {
 		return tasksdomain.ErrInstanceNotFound
 	}
 	if inst.Status == tasksdomain.StatusDone || inst.Status == tasksdomain.StatusSkipped {
 		return tasksdomain.ErrInstanceInTerminalState
+	}
+	if requireAssignee != nil && (inst.AssigneeID == nil || *inst.AssigneeID != *requireAssignee) {
+		return tasksdomain.ErrAssigneeChanged
 	}
 	inst.Status = tasksdomain.StatusDone
 	inst.CompletedBy = &by
@@ -106,22 +115,13 @@ func (r *householdScopedTaskInstanceRepo) CompleteAndAward(_ context.Context, ho
 // CompleteAndAwardAsAssignee mirrors the adapter's guarded transition: the row
 // must still be assigned to assignee, so a test can drive the reassignment race
 // the PIN gate closes (NES-166).
-func (r *householdScopedTaskInstanceRepo) CompleteAndAwardAsAssignee(ctx context.Context, householdID household.HouseholdID, id tasksdomain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
+// The check and the write share one lock acquisition: a fake that released it
+// in between could accept a stale assignee the real adapter's single UPDATE
+// rejects.
+func (r *householdScopedTaskInstanceRepo) CompleteAndAwardAsAssignee(_ context.Context, householdID household.HouseholdID, id tasksdomain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
 	r.mu.Lock()
-	inst, ok := r.instances[id]
-	switch {
-	case !ok || inst.HouseholdID != householdID:
-		r.mu.Unlock()
-		return tasksdomain.ErrInstanceNotFound
-	case inst.Status == tasksdomain.StatusDone || inst.Status == tasksdomain.StatusSkipped:
-		r.mu.Unlock()
-		return tasksdomain.ErrInstanceInTerminalState
-	case inst.AssigneeID == nil || *inst.AssigneeID != assignee:
-		r.mu.Unlock()
-		return tasksdomain.ErrAssigneeChanged
-	}
-	r.mu.Unlock()
-	return r.CompleteAndAward(ctx, householdID, id, assignee, at)
+	defer r.mu.Unlock()
+	return r.completeLocked(householdID, id, assignee, at, &assignee)
 }
 
 // SkipAsAssignee carries the same guard. The deep link never skips, so this
