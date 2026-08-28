@@ -161,6 +161,152 @@ func TestCreateRecipeNormalizesEachLine(t *testing.T) {
 	}
 }
 
+// TestCreateRecipeMergesRepeatedIngredient covers NES-188: recipe_ingredient is
+// keyed by (recipe_id, ingredient_id), so two lines naming one ingredient
+// cannot both be stored. Before this, the collision surfaced as a raw unique
+// violation and a 500 — from ordinary input, since a recipe may call for garlic
+// in its base and again in its sauce, and EnsureIngredient canonicalises
+// "Garlic" and "garlic" to the same row.
+func TestCreateRecipeMergesRepeatedIngredient(t *testing.T) {
+	repo := newFakeRecipeRepo()
+	ensurer := newFakeEnsurer()
+	svc := mustService(t, repo, ensurer)
+	hh := household.NewHouseholdID()
+
+	recipe, err := svc.CreateRecipe(context.Background(), hh, app.RecipeInput{
+		Title: "Aglio e olio", Servings: 2,
+		Ingredients: []app.IngredientLine{
+			line("Garlic", 2, household.UnitCount, false),
+			line("Spaghetti", 200, household.UnitGram, false),
+			line("garlic", 3, household.UnitCount, false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+
+	if len(recipe.Ingredients) != 2 {
+		t.Fatalf("recipe ingredients = %d, want 2 (the two garlic lines merged)", len(recipe.Ingredients))
+	}
+	// Merged in place: the ingredient keeps the position of its FIRST mention,
+	// so the recipe still reads in the order it was written.
+	if recipe.Ingredients[0].IngredientID != ensurer.byName["garlic"] {
+		t.Errorf("line[0] = %v, want the garlic id", recipe.Ingredients[0].IngredientID)
+	}
+	if got := recipe.Ingredients[0].Quantity.Amount; got != 5 {
+		t.Errorf("merged garlic amount = %v, want 5", got)
+	}
+	if got := recipe.Ingredients[0].Quantity.Unit; got != household.UnitCount {
+		t.Errorf("merged garlic unit = %v, want count", got)
+	}
+	if recipe.Ingredients[1].IngredientID != ensurer.byName["spaghetti"] {
+		t.Errorf("line[1] = %v, want the spaghetti id", recipe.Ingredients[1].IngredientID)
+	}
+}
+
+// TestCreateRecipeRepeatedIngredientOptionalFlag proves the merged line is
+// required when either mention was: half an ingredient cannot be optional.
+func TestCreateRecipeRepeatedIngredientOptionalFlag(t *testing.T) {
+	svc := mustService(t, newFakeRecipeRepo(), newFakeEnsurer())
+	hh := household.NewHouseholdID()
+
+	for _, tc := range []struct {
+		name          string
+		first, second bool
+		wantOptional  bool
+	}{
+		{"required then optional", false, true, false},
+		{"optional then required", true, false, false},
+		{"optional twice", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recipe, err := svc.CreateRecipe(context.Background(), hh, app.RecipeInput{
+				Title: "Soup", Servings: 2,
+				Ingredients: []app.IngredientLine{
+					line("thyme", 1, household.UnitGram, tc.first),
+					line("thyme", 1, household.UnitGram, tc.second),
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateRecipe: %v", err)
+			}
+			if len(recipe.Ingredients) != 1 {
+				t.Fatalf("ingredients = %d, want 1", len(recipe.Ingredients))
+			}
+			if got := recipe.Ingredients[0].Optional; got != tc.wantOptional {
+				t.Errorf("optional = %v, want %v", got, tc.wantOptional)
+			}
+		})
+	}
+}
+
+// TestCreateRecipeRepeatedIngredientUnitMismatch proves the one case that is
+// NOT mergeable is refused rather than half-dropped: Quantity does not convert
+// between units, so 200 g and 1 kg of one ingredient has no total, and silently
+// keeping one line would understate the shopping list generated from the plan.
+func TestCreateRecipeRepeatedIngredientUnitMismatch(t *testing.T) {
+	repo := newFakeRecipeRepo()
+	svc := mustService(t, repo, newFakeEnsurer())
+
+	_, err := svc.CreateRecipe(context.Background(), household.NewHouseholdID(), app.RecipeInput{
+		Title: "Bread", Servings: 2,
+		Ingredients: []app.IngredientLine{
+			line("flour", 200, household.UnitGram, false),
+			line("flour", 1, household.UnitKilogram, false),
+		},
+	})
+	if !errors.Is(err, domain.ErrInvalidRecipe) {
+		t.Fatalf("CreateRecipe(mixed units) = %v, want ErrInvalidRecipe", err)
+	}
+	if len(repo.recipes) != 0 {
+		t.Errorf("repo holds %d recipes, want 0: a refused recipe must not be persisted", len(repo.recipes))
+	}
+}
+
+// TestEditRecipeMergesRepeatedIngredient proves edit shares the guarantee: both
+// paths run through buildRecipe, and the 500 was reachable from either.
+func TestEditRecipeMergesRepeatedIngredient(t *testing.T) {
+	repo := newFakeRecipeRepo()
+	svc := mustService(t, repo, newFakeEnsurer())
+	ctx := context.Background()
+	hh := household.NewHouseholdID()
+
+	created, err := svc.CreateRecipe(ctx, hh, app.RecipeInput{
+		Title: "Stew", Servings: 2,
+		Ingredients: []app.IngredientLine{line("onion", 1, household.UnitCount, false)},
+	})
+	if err != nil {
+		t.Fatalf("CreateRecipe: %v", err)
+	}
+
+	edited, err := svc.EditRecipe(ctx, hh, created.ID, app.RecipeInput{
+		Title: "Stew", Servings: 2,
+		Ingredients: []app.IngredientLine{
+			line("onion", 1, household.UnitCount, false),
+			line("Onion", 2, household.UnitCount, false),
+		},
+	})
+	if err != nil {
+		t.Fatalf("EditRecipe: %v", err)
+	}
+	if len(edited.Ingredients) != 1 {
+		t.Fatalf("ingredients = %d, want 1", len(edited.Ingredients))
+	}
+	if got := edited.Ingredients[0].Quantity.Amount; got != 3 {
+		t.Errorf("merged onion amount = %v, want 3", got)
+	}
+
+	if _, err := svc.EditRecipe(ctx, hh, created.ID, app.RecipeInput{
+		Title: "Stew", Servings: 2,
+		Ingredients: []app.IngredientLine{
+			line("onion", 100, household.UnitGram, false),
+			line("onion", 1, household.UnitCount, false),
+		},
+	}); !errors.Is(err, domain.ErrInvalidRecipe) {
+		t.Errorf("EditRecipe(mixed units) = %v, want ErrInvalidRecipe", err)
+	}
+}
+
 func TestCreateRecipeValidationErrors(t *testing.T) {
 	svc := mustService(t, newFakeRecipeRepo(), newFakeEnsurer())
 	ctx := context.Background()
