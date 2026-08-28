@@ -344,10 +344,32 @@ func (r *fakeTaskInstanceRepo) Complete(_ context.Context, householdID household
 func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.completeAndAwardLocked(householdID, id, by, at, nil)
+}
+
+// CompleteAndAwardAsAssignee mirrors the adapter's guarded transition: the
+// instance must still be assigned to assignee, which is what makes the PIN
+// gate's authorization and its write one act rather than two (NES-166). The
+// check and the transition share ONE lock acquisition, because a fake that
+// checked and then re-locked to write could accept a stale assignee the real
+// adapter's single UPDATE rejects — and a test double that is more permissive
+// than production is worse than none.
+func (r *fakeTaskInstanceRepo) CompleteAndAwardAsAssignee(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.completeAndAwardLocked(householdID, id, assignee, at, &assignee)
+}
+
+// completeAndAwardLocked performs the transition with r.mu already held. A
+// non-nil requireAssignee adds the guarded form's assignee predicate.
+func (r *fakeTaskInstanceRepo) completeAndAwardLocked(householdID household.HouseholdID, id domain.TaskInstanceID, by household.MemberID, at time.Time, requireAssignee *household.MemberID) error {
 	for _, inst := range r.instances {
 		if inst.ID == id && inst.HouseholdID == householdID {
 			if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
 				return domain.ErrInstanceInTerminalState
+			}
+			if requireAssignee != nil && (inst.AssigneeID == nil || *inst.AssigneeID != *requireAssignee) {
+				return domain.ErrAssigneeChanged
 			}
 			inst.Status = domain.StatusDone
 			inst.CompletedBy = &by
@@ -362,43 +384,12 @@ func (r *fakeTaskInstanceRepo) CompleteAndAward(_ context.Context, householdID h
 	return domain.ErrInstanceNotFound
 }
 
-// CompleteAndAwardAsAssignee mirrors the adapter's guarded transition: the
-// instance must still be assigned to assignee, which is what makes the PIN
-// gate's authorization and its write one act rather than two (NES-166).
-func (r *fakeTaskInstanceRepo) CompleteAndAwardAsAssignee(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
-	if err := r.assertAssignee(householdID, id, assignee); err != nil {
-		return err
-	}
-	return r.CompleteAndAward(ctx, householdID, id, assignee, at)
-}
-
-// SkipAsAssignee is Skip under the same assignee condition.
-func (r *fakeTaskInstanceRepo) SkipAsAssignee(ctx context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
-	if err := r.assertAssignee(householdID, id, assignee); err != nil {
-		return err
-	}
-	return r.Skip(ctx, householdID, id)
-}
-
-// assertAssignee reports the sentinel the real adapter's UPDATE predicate
-// produces: ErrAssigneeChanged for an actionable instance held by anyone else
-// (or by nobody), and the ordinary lookup/terminal errors otherwise.
-func (r *fakeTaskInstanceRepo) assertAssignee(householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
+// SkipAsAssignee is Skip under the same assignee condition, and under the same
+// single-lock rule as CompleteAndAwardAsAssignee.
+func (r *fakeTaskInstanceRepo) SkipAsAssignee(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID, assignee household.MemberID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, inst := range r.instances {
-		if inst.ID != id || inst.HouseholdID != householdID {
-			continue
-		}
-		if inst.Status != domain.StatusPending && inst.Status != domain.StatusOverdue {
-			return domain.ErrInstanceInTerminalState
-		}
-		if inst.AssigneeID == nil || *inst.AssigneeID != assignee {
-			return domain.ErrAssigneeChanged
-		}
-		return nil
-	}
-	return domain.ErrInstanceNotFound
+	return r.skipLocked(householdID, id, &assignee)
 }
 
 // Skip transitions a pending instance to skipped. NES-116: skipping a
@@ -409,10 +400,19 @@ func (r *fakeTaskInstanceRepo) assertAssignee(householdID household.HouseholdID,
 func (r *fakeTaskInstanceRepo) Skip(_ context.Context, householdID household.HouseholdID, id domain.TaskInstanceID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.skipLocked(householdID, id, nil)
+}
+
+// skipLocked performs the skip with r.mu already held. A non-nil
+// requireAssignee adds the guarded form's assignee predicate.
+func (r *fakeTaskInstanceRepo) skipLocked(householdID household.HouseholdID, id domain.TaskInstanceID, requireAssignee *household.MemberID) error {
 	for _, inst := range r.instances {
 		if inst.ID == id && inst.HouseholdID == householdID {
 			if inst.Status != domain.StatusPending {
 				return domain.ErrInstanceInTerminalState
+			}
+			if requireAssignee != nil && (inst.AssigneeID == nil || *inst.AssigneeID != *requireAssignee) {
+				return domain.ErrAssigneeChanged
 			}
 			inst.Status = domain.StatusSkipped
 			inst.ClaimedBy = nil
