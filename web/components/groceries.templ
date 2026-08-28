@@ -257,7 +257,7 @@ templ pantryAddForm(units []UnitOption, csrfToken string) {
 			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
 		/>
 		<div class="flex gap-2">
-			<div class="flex flex-1 flex-col gap-1">
+			<div class="flex min-w-0 flex-1 flex-col gap-1">
 				<label class="text-xs font-medium text-ink-muted" for="pantry-add-amount">Amount</label>
 				<input
 					id="pantry-add-amount"
@@ -266,10 +266,10 @@ templ pantryAddForm(units []UnitOption, csrfToken string) {
 					min="0"
 					step="any"
 					required
-					class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+					class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
 				/>
 			</div>
-			<div class="flex flex-col gap-1">
+			<div class="flex min-w-0 shrink flex-col gap-1">
 				<label class="text-xs font-medium text-ink-muted" for="pantry-add-unit">Unit</label>
 				@unitSelect("pantry-add-unit", units, "")
 			</div>
@@ -320,10 +320,15 @@ templ pantryQuantityForm(itemID, action, label, selectedUnit string, units []Uni
 		method="post"
 		action={ templ.SafeURL(fmt.Sprintf("/groceries/pantry/%s/%s", itemID, action)) }
 		hx-post={ fmt.Sprintf("/groceries/pantry/%s/%s", itemID, action) }
-		class="flex items-end gap-2"
+		class="flex flex-wrap items-end gap-2"
 	>
 		<input type="hidden" name="csrf_token" value={ csrfToken }/>
-		<div class="flex flex-1 flex-col gap-1">
+		// min-w-0 is load-bearing: a flex child defaults to min-width:auto and so
+		// refuses to shrink below the number input's intrinsic width. Without it
+		// this row was wider than its grid column, and the buttons rendered
+		// underneath the neighbouring section — visible, but unclickable at every
+		// width below the kiosk's own (NES-187).
+		<div class="flex min-w-0 flex-1 flex-col gap-1">
 			<label class="text-xs font-medium text-ink-muted" for={ fmt.Sprintf("pantry-%s-%s-amount", action, itemID) }>{ label } amount</label>
 			<input
 				id={ fmt.Sprintf("pantry-%s-%s-amount", action, itemID) }
@@ -332,7 +337,7 @@ templ pantryQuantityForm(itemID, action, label, selectedUnit string, units []Uni
 				min="0"
 				step="any"
 				required
-				class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+				class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
 			/>
 		</div>
 		@unitSelect(fmt.Sprintf("pantry-%s-%s-unit", action, itemID), units, selectedUnit)
@@ -375,7 +380,7 @@ templ shoppingAddForm(units []UnitOption, csrfToken string) {
 			class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
 		/>
 		<div class="flex gap-2">
-			<div class="flex flex-1 flex-col gap-1">
+			<div class="flex min-w-0 flex-1 flex-col gap-1">
 				<label class="text-xs font-medium text-ink-muted" for="shopping-add-amount">Amount</label>
 				<input
 					id="shopping-add-amount"
@@ -384,10 +389,10 @@ templ shoppingAddForm(units []UnitOption, csrfToken string) {
 					min="0"
 					step="any"
 					required
-					class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+					class="w-full rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
 				/>
 			</div>
-			<div class="flex flex-col gap-1">
+			<div class="flex min-w-0 shrink flex-col gap-1">
 				<label class="text-xs font-medium text-ink-muted" for="shopping-add-unit">Unit</label>
 				@unitSelect("shopping-add-unit", units, "")
 			</div>
@@ -424,7 +429,7 @@ templ shoppingItemRow(item ShoppingItemView, csrfToken string) {
 			</div>
 			<span class="text-sm text-ink-muted">{ item.QuantityLabel }</span>
 		</div>
-		<div class="flex shrink-0 items-center gap-2">
+		<div class="flex flex-wrap items-center gap-2">
 			if item.Status != "needed" {
 				@shoppingStatusForm(item.ID, "needed", "Needed", csrfToken)
 			}
@@ -469,7 +474,7 @@ templ unitSelect(id string, units []UnitOption, selected string) {
 		id={ id }
 		name="unit"
 		aria-label="Unit"
-		class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
+		class="min-w-0 rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"
 	>
 		for _, u := range units {
 			<option value={ u.Value } selected?={ u.Value == selected }>{ u.Label }</option>
