@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -981,6 +982,77 @@ func TestTaskService_CreateRecurringTask_InvalidCadence(t *testing.T) {
 	}
 	if len(taskRepo.tasks) != 0 {
 		t.Errorf("repo has %d tasks after invalid cadence, want 0", len(taskRepo.tasks))
+	}
+}
+
+// TestTaskService_CreateRecurringTask_TitleTooLong verifies that an over-length
+// title is rejected by the SERVICE, not only by the web handler (NES-172). The
+// recurring_task.title CHECK is the last backstop; a caller that skips the
+// handler should still get the domain sentinel rather than a raw constraint
+// error from the database.
+func TestTaskService_CreateRecurringTask_TitleTooLong(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       strings.Repeat("a", domain.MaxTitleLength+1),
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: domain.RotationClaimable,
+		Active:         true,
+	}
+
+	err = svc.CreateRecurringTask(context.Background(), task, nil)
+	if !errors.Is(err, domain.ErrTitleTooLong) {
+		t.Errorf("CreateRecurringTask(over-length title) = %v, want ErrTitleTooLong", err)
+	}
+	if len(taskRepo.tasks) != 0 {
+		t.Errorf("repo has %d tasks after an over-length title, want 0", len(taskRepo.tasks))
+	}
+}
+
+// TestTaskService_CreateRecurringTask_TitleWhitespaceOnly verifies the empty
+// side of the same guard: a whitespace-only title is empty once trimmed.
+func TestTaskService_CreateRecurringTask_TitleWhitespaceOnly(t *testing.T) {
+	taskRepo := newFakeRecurringTaskRepo()
+	instanceRepo := newFakeTaskInstanceRepo()
+
+	svc, err := app.NewTaskService(taskRepo, instanceRepo, nil)
+	if err != nil {
+		t.Fatalf("NewTaskService: %v", err)
+	}
+
+	task := &domain.RecurringTask{
+		ID:          domain.NewRecurringTaskID(),
+		HouseholdID: household.NewHouseholdID(),
+		Title:       "   \t  ",
+		Category:    domain.ChoreCategory,
+		Cadence: household.Cadence{
+			Freq:     household.FreqWeekly,
+			Interval: 1,
+			Anchor:   weeklyAnchor,
+		},
+		RotationPolicy: domain.RotationClaimable,
+		Active:         true,
+	}
+
+	err = svc.CreateRecurringTask(context.Background(), task, nil)
+	if !errors.Is(err, domain.ErrTitleRequired) {
+		t.Errorf("CreateRecurringTask(whitespace title) = %v, want ErrTitleRequired", err)
+	}
+	if len(taskRepo.tasks) != 0 {
+		t.Errorf("repo has %d tasks after a whitespace-only title, want 0", len(taskRepo.tasks))
 	}
 }
 
