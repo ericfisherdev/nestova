@@ -476,11 +476,18 @@ func (h *WebHandlers) confirmComplete(w http.ResponseWriter, r *http.Request, me
 		http.Error(w, "invalid chore id", http.StatusBadRequest)
 		return
 	}
-	by, ok := h.authorizeComplete(w, r, member, instanceID)
+	by, guarded, ok := h.authorizeComplete(w, r, member, instanceID)
 	if !ok {
 		return
 	}
-	if err := h.taskSvc.CompleteInstance(r.Context(), member.HouseholdID, instanceID, by, h.now()); err != nil {
+	// A PIN-verified actor must be re-asserted as the assignee inside the
+	// mutation itself (NES-166): the instance the PIN was checked against can
+	// be traded away before this write lands.
+	var opts []tasksapp.ActionOption
+	if guarded {
+		opts = append(opts, tasksapp.RequireAssignee(by))
+	}
+	if err := h.taskSvc.CompleteInstance(r.Context(), member.HouseholdID, instanceID, by, h.now(), opts...); err != nil {
 		h.respondTaskMutationError(w, r, err)
 		return
 	}
@@ -503,32 +510,32 @@ func (h *WebHandlers) authorizeComplete(
 	r *http.Request,
 	member *household.Member,
 	instanceID tasksdomain.TaskInstanceID,
-) (household.MemberID, bool) {
+) (actorID household.MemberID, verifiedAgainstAssignee bool, ok bool) {
 	inst, err := h.taskInstances.Get(r.Context(), member.HouseholdID, instanceID)
 	if err != nil {
 		h.respondTaskMutationError(w, r, err)
-		return household.MemberID{}, false
+		return household.MemberID{}, false, false
 	}
 	if inst.AssigneeID == nil {
-		return member.ID, true
+		return member.ID, false, true
 	}
 
 	actor, err := h.pin.AuthorizeTaskAction(r.Context(), *inst.AssigneeID, r.FormValue(pinFormField))
 	switch {
 	case err == nil && actor == (household.MemberID{}):
-		return member.ID, true
+		return member.ID, false, true
 	case err == nil:
-		return actor, true
+		return actor, true, true
 	}
 
 	msg, known := authadapter.PINVerificationMessage(err)
 	if !known {
 		h.logger.ErrorContext(r.Context(), "deeplink: authorize complete", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return household.MemberID{}, false
+		return household.MemberID{}, false, false
 	}
 	h.respondPINError(w, r, member, deeplinkdomain.ActionCompleteTask, instanceID.String(), msg)
-	return household.MemberID{}, false
+	return household.MemberID{}, false, false
 }
 
 // respondPINError re-renders the confirm screen at 403 with errMsg shown
@@ -564,6 +571,13 @@ func (h *WebHandlers) respondTaskMutationError(w http.ResponseWriter, r *http.Re
 		h.renderMessage(w, r, http.StatusConflict, "Already done", "This chore was already finished.")
 	case errors.Is(err, tasksdomain.ErrInstanceAlreadyClaimed):
 		h.renderMessage(w, r, http.StatusConflict, "Already claimed", "Someone else already claimed this chore.")
+	case errors.Is(err, tasksdomain.ErrAssigneeChanged):
+		// NES-166: the PIN was right, but a chore trade moved the instance
+		// to another member between verifying it and writing the
+		// completion. Nothing to retype, so this is a message page rather
+		// than a re-rendered form.
+		h.renderMessage(w, r, http.StatusConflict, "Chore reassigned",
+			"This chore was just reassigned to someone else, so it was not completed.")
 	case errors.Is(err, tasksdomain.ErrBeforePhotoRequired):
 		// NES-120: this confirm flow performs the action directly (no
 		// capture UI of its own — the member takes proof photos from the

@@ -57,6 +57,11 @@ func (r *recordingInstanceRepo) CompleteAndAward(ctx context.Context, householdI
 	return r.fakeTaskInstanceRepo.CompleteAndAward(ctx, householdID, id, by, at)
 }
 
+func (r *recordingInstanceRepo) CompleteAndAwardAsAssignee(ctx context.Context, householdID household.HouseholdID, id tasksdomain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
+	r.completedBy = append(r.completedBy, assignee)
+	return r.fakeTaskInstanceRepo.CompleteAndAwardAsAssignee(ctx, householdID, id, assignee, at)
+}
+
 // Compile-time assertion.
 var _ tasksdomain.TaskInstanceRepository = (*recordingInstanceRepo)(nil)
 
@@ -367,5 +372,86 @@ func TestTasksList_RendersPINFieldOnlyForEnrolledAssignee(t *testing.T) {
 
 	if body := get(); !strings.Contains(body, `data-testid="task-pin-input"`) {
 		t.Errorf("PIN field missing for an enrolled assignee: %s", body)
+	}
+}
+
+// TestTaskComplete_PINVerified_UsesAssigneeGuardedMutation proves the gate does
+// not trust its own read: once a PIN has been verified against the assignee,
+// the completion goes through the assignee-guarded repository method, which
+// re-asserts the assignment inside the write. Accepting a chore trade reassigns
+// a pending instance, so a plain CompleteAndAward here would let a former
+// assignee's correct PIN finish — and take the points for — somebody else's
+// chore.
+func TestTaskComplete_PINVerified_UsesAssigneeGuardedMutation(t *testing.T) {
+	f := buildPINGateFixture(t)
+	f.enrolAssigneePIN(t, "4821")
+
+	rec := f.post(t, "complete", "4821")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if f.instances.assigneeGuardedCalls != 1 {
+		t.Errorf("assigneeGuardedCalls = %d, want 1: a PIN-verified completion must re-assert the assignee atomically",
+			f.instances.assigneeGuardedCalls)
+	}
+}
+
+// TestTaskSkip_PINVerified_UsesAssigneeGuardedMutation is the skip half of the
+// same guarantee: skipping another member's chore is as much a theft of their
+// day as completing it is of their points.
+func TestTaskSkip_PINVerified_UsesAssigneeGuardedMutation(t *testing.T) {
+	f := buildPINGateFixture(t)
+	f.enrolAssigneePIN(t, "4821")
+
+	rec := f.post(t, "skip", "4821")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if f.instances.assigneeGuardedCalls != 1 {
+		t.Errorf("assigneeGuardedCalls = %d, want 1", f.instances.assigneeGuardedCalls)
+	}
+}
+
+// TestTaskComplete_ReassignedBetweenPINAndWrite_RefusesInline proves what the
+// member sees when that guard fires: the row comes back at 422 (the status the
+// layout's htmx-config opts into swapping) saying the chore moved, rather than
+// a completion credited to the member who no longer holds it.
+func TestTaskComplete_ReassignedBetweenPINAndWrite_RefusesInline(t *testing.T) {
+	f := buildPINGateFixture(t)
+	f.enrolAssigneePIN(t, "4821")
+	// The repository reports what its UPDATE predicate would: still
+	// actionable, but held by somebody else now.
+	f.instances.completeErr = tasksdomain.ErrAssigneeChanged
+
+	rec := f.post(t, "complete", "4821")
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "reassigned to someone else") {
+		t.Errorf("body does not explain the reassignment: %s", body)
+	}
+}
+
+// TestTaskComplete_ReassignedOnPlainPost_IsAConflict covers the same refusal
+// without HTMX: the credential was right and the row moved, which is a 409
+// conflict rather than an authorization failure.
+func TestTaskComplete_ReassignedOnPlainPost_IsAConflict(t *testing.T) {
+	f := buildPINGateFixture(t)
+	f.enrolAssigneePIN(t, "4821")
+	f.instances.completeErr = tasksdomain.ErrAssigneeChanged
+
+	cookie, csrfToken := seedAuthedSession(t, f.handler, f.sm, f.viewer.ID.String())
+	req := httptest.NewRequest(http.MethodPost, "/tasks/"+f.instanceID.String()+"/complete",
+		strings.NewReader("csrf_token="+csrfToken+"&pin=4821"))
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body: %s", rec.Code, rec.Body.String())
 	}
 }

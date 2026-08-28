@@ -251,6 +251,25 @@ type TaskInstanceRepository interface {
 	// transition as [Complete] — see its doc.
 	CompleteAndAward(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error
 
+	// CompleteAndAwardAsAssignee is [CompleteAndAward] with the additional,
+	// ATOMIC condition that the instance is still assigned to assignee: the
+	// assignee check lives in the UPDATE's own predicate, not in a read
+	// before it. assignee is also the credited member.
+	//
+	// The PIN gate (NES-166) is why this exists. Authorization verifies a
+	// submitted PIN against the instance's CURRENT assignee, and accepting a
+	// chore trade swaps assignee_id on a pending instance
+	// (ChoreTradeRepository.Accept). Checking the assignee in Go between
+	// those two steps would leave a window in which the former assignee's
+	// valid PIN completes — and takes the points for — a chore that is now
+	// somebody else's.
+	//
+	// Returns [ErrAssigneeChanged] when the instance is still actionable but
+	// its assignee is no longer assignee (including an instance that has
+	// since become unassigned). Every other contract, sentinel and side
+	// effect is [CompleteAndAward]'s.
+	CompleteAndAwardAsAssignee(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID, at time.Time) error
+
 	// Skip transitions the instance from pending or overdue to skipped. NES-116:
 	// skipping a [KindStanding] instance releases it back to the pool — a fresh,
 	// unassigned standing instance for the same recurring task is materialised
@@ -265,6 +284,17 @@ type TaskInstanceRepository interface {
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Skip(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID) error
+
+	// SkipAsAssignee is [Skip] with the additional, ATOMIC condition that the
+	// instance is still assigned to assignee, for the same reason
+	// [CompleteAndAwardAsAssignee] carries it: a PIN verified against the
+	// current assignee must not authorize a skip of a chore a trade has since
+	// handed to someone else.
+	//
+	// Returns [ErrAssigneeChanged] when the instance is still actionable but
+	// its assignee is no longer assignee. Every other contract and side
+	// effect is [Skip]'s.
+	SkipAsAssignee(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, assignee household.MemberID) error
 
 	// MarkPendingOverdue bulk-transitions all pending, [KindScheduled] instances
 	// for the household whose due_on < asOf to overdue. [KindStanding] instances

@@ -103,6 +103,45 @@ func (r *householdScopedTaskInstanceRepo) CompleteAndAward(_ context.Context, ho
 	return nil
 }
 
+// CompleteAndAwardAsAssignee mirrors the adapter's guarded transition: the row
+// must still be assigned to assignee, so a test can drive the reassignment race
+// the PIN gate closes (NES-166).
+func (r *householdScopedTaskInstanceRepo) CompleteAndAwardAsAssignee(ctx context.Context, householdID household.HouseholdID, id tasksdomain.TaskInstanceID, assignee household.MemberID, at time.Time) error {
+	r.mu.Lock()
+	inst, ok := r.instances[id]
+	switch {
+	case !ok || inst.HouseholdID != householdID:
+		r.mu.Unlock()
+		return tasksdomain.ErrInstanceNotFound
+	case inst.Status == tasksdomain.StatusDone || inst.Status == tasksdomain.StatusSkipped:
+		r.mu.Unlock()
+		return tasksdomain.ErrInstanceInTerminalState
+	case inst.AssigneeID == nil || *inst.AssigneeID != assignee:
+		r.mu.Unlock()
+		return tasksdomain.ErrAssigneeChanged
+	}
+	r.mu.Unlock()
+	return r.CompleteAndAward(ctx, householdID, id, assignee, at)
+}
+
+// SkipAsAssignee carries the same guard. The deep link never skips, so this
+// exists to satisfy the port rather than to be exercised.
+func (r *householdScopedTaskInstanceRepo) SkipAsAssignee(_ context.Context, householdID household.HouseholdID, id tasksdomain.TaskInstanceID, assignee household.MemberID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst, ok := r.instances[id]
+	switch {
+	case !ok || inst.HouseholdID != householdID:
+		return tasksdomain.ErrInstanceNotFound
+	case inst.Status == tasksdomain.StatusDone || inst.Status == tasksdomain.StatusSkipped:
+		return tasksdomain.ErrInstanceInTerminalState
+	case inst.AssigneeID == nil || *inst.AssigneeID != assignee:
+		return tasksdomain.ErrAssigneeChanged
+	}
+	inst.Status = tasksdomain.StatusSkipped
+	return nil
+}
+
 // Compile-time assertion.
 var _ tasksdomain.TaskInstanceRepository = (*householdScopedTaskInstanceRepo)(nil)
 

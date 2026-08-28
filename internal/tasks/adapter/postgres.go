@@ -1021,6 +1021,33 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 	by household.MemberID,
 	at time.Time,
 ) error {
+	return r.completeAndAward(ctx, householdID, id, by, at, false)
+}
+
+// CompleteAndAwardAsAssignee is CompleteAndAward with the assignee check
+// carried in the UPDATE's own predicate, so authorization and mutation are one
+// atomic act — see the port's doc for why the PIN gate needs that.
+func (r *TaskInstanceRepository) CompleteAndAwardAsAssignee(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	assignee household.MemberID,
+	at time.Time,
+) error {
+	return r.completeAndAward(ctx, householdID, id, assignee, at, true)
+}
+
+// completeAndAward is the shared body. requireAssignee adds "AND assignee_id =
+// $3" to the transition, which needs no extra placeholder: the member being
+// credited IS the member the row must still be assigned to.
+func (r *TaskInstanceRepository) completeAndAward(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	by household.MemberID,
+	at time.Time,
+	requireAssignee bool,
+) error {
 	tx, err := beginTx(ctx, r.dbtx, "complete and award")
 	if err != nil {
 		return err
@@ -1033,7 +1060,7 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 	// guard that resolves the double-completion race: a losing concurrent call
 	// matches zero rows here (the winner's commit already flipped status to
 	// done) and falls through to disambiguateTerminal below.
-	const updateQ = `
+	updateQ := `
 		UPDATE task_instance
 		   SET status           = 'done',
 		       completed_by     = $3,
@@ -1045,7 +1072,8 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       IN ('pending', 'overdue')
+		   AND status       IN ('pending', 'overdue')` +
+		assigneePredicate(requireAssignee) + `
 		RETURNING recurring_task_id, kind`
 
 	var recurringTaskIDStr, kindStr string
@@ -1053,7 +1081,7 @@ func (r *TaskInstanceRepository) CompleteAndAward(
 		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return r.disambiguateTerminal(ctx, tx, householdID, id)
+			return r.disambiguateZeroRows(ctx, tx, householdID, id, requireAssignee)
 		}
 		return fmt.Errorf("complete and award: update instance: %w", err)
 	}
@@ -1120,13 +1148,37 @@ func (r *TaskInstanceRepository) Skip(
 	householdID household.HouseholdID,
 	id domain.TaskInstanceID,
 ) error {
+	return r.skip(ctx, householdID, id, nil)
+}
+
+// SkipAsAssignee is Skip with the assignee check carried in the UPDATE's own
+// predicate — see the port's doc for why the PIN gate needs the check and the
+// write to be one atomic act.
+func (r *TaskInstanceRepository) SkipAsAssignee(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	assignee household.MemberID,
+) error {
+	return r.skip(ctx, householdID, id, &assignee)
+}
+
+// skip is the shared body. A non-nil assignee adds "AND assignee_id = $3" to
+// the transition; unlike completion, skipping records no member of its own, so
+// the guarded form needs a placeholder the plain form does not have.
+func (r *TaskInstanceRepository) skip(
+	ctx context.Context,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	assignee *household.MemberID,
+) error {
 	tx, err := beginTx(ctx, r.dbtx, "skip task instance")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	const q = `
+	q := `
 		UPDATE task_instance
 		   SET status           = 'skipped',
 		       claimed_by       = NULL,
@@ -1136,15 +1188,21 @@ func (r *TaskInstanceRepository) Skip(
 		       updated_at       = now()
 		 WHERE id           = $1
 		   AND household_id = $2
-		   AND status       IN ('pending', 'overdue')
+		   AND status       IN ('pending', 'overdue')` +
+		assigneePredicate(assignee != nil) + `
 		RETURNING recurring_task_id, kind`
 
+	args := []any{id.String(), householdID.String()}
+	if assignee != nil {
+		args = append(args, assignee.String())
+	}
+
 	var recurringTaskIDStr, kindStr string
-	err = tx.QueryRow(ctx, q, id.String(), householdID.String()).
+	err = tx.QueryRow(ctx, q, args...).
 		Scan(&recurringTaskIDStr, &kindStr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return r.disambiguateTerminal(ctx, tx, householdID, id)
+			return r.disambiguateZeroRows(ctx, tx, householdID, id, assignee != nil)
 		}
 		return fmt.Errorf("skip task instance: %w", err)
 	}
@@ -1157,6 +1215,57 @@ func (r *TaskInstanceRepository) Skip(
 		return fmt.Errorf("skip task instance: commit: %w", err)
 	}
 	return nil
+}
+
+// assigneePredicate returns the SQL fragment constraining a transition to an
+// instance still assigned to $3, or "" when the caller does not need it. It is
+// a fragment rather than a parameterised "AND ($3::uuid IS NULL OR assignee_id
+// = $3)" so the unguarded path's query text is byte-for-byte what it always
+// was, and so the guarded path can never match an unassigned row.
+func assigneePredicate(require bool) string {
+	if !require {
+		return ""
+	}
+	return `
+		   AND assignee_id  = $3`
+}
+
+// disambiguateZeroRows explains a transition that matched no rows. Without the
+// assignee guard that is exactly disambiguateTerminal's question ("gone, or
+// already terminal?"); with it there is a third answer, and the instance being
+// still actionable but assigned to somebody else is the one the PIN gate has
+// to tell its caller about.
+func (r *TaskInstanceRepository) disambiguateZeroRows(
+	ctx context.Context,
+	q rowQuerier,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	requireAssignee bool,
+) error {
+	if !requireAssignee {
+		return r.disambiguateTerminal(ctx, q, householdID, id)
+	}
+
+	const query = `
+		SELECT status
+		  FROM task_instance
+		 WHERE id = $1
+		   AND household_id = $2`
+	var status string
+	err := q.QueryRow(ctx, query, id.String(), householdID.String()).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrInstanceNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("disambiguate assignee-guarded task instance: %w", err)
+	}
+	if status == string(domain.StatusDone) || status == string(domain.StatusSkipped) {
+		return domain.ErrInstanceInTerminalState
+	}
+	// Still pending or overdue, so only the assignee predicate can have
+	// excluded it: the row was reassigned (or unassigned) since the caller
+	// authorized against its assignee.
+	return domain.ErrAssigneeChanged
 }
 
 // disambiguateTerminal reads the instance to determine why a Complete or Skip
