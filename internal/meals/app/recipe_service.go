@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -114,8 +115,25 @@ func (s *RecipeService) buildRecipe(ctx context.Context, id domain.RecipeID, hou
 // free-text name to a catalogue id (a race-safe upsert). Quantity is validated
 // before EnsureIngredient so a rejected line never mutates the shared catalogue;
 // a blank name is rejected by EnsureIngredient itself without a catalogue write.
+//
+// Lines that resolve to the SAME catalogue ingredient are merged, because
+// recipe_ingredient is keyed by (recipe_id, ingredient_id) and two rows for one
+// ingredient cannot be stored (NES-188). Two lines reach that state easily and
+// innocently: a recipe calling for garlic in its base and again in its sauce,
+// or the same name typed with different capitalisation, since EnsureIngredient
+// canonicalises both to one row. Merging is what a cook means by writing it
+// twice — the recipe needs the total.
+//
+// Merging only ever adds within one unit. Quantity.Add refuses to convert
+// between units, so "200 g" and "1 kg" of one ingredient is a recipe nobody can
+// scale for the shopping list: that is rejected with domain.ErrInvalidRecipe
+// rather than silently dropping a line and understating the plan.
 func (s *RecipeService) normalizeLines(ctx context.Context, lines []IngredientLine) ([]domain.RecipeIngredient, error) {
 	out := make([]domain.RecipeIngredient, 0, len(lines))
+	// index maps an already-seen ingredient to its position in out, so the
+	// merged result keeps the order the lines were written in.
+	index := make(map[tracking.IngredientID]int, len(lines))
+
 	for _, line := range lines {
 		quantity, err := household.NewQuantity(line.Amount, line.Unit)
 		if err != nil {
@@ -125,11 +143,27 @@ func (s *RecipeService) normalizeLines(ctx context.Context, lines []IngredientLi
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, domain.RecipeIngredient{
-			IngredientID: ingredient.ID,
-			Quantity:     quantity,
-			Optional:     line.Optional,
-		})
+
+		at, seen := index[ingredient.ID]
+		if !seen {
+			index[ingredient.ID] = len(out)
+			out = append(out, domain.RecipeIngredient{
+				IngredientID: ingredient.ID,
+				Quantity:     quantity,
+				Optional:     line.Optional,
+			})
+			continue
+		}
+
+		merged, err := out[at].Quantity.Add(quantity)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %q appears twice in different units (%s and %s)",
+				domain.ErrInvalidRecipe, line.Name, out[at].Quantity.Unit, quantity.Unit)
+		}
+		out[at].Quantity = merged
+		// A required line wins: the merged line really is required, whichever
+		// half of it the member marked optional.
+		out[at].Optional = out[at].Optional && line.Optional
 	}
 	return out, nil
 }
