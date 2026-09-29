@@ -388,6 +388,82 @@ test.describe('§11.4 album membership and isolation', () => {
     await expect(page.locator('[data-testid="album-empty"]')).toContainText('No photos yet');
   });
 
+  test('T-11.4.6 [!] album.js loads before Alpine, so the viewer comes alive (NES-147)', async ({ page, browser }) => {
+    await login(page, PERSONAS.owner);
+    const captions = [name('Alive slide one'), name('Alive slide two')];
+    const albumID = await createAlbum(page, name('Alive album'));
+    for (const [i, caption] of captions.entries()) {
+      expect((await upload(page, fixtures.noise(`alive-slide-${i}.png`), caption)).status).toBe(303);
+      expect(
+        await post(page, `/photos/${photoIdByCaption(caption)}/add-to-album`, { album_id: albumID }),
+      ).toBe(303);
+    }
+
+    // viewerState loads the album page and reports what a person would see:
+    // the caption bar Alpine fills from albumViewer's init(), and whether any
+    // slide was faded in by GSAP. Alpine's own complaint about an unregistered
+    // component arrives as a console warning, so those are collected too.
+    async function viewerState(target) {
+      const complaints = [];
+      const onConsole = (msg) => {
+        if (/albumViewer/.test(msg.text())) complaints.push(msg.text());
+      };
+      const onError = (err) => {
+        if (/albumViewer/.test(String(err))) complaints.push(String(err));
+      };
+      target.on('console', onConsole);
+      target.on('pageerror', onError);
+      await target.goto(`/album/${albumID}`);
+      await expect(target.locator('[data-testid="album-viewer"]')).toBeVisible();
+      // Settle past Alpine's start and the first GSAP fade, which is immediate.
+      await target.waitForLoadState('load');
+      await target.waitForTimeout(1_000);
+      const state = await target.evaluate(() => ({
+        order: [...document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src')),
+        caption: document.querySelector('[data-testid="album-viewer"] p[x-text="caption"]')?.textContent.trim() ?? '',
+        shown: [...document.querySelectorAll('.album-slide')]
+          .filter((s) => getComputedStyle(s).visibility === 'visible' && Number(getComputedStyle(s).opacity) > 0)
+          .length,
+      }));
+      target.off('console', onConsole);
+      target.off('pageerror', onError);
+      return { ...state, complaints };
+    }
+
+    const live = await viewerState(page);
+    expect(live.order.indexOf('/static/js/album.js'), 'album.js must be in the document')
+      .toBeGreaterThanOrEqual(0);
+    expect(live.order.indexOf('/static/js/album.js'), 'album.js must precede alpine.min.js')
+      .toBeLessThan(live.order.indexOf('/static/js/alpine.min.js'));
+    expect(captions, 'the caption bar shows a slide caption, so albumViewer initialised').toContain(live.caption);
+    expect(live.shown, 'exactly one slide is faded in').toBe(1);
+    expect(live.complaints, 'Alpine must not report albumViewer as undefined').toEqual([]);
+
+    // Control: serve the same page with the NES-147 order (album.js AFTER
+    // Alpine). If the checks above could not tell the difference, they would
+    // pass on the broken order too — this proves they detect it.
+    //
+    // Its own context with the service worker blocked: the page above
+    // registered /sw.js, and a navigation the worker handles never reaches
+    // Playwright's router, so the rewrite would silently not apply.
+    const brokenContext = await browser.newContext({ serviceWorkers: 'block' });
+    const broken = await brokenContext.newPage();
+    await login(broken, PERSONAS.owner);
+    await broken.route(`**/album/${albumID}`, async (route) => {
+      const response = await route.fetch();
+      const html = await response.text();
+      const albumTag = html.match(/<script[^>]*album\.js[^>]*><\/script>/)[0];
+      const alpineTag = html.match(/<script[^>]*alpine\.min\.js[^>]*><\/script>/)[0];
+      const body = html.replace(albumTag, '').replace(alpineTag, `${alpineTag}${albumTag}`);
+      await route.fulfill({ response, body });
+    });
+    const dead = await viewerState(broken);
+    expect(dead.order.indexOf('/static/js/album.js')).toBeGreaterThan(dead.order.indexOf('/static/js/alpine.min.js'));
+    expect(dead.caption, 'with the wrong order the viewer never initialises').toBe('');
+    expect(dead.shown, 'with the wrong order no slide is ever shown').toBe(0);
+    await brokenContext.close();
+  });
+
   test("T-11.4.7 another household's photo bytes are not served", async ({ page }) => {
     await login(page, PERSONAS.owner);
     const caption = name('Household A private');

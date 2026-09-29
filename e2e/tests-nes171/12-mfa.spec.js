@@ -7,6 +7,9 @@ const { PERSONAS, PASSWORD } = require('../tests/fixtures');
 const { login, postForm } = require('./helpers');
 const { psql, seedMemberInA } = require('../tests/db');
 const totp = require('./totp');
+const {
+  seedFreshMember, enrollTOTP, passwordStep, signInWithPassword, waitForTOTPWindowRoom,
+} = require('./helpers-webauthn');
 
 const MFA_USER = { email: 'mfa-probe@test.local', password: PASSWORD, displayName: 'MFA Probe' };
 
@@ -160,4 +163,134 @@ test('T-2.2.13 repeated wrong codes lock the second factor', async ({ page }) =>
   // After the threshold, even a CORRECT code must be refused while locked.
   const correct = await postForm(page, '/login/mfa', { csrf_token, code: totp.code(secret) });
   expect(correct, 'a correct code during lockout must still be refused').toBeGreaterThanOrEqual(400);
+});
+
+// ---------------------------------------------------------------------------
+// The tests below each seed their OWN member (seedFreshMember), so they do not
+// depend on the serial MFA_USER state above, nor on each other.
+// ---------------------------------------------------------------------------
+
+// REMEMBER_COOKIE is the "remember this device" cookie the login MFA step
+// sets (authadapter.RememberDeviceCookieName).
+const REMEMBER_COOKIE = 'nestova_remember';
+const THIRTY_DAYS_S = 30 * 24 * 60 * 60;
+
+// enrolledMember seeds a fresh member, signs in (no second factor yet) and
+// enrols TOTP. Returns the persona and its secret.
+async function enrolledMember(page, email, displayName) {
+  const user = seedFreshMember({ email, displayName });
+  await login(page, user);
+  const { secret } = await enrollTOTP(page);
+  return { user, secret };
+}
+
+// rememberedLogin completes the second factor with "remember this device"
+// ticked and returns the remember cookie it set.
+async function rememberedLogin(page, user, secret) {
+  const csrf_token = await passwordStep(page, user);
+  const status = await postForm(page, '/login/mfa', { csrf_token, code: totp.code(secret), remember_device: 'on' });
+  expect(status, 'a correct code with remember-device must be accepted').toBe(303);
+  const cookie = (await page.context().cookies()).find((c) => c.name === REMEMBER_COOKIE);
+  expect(cookie, 'remember-device must set its cookie').toBeTruthy();
+  return cookie;
+}
+
+test('T-2.2.5 a login TOTP code cannot be replayed', async ({ page }) => {
+  const { user, secret } = await enrolledMember(page, 'mfa-replay@test.local', 'MFA Replay');
+
+  // Both logins must fall inside ONE period, or the second code is simply a
+  // different code and the test proves nothing.
+  await waitForTOTPWindowRoom(page, 15);
+  const code = totp.code(secret);
+
+  let csrf_token = await passwordStep(page, user);
+  expect(await postForm(page, '/login/mfa', { csrf_token, code }), 'the first use must be accepted').toBe(303);
+
+  csrf_token = await passwordStep(page, user);
+  expect(await postForm(page, '/login/mfa', { csrf_token, code }), 'the same code a second time must be refused').toBe(401);
+});
+
+test('T-2.2.17 clock skew of one period is tolerated, five minutes is not', async ({ page }) => {
+  const { user, secret } = await enrolledMember(page, 'mfa-skew@test.local', 'MFA Skew');
+
+  // Enough room that a "-1" code cannot age into "-2" before the server checks it.
+  await waitForTOTPWindowRoom(page, 15);
+  let csrf_token = await passwordStep(page, user);
+
+  // Ten periods = five minutes, either side. Refusals first: they do not
+  // advance the replay high-water mark, and two stay under the lockout.
+  for (const stepOffset of [-10, 10]) {
+    const status = await postForm(page, '/login/mfa', { csrf_token, code: totp.code(secret, { stepOffset }) });
+    expect(status, `a code ${stepOffset} periods off must be refused`).toBe(401);
+  }
+
+  const behind = await postForm(page, '/login/mfa', { csrf_token, code: totp.code(secret, { stepOffset: -1 }) });
+  expect(behind, 'a code one period behind must be accepted').toBe(303);
+
+  // +1 is a LATER step than -1, so the replay guard does not refuse it.
+  csrf_token = await passwordStep(page, user);
+  const ahead = await postForm(page, '/login/mfa', { csrf_token, code: totp.code(secret, { stepOffset: 1 }) });
+  expect(ahead, 'a code one period ahead must be accepted').toBe(303);
+});
+
+test('T-2.2.14 a remembered device skips the prompt, for 30 days', async ({ page }) => {
+  const { user, secret } = await enrolledMember(page, 'mfa-remember@test.local', 'MFA Remember');
+  const cookie = await rememberedLogin(page, user, secret);
+
+  // The expiry is enforced server-side from the SIGNED payload
+  // ("<memberID>|<unix expiry>"), which the browser cannot alter; the cookie's
+  // own lifetime must agree with it. Neither clock can be advanced from here,
+  // so the 30-day bound is asserted on both values rather than waited out.
+  const nowS = Date.now() / 1000;
+  expect(Math.abs(cookie.expires - (nowS + THIRTY_DAYS_S)), 'cookie lifetime must be 30 days').toBeLessThan(300);
+  const [payload] = cookie.value.split('.');
+  const [, signedExpiry] = Buffer.from(payload, 'base64url').toString().split('|');
+  expect(Math.abs(Number(signedExpiry) - (nowS + THIRTY_DAYS_S)), 'signed expiry must be 30 days out').toBeLessThan(300);
+
+  // Sign out but keep the remember cookie: the password alone now lands on
+  // the dashboard (helpers.login asserts "/").
+  await page.context().clearCookies();
+  await page.context().addCookies([cookie]);
+  await login(page, user);
+});
+
+test('T-2.2.15 a remember cookie copied to another browser does not skip MFA', async ({ page, browser, baseURL }) => {
+  test.fail(true, 'DEFECT: the remember-device token is a stateless bearer HMAC of memberID|expiry with no device binding, so a copied cookie skips MFA anywhere');
+  const { user, secret } = await enrolledMember(page, 'mfa-remember-move@test.local', 'MFA Remember Move');
+  const cookie = await rememberedLogin(page, user, secret);
+
+  const other = await browser.newContext({ baseURL });
+  try {
+    const otherPage = await other.newPage();
+    // Sanity: without the cookie, the other browser IS prompted.
+    await passwordStep(otherPage, user);
+
+    await other.clearCookies();
+    await other.addCookies([cookie]);
+    expect(await signInWithPassword(otherPage, user), 'a moved remember cookie must not skip MFA').toBe('/login/mfa');
+  } finally {
+    await other.close();
+  }
+});
+
+test('T-2.2.16 enrolling twice is refused and keeps the original secret', async ({ page }) => {
+  const { user, secret } = await enrolledMember(page, 'mfa-twice@test.local', 'MFA Twice');
+  const secretRow = () => psql(`SELECT encode(totp_secret_enc, 'hex') FROM identity.member_mfa m
+                                  JOIN identity.member mem ON mem.id = m.member_id
+                                 WHERE mem.email = '${user.email}';`).trim();
+  const before = secretRow();
+
+  await page.goto('/settings');
+  const csrf_token = await page.locator('input[name="csrf_token"]').first().inputValue();
+  // ErrMFAAlreadyEnrolled surfaces as a plain redirect back to /settings with
+  // no secret revealed (MFAWebHandlers.Enroll).
+  const res = await page.request.post('/settings/mfa/enroll', { form: { csrf_token }, maxRedirects: 0 });
+  expect(res.status(), 'a second enrolment must be turned away').toBe(303);
+  expect(res.headers().location).toBe('/settings');
+  expect(await res.text()).not.toContain('mfa-manual-secret');
+  expect(secretRow(), 'the stored secret must not change').toBe(before);
+
+  // And the ORIGINAL secret still signs the member in.
+  const loginToken = await passwordStep(page, user);
+  expect(await postForm(page, '/login/mfa', { csrf_token: loginToken, code: totp.code(secret) })).toBe(303);
 });

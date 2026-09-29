@@ -6,7 +6,14 @@
 // the case where the button is absent but the endpoint still answers.
 const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
-const { login, postForm } = require('./helpers');
+const { login, csrfToken, postForm } = require('./helpers');
+const { psql, seedMemberInA } = require('../tests/db');
+
+const TS = Date.now();
+
+function rewardCount(name) {
+  return psql(`SELECT count(*) FROM nestova.reward WHERE name = '${name}';`).trim();
+}
 
 // Parent-gated GET pages: a child must get 403, not a rendered page.
 const PARENT_PAGES = ['/admin/rewards', '/admin/rewards/new', '/trades/history'];
@@ -73,5 +80,58 @@ test.describe('§0.3 role escalation', () => {
       if (res.status() !== 200) failures.push(`GET ${path} -> ${res.status()}`);
     }
     expect(failures, 'parent pages the owner could not load').toEqual([]);
+  });
+
+  test('T-0.3.5 a role demoted mid-session takes effect on the very next request', async ({ page }) => {
+    // A seeded member, because the demotion is irreversible for the persona.
+    const email = `demoted-${TS}@test.local`;
+    const memberId = seedMemberInA({
+      displayName: `Demoted ${TS}`, email, role: 'adult', copyHashFrom: PERSONAS.owner.email,
+    });
+    await login(page, { email, password: PERSONAS.owner.password });
+
+    // Sanity guard: as an adult, the page loads and the full payload is accepted.
+    expect((await page.goto('/admin/rewards')).status(), 'an adult reaches the reward admin').toBe(200);
+    const csrf_token = await csrfToken(page, '/settings');
+    const allowed = `Before demotion ${TS}`;
+    expect(await postForm(page, '/admin/rewards', { csrf_token, name: allowed, cost_points: '5' })).toBe(303);
+    expect(rewardCount(allowed)).toBe('1');
+
+    // The demotion happens out of band — another tab, another device, psql —
+    // while this session stays signed in.
+    psql(`UPDATE identity.member SET role = 'child', updated_at = now() WHERE id = '${memberId}';`);
+
+    expect((await page.goto('/admin/rewards')).status(), 'the demoted session must lose the page').toBe(403);
+    const refused = `After demotion ${TS}`;
+    expect(await postForm(page, '/admin/rewards', { csrf_token, name: refused, cost_points: '5' }),
+      'the demoted session must lose the write').toBe(403);
+    expect(rewardCount(refused), 'no reward may be created after the demotion').toBe('0');
+  });
+
+  test('T-0.3.6 a forged role in a form field, query string or cookie is ignored', async ({ page, context }) => {
+    await login(page, PERSONAS.child);
+    const csrf_token = await csrfToken(page, '/settings');
+    const baseURL = new URL(page.url()).origin;
+    await context.addCookies(['role', 'member_role', 'is_admin', 'is_parent'].map((name) => ({
+      name, value: name.startsWith('is_') ? 'true' : 'owner', url: baseURL,
+    })));
+
+    const forged = `Forged role ${TS}`;
+    const status = await postForm(page, '/admin/rewards?role=owner', {
+      csrf_token, name: forged, cost_points: '5',
+      role: 'owner', member_role: 'owner', is_admin: 'true', is_parent: 'true',
+    });
+    expect(status, 'a child with a forged role must still be refused').toBe(403);
+    expect(rewardCount(forged), 'the forged request must write nothing').toBe('0');
+    expect((await page.goto('/admin/rewards?role=owner')).status(), 'a forged role in the query string is ignored').toBe(403);
+
+    // Sanity guard: the same payload from a real owner is accepted, so the
+    // child's 403 was the role check and not a malformed request.
+    await context.clearCookies();
+    await login(page, PERSONAS.owner);
+    const ownerToken = await csrfToken(page, '/settings');
+    const real = `Real owner ${TS}`;
+    expect(await postForm(page, '/admin/rewards', { csrf_token: ownerToken, name: real, cost_points: '5' })).toBe(303);
+    expect(rewardCount(real)).toBe('1');
   });
 });
