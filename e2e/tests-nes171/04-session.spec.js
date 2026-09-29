@@ -2,7 +2,18 @@
 // session ending (T-0.1.4, T-0.1.5).
 const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
-const { login, postForm } = require('./helpers');
+const { login, csrfToken, postForm } = require('./helpers');
+const { psql, seedMemberInA } = require('../tests/db');
+
+const TS = Date.now();
+
+// postNoFollow posts through the page's cookie jar and reports the raw status
+// and Location. postForm maps every redirect to 303, which cannot tell "saved,
+// back to the page" from "signed out, go to /login" — this case needs both.
+async function postNoFollow(page, path, fields) {
+  const res = await page.request.post(path, { form: fields, maxRedirects: 0 });
+  return { status: res.status(), location: res.headers().location || '' };
+}
 
 const PROTECTED = ['/', '/tasks', '/settings', '/photos', '/calendar', '/groceries', '/meals', '/subscriptions', '/rewards'];
 
@@ -96,5 +107,54 @@ test.describe('§0.4 session and auth state', () => {
 
     await a.close();
     await b.close();
+  });
+
+  test('T-0.4.6 a deactivated or deleted member loses their live session', async ({ browser }) => {
+    const seed = (label) => {
+      const email = `${label}-${TS}@test.local`;
+      const id = seedMemberInA({ displayName: `${label} ${TS}`, email, role: 'adult', copyHashFrom: PERSONAS.owner.email });
+      return { id, email, password: PERSONAS.owner.password, label };
+    };
+    const members = [seed('deactivated'), seed('deleted')];
+
+    const sessions = [];
+    for (const m of members) {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await login(page, m);
+      // Sanity guard: the live session works and its write is accepted.
+      const csrf_token = await csrfToken(page, '/settings');
+      const before = await postNoFollow(page, '/admin/rewards', { csrf_token, name: `${m.label} before ${TS}`, cost_points: '5' });
+      expect(before.status, `${m.label}: the live session's write is accepted`).toBe(303);
+      expect(before.location, `${m.label}: an accepted write does not bounce to /login`).not.toContain('/login');
+      sessions.push({ m, context, page, csrf_token });
+    }
+
+    psql(`UPDATE identity.member SET active = false, updated_at = now() WHERE id = '${members[0].id}';`);
+    psql(`DELETE FROM identity.member WHERE id = '${members[1].id}';`);
+
+    for (const { m, context, page, csrf_token } of sessions) {
+      const after = await postNoFollow(page, '/admin/rewards', { csrf_token, name: `${m.label} after ${TS}`, cost_points: '5' });
+      expect(after.status, `${m.label}: the stale session's write must not be accepted`).toBe(303);
+      expect(after.location, `${m.label}: the stale session is sent to sign in`).toContain('/login');
+      expect(psql(`SELECT count(*) FROM nestova.reward WHERE name = '${m.label} after ${TS}';`).trim(),
+        `${m.label}: nothing may be written by the stale session`).toBe('0');
+
+      const res = await page.goto('/settings');
+      expect(res.status()).toBeLessThan(500);
+      expect(new URL(page.url()).pathname, `${m.label}: a page load lands on /login`).toBe('/login');
+      await context.close();
+    }
+
+    // And the deactivated member cannot simply sign back in.
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto('/login');
+    await page.fill('input[name="email"]', members[0].email);
+    await page.fill('input[name="password"]', members[0].password);
+    await page.click('button:has-text("Sign in")');
+    await page.waitForLoadState('load');
+    expect(new URL(page.url()).pathname, 'a deactivated member must not sign in again').toBe('/login');
+    await context.close();
   });
 });

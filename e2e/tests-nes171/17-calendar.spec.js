@@ -123,12 +123,13 @@ test.describe('§9.1 the unified view and connecting', () => {
 
   test('T-9.1.3 connecting for real is not exercised here', async () => {
     // The callback's success path exchanges the authorization code with Google
-    // for tokens. Stubbing that exchange would mean asserting the stub, and the
-    // app offers no seam to point the exchanger at a local fake, so this stays
-    // uncovered on purpose. The REJECTION paths below are the part that is
-    // local logic, and they are covered. internal/calendar/app's own tests
-    // cover Connect against a fake exchanger.
-    test.skip(true, 'needs a real Google token exchange; no local seam to stub it');
+    // for tokens. That exchange runs server-side, so browser interception never
+    // sees it, and the token endpoint is hardcoded (google.Endpoint in
+    // internal/calendar/adapter/google_oauth.go) with no env override — there
+    // is no seam to point it at a local fake. Re-checked 2026-09-29. The
+    // REJECTION paths below are local logic and are covered;
+    // internal/calendar/app's own tests cover Connect against a fake exchanger.
+    test.skip(true, 'needs a real Google token exchange: server-side, endpoint hardcoded to google.Endpoint, no local seam');
   });
 });
 
@@ -220,11 +221,13 @@ test.describe('§9.2 callback rejections and rendering edge cases', () => {
   });
 
   test('T-9.2.5 an invalid sync token is not reachable from any HTTP surface', async () => {
-    // ErrSyncTokenInvalid is raised by the Google sync client and handled by the
-    // sync engine, which runs on the background scheduler. Nothing in the web
-    // surface triggers a sync, so this checklist item cannot be driven from a
-    // browser at all; internal/calendar's own tests own it.
-    test.skip(true, 'sync runs on the background scheduler; no HTTP surface triggers it');
+    // ErrSyncTokenInvalid is raised by the Google Calendar client on a 410 and
+    // handled by the sync engine, which runs only on the background scheduler.
+    // Nothing in the web surface triggers a sync, and the client talks to the
+    // real Google API (NewGoogleCalendarClient takes no endpoint), so this
+    // cannot be driven locally. Re-checked 2026-09-29. It is owned by
+    // TestRunOnceFullResyncOnInvalidToken in internal/calendar/app/sync_test.go.
+    test.skip(true, 'sync runs only on the background scheduler against the real Google API; no HTTP trigger or endpoint seam');
   });
 
   test('T-9.2.6 one unusable cached event does not stop the others rendering', async ({ page }) => {

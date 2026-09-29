@@ -6,6 +6,9 @@ const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
 const { login, postForm } = require('./helpers');
 const { psql } = require('../tests/db');
+const {
+  newMember, signIn, seedInstance: seedChoreInstance, instanceRow, ledgerFor, balanceOf, taskRow,
+} = require('./helpers-chores');
 
 function householdA() {
   return psql("SELECT id FROM identity.household WHERE name = 'Household A' LIMIT 1;").trim();
@@ -215,5 +218,110 @@ test.describe('§5 chores', () => {
     expect(await postForm(page, `/trades/${tradeId}/cancel`, { csrf_token })).toBe(303);
     const again = await postForm(page, `/trades/${tradeId}/cancel`, { csrf_token });
     expect(again, 'a resolved trade must not be cancelled again').toBeGreaterThanOrEqual(400);
+  });
+});
+
+// §5.2 actions through the real row controls. Each acts as a fresh member so a
+// PIN another spec enrolled on a shared persona cannot change the outcome.
+test.describe('§5.2 complete / skip / claim', () => {
+  // markDocument tags the live document so a test can prove an action swapped
+  // the row without a navigation: a full reload would drop the tag.
+  async function markDocument(page) {
+    await page.evaluate(() => { window.__noReload = true; });
+  }
+  async function expectNoReload(page) {
+    expect(await page.evaluate(() => window.__noReload === true), 'the page must not reload').toBe(true);
+    expect(new URL(page.url()).pathname).toBe('/tasks');
+  }
+
+  test('T-5.2.2 skip swaps the row in place, through the NES-166 PIN gate', async ({ page }) => {
+    const member = newMember('Skipper');
+    const inst = seedChoreInstance({ assignee: member.id });
+    await signIn(page, member);
+    const csrf_token = await tasksToken(page);
+    expect(await postForm(page, '/settings/pin', { csrf_token, pin: '2468' })).toBe(200);
+
+    await page.goto('/tasks');
+    await markDocument(page);
+    const row = taskRow(page, inst.id);
+    await row.locator('[data-testid="task-pin-input"]').fill('2468');
+    const skipped = page.waitForResponse((r) => r.url().endsWith(`/tasks/${inst.id}/skip`) && r.request().method() === 'POST');
+    await row.getByRole('button', { name: 'Skip' }).click();
+    expect((await skipped).status()).toBe(200);
+
+    await expect(taskRow(page, inst.id)).toContainText('Skipped');
+    await expect(taskRow(page, inst.id).getByRole('button', { name: 'Done' })).toHaveCount(0);
+    await expectNoReload(page);
+    expect(instanceRow(inst.id).status).toBe('skipped');
+  });
+
+  test('T-5.2.3 claim swaps the row in place and shows the countdown', async ({ page }) => {
+    const member = newMember('Grabber');
+    const inst = seedChoreInstance();
+    await signIn(page, member);
+    await page.goto('/tasks');
+    await markDocument(page);
+
+    const claimed = page.waitForResponse((r) => r.url().endsWith(`/tasks/${inst.id}/claim`) && r.request().method() === 'POST');
+    await taskRow(page, inst.id).getByRole('button', { name: 'Claim' }).click();
+    expect((await claimed).status()).toBe(200);
+
+    const row = taskRow(page, inst.id);
+    await expect(row).toContainText(/expires in (12h 0m|11h 59m)/);
+    await expect(row.getByRole('button', { name: 'Done' })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Claim' })).toHaveCount(0);
+    await expectNoReload(page);
+    expect(instanceRow(inst.id).claimedBy).toBe(member.id);
+  });
+
+  test('T-5.2.6 claiming a chore another member already claimed is refused with 409', async ({ browser }) => {
+    const first = newMember('FirstClaim');
+    const second = newMember('SecondClaim');
+    const inst = seedChoreInstance();
+
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+    await signIn(pageA, first);
+    await signIn(pageB, second);
+    const tokenA = await tasksToken(pageA);
+    const tokenB = await tasksToken(pageB);
+
+    expect(await postForm(pageA, `/tasks/${inst.id}/claim`, { csrf_token: tokenA }), 'sanity: the first claim wins').toBe(303);
+    const refused = await pageB.evaluate(async ({ path, token }) => {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf_token: token }).toString(),
+        redirect: 'manual',
+      });
+      return { status: res.status, body: await res.text() };
+    }, { path: `/tasks/${inst.id}/claim`, token: tokenB });
+
+    expect(refused.status, 'ErrInstanceAlreadyClaimed maps to 409').toBe(409);
+    expect(refused.body).toContain('task already acted on');
+    expect(instanceRow(inst.id).claimedBy, 'the first claimant keeps the chore').toBe(first.id);
+
+    await ctxA.close();
+    await ctxB.close();
+  });
+
+  test('T-5.2.8 a completion awards its points exactly once', async ({ page }) => {
+    const member = newMember('Earner');
+    const inst = seedChoreInstance({ points: 7 });
+    await signIn(page, member);
+    const csrf_token = await tasksToken(page);
+
+    expect(await postForm(page, `/tasks/${inst.id}/complete`, { csrf_token })).toBe(303);
+    expect(ledgerFor(inst.id)).toEqual([{ memberId: member.id, sourceType: 'task_instance', points: 7 }]);
+
+    expect(await postForm(page, `/tasks/${inst.id}/complete`, { csrf_token }), 'a second completion is refused').toBe(409);
+    expect(ledgerFor(inst.id), 'the refused completion must not add a ledger row').toHaveLength(1);
+    expect(balanceOf(member.id)).toBe(7);
+
+    await page.goto('/rewards');
+    const balanceCard = page.locator('div').filter({ has: page.getByRole('heading', { name: 'Your Balance' }) }).last();
+    await expect(balanceCard).toContainText('7 pts');
   });
 });
