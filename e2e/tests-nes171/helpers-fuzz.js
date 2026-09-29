@@ -10,6 +10,7 @@
 // checklist's false-pass caution gives: an incomplete payload is refused for
 // the wrong reason and the negative test goes green anyway.
 const { psql } = require('../tests/db');
+const { randomInt } = require('node:crypto');
 
 const OWNER_NAME = 'Owner A';
 
@@ -25,7 +26,7 @@ function memberId(displayName) {
 // so its row can be found with a LIKE that needs no SQL escaping whatever else
 // the value contains.
 function uniqueMarker(label) {
-  return `${label}${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+  return `${label}${Date.now()}${randomInt(1_000_000)}`;
 }
 
 // isoDate formats a local date the way a date input submits it.
