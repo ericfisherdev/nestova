@@ -259,7 +259,7 @@ test.describe('§0.5 every text field', () => {
     const csrf_token = await fuzz.csrfFor(page);
     const failures = await sweep(fuzz.renderedFields(), async (field) => {
       const marker = fuzz.uniqueMarker('rtl');
-      const value = `‮${marker}`;
+      const value = `\u202E${marker}`;
       const res = await fuzz.createWith(page, csrf_token, field, value, marker);
       if (res.status !== field.accepted) {
         fuzz.cleanupField(field, marker);

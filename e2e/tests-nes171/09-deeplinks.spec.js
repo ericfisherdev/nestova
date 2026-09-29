@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const { PASSWORD, PERSONAS } = require('../tests/fixtures');
 const { login } = require('./helpers');
 const { psql, seedHouseholdB, seedMemberInA } = require('../tests/db');
+const { randomInt } = require('node:crypto');
 
 const SECRET = process.env.NESTOVA_SESSION_SECRET || 'dev-only-insecure-session-secret-change-me';
 const PURPOSE = 'nestova:deeplink:v1';
@@ -40,7 +41,7 @@ function householdId(name) {
 }
 
 function uniqueSuffix() {
-  return `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  return `${Date.now()}-${randomInt(1_000_000)}`;
 }
 
 // seedPersona adds a fresh member to household A and returns its id plus a

@@ -13,6 +13,7 @@
 // DATABASE_URL, which is why /setup looked like a 404 there.
 const { test, expect } = require('@playwright/test');
 const { postForm, csrfToken } = require('./helpers');
+const { randomInt } = require('node:crypto');
 const {
   PRIVATE_BASE_URL,
   PG_PORT,
@@ -205,7 +206,7 @@ test.describe('§1 onboarding on an empty database', () => {
   const count = (table) => Number(privatePsql(DB, `SELECT count(*) FROM ${table};`).trim());
 
   function onboardingFields(overrides = {}) {
-    const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const suffix = `${Date.now()}${randomInt(1000)}`;
     return {
       household_name: `Private Household ${suffix}`,
       display_name: `Founder ${suffix}`,

@@ -14,6 +14,7 @@
 const { PASSWORD, PERSONAS } = require('../tests/fixtures');
 const { psql, seedMemberInA } = require('../tests/db');
 const { login } = require('./helpers');
+const { randomInt } = require('node:crypto');
 
 // sqlText quotes s as a SQL string literal.
 function sqlText(s) {
@@ -25,7 +26,7 @@ function householdA() {
 }
 
 function uniqueSuffix() {
-  return `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+  return `${Date.now()}${randomInt(1000)}`;
 }
 
 // newMember seeds a member of household A who can sign in with the shared
