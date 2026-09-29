@@ -14,6 +14,7 @@ const { test, expect } = require('@playwright/test');
 const { PASSWORD, PERSONAS } = require('../tests/fixtures');
 const { login } = require('./helpers');
 const { psql, seedMemberInA } = require('../tests/db');
+const { randomInt } = require('node:crypto');
 const {
   waitForController,
   cacheInventory,
@@ -24,7 +25,7 @@ const {
 } = require('./helpers-pwa');
 
 function uniqueSuffix() {
-  return `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  return `${Date.now()}-${randomInt(1_000_000)}`;
 }
 
 function shoppingRows(itemName) {

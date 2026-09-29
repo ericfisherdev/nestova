@@ -7,6 +7,7 @@
 const { expect } = require('@playwright/test');
 const { PERSONAS, PASSWORD } = require('../tests/fixtures');
 const { psql, seedMemberInA } = require('../tests/db');
+const { randomInt } = require('node:crypto');
 
 function householdA() {
   return psql("SELECT id FROM identity.household WHERE name = 'Household A' LIMIT 1;").trim();
@@ -21,7 +22,7 @@ function memberId(displayName) {
 // no redemptions, so a test can assert exact balances without depending on
 // what earlier specs did to the shared personas.
 function seedRewardsMember(label) {
-  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const suffix = `${Date.now()}-${randomInt(1_000_000)}`;
   const displayName = `Rewards ${label} ${suffix}`;
   const email = `rewards-${label.toLowerCase()}-${suffix}@test.local`;
   const id = seedMemberInA({ displayName, email, role: 'child', copyHashFrom: PERSONAS.child.email });
@@ -55,7 +56,7 @@ function lowestRunningBalance(member) {
 }
 
 function seedReward({ cost, quantity = null, active = true, name }) {
-  const rewardName = name || `Reward probe ${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const rewardName = name || `Reward probe ${Date.now()}-${randomInt(1_000_000)}`;
   const qty = quantity === null ? 'NULL' : quantity;
   return psql(`
     INSERT INTO nestova.reward
