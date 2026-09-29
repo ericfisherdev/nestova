@@ -42,3 +42,6 @@ go.work.sum
 
 # Runtime dev data the server writes (media uploads, badger cache).
 .localdata/
+
+# Understand-Anything knowledge graph data
+.ua/
