@@ -257,7 +257,7 @@ test.describe('§0.8 HTMX and rendering integrity', () => {
     await expect(page.locator(`#task-${id}`), 'exactly one row, not a stack of swaps').toHaveCount(1);
     expect(await page.locator(`#task-${id} [id="task-${id}"]`).count(), 'the row must not be nested inside itself').toBe(0);
     expect(Number(psql(`SELECT count(*) FROM nestova.point_ledger WHERE source_id = '${id}';`).trim()),
-      'the chore must be credited once').toBeLessThanOrEqual(1);
+      'the chore must be credited once').toBe(1);
     // htmx drops a trigger whose element already has a request in flight, so
     // the extra clicks never reach the server at all.
     expect(sent, 'three clicks during one in-flight request send one request').toBe(1);

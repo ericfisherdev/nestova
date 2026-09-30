@@ -106,7 +106,7 @@ test.describe('§5 chores', () => {
     const accepted = statuses.filter((s) => s === 303).length;
 
     expect(accepted, 'only one completion may be accepted').toBe(1);
-    expect(ledgerCountFor(id), 'points must be awarded exactly once').toBeLessThanOrEqual(1);
+    expect(ledgerCountFor(id), 'points must be awarded exactly once').toBe(1);
   });
 
   test('T-0.7.3 [!] two members claiming at once resolve to a single winner', async ({ browser }) => {
