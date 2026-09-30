@@ -69,23 +69,32 @@ test.describe('§0.2 tenant isolation', () => {
     expect(b.householdId, 'household B should have been seeded').toBeTruthy();
   });
 
-  test('T-0.2.1 household B cannot act on household A chores', async ({ page }) => {
+  test('T-0.2.1 household B cannot act on household A chores', async ({ page, browser }) => {
     const a = seedInstanceInA();
     await login(page, OWNER_B);
     await page.goto('/tasks');
     const csrf_token = await page.locator('input[name="csrf_token"]').first().inputValue();
 
-    const results = {};
     for (const action of ['complete', 'skip', 'claim']) {
-      results[action] = await postForm(page, `/tasks/${a.instanceId}/${action}`, { csrf_token });
+      expectRefusedLikeMissing(`${action} A's chore`,
+        await probeForeignId(page, (id) => `/tasks/${id}/${action}`, a.instanceId, { csrf_token }));
     }
-    const leaked = Object.entries(results).filter(([, s]) => s < 400);
-    expect(leaked, "household B actions on A's instance that were not refused").toEqual([]);
 
     const status = psql(
       `SELECT status FROM nestova.task_instance WHERE id = '${a.instanceId}';`,
     ).trim();
     expect(status, "A's instance must be untouched").toBe('pending');
+
+    // Sanity guard: A's owner completes the same instance, so the refusals above
+    // were about tenancy and not a route that is broken for everyone.
+    const owner = await signedIn(browser, PERSONAS.owner);
+    try {
+      const aToken = await csrfToken(owner.page, '/tasks');
+      expect(await postForm(owner.page, `/tasks/${a.instanceId}/complete`, { csrf_token: aToken }),
+        "sanity: A's owner completes A's chore").toBe(303);
+    } finally {
+      await owner.context.close();
+    }
   });
 
   test('T-0.2.9 household B cannot set a PIN on a household A member', async ({ page }) => {
@@ -94,13 +103,17 @@ test.describe('§0.2 tenant isolation', () => {
     await page.goto('/settings');
     const csrf_token = await page.locator('input[name="csrf_token"]').first().inputValue();
 
-    const status = await postForm(page, `/settings/members/${a.ownerA}/pin`, { csrf_token, pin: '9999' });
-    expect(status, "B must not set a PIN on A's member").toBeGreaterThanOrEqual(400);
+    expectRefusedLikeMissing("set a PIN on A's member",
+      await probeForeignId(page, (id) => `/settings/members/${id}/pin`, a.ownerA, { csrf_token, pin: '9999' }));
 
     const pins = psql(
       `SELECT count(*) FROM identity.member_pin WHERE member_id = '${a.ownerA}';`,
     ).trim();
     expect(pins, "no PIN row may exist for A's member").toBe('0');
+
+    // Sanity guard: the same payload is accepted for B's own member.
+    expect(await postForm(page, `/settings/members/${b.ownerId}/pin`, { csrf_token, pin: '9999' }),
+      "sanity: B sets a PIN on B's own member").toBe(200);
   });
 
   test('T-0.2.11 a foreign id is indistinguishable from a missing one', async ({ page }) => {
