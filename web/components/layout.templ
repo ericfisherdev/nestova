@@ -99,6 +99,8 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<script src="/static/js/claim-countdown.js" defer></script>
 			<script src="/static/js/upload-queue.js" defer></script>
 			<script src="/static/js/webauthn-register.js" defer></script>
+			<!-- Offline notice for failed HTMX requests (NES-202). -->
+			<script src="/static/js/network-alert.js" defer></script>
 			<script src="/static/js/alpine.min.js" defer></script>
 			<!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. -->
 			<script src="/static/js/gsap.min.js" defer></script>
@@ -138,6 +140,14 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 				class="fixed inset-0 z-30 bg-ink/30 md:hidden"
 				aria-hidden="true"
 			></div>
+			<!-- Shown by network-alert.js when an HTMX request fails because the
+			     network dropped; hidden until then and cleared on reconnect. -->
+			<div
+				id="network-alert"
+				role="alert"
+				hidden
+				class="fixed inset-x-0 bottom-0 z-50 bg-ink px-4 py-3 text-center text-sm text-white"
+			>You're offline. Nothing was saved. Try again.</div>
 			@sidebar(props, nav)
 			<!-- inert disables the main content behind the open drawer so keyboard
 			     focus cannot escape the modal drawer (WCAG 2.4.3). -->
