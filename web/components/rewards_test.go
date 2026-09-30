@@ -210,15 +210,15 @@ func TestRewardsPageComponent_RendersKeyElements(t *testing.T) {
 		}
 	}
 
-	// No error banner when InsufficientMessage is empty.
+	// No error banner when RedeemErrorMessage is empty.
 	if strings.Contains(out, `role="alert"`) {
-		t.Errorf("RewardsPageComponent should not render alert when InsufficientMessage is empty")
+		t.Errorf("RewardsPageComponent should not render alert when RedeemErrorMessage is empty")
 	}
 }
 
-func TestRewardsPageComponent_InsufficientMessageBanner(t *testing.T) {
+func TestRewardsPageComponent_RedeemErrorMessageBanner(t *testing.T) {
 	page := components.RewardsPage{
-		InsufficientMessage: "You don't have enough points.",
+		RedeemErrorMessage: "You don't have enough points.",
 	}
 	out := renderString(t, components.RewardsPageComponent(page))
 

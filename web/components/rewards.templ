@@ -64,9 +64,10 @@ type RewardsPage struct {
 	MyRedemptions []MyRedemptionItem
 	// CSRFToken is the per-session CSRF token embedded in every redeem form.
 	CSRFToken string
-	// InsufficientMessage is set when the previous redeem attempt was rejected
-	// due to insufficient points; empty means no error banner is shown.
-	InsufficientMessage string
+	// RedeemErrorMessage is set when the previous redeem attempt was rejected
+	// with a conflict (insufficient points or out of stock); empty means no
+	// error banner is shown.
+	RedeemErrorMessage string
 	// CanManageRewards is true for parents (owner or adult roles), who get a
 	// link to the reward admin catalogue (NES-126), mirroring
 	// TradeSections.CanViewHistory's role gate (NES-122).
@@ -125,10 +126,10 @@ templ RewardsPageComponent(page RewardsPage) {
 				<a href="/admin/rewards" class="shrink-0 text-sm font-medium text-sage hover:underline">Manage rewards</a>
 			}
 		</div>
-		<!-- Insufficient points error banner -->
-		if page.InsufficientMessage != "" {
+		<!-- Redeem conflict error banner -->
+		if page.RedeemErrorMessage != "" {
 			<div role="alert" class="mb-4 rounded-card border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-				{ page.InsufficientMessage }
+				{ page.RedeemErrorMessage }
 			</div>
 		}
 		<div class="grid gap-6 lg:grid-cols-2">
