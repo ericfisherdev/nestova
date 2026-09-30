@@ -184,16 +184,17 @@ func (s *RewardAdminService) Archive(ctx context.Context, householdID household.
 
 // validateRewardFields enforces the catalogue invariants shared by Create and
 // Update, mirroring the reward table's own CHECK constraints (cost_points > 0,
-// quantity_available IS NULL OR quantity_available >= 0) so a violation is
+// quantity_available IS NULL OR quantity_available >= 0) and the int4 column
+// range (domain.MaxInt4) so a violation is
 // caught before it ever reaches the database.
 func validateRewardFields(name string, costPoints int, quantityAvailable *int) error {
 	if name == "" {
 		return domain.ErrInvalidRewardName
 	}
-	if costPoints <= 0 {
+	if costPoints <= 0 || costPoints > domain.MaxInt4 {
 		return domain.ErrInvalidRewardCost
 	}
-	if quantityAvailable != nil && *quantityAvailable < 0 {
+	if quantityAvailable != nil && (*quantityAvailable < 0 || *quantityAvailable > domain.MaxInt4) {
 		return domain.ErrInvalidRewardQuantity
 	}
 	return nil

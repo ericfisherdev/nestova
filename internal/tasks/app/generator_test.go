@@ -1553,3 +1553,49 @@ func TestGenerator_PhotoPolicyPreservedForEveryGeneratedInstance(t *testing.T) {
 		t.Errorf("CompleteInstance after seeding both photos = %v, want nil", err)
 	}
 }
+
+// TestTaskService_CreateRecurringTask_CountsOutOfRange verifies that points and
+// lead time beyond the int4 column range are rejected by the service (NES-191),
+// while the largest in-range value is not.
+func TestTaskService_CreateRecurringTask_CountsOutOfRange(t *testing.T) {
+	tests := []struct {
+		name     string
+		points   int
+		leadDays int
+		wantErr  error
+	}{
+		{name: "points above int4", points: domain.MaxInt4 + 1, wantErr: domain.ErrInvalidTaskPoints},
+		{name: "negative points", points: -1, wantErr: domain.ErrInvalidTaskPoints},
+		{name: "lead time above int4", leadDays: domain.MaxInt4 + 1, wantErr: domain.ErrInvalidLeadTime},
+		{name: "largest in-range values", points: domain.MaxInt4, leadDays: domain.MaxInt4},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, err := app.NewTaskService(newFakeRecurringTaskRepo(), newFakeTaskInstanceRepo(), nil)
+			if err != nil {
+				t.Fatalf("NewTaskService: %v", err)
+			}
+			task := &domain.RecurringTask{
+				ID:          domain.NewRecurringTaskID(),
+				HouseholdID: household.NewHouseholdID(),
+				Title:       "Take out the bins",
+				Category:    domain.ChoreCategory,
+				Cadence: household.Cadence{
+					Freq:     household.FreqWeekly,
+					Interval: 1,
+					Anchor:   weeklyAnchor,
+				},
+				RotationPolicy: domain.RotationClaimable,
+				Points:         tc.points,
+				LeadTimeDays:   tc.leadDays,
+				Active:         true,
+			}
+
+			err = svc.CreateRecurringTask(context.Background(), task, nil)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("CreateRecurringTask() = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}

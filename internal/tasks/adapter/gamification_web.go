@@ -865,8 +865,8 @@ func parseRewardAdminForm(
 	}
 
 	cost, err := strconv.Atoi(rawCost)
-	if err != nil || cost <= 0 {
-		form.Error = "Cost must be a positive number of points."
+	if err != nil || cost <= 0 || cost > domain.MaxInt4 {
+		form.Error = rewardAdminErrMessage(domain.ErrInvalidRewardCost)
 		return "", "", 0, nil, nil, form, form.Error
 	}
 
@@ -878,8 +878,8 @@ func parseRewardAdminForm(
 	var quantityPtr *int
 	if rawQuantity != "" {
 		q, err := strconv.Atoi(rawQuantity)
-		if err != nil || q < 0 {
-			form.Error = "Quantity available must be zero or greater, or left blank for unlimited."
+		if err != nil || q < 0 || q > domain.MaxInt4 {
+			form.Error = rewardAdminErrMessage(domain.ErrInvalidRewardQuantity)
 			return "", "", 0, nil, nil, form, form.Error
 		}
 		quantityPtr = &q
@@ -896,9 +896,9 @@ func rewardAdminErrMessage(err error) string {
 	case errors.Is(err, domain.ErrInvalidRewardName):
 		return "Name is required."
 	case errors.Is(err, domain.ErrInvalidRewardCost):
-		return "Cost must be a positive number of points."
+		return fmt.Sprintf("Cost must be a whole number of points from 1 to %d.", domain.MaxInt4)
 	case errors.Is(err, domain.ErrInvalidRewardQuantity):
-		return "Quantity available must be zero or greater, or left blank for unlimited."
+		return fmt.Sprintf("Quantity available must be from 0 to %d, or left blank for unlimited.", domain.MaxInt4)
 	default:
 		return ""
 	}

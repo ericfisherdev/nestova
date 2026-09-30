@@ -444,7 +444,6 @@ test.describe('§6 rewards', () => {
   });
 
   test('T-6.3.4 [!] a MaxInt64 cost is refused with 422, not 500', async ({ page }) => {
-    test.fail(true, 'DEFECT: cost_points is Atoi-parsed to int64 but stored in an int4 column; overflow returns 500');
     const name = `Huge cost ${Date.now()}`;
     await login(page, PERSONAS.owner);
     await page.goto('/admin/rewards/new');

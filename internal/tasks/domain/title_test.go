@@ -40,3 +40,30 @@ func TestValidateTitle(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateTaskCounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		points   int
+		leadDays int
+		want     error
+	}{
+		{name: "zeroes", want: nil},
+		{name: "largest in-range values", points: domain.MaxInt4, leadDays: domain.MaxInt4, want: nil},
+		{name: "negative points", points: -1, want: domain.ErrInvalidTaskPoints},
+		{name: "points one over", points: domain.MaxInt4 + 1, want: domain.ErrInvalidTaskPoints},
+		{name: "negative lead time", leadDays: -1, want: domain.ErrInvalidLeadTime},
+		{name: "lead time one over", leadDays: domain.MaxInt4 + 1, want: domain.ErrInvalidLeadTime},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := domain.ValidateTaskCounts(tc.points, tc.leadDays); !errors.Is(err, tc.want) {
+				t.Errorf("ValidateTaskCounts(%d, %d) = %v, want %v", tc.points, tc.leadDays, err, tc.want)
+			}
+		})
+	}
+}

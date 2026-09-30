@@ -18,6 +18,14 @@ var (
 	// recurring_task.title, mirrored by that column's CHECK constraint.
 	ErrTitleTooLong = errors.New("tasks: task title is too long")
 
+	// ErrInvalidTaskPoints is returned by ValidateTaskCounts when a recurring
+	// task's points are negative or exceed MaxInt4 (NES-191).
+	ErrInvalidTaskPoints = errors.New("tasks: task points out of range")
+
+	// ErrInvalidLeadTime is returned by ValidateTaskCounts when a recurring
+	// task's lead time in days is negative or exceeds MaxInt4 (NES-191).
+	ErrInvalidLeadTime = errors.New("tasks: task lead time out of range")
+
 	// ErrInstanceNotFound is returned by TaskInstanceRepository.Get when the
 	// requested TaskInstanceID does not exist.
 	ErrInstanceNotFound = errors.New("tasks: task instance not found")

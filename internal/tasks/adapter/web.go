@@ -808,8 +808,8 @@ func (h *WebHandlers) parseCreateForm(
 	points := 0
 	if rawPoints != "" {
 		points, err = strconv.Atoi(rawPoints)
-		if err != nil || points < 0 {
-			form.Error = "Points must be a whole number of 0 or more."
+		if err != nil || domain.ValidateTaskCounts(points, 0) != nil {
+			form.Error = taskCountErrMessage(domain.ErrInvalidTaskPoints)
 			return nil, nil, form, form.Error
 		}
 	}
@@ -817,8 +817,8 @@ func (h *WebHandlers) parseCreateForm(
 	leadDays := 0
 	if rawLead != "" {
 		leadDays, err = strconv.Atoi(rawLead)
-		if err != nil || leadDays < 0 {
-			form.Error = "Lead time must be a whole number of 0 or more."
+		if err != nil || domain.ValidateTaskCounts(0, leadDays) != nil {
+			form.Error = taskCountErrMessage(domain.ErrInvalidLeadTime)
 			return nil, nil, form, form.Error
 		}
 	}
@@ -869,10 +869,27 @@ func titleErrMessage(err error) string {
 	}
 }
 
+// taskCountErrMessage maps the points and lead-time range sentinels to their
+// user-readable message, or "" for any other error. It backs both the form
+// parse and createTaskErrMessage so the wording cannot drift.
+func taskCountErrMessage(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrInvalidTaskPoints):
+		return fmt.Sprintf("Points must be a whole number from 0 to %d.", domain.MaxInt4)
+	case errors.Is(err, domain.ErrInvalidLeadTime):
+		return fmt.Sprintf("Lead time must be a whole number from 0 to %d.", domain.MaxInt4)
+	default:
+		return ""
+	}
+}
+
 // createTaskErrMessage maps known service-layer errors to user-readable messages.
 // An empty string means the error is unexpected and should be treated as a 500.
 func createTaskErrMessage(err error) string {
 	if msg := titleErrMessage(err); msg != "" {
+		return msg
+	}
+	if msg := taskCountErrMessage(err); msg != "" {
 		return msg
 	}
 	switch {
