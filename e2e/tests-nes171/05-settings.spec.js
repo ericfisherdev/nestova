@@ -351,6 +351,27 @@ test.describe('§3.1 notification channel preferences', () => {
     expect(push.body, 'the sentinel must not leak verbatim').not.toContain('ErrChannelNotDeliverable');
     expect(preferenceOf(member.id, 'restock_soon')).toBe('inapp');
   });
+
+  test('NES-206 Text message is not offered when no SMS sender is configured', async ({ page }) => {
+    test.fail(true, 'DEFECT: NES-206 — the SMS channel is offered and accepted with NOTIFY_SMS_ENABLED unset');
+    // Product decision 2026-09-29: only offer channels that can actually be
+    // delivered. The suite's server runs without NOTIFY_SMS_ENABLED, so SMS
+    // is not deliverable here.
+    const member = seedPersona('No SMS sender');
+    await login(page, member);
+    const csrf_token = await settingsToken(page);
+
+    // Sanity guard: the preference route accepts a deliverable channel.
+    expect(await postForm(page, PREFERENCES, { csrf_token, [`pref_${TRADE_PROPOSED}`]: 'inapp' })).toBe(200);
+
+    await page.goto('/settings');
+    await expect(page.locator('select[name^="pref_"]').first()).toBeVisible();
+    await expect(page.locator('select[name^="pref_"] option[value="sms"]'), 'no Text message option').toHaveCount(0);
+
+    const sms = await postFormBody(page, PREFERENCES, { csrf_token, [`pref_${TRADE_PROPOSED}`]: 'sms' });
+    expect(sms.status, 'an SMS preference must be refused when SMS cannot be delivered').toBe(400);
+    expect(preferenceOf(member.id, TRADE_PROPOSED)).toBe('inapp');
+  });
 });
 
 test.describe('§3.2 quiet-hours behaviour', () => {
