@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/notify/domain"
@@ -118,8 +119,13 @@ func (e *RoutingEnqueuer) route(ctx context.Context, n *domain.Notification) {
 		n.Channel = domain.ChannelInApp
 		return
 	}
-	if qh.InQuietHours(n.ScheduledFor) {
-		n.ScheduledFor = qh.EndAfter(n.ScheduledFor)
+	// Quiet hours are a local clock window, and InQuietHours reads the
+	// hour in the timestamp's own zone, so a caller that stamps UTC would
+	// be tested against the wrong window (NES-204). Compare in the
+	// server's local zone, as trade notifications already do (NES-198).
+	local := n.ScheduledFor.In(time.Local)
+	if qh.InQuietHours(local) {
+		n.ScheduledFor = qh.EndAfter(local)
 	}
 }
 
