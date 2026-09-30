@@ -13,9 +13,10 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/db"
 )
 
-// rememberedDeviceMemberFK is the member FK on remembered_device (00043); a
-// violation means the member does not exist.
-const rememberedDeviceMemberFK = "remembered_device_member_id_fkey"
+// rememberedDeviceEnrollmentFK is the FK from remembered_device to the member's
+// MFA enrollment (00043); a violation means the enrollment was deleted between
+// the insert's predicate and its commit.
+const rememberedDeviceEnrollmentFK = "remembered_device_enrollment_fkey"
 
 // RememberedDeviceRepository is the pgx-backed
 // authdomain.RememberedDeviceRepository over nestova.remembered_device.
@@ -36,8 +37,16 @@ func NewRememberedDeviceRepository(dbtx db.TX) *RememberedDeviceRepository {
 }
 
 // Create inserts device and sweeps the member's already-expired rows, so the
-// table does not accumulate dead devices. Returns household.ErrMemberNotFound
-// when the member does not exist.
+// table does not accumulate dead devices.
+//
+// The insert is conditional on the member holding a confirmed enrollment that
+// predates device.CreatedAt, checked in the same statement as the write, and
+// the enrollment FK makes a concurrent DeleteEnrollment either cascade the new
+// row away or fail the insert. Together they stop a device being issued after
+// the revocation (disenrol or owner reset) that was meant to kill it.
+//
+// Returns authdomain.ErrMFANotEnrolled when the member has no confirmed
+// enrollment at write time (including a member that does not exist).
 func (r *RememberedDeviceRepository) Create(ctx context.Context, device *authdomain.RememberedDevice) error {
 	const sweep = `DELETE FROM remembered_device WHERE member_id = $1 AND expires_at <= $2`
 	if _, err := r.dbtx.Exec(ctx, sweep, device.MemberID.String(), device.CreatedAt); err != nil {
@@ -46,17 +55,24 @@ func (r *RememberedDeviceRepository) Create(ctx context.Context, device *authdom
 
 	const ins = `
 		INSERT INTO remembered_device (id, member_id, token_hash, user_agent, created_at, expires_at, last_used_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`
-	_, err := r.dbtx.Exec(ctx, ins,
+		SELECT $1::uuid, mfa.member_id, $3::bytea, $4::text, $5::timestamptz, $6::timestamptz, $7::timestamptz
+		  FROM identity.member_mfa mfa
+		 WHERE mfa.member_id = $2::uuid
+		   AND mfa.confirmed_at IS NOT NULL
+		   AND mfa.confirmed_at <= $5::timestamptz`
+	tag, err := r.dbtx.Exec(ctx, ins,
 		device.ID.String(), device.MemberID.String(), device.TokenHash, device.UserAgent,
 		device.CreatedAt, device.ExpiresAt, device.LastUsedAt,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.ConstraintName == rememberedDeviceMemberFK {
-			return household.ErrMemberNotFound
+		if errors.As(err, &pgErr) && pgErr.ConstraintName == rememberedDeviceEnrollmentFK {
+			return authdomain.ErrMFANotEnrolled
 		}
 		return fmt.Errorf("insert remembered device: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return authdomain.ErrMFANotEnrolled
 	}
 	return nil
 }

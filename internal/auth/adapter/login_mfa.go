@@ -393,8 +393,14 @@ func (h *LoginMFAHandlers) notifyLockout(ctx context.Context, memberID household
 // memberID and sets it as the "remember this device" cookie, valid for
 // authapp.RememberDeviceTTL. The login has already succeeded by the time this
 // runs, so an issue failure is logged and the member simply is not remembered.
+// authdomain.ErrMFANotEnrolled means a disenrol or owner reset removed the
+// enrollment mid-login; no cookie is set.
 func (h *LoginMFAHandlers) setRememberDeviceCookie(w http.ResponseWriter, r *http.Request, memberID household.MemberID, now time.Time) {
 	token, err := h.remember.Issue(r.Context(), memberID, r.UserAgent(), now)
+	if errors.Is(err, authdomain.ErrMFANotEnrolled) {
+		h.logger.WarnContext(r.Context(), "remember-device token refused: mfa enrollment gone mid-login", "member_id", memberID.String())
+		return
+	}
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "issue remember-device token", "member_id", memberID.String(), "error", err)
 		return

@@ -51,7 +51,9 @@ func NewRememberDeviceService(repo authdomain.RememberedDeviceRepository) (*Reme
 // userAgent is stored (truncated to authdomain.MaxUserAgentLength runes) for
 // display only.
 //
-// Returns household.ErrMemberNotFound (wrapped) when memberID does not exist.
+// Returns authdomain.ErrMFANotEnrolled (wrapped) when memberID has no confirmed
+// MFA enrollment at write time, e.g. an owner reset raced the login; nothing
+// is stored then.
 func (s *RememberDeviceService) Issue(ctx context.Context, memberID household.MemberID, userAgent string, now time.Time) (string, error) {
 	raw := make([]byte, rememberTokenBytes)
 	if _, err := rand.Read(raw); err != nil {
