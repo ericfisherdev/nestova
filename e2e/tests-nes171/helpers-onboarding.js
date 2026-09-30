@@ -29,9 +29,11 @@ const PRIVATE_PORT = SUITE_PORT + 100;
 const PRIVATE_BASE_URL = `http://localhost:${PRIVATE_PORT}`;
 const WORK_DIR = path.join(os.tmpdir(), `nestova-nes171-private-${PRIVATE_PORT}`);
 const BIN_DIR = path.join(WORK_DIR, 'bin');
+const PID_FILE = path.join(WORK_DIR, 'server.pid');
 
 const READY_TIMEOUT_MS = 60_000;
 const STOP_TIMEOUT_MS = 10_000;
+const PORT_RELEASE_MS = 3_000;
 
 let binariesBuilt = false;
 
@@ -117,6 +119,7 @@ class PrivateServer {
       stdio: ['ignore', log, log],
     });
     fs.closeSync(log);
+    fs.writeFileSync(PID_FILE, String(this.proc.pid));
     await this.waitFor(readyPath);
   }
 
@@ -141,6 +144,7 @@ class PrivateServer {
 
   async stop() {
     if (!this.proc || this.proc.exitCode !== null) return;
+    fs.rmSync(PID_FILE, { force: true });
     const exited = new Promise((resolve) => this.proc.once('exit', resolve));
     process.kill(-this.proc.pid, 'SIGTERM');
     const timedOut = await Promise.race([
@@ -165,13 +169,49 @@ class PrivateServer {
   }
 }
 
-// freePort kills whatever a previous, aborted run left listening on
-// PRIVATE_PORT, so a crashed run cannot make the next one test a stale server.
-function freePort() {
+// isHarnessServer reports whether pid is still the server binary this harness
+// built, so a recycled pid is never signalled.
+function isHarnessServer(pid) {
   try {
-    execFileSync(tool('fuser'), ['-k', `${PRIVATE_PORT}/tcp`], { stdio: 'ignore' });
+    return fs.readlinkSync(`/proc/${pid}/exe`) === path.join(BIN_DIR, 'server');
   } catch {
-    // Nothing was listening.
+    return false;
+  }
+}
+
+// freePort stops the server an earlier, aborted run of THIS harness left behind
+// (tracked by pid file) and refuses to go on if anything else holds
+// PRIVATE_PORT: killing a foreign process would be wrong, and waitFor could
+// otherwise get a 200 from its /healthz and test the wrong server.
+function freePort() {
+  if (fs.existsSync(PID_FILE)) {
+    const pid = Number(fs.readFileSync(PID_FILE, 'utf8'));
+    if (Number.isInteger(pid) && pid > 1 && isHarnessServer(pid)) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // Already gone.
+      }
+    }
+    fs.rmSync(PID_FILE, { force: true });
+  }
+  // A SIGKILLed server can take a moment to release its socket.
+  const deadline = Date.now() + PORT_RELEASE_MS;
+  while (portInUse()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`port ${PRIVATE_PORT} is held by a process this harness did not start; free it or change NESTOVA_BASE_URL`);
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+}
+
+// portInUse is true when anything listens on PRIVATE_PORT (fuser exits 0).
+function portInUse() {
+  try {
+    execFileSync(tool('fuser'), [`${PRIVATE_PORT}/tcp`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
   }
 }
 
