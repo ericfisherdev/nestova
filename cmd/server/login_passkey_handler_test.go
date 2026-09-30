@@ -144,13 +144,14 @@ func buildLoginPasskeyTestHandler(t *testing.T, hhRepo household.HouseholdReposi
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err = authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger)
+	rememberService, err := authapp.NewRememberDeviceService(newFakeRememberedDeviceRepo())
+	if err != nil {
+		t.Fatalf("NewRememberDeviceService: %v", err)
+	}
+	mfaService, err = authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger,
+		authapp.WithRememberedDeviceRevoker(rememberService))
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
-	}
-	rememberSigner, err := authapp.NewRememberDeviceSigner([]byte("login-passkey-test-harness-remember-key"))
-	if err != nil {
-		t.Fatalf("NewRememberDeviceSigner: %v", err)
 	}
 
 	wa, err := webauthn.New(&webauthn.Config{
@@ -173,8 +174,8 @@ func buildLoginPasskeyTestHandler(t *testing.T, hhRepo household.HouseholdReposi
 	loginPasskeyHandlers := authadapter.NewLoginPasskeyHandlers(sm, webauthnService, logger)
 
 	authn := authapp.New(credRepo, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberSigner, webauthnService, logger)
-	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberSigner, webauthnService, notify, false, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberService, webauthnService, logger)
+	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberService, webauthnService, notify, false, logger)
 
 	requireMember := authadapter.RequireMember(sm)
 	requireStepUp := authadapter.RequireStepUp(sm, mfaService, webauthnService, "/settings", logger)

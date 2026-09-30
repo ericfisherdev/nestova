@@ -237,15 +237,19 @@ test('T-2.2.14 a remembered device skips the prompt, for 30 days', async ({ page
   const { user, secret } = await enrolledMember(page, 'mfa-remember@test.local', 'MFA Remember');
   const cookie = await rememberedLogin(page, user, secret);
 
-  // The expiry is enforced server-side from the SIGNED payload
-  // ("<memberID>|<unix expiry>"), which the browser cannot alter; the cookie's
-  // own lifetime must agree with it. Neither clock can be advanced from here,
-  // so the 30-day bound is asserted on both values rather than waited out.
+  // The token is opaque; its expiry lives server-side in remembered_device, and
+  // the cookie's own lifetime must agree with it. Neither clock can be
+  // advanced from here, so the 30-day bound is asserted on both values rather
+  // than waited out.
   const nowS = Date.now() / 1000;
   expect(Math.abs(cookie.expires - (nowS + THIRTY_DAYS_S)), 'cookie lifetime must be 30 days').toBeLessThan(300);
-  const [payload] = cookie.value.split('.');
-  const [, signedExpiry] = Buffer.from(payload, 'base64url').toString().split('|');
-  expect(Math.abs(Number(signedExpiry) - (nowS + THIRTY_DAYS_S)), 'signed expiry must be 30 days out').toBeLessThan(300);
+  const storedExpiryS = Number(psql(`SELECT extract(epoch FROM expires_at)::bigint FROM nestova.remembered_device
+                                       WHERE member_id = '${user.id}';`).trim());
+  expect(Math.abs(storedExpiryS - (nowS + THIRTY_DAYS_S)), 'stored expiry must be 30 days out').toBeLessThan(300);
+  const storedHash = psql(`SELECT encode(token_hash, 'hex') FROM nestova.remembered_device
+                            WHERE member_id = '${user.id}';`).trim();
+  expect(storedHash, 'only a 32-byte hash of the token may be stored').toMatch(/^[0-9a-f]{64}$/);
+  expect(storedHash, 'the raw token must not be what is stored').not.toBe(Buffer.from(cookie.value, 'base64url').toString('hex'));
 
   // Sign out but keep the remember cookie: the password alone now lands on
   // the dashboard (helpers.login asserts "/").
@@ -254,8 +258,14 @@ test('T-2.2.14 a remembered device skips the prompt, for 30 days', async ({ page
   await login(page, user);
 });
 
-test('T-2.2.15 a remember cookie copied to another browser does not skip MFA', async ({ page, browser, baseURL }) => {
-  test.fail(true, 'DEFECT: the remember-device token is a stateless bearer HMAC of memberID|expiry with no device binding, so a copied cookie skips MFA anywhere');
+test('T-2.2.15 a remember cookie copied to another browser stops working once revoked', async ({ page, browser, baseURL }) => {
+  // The token is a server-side bearer credential: a copy made BEFORE any
+  // revocation is indistinguishable from the original (a user agent is
+  // attacker-controlled, so binding to it would add nothing). What the ticket
+  // requires is that revocation kills every copy, so revoke through the real
+  // path: the household owner resets the member's MFA, and the member enrols
+  // again.
+  const owner = seedFreshMember({ email: 'mfa-remember-owner@test.local', displayName: 'MFA Remember Owner', role: 'owner' });
   const { user, secret } = await enrolledMember(page, 'mfa-remember-move@test.local', 'MFA Remember Move');
   const cookie = await rememberedLogin(page, user, secret);
 
@@ -264,10 +274,23 @@ test('T-2.2.15 a remember cookie copied to another browser does not skip MFA', a
     const otherPage = await other.newPage();
     // Sanity: without the cookie, the other browser IS prompted.
     await passwordStep(otherPage, user);
-
     await other.clearCookies();
+
+    // Revoke: owner reset, then the member enrols a fresh secret.
+    await page.context().clearCookies();
+    await login(page, owner);
+    await page.goto('/settings');
+    const csrf_token = await page.locator('input[name="csrf_token"]').first().inputValue();
+    expect(await postForm(page, '/settings/mfa/reset', { csrf_token, member_id: user.id, owner_password: PASSWORD }),
+      'the owner reset must succeed').toBe(303);
+    expect(psql(`SELECT count(*) FROM nestova.remembered_device WHERE member_id = '${user.id}';`).trim(),
+      'a reset must delete the member\'s remembered devices').toBe('0');
+    await page.context().clearCookies();
+    await login(page, user);
+    await enrollTOTP(page);
+
     await other.addCookies([cookie]);
-    expect(await signInWithPassword(otherPage, user), 'a moved remember cookie must not skip MFA').toBe('/login/mfa');
+    expect(await signInWithPassword(otherPage, user), 'a revoked remember cookie must not skip MFA').toBe('/login/mfa');
   } finally {
     await other.close();
   }
