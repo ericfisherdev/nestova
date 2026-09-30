@@ -212,9 +212,7 @@ func TestLayout_RendersHiddenNetworkAlert(t *testing.T) {
 	out := renderString(t, components.Layout(components.ShellProps{}, nil, templ.Raw("")))
 
 	for _, want := range []string{
-		`id="network-alert"`,
-		`role="alert"`,
-		`hidden`,
+		`id="network-alert" role="alert" hidden `, // md:hidden elsewhere must not satisfy this
 		`Nothing was saved`,
 		`src="/static/js/network-alert.js" defer`,
 	} {

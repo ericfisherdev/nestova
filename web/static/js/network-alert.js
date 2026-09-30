@@ -6,7 +6,8 @@
 //
 // The alert lives in the member shell (web/components/layout.templ) as a
 // hidden role="alert" element. Showing it is what makes assistive tech
-// announce it. It clears when the browser reports the connection is back.
+// announce it. It clears when the browser reports the connection is back or the next
+// request succeeds.
 (function () {
   const alertEl = document.getElementById('network-alert');
   if (!alertEl) return;
@@ -21,6 +22,12 @@
   document.body.addEventListener('htmx:sendError', show);
   document.body.addEventListener('htmx:responseError', () => {
     if (!navigator.onLine) show();
+  });
+  // A later request that completes proves the server is reachable again. This
+  // also covers send errors that never flipped navigator.onLine (server
+  // restarting, proxy reset), where no 'online' event would ever fire.
+  document.body.addEventListener('htmx:afterRequest', (evt) => {
+    if (evt.detail.successful) hide();
   });
   window.addEventListener('online', hide);
 })();
