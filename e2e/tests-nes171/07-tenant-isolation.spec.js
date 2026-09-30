@@ -111,9 +111,15 @@ test.describe('§0.2 tenant isolation', () => {
     ).trim();
     expect(pins, "no PIN row may exist for A's member").toBe('0');
 
-    // Sanity guard: the same payload is accepted for B's own member.
-    expect(await postForm(page, `/settings/members/${b.ownerId}/pin`, { csrf_token, pin: '9999' }),
-      "sanity: B sets a PIN on B's own member").toBe(200);
+    // Sanity guard: the same payload is accepted for B's own member. B's owner
+    // is a shared persona and 05-settings T-3.3.6 asserts it holds no PIN, so
+    // the row is removed again even if the assertion fails.
+    try {
+      expect(await postForm(page, `/settings/members/${b.ownerId}/pin`, { csrf_token, pin: '9999' }),
+        "sanity: B sets a PIN on B's own member").toBe(200);
+    } finally {
+      psql(`DELETE FROM identity.member_pin WHERE member_id = '${b.ownerId}';`);
+    }
   });
 
   test('T-0.2.11 a foreign id is indistinguishable from a missing one', async ({ page }) => {
