@@ -291,7 +291,6 @@ test.describe('§14 the worker in use', () => {
   });
 
   test('T-14.2.4 after logout, Back does not bring the previous member\'s page back', async ({ page }) => {
-    test.fail(true, 'DEFECT: authenticated HTML has no Cache-Control: no-store, so Back after logout re-renders the member page from the HTTP cache');
     const first = seedChild('Leaky', 4242);
     await login(page, first);
     await page.goto('/rewards');
