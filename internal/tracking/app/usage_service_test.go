@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,23 @@ func TestRegisterItemRejectsEmptyName(t *testing.T) {
 	}
 	if len(items.created) != 0 {
 		t.Errorf("RegisterItem(blank name) must not persist, got %d Create calls", len(items.created))
+	}
+}
+
+func TestRegisterItemRejectsOverLengthName(t *testing.T) {
+	items := &recordingTrackedItemRepo{}
+	svc := mustUsageService(t, items, &recordingEventRepo{}, &fakePredictionRepo{})
+	hh := household.NewHouseholdID()
+
+	if _, err := svc.RegisterItem(context.Background(), hh, strings.Repeat("家", domain.MaxTrackedItemNameLength), "", 0); err != nil {
+		t.Fatalf("RegisterItem(name at the cap) = %v, want nil", err)
+	}
+	_, err := svc.RegisterItem(context.Background(), hh, strings.Repeat("a", domain.MaxTrackedItemNameLength+1), "", 0)
+	if !errors.Is(err, domain.ErrTrackedItemNameTooLong) {
+		t.Fatalf("RegisterItem(name over the cap) = %v, want ErrTrackedItemNameTooLong", err)
+	}
+	if len(items.created) != 1 {
+		t.Errorf("Create calls = %d, want only the at-cap item persisted", len(items.created))
 	}
 }
 

@@ -47,7 +47,7 @@ type ShoppingListItem struct {
 // MaxShoppingListItemNameLength bounds a free-text shopping-list item name,
 // counted in runes rather than bytes (see the tasks domain's MaxTitleLength).
 // The shopping_list_item.name CHECK constraint in
-// 00044_text_field_length_caps.sql carries the same number.
+// 00045_text_field_length_caps.sql carries the same number.
 const MaxShoppingListItemNameLength = 200
 
 // Validate reports whether the item is well-formed: identified by exactly one of

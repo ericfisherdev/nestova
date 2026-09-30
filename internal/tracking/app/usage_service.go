@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/tracking/domain"
@@ -50,7 +51,8 @@ func NewUsageService(
 }
 
 // RegisterItem creates a new active tracked item. It trims and rejects an empty
-// name, and stamps Active true so the item is immediately listed and eligible
+// name, refuses one over domain.MaxTrackedItemNameLength runes with
+// domain.ErrTrackedItemNameTooLong, and stamps Active true so the item is immediately listed and eligible
 // for restock prediction. restockLeadDays is how many days before predicted
 // depletion the item should surface on the shopping list.
 func (s *UsageService) RegisterItem(
@@ -62,6 +64,9 @@ func (s *UsageService) RegisterItem(
 	trimmedName := strings.TrimSpace(name)
 	if trimmedName == "" {
 		return nil, fmt.Errorf("register item: name must not be empty")
+	}
+	if utf8.RuneCountInString(trimmedName) > domain.MaxTrackedItemNameLength {
+		return nil, domain.ErrTrackedItemNameTooLong
 	}
 	if restockLeadDays < 0 {
 		return nil, fmt.Errorf("register item: restock lead days must not be negative")

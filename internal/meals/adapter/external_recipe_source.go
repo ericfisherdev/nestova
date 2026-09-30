@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sync/singleflight"
 
@@ -269,13 +270,24 @@ func (s *ExternalRecipeSource) queryProvider(ctx context.Context, ingredients []
 	return results, nil
 }
 
+// clampRunes truncates s to at most n runes, trimming any whitespace the cut
+// leaves at the end. Provider text is not user input: it is shortened to fit the
+// domain's length bounds rather than refused, so one long title cannot fail a
+// whole search and a long ingredient name is not silently dropped.
+func clampRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return strings.TrimSpace(string([]rune(s)[:n]))
+}
+
 // cacheAndMap caches the provider result as an external recipe and maps it to a
 // RecipeMatch.
 func (s *ExternalRecipeSource) cacheAndMap(ctx context.Context, result providerRecipe) (domain.RecipeMatch, error) {
 	ref := "spoonacular-" + strconv.Itoa(result.ID)
 	recipe := &domain.Recipe{
 		ID:          domain.NewRecipeID(),
-		Title:       result.Title,
+		Title:       clampRunes(strings.TrimSpace(result.Title), domain.MaxRecipeTitleLength),
 		Source:      domain.SourceExternal,
 		ExternalRef: &ref,
 		// find-by-ingredients omits the yield; 1 keeps the row valid and is refined
@@ -296,7 +308,7 @@ func (s *ExternalRecipeSource) cacheAndMap(ctx context.Context, result providerR
 
 	missing := make([]tracking.IngredientID, 0, missed)
 	for _, ingredient := range result.MissedIngredients {
-		normalized, err := s.ensurer.EnsureIngredient(ctx, ingredient.Name)
+		normalized, err := s.ensurer.EnsureIngredient(ctx, clampRunes(ingredient.Name, tracking.MaxIngredientNameLength))
 		if err != nil {
 			// Skip only an invalid provider value (e.g. a blank name); a real failure
 			// (a catalogue/DB error) must surface rather than silently dropping a

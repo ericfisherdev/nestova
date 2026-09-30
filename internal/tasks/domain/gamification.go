@@ -152,7 +152,7 @@ type PointEntry struct {
 
 // Length bounds for a reward's free-text fields, counted in runes rather than
 // bytes (see MaxTitleLength). The reward.name and reward.description CHECK
-// constraints in 00044_text_field_length_caps.sql carry the same numbers, so a
+// constraints in 00045_text_field_length_caps.sql carry the same numbers, so a
 // caller that bypasses ValidateRewardText still cannot write an unbounded value.
 const (
 	MaxRewardNameLength        = 200

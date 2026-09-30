@@ -28,7 +28,7 @@ var (
 
 // MaxRecipeTitleLength bounds a recipe's title, counted in runes rather than
 // bytes (see the tasks domain's MaxTitleLength). The recipe.title CHECK
-// constraint in 00044_text_field_length_caps.sql carries the same number.
+// constraint in 00045_text_field_length_caps.sql carries the same number.
 const MaxRecipeTitleLength = 200
 
 // RecipeIngredient is one normalized ingredient line of a recipe, keyed to the

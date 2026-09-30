@@ -1038,6 +1038,23 @@ func TestWebAuthnService_Rename_OverLengthNickname_Refused(t *testing.T) {
 	}
 }
 
+func TestWebAuthnService_FinishRegistration_OverLengthNickname_RefusedBeforeCeremony(t *testing.T) {
+	t.Parallel()
+	svc, repo, _, _ := newWebAuthnServiceFixture(t)
+	memberID := household.NewMemberID()
+
+	// A zero session and nil response would fail verification, so getting
+	// ErrNicknameTooLong proves the nickname is checked before the ceremony.
+	err := svc.FinishRegistration(context.Background(), memberID, household.NewHouseholdID(), "Alex",
+		strings.Repeat("n", authdomain.MaxNicknameLength+1), webauthn.SessionData{}, nil)
+	if !errors.Is(err, authdomain.ErrNicknameTooLong) {
+		t.Fatalf("FinishRegistration = %v, want ErrNicknameTooLong", err)
+	}
+	if creds, _ := repo.ListByMember(context.Background(), memberID); len(creds) != 0 {
+		t.Errorf("stored %d credentials, want 0", len(creds))
+	}
+}
+
 func TestWebAuthnService_Rename_NotFound(t *testing.T) {
 	t.Parallel()
 	svc, _, _, _ := newWebAuthnServiceFixture(t)

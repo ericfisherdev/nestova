@@ -11,6 +11,17 @@ import (
 // ErrTrackedItemNotFound is returned when a tracked item does not exist.
 var ErrTrackedItemNotFound = errors.New("tracking: tracked item not found")
 
+// ErrTrackedItemNameTooLong is returned by UsageService.RegisterItem when the
+// name exceeds MaxTrackedItemNameLength runes (NES-194). The restock scheduler
+// resolves a tracked item's name to a catalogue ingredient, so the bound must
+// not exceed MaxIngredientNameLength.
+var ErrTrackedItemNameTooLong = errors.New("tracking: tracked item name is too long")
+
+// MaxTrackedItemNameLength bounds a tracked item's name, counted in runes. The
+// tracked_item.name CHECK in 00045_text_field_length_caps.sql carries the same
+// number.
+const MaxTrackedItemNameLength = MaxIngredientNameLength
+
 // TrackedItem is a household consumable whose usage is tracked to predict when
 // it needs restocking. RestockLeadDays is how many days before predicted
 // depletion the item should appear on the shopping list. Inactive items are
