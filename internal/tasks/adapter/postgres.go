@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -1779,12 +1780,18 @@ func (r *TaskInstanceRepository) SweepExpiredClaims(ctx context.Context, asOf ti
 		return nil, fmt.Errorf("sweep expired claims: fetch task meta: %w", err)
 	}
 
+	// Penalty locks are taken per (household, member); a stable order keeps two
+	// concurrent sweeps that share a claimant from deadlocking on each other.
+	sort.SliceStable(reverted, func(i, j int) bool {
+		return reverted[i].claimedBy.String() < reverted[j].claimedBy.String()
+	})
+
 	claims := make([]domain.ExpiredClaim, 0, len(reverted))
 	for _, row := range reverted {
 		m := meta[row.recurringTaskID]
-		penalty := domain.ClaimExpiryPenalty(m.points)
 
-		if err := insertClaimExpiryPenalty(ctx, tx, row, penalty); err != nil {
+		penalty, err := insertClaimExpiryPenalty(ctx, tx, row, domain.ClaimExpiryPenalty(m.points))
+		if err != nil {
 			return nil, fmt.Errorf("sweep expired claims: insert penalty: %w", err)
 		}
 
@@ -1952,13 +1959,37 @@ func fetchClaimTaskMeta(
 	return result, nil
 }
 
-// insertClaimExpiryPenalty appends a negative point_ledger entry of
-// -penalty for row.claimedBy, keyed for idempotency by
+// insertClaimExpiryPenalty appends a negative point_ledger entry for
+// row.claimedBy and returns the magnitude actually applied: the smaller of
+// wanted and the member's balance, so a penalty never takes the balance below
+// zero (NES-205). No ledger row is written when the balance is already zero.
+//
+// The balance read happens under [lockMemberBalance], the same advisory lock
+// RedeemWithDebit holds, so a racing redemption cannot spend the points this
+// penalty is about to deduct. The entry is keyed for idempotency by
 // point_ledger_claim_expiry_uniq (source_id, claim_started_at) WHERE
 // source_type = 'claim_expiry'. A conflict (the same claim window already
 // penalized) is silently ignored — belt-and-suspenders alongside the SKIP
 // LOCKED guard in revertExpiredClaims.
-func insertClaimExpiryPenalty(ctx context.Context, tx pgx.Tx, row expiredClaimRow, penalty int) error {
+func insertClaimExpiryPenalty(ctx context.Context, tx pgx.Tx, row expiredClaimRow, wanted int) (int, error) {
+	if err := lockMemberBalance(ctx, tx, row.householdID, row.claimedBy); err != nil {
+		return 0, fmt.Errorf("insert claim expiry penalty: %w", err)
+	}
+
+	const balQ = `
+		SELECT COALESCE(SUM(points), 0)
+		  FROM point_ledger
+		 WHERE household_id = $1
+		   AND member_id    = $2`
+	var balance int
+	if err := tx.QueryRow(ctx, balQ, row.householdID.String(), row.claimedBy.String()).Scan(&balance); err != nil {
+		return 0, fmt.Errorf("insert claim expiry penalty: read balance: %w", err)
+	}
+	penalty := min(wanted, max(balance, 0))
+	if penalty == 0 {
+		return 0, nil
+	}
+
 	const q = `
 		INSERT INTO point_ledger
 			(id, household_id, member_id, source_type, source_id, points, claim_started_at, created_at)
@@ -1975,9 +2006,9 @@ func insertClaimExpiryPenalty(ctx context.Context, tx pgx.Tx, row expiredClaimRo
 		row.claimedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("insert claim expiry penalty: %w", err)
+		return 0, fmt.Errorf("insert claim expiry penalty: %w", err)
 	}
-	return nil
+	return penalty, nil
 }
 
 // reminderRow is the intermediate representation for a single row returned by

@@ -486,6 +486,42 @@ func TestEmitClaimExpiry_EnqueuesOneNotificationPerClaim(t *testing.T) {
 	}
 }
 
+// TestEmitClaimExpiry_BodyReflectsAppliedPenalty verifies the notification
+// quotes the penalty actually applied and says nothing of a loss when the
+// claimant had no points to lose (NES-205).
+func TestEmitClaimExpiry_BodyReflectsAppliedPenalty(t *testing.T) {
+	tests := []struct {
+		name    string
+		penalty int
+		want    string
+	}{
+		{name: "penalty applied", penalty: 3, want: "Your claim on Mow the lawn expired, -3 points."},
+		{name: "no points to lose", penalty: 0, want: "Your claim on Mow the lawn expired."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enqueuer := newFakeEnqueuer()
+			instRepo := &fakeInstanceRepoWithClaimExpiry{
+				fakeTaskInstanceRepo: newFakeTaskInstanceRepo(),
+				claims:               []domain.ExpiredClaim{newExpiredClaim(tc.penalty)},
+			}
+			r, err := app.NewReminders(instRepo, enqueuer, discardLogger())
+			if err != nil {
+				t.Fatalf("NewReminders: %v", err)
+			}
+			if err := r.EmitClaimExpiry(context.Background(), time.Now()); err != nil {
+				t.Fatalf("EmitClaimExpiry: %v", err)
+			}
+			if len(enqueuer.notifications) != 1 {
+				t.Fatalf("enqueued %d notifications, want 1", len(enqueuer.notifications))
+			}
+			if got := enqueuer.notifications[0].Body; got != tc.want {
+				t.Errorf("Body = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEmitClaimExpiry_SweepError_ReturnsError verifies that an error from
 // SweepExpiredClaims is propagated and no notifications are enqueued.
 func TestEmitClaimExpiry_SweepError_ReturnsError(t *testing.T) {

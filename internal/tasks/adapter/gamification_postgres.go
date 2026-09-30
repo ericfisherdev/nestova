@@ -80,6 +80,28 @@ func (r *PointLedgerPostgresRepository) Append(ctx context.Context, entry *domai
 	return nil
 }
 
+// lockMemberBalance takes a transaction-scoped advisory lock serializing every
+// balance-reducing ledger write for one (household, member) pair: redemption
+// debits and claim-expiry penalties. Holders read the balance after acquiring
+// the lock, so the read cannot go stale before their write commits.
+//
+// pg_advisory_xact_lock takes a single int8 key; hashtext produces a 32-bit
+// hash of the string, which fits in int8 safely. Concatenating both IDs with a
+// separator prevents collisions between a householdID that is a prefix of a
+// memberID.
+func lockMemberBalance(
+	ctx context.Context,
+	tx pgx.Tx,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+) error {
+	const q = `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2))`
+	if _, err := tx.Exec(ctx, q, householdID.String(), memberID.String()); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+	return nil
+}
+
 // Balance returns the sum of all points for the member within the household.
 // Returns 0, nil when no entries exist.
 func (r *PointLedgerPostgresRepository) Balance(
@@ -623,16 +645,8 @@ func (r *RewardPostgresRepository) RedeemWithDebit(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Step 2: serialize concurrent redeems for this (household, member) pair.
-	// pg_advisory_xact_lock takes a single int8 key; hashtext produces a 32-bit
-	// hash of the string, which fits in int8 safely. Concatenating both IDs with a
-	// separator prevents collisions between a householdID that is a prefix of a
-	// memberID.
-	const lockQ = `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2))`
-	if _, err := tx.Exec(ctx, lockQ,
-		redemption.HouseholdID.String(),
-		redemption.MemberID.String(),
-	); err != nil {
-		return 0, fmt.Errorf("redeem with debit: advisory lock: %w", err)
+	if err := lockMemberBalance(ctx, tx, redemption.HouseholdID, redemption.MemberID); err != nil {
+		return 0, fmt.Errorf("redeem with debit: %w", err)
 	}
 
 	// Step 3: lock the reward row and read the fields this transaction must

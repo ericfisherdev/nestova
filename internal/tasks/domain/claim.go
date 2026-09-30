@@ -28,9 +28,10 @@ const SourceTypeClaimExpiry = "claim_expiry"
 // task worth points points expires without completion: half of points,
 // rounded down, with a floor of 1. The floor applies even to a zero- or
 // one-point task, since the risk of claiming and abandoning a chore is not
-// proportional to its award value. Penalties are never clamped by a member's
-// balance — callers must apply the full, unconditional penalty and let
-// balances go negative.
+// proportional to its award value. This is the formula only: a member's
+// balance never goes below zero (NES-205), so the sweep applies the smaller of
+// this value and the claimant's current balance, and writes no ledger entry
+// when the balance is already zero.
 func ClaimExpiryPenalty(points int) int {
 	if half := points / 2; half > 1 {
 		return half
@@ -81,7 +82,8 @@ type ExpiredClaim struct {
 	// Title is the recurring_task.title, used in the notification body.
 	Title string
 	// PenaltyPoints is the positive point amount deducted from ClaimedBy's
-	// balance (see [ClaimExpiryPenalty]). The point_ledger entry itself is
+	// balance: [ClaimExpiryPenalty] capped at that balance, so zero when the
+	// claimant had no points to lose. The point_ledger entry itself is
 	// negative; this field is the human-readable magnitude for notification
 	// text.
 	PenaltyPoints int

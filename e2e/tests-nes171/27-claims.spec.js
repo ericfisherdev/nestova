@@ -226,7 +226,6 @@ test.describe.serial('§5.3/§5.1 after a scheduler tick (opt-in)', () => {
   });
 
   test('T-5.3.6 a lapse penalty never takes a balance below zero', async () => {
-    test.fail(true, 'DEFECT: NES-205 — the claim-expiry penalty is applied in full and takes a zero balance to -1');
     // Product decision 2026-09-29: balances have a floor of zero. The penalty
     // is capped at the member's balance, so a member with nothing to lose gets
     // no penalty row at all.
