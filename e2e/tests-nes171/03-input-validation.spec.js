@@ -298,7 +298,6 @@ test.describe('§0.5 every text field', () => {
   });
 
   test('T-0.5.10 a null byte is refused or stripped, never a 500', async ({ page }) => {
-    test.fail(true, 'DEFECT: a NUL byte in any text field reaches Postgres and returns 500 (SQLSTATE 22021)');
     const csrf_token = await fuzz.csrfFor(page);
     const failures = await sweep(fuzz.TEXT_FIELDS, async (field) => {
       const marker = fuzz.uniqueMarker('nul');
