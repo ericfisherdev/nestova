@@ -70,16 +70,6 @@ test.describe('§0.5 text input safeguards', () => {
     expect(status, 'an unbounded title must not be accepted').toBe(422);
   });
 
-  test('T-0.5.5 script tags in a title are escaped, never executed', async ({ page }) => {
-    const csrf_token = await tokenFrom(page, '/tasks/new');
-    const title = '<script>window.__xss = 1</script>';
-    await postForm(page, '/tasks', { csrf_token, ...validTask({ title }) });
-
-    await page.goto('/tasks');
-    const executed = await page.evaluate(() => window.__xss === 1);
-    expect(executed, 'stored script must not execute on render').toBe(false);
-  });
-
   test('T-0.5.8 unicode in a title round-trips intact', async ({ page }) => {
     const csrf_token = await tokenFrom(page, '/tasks/new');
     const title = 'Ｕnicode 家事 مهمة 👨‍👩‍👧‍👦';
@@ -167,8 +157,8 @@ function describeRefusal(res) {
   return `${res.status} ${res.body.replace(/\s+/g, ' ').slice(0, 100)}`;
 }
 
-// sanityAccepts proves the route takes a fully valid value for field in this
-// test, so a refusal elsewhere in the test is about the value under test.
+// sanityAccepts proves the route takes a fully valid value for field. It backs
+// the unmarked "sanity:" test, so a broken fill cannot hide inside a [!] test.
 async function sanityAccepts(page, csrf_token, field) {
   const marker = fuzz.uniqueMarker('sane');
   const res = await fuzz.createWith(page, csrf_token, field, `Valid ${marker}`, marker);
@@ -197,6 +187,35 @@ test.describe('§0.5 every text field', () => {
       return null;
     });
     expect(failures, 'fields that stored surrounding whitespace').toEqual([]);
+  });
+
+  test('sanity: every text field accepts a valid value', async ({ page }) => {
+    const csrf_token = await fuzz.csrfFor(page);
+    const failures = await sweep(fuzz.TEXT_FIELDS, (field) => sanityAccepts(page, csrf_token, field));
+    expect(failures, 'fields that refused a valid value, which would mask the [!] tests below').toEqual([]);
+  });
+
+  test('T-0.5.5 script tags in a text field are escaped, never executed', async ({ page }) => {
+    const csrf_token = await fuzz.csrfFor(page);
+    const failures = await sweep(fuzz.renderedFields(), async (field) => {
+      const marker = fuzz.uniqueMarker('xss');
+      const value = `<script>window.__nes171xss=1</script>${marker}`;
+      const res = await fuzz.createWith(page, csrf_token, field, value, marker);
+      if (res.status !== field.accepted) {
+        fuzz.cleanupField(field, marker);
+        return `refused the payload, so its rendering was never exercised: ${describeRefusal(res)}`;
+      }
+      const shown = fuzz.expectedStored(field, value);
+      const problems = [];
+      for (const view of field.views) {
+        await page.goto(view);
+        if (!(await page.evaluate(fuzz.pageShows, shown))) problems.push(`${view} does not show the value as text, so nothing was checked`);
+        if (await page.evaluate(() => window.__nes171xss === 1)) problems.push(`${view} executed the stored script`);
+      }
+      fuzz.cleanupField(field, marker);
+      return problems;
+    });
+    expect(failures, 'fields whose stored script executed or was not rendered').toEqual([]);
   });
 
   test('T-0.5.6 attribute-context injection is escaped, never parsed into an attribute', async ({ page }) => {
@@ -282,8 +301,6 @@ test.describe('§0.5 every text field', () => {
     test.fail(true, 'DEFECT: a NUL byte in any text field reaches Postgres and returns 500 (SQLSTATE 22021)');
     const csrf_token = await fuzz.csrfFor(page);
     const failures = await sweep(fuzz.TEXT_FIELDS, async (field) => {
-      const sane = await sanityAccepts(page, csrf_token, field);
-      if (sane) return sane;
       const marker = fuzz.uniqueMarker('nul');
       const res = await fuzz.createWith(page, csrf_token, field, `Nul\u0000byte ${marker}`, marker);
       fuzz.cleanupField(field, marker);
@@ -374,8 +391,6 @@ test.describe('§0.5 every text field', () => {
     test.fail(true, 'DEFECT (A.1): only the task title (NES-172) caps its length; every other text field stores 10,000 characters');
     const csrf_token = await fuzz.csrfFor(page);
     const failures = await sweep(fuzz.TEXT_FIELDS, async (field) => {
-      const sane = await sanityAccepts(page, csrf_token, field);
-      if (sane) return sane;
       const marker = fuzz.uniqueMarker('huge');
       const huge = marker + 'a'.repeat(10_000 - marker.length);
       const res = await fuzz.createWith(page, csrf_token, field, huge, marker);
@@ -524,6 +539,11 @@ test.describe('§0.6 every numeric field', () => {
     await login(page, PERSONAS.owner);
   });
 
+  test('sanity: every numeric field accepts a valid number', async ({ page }) => {
+    const csrf_token = await fuzz.csrfFor(page);
+    expect(await numericSanity(page, csrf_token, fields), 'fields that refused a valid number, which would mask the [!] tests below').toEqual([]);
+  });
+
   test('T-0.6.5 a fraction where an integer is expected is refused, consistently', async ({ page }) => {
     const csrf_token = await fuzz.csrfFor(page);
     const integers = fields.filter((f) => f.kind === 'integer');
@@ -538,7 +558,6 @@ test.describe('§0.6 every numeric field', () => {
   test('T-0.6.6 [!] scientific notation is refused', async ({ page }) => {
     test.fail(true, 'DEFECT: subscription cost and pantry quantity parse with ParseFloat and accept 1e10');
     const csrf_token = await fuzz.csrfFor(page);
-    expect(await numericSanity(page, csrf_token, fields), 'fields that refused a valid number').toEqual([]);
 
     const failures = await sweep(fields, (field) => expectRefused(page, csrf_token, field, '1e10'));
     expect(failures, 'fields that accepted 1e10').toEqual([]);
@@ -592,7 +611,6 @@ test.describe('§0.6 every numeric field', () => {
     test.fail(true, 'DEFECT: 9.999 is silently rounded to $10.00, and a bad currency returns the raw Go error "household: invalid money: ..."');
     const csrf_token = await fuzz.csrfFor(page);
     const cost = fields.find((f) => f.name === 'subscription cost');
-    expect(await numericSanity(page, csrf_token, [cost]), 'a valid cost must be accepted').toEqual([]);
 
     const failures = [];
     const subCent = await fuzz.submitNumber(page, csrf_token, cost, '9.999');
@@ -634,7 +652,6 @@ test.describe('§0.6 every numeric field', () => {
     const int4Fields = ['task points', 'task lead time', 'reward cost', 'reward quantity'].map(byName);
     const cost = byName('subscription cost');
     const pantry = byName('pantry quantity');
-    expect(await numericSanity(page, csrf_token, [...int4Fields, cost, pantry]), 'fields that refused a valid number').toEqual([]);
 
     const failures = await sweep(int4Fields, async (field) => {
       const problems = [];
