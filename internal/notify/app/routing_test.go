@@ -290,7 +290,7 @@ func TestRoutingEnqueuer_SMSPreference_InsideQuietHours_ShiftsScheduledFor(t *te
 	quietHours := &fakeQuietHoursReader{quietHours: qh}
 	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
 
-	scheduledFor := time.Date(2026, time.July, 19, 23, 0, 0, 0, time.UTC) // inside 22:00-07:00
+	scheduledFor := time.Date(2026, time.July, 19, 23, 0, 0, 0, time.Local) // inside 22:00-07:00
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, scheduledFor)
 	if err := e.Enqueue(context.Background(), n); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -307,6 +307,32 @@ func TestRoutingEnqueuer_SMSPreference_InsideQuietHours_ShiftsScheduledFor(t *te
 	}
 }
 
+func TestRoutingEnqueuer_SMSPreference_UTCScheduledForInLocalWindow_ShiftsToLocalEnd(t *testing.T) {
+	outbox := &fakeOutbox{}
+	memberID := household.NewMemberID()
+	prefs := &fakePreferenceRepo{prefs: map[string]domain.Channel{
+		prefKey(memberID, domain.EventTypeClaimExpiring): domain.ChannelSMS,
+	}}
+	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
+
+	start, end := 22*time.Hour, 7*time.Hour
+	qh := &domain.QuietHours{Start: &start, End: &end}
+	quietHours := &fakeQuietHoursReader{quietHours: qh}
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
+
+	// 23:00 local, expressed in UTC: must be held even though its UTC
+	// clock reading may sit outside the window.
+	local := time.Date(2026, time.July, 19, 23, 0, 0, 0, time.Local)
+	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, local.UTC())
+	if err := e.Enqueue(context.Background(), n); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	want := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.Local)
+	if !n.ScheduledFor.Equal(want) {
+		t.Errorf("ScheduledFor = %v, want local window end %v", n.ScheduledFor, want)
+	}
+}
+
 func TestRoutingEnqueuer_SMSPreference_OutsideQuietHours_NoShift(t *testing.T) {
 	outbox := &fakeOutbox{}
 	memberID := household.NewMemberID()
@@ -320,7 +346,7 @@ func TestRoutingEnqueuer_SMSPreference_OutsideQuietHours_NoShift(t *testing.T) {
 	quietHours := &fakeQuietHoursReader{quietHours: qh}
 	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
 
-	scheduledFor := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC) // midday, outside 22:00-07:00
+	scheduledFor := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.Local) // midday, outside 22:00-07:00
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, scheduledFor)
 	if err := e.Enqueue(context.Background(), n); err != nil {
 		t.Fatalf("Enqueue: %v", err)

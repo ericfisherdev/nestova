@@ -463,7 +463,6 @@ test.describe('§3.2 quiet-hours behaviour (senders wired)', () => {
 
   // Extra case, not a checklist item: found while writing T-3.2.3.
   test('quiet hours use local time for reward-redemption SMS as they do for trades', async ({ page, browser }) => {
-    test.fail(true, 'DEFECT: RewardService.Redeem stamps the parent notification with time.Now().UTC(), so RoutingEnqueuer tests quiet hours against the UTC clock instead of local time');
     test.skip(Math.abs(new Date().getTimezoneOffset()) < 60, 'only observable when local time is at least an hour off UTC');
     const now = minutesNow();
     test.skip(now < 30 || now > 1409, 'the probe window needs half an hour of headroom inside the local day');
