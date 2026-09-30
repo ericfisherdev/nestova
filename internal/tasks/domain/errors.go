@@ -101,6 +101,12 @@ var (
 	// propose time.
 	ErrInstanceNotTradeable = errors.New("tasks: instance is not tradeable")
 
+	// ErrTradeWindowClosed is returned by ChoreTradeRepository.Propose
+	// (NES-198) when the earlier of the two instances' due days has already
+	// ended in local time, so the trade would expire the moment it was
+	// proposed.
+	ErrTradeWindowClosed = errors.New("tasks: trade window has closed for this chore")
+
 	// ErrNotYourChore is returned by ChoreTradeRepository.Propose (NES-121)
 	// when the offered instance is not assigned to the proposer, or the
 	// requested instance is not assigned to the responder — a trade can only

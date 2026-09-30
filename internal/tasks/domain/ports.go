@@ -560,6 +560,8 @@ type ProofPhotoIDs struct {
 //   - Propose returns [ErrInstanceNotTradeable] when either instance fails
 //     [IsInstanceTradeable], or when either instance already carries a live
 //     trade proposal.
+//   - Propose returns [ErrTradeWindowClosed] when the trade's expiry (see
+//     [TradeExpiry]) is not after the current time.
 //   - Propose returns [ErrNotYourChore] when the offered instance is not
 //     assigned to trade.ProposerID, or the requested instance is not
 //     assigned to trade.ResponderID.

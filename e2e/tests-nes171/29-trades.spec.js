@@ -8,11 +8,10 @@
 // routes. The shared personas have no PIN enrolled; the one test that needs
 // the NES-166 PIN gate seeds its own members.
 //
-// Trade chores are due TRADE_DUE_IN_DAYS out, not today. A trade expires at
-// the earlier chore's due_on, stored as that date's 00:00 UTC, so a trade on
-// a chore due today is already expired when it is proposed and can never be
-// accepted (the T-5.5.3 defect below). Seeding two days out keeps the other
-// tests about what they test rather than tripping over that.
+// Trade chores are due TRADE_DUE_IN_DAYS out, not today, so the other tests
+// stay about what they test rather than the day-boundary behaviour that
+// T-5.5.3 covers. A trade expires at the end of the earlier chore's due day in
+// local time (NES-198).
 const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
 const { psql, seedMemberInA } = require('../tests/db');
@@ -94,11 +93,8 @@ async function proposeThenAcceptFromDashboard(browser, owner, offered, requested
 
 test.describe('§5.5 trades', () => {
   test('T-5.5.3 accepting a trade on chores due today swaps them', async ({ browser }) => {
-    test.fail(true, 'DEFECT: a trade on a chore due today expires at that date 00:00 UTC, before it is even proposed, so Accept always returns 409');
-    // /tasks offers the Trade link on today's chores and Propose accepts the
-    // proposal, but chore_trade.expires_at is the earlier due_on at 00:00 UTC —
-    // already past — so Accept's `expires_at > now` guard refuses it with
-    // ErrTradeNotPending ("trade is no longer pending") every time.
+    // A trade expires at the end of the earlier chore's due day in local time
+    // (NES-198), so one proposed on chores due today is acceptable until then.
     const m = ids();
     const offered = seedInstance({ assignee: m.owner, titlePrefix: 'Trade today' });
     const requested = seedInstance({ assignee: m.adult, titlePrefix: 'Trade today req' });
@@ -117,7 +113,7 @@ test.describe('§5.5 trades', () => {
   });
 
   test('trade accept control: chores due in two days swap on accept from the dashboard', async ({ browser }) => {
-    // The T-5.5.3 flow with the expiry defect sidestepped: proves the propose
+    // The T-5.5.3 flow on chores due later: proves the propose
     // picker, the dashboard card and the swap itself all work.
     const m = ids();
     const offered = seedTradeChore(m.owner, 'Trade offered');

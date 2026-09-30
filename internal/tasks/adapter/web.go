@@ -1114,7 +1114,7 @@ func (h *WebHandlers) instanceToRow(
 		ClaimExpiresAtISO: claimExpiresAtISO,
 		CSRFToken:         csrfToken,
 		Mine:              inst.AssigneeID != nil && *inst.AssigneeID == viewerID,
-		Tradeable:         domain.IsInstanceTradeable(inst),
+		Tradeable:         domain.IsInstanceTradeableAt(inst, time.Now(), time.Local),
 		RequiresPIN:       actionable && inst.AssigneeID != nil && pinEnrolled[*inst.AssigneeID],
 		PhotoPolicy:       photoPolicy,
 		BeforePhotoRawURL: beforeURL,

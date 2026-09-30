@@ -137,9 +137,10 @@ type ChoreTrade struct {
 	// ResolvedAt is set the moment Status leaves [TradeProposed] (accept,
 	// decline, cancel, or expiry) and nil while the trade is still live.
 	ResolvedAt *time.Time
-	// ExpiresAt is the earlier of the two instances' due dates, computed once
-	// at propose time. The background sweep transitions a still-[TradeProposed]
-	// trade to [TradeExpired] once asOf reaches this instant.
+	// ExpiresAt is the end of the earlier of the two instances' due days in
+	// local time (see [TradeExpiry]), computed once at propose time. The
+	// background sweep transitions a still-[TradeProposed] trade to
+	// [TradeExpired] once asOf reaches this instant.
 	ExpiresAt time.Time
 }
 
@@ -174,6 +175,24 @@ func IsInstanceTradeable(inst *TaskInstance) bool {
 		inst.Kind == KindScheduled &&
 		inst.ClaimedBy == nil &&
 		inst.DueOn != nil
+}
+
+// TradeExpiry returns the instant a trade over a chore due on dueOn stops
+// being acceptable: the first moment after dueOn's calendar day ends in loc
+// (NES-198). A chore due today is therefore tradeable until local midnight,
+// not until 00:00 UTC of its due date. dueOn is a date-only value normalized
+// by [DateOf], so its calendar day is read in UTC and re-anchored to loc.
+func TradeExpiry(dueOn time.Time, loc *time.Location) time.Time {
+	y, m, d := dueOn.UTC().Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+}
+
+// IsInstanceTradeableAt reports whether inst is tradeable per
+// [IsInstanceTradeable] AND its trade window is still open at now, i.e. the
+// [TradeExpiry] of its due date, in loc, is after now. A proposal over an
+// instance failing this would be born expired.
+func IsInstanceTradeableAt(inst *TaskInstance, now time.Time, loc *time.Location) bool {
+	return IsInstanceTradeable(inst) && TradeExpiry(*inst.DueOn, loc).After(now)
 }
 
 // ---------------------------------------------------------------------------

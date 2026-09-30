@@ -42,6 +42,15 @@ func seedThirdMember(t *testing.T, pool *pgxpool.Pool, householdID household.Hou
 
 // proposeTrade builds a domain.ChoreTrade from the given parties/instances and
 // persists it via tradeRepo.Propose, failing the test on error.
+// newTradeRepo builds a TradeRepository whose clock sits at refDate, in UTC, so
+// fixtures dated relative to refDate (all in the past against the wall clock)
+// still have an open trade window (NES-198).
+func newTradeRepo(pool *pgxpool.Pool) *adapter.TradeRepository {
+	return adapter.NewTradeRepository(pool,
+		adapter.WithTradeClock(func() time.Time { return refDate }),
+		adapter.WithTradeLocation(time.UTC))
+}
+
 func proposeTrade(
 	t *testing.T,
 	tradeRepo *adapter.TradeRepository,
@@ -156,13 +165,13 @@ func assertReservationConflictRejected(t *testing.T, err error) {
 // Propose
 // ---------------------------------------------------------------------------
 
-// TestTrade_Propose_SetsExpiresAtToEarlierDueDate verifies AC5's fixture: a
-// trade's expires_at is the earlier of the two instances' due dates.
-func TestTrade_Propose_SetsExpiresAtToEarlierDueDate(t *testing.T) {
+// TestTrade_Propose_SetsExpiresAtToEndOfEarlierDueDay verifies AC5's fixture: a
+// trade's expires_at is the end of the earlier of the two instances' due days.
+func TestTrade_Propose_SetsExpiresAtToEndOfEarlierDueDay(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	earlierDue := refDate.AddDate(0, 0, 3)
@@ -177,9 +186,96 @@ func TestTrade_Propose_SetsExpiresAtToEarlierDueDate(t *testing.T) {
 	if trade.Status != domain.TradeProposed {
 		t.Errorf("Status = %v, want TradeProposed", trade.Status)
 	}
-	if !trade.ExpiresAt.Equal(domain.DateOf(earlierDue)) {
-		t.Errorf("ExpiresAt = %v, want the earlier due date %v", trade.ExpiresAt, domain.DateOf(earlierDue))
+	wantExpiry := domain.DateOf(earlierDue).AddDate(0, 0, 1)
+	if !trade.ExpiresAt.Equal(wantExpiry) {
+		t.Errorf("ExpiresAt = %v, want the end of the earlier due day %v", trade.ExpiresAt, wantExpiry)
 	}
+}
+
+// TestTrade_Propose_DueToday_AcceptableUntilEndOfLocalDay covers NES-198: a
+// chore due today can be traded, and the trade can be accepted until local
+// midnight even though that instant is well past 00:00 UTC of the due date.
+func TestTrade_Propose_DueToday_AcceptableUntilEndOfLocalDay(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	chicago := loadLocation(t, "America/Chicago")
+
+	// 21:30 CDT on 2025-03-10 is 02:30 UTC on 2025-03-11.
+	now := time.Date(2025, 3, 10, 21, 30, 0, 0, chicago)
+	tradeRepo := adapter.NewTradeRepository(pool,
+		adapter.WithTradeClock(func() time.Time { return now }),
+		adapter.WithTradeLocation(chicago))
+
+	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate)
+	trade := proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
+
+	wantExpiry := time.Date(2025, 3, 11, 0, 0, 0, 0, chicago)
+	if !trade.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("ExpiresAt = %v, want local midnight %v", trade.ExpiresAt, wantExpiry)
+	}
+	if _, err := tradeRepo.Accept(testCtx(t), h.ID, trade.ID, m2, wantExpiry.Add(-time.Minute)); err != nil {
+		t.Errorf("Accept one minute before local midnight: %v, want nil", err)
+	}
+}
+
+// TestTrade_Propose_TomorrowStillTradeableInTheEvening covers NES-198's second
+// symptom: the evening before the due day (past 00:00 UTC of the due date)
+// the chore must still be tradeable.
+func TestTrade_Propose_TomorrowStillTradeableInTheEvening(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	chicago := loadLocation(t, "America/Chicago")
+
+	// 20:00 CDT on 2025-03-09 is 01:00 UTC on 2025-03-10, the due date.
+	now := time.Date(2025, 3, 9, 20, 0, 0, 0, chicago)
+	tradeRepo := adapter.NewTradeRepository(pool,
+		adapter.WithTradeClock(func() time.Time { return now }),
+		adapter.WithTradeLocation(chicago))
+
+	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate)
+	proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
+}
+
+// TestTrade_Propose_DueDayEnded_ReturnsErrTradeWindowClosed covers NES-198: a
+// proposal whose expiry is already past is refused rather than stored
+// expired.
+func TestTrade_Propose_DueDayEnded_ReturnsErrTradeWindowClosed(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	h, m1, m2 := seedHousehold(t, pool)
+	chicago := loadLocation(t, "America/Chicago")
+
+	now := time.Date(2025, 3, 11, 0, 0, 0, 0, chicago) // exactly local midnight after the due day
+	tradeRepo := adapter.NewTradeRepository(pool,
+		adapter.WithTradeClock(func() time.Time { return now }),
+		adapter.WithTradeLocation(chicago))
+
+	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate)
+	trade := &domain.ChoreTrade{
+		ID:                  domain.NewChoreTradeID(),
+		ProposerID:          m1,
+		ResponderID:         m2,
+		OfferedInstanceID:   offered.ID,
+		RequestedInstanceID: requested.ID,
+	}
+	_, err := tradeRepo.Propose(testCtx(t), h.ID, trade)
+	if !errors.Is(err, domain.ErrTradeWindowClosed) {
+		t.Errorf("Propose after the due day = %v, want ErrTradeWindowClosed", err)
+	}
+}
+
+func loadLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatalf("LoadLocation(%q): %v", name, err)
+	}
+	return loc
 }
 
 // TestTrade_Propose_InstanceNotFound_ReturnsErrInstanceNotFound verifies that
@@ -188,7 +284,7 @@ func TestTrade_Propose_InstanceNotFound_ReturnsErrInstanceNotFound(t *testing.T)
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	rt := seedRecurringTask(t, taskRepo, h.ID)
@@ -213,7 +309,7 @@ func TestTrade_Propose_ClaimedOfferedInstance_ReturnsErrInstanceNotTradeable(t *
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	rt1 := seedRecurringTask(t, taskRepo, h.ID)
@@ -246,7 +342,7 @@ func TestTrade_Propose_ClaimedRequestedInstance_ReturnsErrInstanceNotTradeable(t
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	rt1 := seedRecurringTask(t, taskRepo, h.ID)
@@ -276,7 +372,7 @@ func TestTrade_Propose_OfferedInstanceAlreadyLive_ReturnsErrInstanceNotTradeable
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested1 := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -304,7 +400,7 @@ func TestTrade_Propose_RequestedInstanceAlreadyLive_ReturnsErrInstanceNotTradeab
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered1, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -342,7 +438,7 @@ func TestTrade_Propose_OfferedAlreadyRequestedElsewhere_ReturnsErrInstanceNotTra
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -371,7 +467,7 @@ func TestTrade_Propose_RequestedAlreadyOfferedElsewhere_ReturnsErrInstanceNotTra
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -407,7 +503,7 @@ func TestTrade_SchemaLevel_RawInsert_OfferedAlreadyRequestedElsewhere_Rejected(t
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -426,7 +522,7 @@ func TestTrade_SchemaLevel_RawInsert_RequestedAlreadyOfferedElsewhere_Rejected(t
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -447,7 +543,7 @@ func TestTrade_Accept_SwapsAssigneesAtomically(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -494,7 +590,7 @@ func TestTrade_Accept_WrongResponder_ReturnsErrTradeNotPending(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -514,7 +610,7 @@ func TestTrade_Accept_InstanceCompletedAfterProposal_ReturnsErrInstanceNotTradea
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -554,7 +650,7 @@ func TestTrade_Accept_InstanceReassignedAfterProposal_ReturnsErrInstanceNotTrade
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -584,7 +680,7 @@ func TestTrade_Accept_ExpiredButNotYetSwept_ReturnsErrTradeNotPending(t *testing
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -617,7 +713,7 @@ func TestTrade_Decline_NoAssignmentChange(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -647,7 +743,7 @@ func TestTrade_Decline_Twice_ReturnsErrTradeNotPending(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -667,7 +763,7 @@ func TestTrade_Cancel_NoAssignmentChange(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -694,7 +790,7 @@ func TestTrade_Cancel_WrongProposer_ReturnsErrTradeNotPending(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -729,14 +825,14 @@ func assertAssigneeUnchanged(
 // SweepExpiredTrades
 // ---------------------------------------------------------------------------
 
-// TestTrade_SweepExpiredTrades_ExpiresAtOrBeforeEarlierDueDate covers AC5: an
+// TestTrade_SweepExpiredTrades_ExpiresAtEndOfEarlierDueDay covers AC5: an
 // unresolved trade expires automatically at (not after) the earlier of the
 // two due dates, and no instance assignment changes.
-func TestTrade_SweepExpiredTrades_ExpiresAtOrBeforeEarlierDueDate(t *testing.T) {
+func TestTrade_SweepExpiredTrades_ExpiresAtEndOfEarlierDueDay(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	earlierDue := refDate.AddDate(0, 0, 3)
@@ -748,7 +844,8 @@ func TestTrade_SweepExpiredTrades_ExpiresAtOrBeforeEarlierDueDate(t *testing.T) 
 	trade := proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
 
 	// Before the earlier due date: not yet expired.
-	before, err := tradeRepo.SweepExpiredTrades(testCtx(t), domain.DateOf(earlierDue).Add(-time.Hour))
+	earlierExpiry := domain.DateOf(earlierDue).AddDate(0, 0, 1)
+	before, err := tradeRepo.SweepExpiredTrades(testCtx(t), earlierExpiry.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("SweepExpiredTrades (before): %v", err)
 	}
@@ -756,8 +853,8 @@ func TestTrade_SweepExpiredTrades_ExpiresAtOrBeforeEarlierDueDate(t *testing.T) 
 		t.Fatalf("SweepExpiredTrades (before earlier due date) = %d expired, want 0", len(before))
 	}
 
-	// At the earlier due date: expires.
-	expired, err := tradeRepo.SweepExpiredTrades(testCtx(t), domain.DateOf(earlierDue))
+	// At the end of the earlier due day: expires.
+	expired, err := tradeRepo.SweepExpiredTrades(testCtx(t), earlierExpiry)
 	if err != nil {
 		t.Fatalf("SweepExpiredTrades (at): %v", err)
 	}
@@ -789,7 +886,7 @@ func TestTrade_SweepExpiredTrades_AcceptedTradeNeverExpires(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 3)
@@ -826,7 +923,7 @@ func TestTrade_Accept_FreesReservationForFollowUpTrade(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -856,7 +953,7 @@ func TestTrade_Decline_FreesReservationForFollowUpTrade(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -884,7 +981,7 @@ func TestTrade_Cancel_FreesReservationForFollowUpTrade(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -913,7 +1010,7 @@ func TestTrade_Expire_FreesReservationForFollowUpTrade(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -951,7 +1048,7 @@ func TestTrade_Accept_ConcurrentAcceptsOnlyOneSucceeds(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -1005,7 +1102,7 @@ func TestTrade_Accept_RaceAgainstComplete(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -1102,7 +1199,7 @@ func TestTrade_ProposeVsAccept_NoDeadlock(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -1181,7 +1278,7 @@ func TestTrade_ProposeVsPropose_CrossRoleRace_ExactlyOneWins(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
