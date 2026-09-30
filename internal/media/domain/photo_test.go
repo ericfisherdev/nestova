@@ -34,6 +34,12 @@ func TestPhotoValidate(t *testing.T) {
 		}
 	}
 
+	nulCaption := ok
+	nulCaption.Caption = "beach\x00day"
+	if !errors.Is(nulCaption.Validate(), domain.ErrInvalidPhoto) {
+		t.Fatal("caption with a NUL byte accepted")
+	}
+
 	invalidHashes := []string{
 		"",
 		"   ",

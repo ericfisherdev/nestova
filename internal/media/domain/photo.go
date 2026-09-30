@@ -107,6 +107,9 @@ func (p Photo) Validate() error {
 	if _, ok := acceptedContentTypes[p.ContentType]; !ok {
 		return fmt.Errorf("%w: content type %q is not accepted", ErrInvalidPhoto, p.ContentType)
 	}
+	if strings.ContainsRune(p.Caption, 0) {
+		return fmt.Errorf("%w: caption must not contain null characters", ErrInvalidPhoto)
+	}
 	return nil
 }
 
