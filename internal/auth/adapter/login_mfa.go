@@ -69,7 +69,7 @@ const sessionKeyWebAuthnStepUpChallenge = "webauthn_stepup_challenge"
 type LoginMFAHandlers struct {
 	sm       *scs.SessionManager
 	mfa      *authapp.MFAService
-	remember *authapp.RememberDeviceSigner
+	remember *authapp.RememberDeviceService
 	// webauthn is OPTIONAL (nil allowed) — mirroring Handlers' own mfa/
 	// remember exception (see NewHandlers' doc): a deployment with no
 	// Server.PublicBaseURL configured never wires WebAuthn at all
@@ -91,7 +91,7 @@ type LoginMFAHandlers struct {
 // deliberate exception (see its own field doc). secure mirrors the session
 // cookie's SESSION_COOKIE_SECURE policy (cfg.Session.Secure), applied to
 // the remember-device cookie too.
-func NewLoginMFAHandlers(sm *scs.SessionManager, mfa *authapp.MFAService, remember *authapp.RememberDeviceSigner, webauthnService *authapp.WebAuthnService, notify notifydomain.Enqueuer, secure bool, logger *slog.Logger) *LoginMFAHandlers {
+func NewLoginMFAHandlers(sm *scs.SessionManager, mfa *authapp.MFAService, remember *authapp.RememberDeviceService, webauthnService *authapp.WebAuthnService, notify notifydomain.Enqueuer, secure bool, logger *slog.Logger) *LoginMFAHandlers {
 	if sm == nil {
 		panic("auth/adapter: NewLoginMFAHandlers requires a non-nil session manager")
 	}
@@ -99,7 +99,7 @@ func NewLoginMFAHandlers(sm *scs.SessionManager, mfa *authapp.MFAService, rememb
 		panic("auth/adapter: NewLoginMFAHandlers requires a non-nil MFAService")
 	}
 	if remember == nil {
-		panic("auth/adapter: NewLoginMFAHandlers requires a non-nil RememberDeviceSigner")
+		panic("auth/adapter: NewLoginMFAHandlers requires a non-nil RememberDeviceService")
 	}
 	if notify == nil {
 		panic("auth/adapter: NewLoginMFAHandlers requires a non-nil notify Enqueuer")
@@ -223,7 +223,7 @@ func (h *LoginMFAHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.FormValue("remember_device") != "" {
-		h.setRememberDeviceCookie(w, memberID, now)
+		h.setRememberDeviceCookie(w, r, memberID, now)
 	}
 	http.Redirect(w, r, next, http.StatusSeeOther)
 }
@@ -389,10 +389,16 @@ func (h *LoginMFAHandlers) notifyLockout(ctx context.Context, memberID household
 	}
 }
 
-// setRememberDeviceCookie signs and sets the "remember this device" cookie
-// for memberID, valid for authapp.RememberDeviceTTL.
-func (h *LoginMFAHandlers) setRememberDeviceCookie(w http.ResponseWriter, memberID household.MemberID, now time.Time) {
-	token := h.remember.Sign(memberID, now)
+// setRememberDeviceCookie issues a server-side remember-device token for
+// memberID and sets it as the "remember this device" cookie, valid for
+// authapp.RememberDeviceTTL. The login has already succeeded by the time this
+// runs, so an issue failure is logged and the member simply is not remembered.
+func (h *LoginMFAHandlers) setRememberDeviceCookie(w http.ResponseWriter, r *http.Request, memberID household.MemberID, now time.Time) {
+	token, err := h.remember.Issue(r.Context(), memberID, r.UserAgent(), now)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "issue remember-device token", "member_id", memberID.String(), "error", err)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     RememberDeviceCookieName,
 		Value:    token,

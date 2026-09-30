@@ -173,7 +173,8 @@ function seedFreshMember({ email, displayName, role = 'adult' }) {
   psql(`
     DELETE FROM identity.member_mfa WHERE member_id = '${id}';
     DELETE FROM identity.member_credential WHERE member_id = '${id}';
-    DELETE FROM nestova.notification WHERE member_id = '${id}';`);
+    DELETE FROM nestova.notification WHERE member_id = '${id}';
+    DELETE FROM nestova.remembered_device WHERE member_id = '${id}';`);
   return { id, email, password: PASSWORD, displayName };
 }
 

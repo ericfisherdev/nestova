@@ -271,7 +271,23 @@ type mfaFixture struct {
 	totp      *fakeTOTPProvider
 	passwords *fakePasswordVerifier
 	members   *fakeMemberLookup
+	devices   *fakeDeviceRevoker
 	logs      *bytes.Buffer
+}
+
+// fakeDeviceRevoker records the members whose remembered devices were
+// revoked (NES-200), and can be made to fail.
+type fakeDeviceRevoker struct {
+	revoked []household.MemberID
+	err     error
+}
+
+func (f *fakeDeviceRevoker) RevokeAll(_ context.Context, memberID household.MemberID) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.revoked = append(f.revoked, memberID)
+	return nil
 }
 
 // newMFAFixture wires an MFAService with fully controllable fakes.
@@ -281,12 +297,13 @@ func newMFAFixture(t *testing.T) *mfaFixture {
 	totpFake := &fakeTOTPProvider{secret: "JBSWY3DPEHPK3PXP", otpauthURL: "otpauth://totp/Nestova:alice?secret=JBSWY3DPEHPK3PXP&issuer=Nestova", validCode: "123456"}
 	passwords := &fakePasswordVerifier{credentials: make(map[household.MemberID]*authdomain.Credential)}
 	members := newFakeMemberLookup()
+	devices := &fakeDeviceRevoker{}
 	logger, buf := discardLogger()
-	svc, err := app.NewMFAService(repo, testCipher(t), totpFake, passwords, members, cryptotest.Hasher(), logger)
+	svc, err := app.NewMFAService(repo, testCipher(t), totpFake, passwords, members, cryptotest.Hasher(), logger, app.WithRememberedDeviceRevoker(devices))
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
-	return &mfaFixture{svc: svc, repo: repo, totp: totpFake, passwords: passwords, members: members, logs: buf}
+	return &mfaFixture{svc: svc, repo: repo, totp: totpFake, passwords: passwords, members: members, devices: devices, logs: buf}
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,4 +1098,97 @@ func seedOwnerPassword(t *testing.T, passwords *fakePasswordVerifier, ownerID ho
 		t.Fatalf("crypto.Hash: %v", err)
 	}
 	passwords.credentials[ownerID] = &authdomain.Credential{MemberID: ownerID, PasswordHash: hash}
+}
+
+// ---------------------------------------------------------------------------
+// NES-200: remembered devices are revoked with the MFA they bypass
+// ---------------------------------------------------------------------------
+
+func TestDisenroll_RevokesRememberedDevices(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
+
+	if err := f.svc.Disenroll(context.Background(), memberID, householdID, "", codes[0]); err != nil {
+		t.Fatalf("Disenroll: %v", err)
+	}
+	if len(f.devices.revoked) != 1 || f.devices.revoked[0] != memberID {
+		t.Errorf("revoked = %v, want exactly [%s]", f.devices.revoked, memberID)
+	}
+}
+
+func TestDisenroll_InvalidCode_KeepsRememberedDevices(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	confirmEnrollment(t, f.svc, memberID, householdID)
+
+	if err := f.svc.Disenroll(context.Background(), memberID, householdID, "", "WRONG-CODE"); err == nil {
+		t.Fatal("Disenroll with a wrong recovery code succeeded")
+	}
+	if len(f.devices.revoked) != 0 {
+		t.Errorf("a refused disenrol must not revoke devices; revoked = %v", f.devices.revoked)
+	}
+}
+
+func TestDisenroll_RevokeFailure_KeepsEnrollment(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	codes := confirmEnrollment(t, f.svc, memberID, householdID)
+	revokeErr := errors.New("db down")
+	f.devices.err = revokeErr
+
+	if err := f.svc.Disenroll(context.Background(), memberID, householdID, "", codes[0]); !errors.Is(err, revokeErr) {
+		t.Fatalf("Disenroll: err = %v, want the revoke error", err)
+	}
+	status, err := f.svc.Status(context.Background(), memberID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status == nil || !status.Confirmed() {
+		t.Error("a failed revoke must leave the enrollment in place so the disenrol can be retried")
+	}
+}
+
+func TestResetMemberMFA_RevokesTargetRememberedDevices(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	householdID := household.NewHouseholdID()
+	owner := household.NewMemberID()
+	target := household.NewMemberID()
+	f.members.seed(&household.Member{ID: owner, HouseholdID: householdID, Role: household.RoleOwner})
+	f.members.seed(&household.Member{ID: target, HouseholdID: householdID, Role: household.RoleChild})
+	seedOwnerPassword(t, f.passwords, owner, "correct-horse-battery-staple")
+	confirmEnrollment(t, f.svc, target, householdID)
+
+	if err := f.svc.ResetMemberMFA(context.Background(), owner, "correct-horse-battery-staple", target); err != nil {
+		t.Fatalf("ResetMemberMFA: %v", err)
+	}
+	if len(f.devices.revoked) != 1 || f.devices.revoked[0] != target {
+		t.Errorf("revoked = %v, want exactly [%s] (the target, not the owner)", f.devices.revoked, target)
+	}
+}
+
+func TestResetMemberMFA_WrongPassword_KeepsRememberedDevices(t *testing.T) {
+	t.Parallel()
+	f := newMFAFixture(t)
+	householdID := household.NewHouseholdID()
+	owner := household.NewMemberID()
+	target := household.NewMemberID()
+	f.members.seed(&household.Member{ID: owner, HouseholdID: householdID, Role: household.RoleOwner})
+	f.members.seed(&household.Member{ID: target, HouseholdID: householdID, Role: household.RoleChild})
+	seedOwnerPassword(t, f.passwords, owner, "correct-horse-battery-staple")
+	confirmEnrollment(t, f.svc, target, householdID)
+
+	if err := f.svc.ResetMemberMFA(context.Background(), owner, "wrong-password", target); !errors.Is(err, authdomain.ErrOwnerReauthRequired) {
+		t.Fatalf("ResetMemberMFA: err = %v, want ErrOwnerReauthRequired", err)
+	}
+	if len(f.devices.revoked) != 0 {
+		t.Errorf("a refused reset must not revoke devices; revoked = %v", f.devices.revoked)
+	}
 }

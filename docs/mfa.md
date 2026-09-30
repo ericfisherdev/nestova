@@ -40,11 +40,26 @@ appliance deployment shape.
 
 ### Remembered devices
 
-Checking "remember this device" at the login MFA step sets a signed,
-`HttpOnly` cookie (`nestova_remember`) valid for 30 days
-(`internal/auth/app/remember.go`). A remembered device skips the login-time
-prompt on a subsequent login, but the session it produces is **not** marked
-freshly verified — see the next section.
+Checking "remember this device" at the login MFA step sets an `HttpOnly`
+cookie (`nestova_remember`) valid for 30 days (`internal/auth/app/remember.go`).
+The value is a random 256-bit opaque token; only its SHA-256 is stored, in
+`nestova.remembered_device` (with the member, expiry, last-used time and the
+user agent for display). Each login looks the token up for that member and
+rejects an unknown, expired, revoked or other-member's token, so the MFA prompt
+is shown instead.
+
+Every remembered device of a member is deleted when that member disenrols from
+MFA or the household owner resets their MFA, so a copied cookie stops working.
+There is no in-app password-change flow yet; when one is added it must call
+`RememberDeviceService.RevokeAll` too.
+
+The token is deliberately **not** bound to a user agent or address: both change
+legitimately (browser updates, roaming networks) and a user agent is
+attacker-controlled, so binding would break normal use for no security gain.
+Revocation is the defense.
+
+A remembered device skips the login-time prompt on a subsequent login, but the
+session it produces is **not** marked freshly verified — see the next section.
 
 ### Step-up for sensitive actions
 
