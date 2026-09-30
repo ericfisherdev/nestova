@@ -108,34 +108,18 @@ test.describe('§7.1 happy paths', () => {
     expect(quantityOf(item)).toBe('500 g');
 
     const id = await pantryItemId(page, item);
-    const token = await csrfToken(page, '/groceries');
 
-    // Posted rather than clicked: the row's own buttons are unreachable at this
-    // viewport (see T-7.1.2b), and the arithmetic is what this item is about.
-    expect(
-      await postForm(page, `/groceries/pantry/${id}/adjust`, {
-        csrf_token: token,
-        amount: '250',
-        unit: 'g',
-      }),
-    ).toBe(303);
+    await submitPantryAmount(page, id, 'adjust', '250');
     await expect.poll(() => quantityOf(item)).toBe('750 g');
 
-    expect(
-      await postForm(page, `/groceries/pantry/${id}/consume`, {
-        csrf_token: token,
-        amount: '200',
-        unit: 'g',
-      }),
-    ).toBe(303);
+    await submitPantryAmount(page, id, 'consume', '200');
     await expect.poll(() => quantityOf(item)).toBe('550 g');
   });
 
-  // DEFECT: the consume/adjust mini-forms overflow their own pantry card and
-  // are painted under the shopping-list section, so the buttons cannot be
-  // clicked. Measured at 1024/1280/1440 the button's right edge sits 167/81/28
-  // px past the card; only at 1920 (the kiosk's own width) does it fit, which
-  // is why no existing spec caught it — none of them click these controls.
+  // Regression guard for NES-187: the consume/adjust mini-forms used to overflow
+  // their pantry card and were painted under the shopping-list section, so the
+  // buttons could not be clicked below the kiosk's 1920px width. The suite runs
+  // at 1280px, so a relapse fails here on the click.
   test('T-7.1.2b the pantry row\'s consume and adjust buttons are clickable', async ({ page }) => {
     await login(page, PERSONAS.owner);
     const item = name('Clickability probe');
