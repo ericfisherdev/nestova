@@ -10,12 +10,14 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tool, hasTool } = require('../tests/tools');
 
 const DIR = path.join(os.tmpdir(), `nestova-media-fixtures-${process.pid}`);
 
 function hasMagick() {
+  if (!hasTool('magick')) return false;
   try {
-    execFileSync('magick', ['-version'], { stdio: 'ignore' });
+    execFileSync(tool('magick'), ['-version'], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -28,7 +30,7 @@ function dir() {
 }
 
 function magick(args) {
-  execFileSync('magick', args, { stdio: 'pipe' });
+  execFileSync(tool('magick'), args, { stdio: 'pipe' });
 }
 
 // image writes a solid-colour image of the given type. The colour is derived
