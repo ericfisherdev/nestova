@@ -7,8 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
+	"github.com/alexedwards/scs/v2"
+	"github.com/alexedwards/scs/v2/memstore"
+	identitysession "github.com/ericfisherdev/nestcore/identity/session"
+
+	authadapter "github.com/ericfisherdev/nestova/internal/auth/adapter"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	"github.com/ericfisherdev/nestova/internal/kiosk/adapter"
 	"github.com/ericfisherdev/nestova/internal/kiosk/domain"
@@ -255,5 +261,40 @@ func TestSetAndClearCookie(t *testing.T) {
 func TestErrNoHouseholdIsComparable(t *testing.T) {
 	if !errors.Is(adapter.ErrNoHousehold, adapter.ErrNoHousehold) {
 		t.Fatal("ErrNoHousehold must satisfy errors.Is against itself")
+	}
+}
+
+// memberOnlyRepo satisfies household.HouseholdRepository for the one method
+// authadapter.Authenticate calls; any other call panics on the nil embed.
+type memberOnlyRepo struct {
+	household.HouseholdRepository
+	member *household.Member
+}
+
+func (r memberOnlyRepo) EnsureMemberProfile(context.Context, household.MemberID) (*household.Member, error) {
+	return r.member, nil
+}
+
+func TestRequireKioskOrMember_MemberPagesAreNotCacheable(t *testing.T) {
+	member := &household.Member{ID: household.NewMemberID()}
+	sm := scs.New()
+	sm.Store = memstore.New()
+
+	var hit bool
+	protected := authadapter.Authenticate(sm, memberOnlyRepo{member: member})(
+		adapter.RequireKioskOrMember()(passthroughHandler(&hit)))
+	chain := sm.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sm.Put(r.Context(), identitysession.KeyMemberID, member.ID.String())
+		protected.ServeHTTP(w, r)
+	}))
+
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/kiosk/chores", nil))
+
+	if !hit {
+		t.Fatal("a member session should reach the protected handler")
+	}
+	if got := rec.Header().Values("Cache-Control"); !slices.Contains(got, "no-store") {
+		t.Errorf("Cache-Control = %q, want no-store so Back after logout cannot restore the page", got)
 	}
 }
