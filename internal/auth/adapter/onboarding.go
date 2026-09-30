@@ -22,6 +22,14 @@ import (
 // member provisioning.
 const minPasswordLen = 8
 
+// emailInvalidMessage covers both a malformed and an over-long address: the
+// user's remedy is the same.
+const emailInvalidMessage = "Please enter a valid email address."
+
+func passwordTooLongMessage() string {
+	return fmt.Sprintf("Password must be %d characters or fewer.", household.MaxPasswordLength)
+}
+
 // credentialStore is the minimal outbound port used by OnboardingHandlers for
 // credential reads. It is satisfied by *CredentialRepository and by test fakes,
 // keeping OnboardingHandlers decoupled from the concrete pgx type. Credential
@@ -408,10 +416,12 @@ func validateOnboardingForm(householdName, displayName, email, password string) 
 		return fmt.Sprintf("Your name must be %d characters or fewer.", household.MaxDisplayNameLength)
 	case email == "":
 		return "Email is required."
-	case !strings.Contains(email, "@"):
-		return "Please enter a valid email address."
+	case household.ValidateEmail(email) != nil:
+		return emailInvalidMessage
 	case len(password) < minPasswordLen:
 		return "Password must be at least 8 characters."
+	case household.ValidatePassword(password) != nil:
+		return passwordTooLongMessage()
 	default:
 		return ""
 	}
@@ -428,10 +438,12 @@ func validateAddMemberForm(displayName, email, password string) string {
 		return fmt.Sprintf("Display name must be %d characters or fewer.", household.MaxDisplayNameLength)
 	case (email == "") != (password == ""):
 		return "Provide both email and password, or leave both blank."
-	case email != "" && !strings.Contains(email, "@"):
-		return "Please enter a valid email address."
+	case email != "" && household.ValidateEmail(email) != nil:
+		return emailInvalidMessage
 	case email != "" && len(password) < minPasswordLen:
 		return "Password must be at least 8 characters."
+	case email != "" && household.ValidatePassword(password) != nil:
+		return passwordTooLongMessage()
 	default:
 		return ""
 	}

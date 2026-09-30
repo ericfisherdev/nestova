@@ -709,3 +709,69 @@ func TestOnboardingPOST_RejectsOverLengthNames(t *testing.T) {
 		})
 	}
 }
+
+// TestAddMember_RejectsMalformedEmailAndOversizedPassword confirms the
+// add-member flow answers 422 and provisions nothing when the email is
+// malformed or the password exceeds its cap (NES-196).
+func TestAddMember_RejectsMalformedEmailAndOversizedPassword(t *testing.T) {
+	tests := []struct {
+		name     string
+		email    string
+		password string
+	}{
+		{"double at", "a@@b.com", "supersecret"},
+		{"300 character local part", strings.Repeat("l", 300) + "@test.local", "supersecret"},
+		{"oversized password", "jamie@example.com", strings.Repeat("p", 1_000_000)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			owner := &household.Member{
+				ID:          household.NewMemberID(),
+				HouseholdID: household.NewHouseholdID(),
+				DisplayName: "Owner",
+				Role:        household.RoleOwner,
+				Color:       household.ColorSage,
+			}
+			repo := &fakeHouseholdRepo{currentMember: owner}
+			prov := &fakeProvisioner{}
+			sm := newOnboardingSessionManager()
+			h := adapter.NewOnboardingHandlers(repo, fakeCredStore{}, prov, sm, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /members", func(w http.ResponseWriter, r *http.Request) {
+				h.AddMember(w, r, components.ShellProps{}, nil)
+			})
+			mux.HandleFunc("GET /seed", func(_ http.ResponseWriter, r *http.Request) {
+				sm.Put(r.Context(), "member_id", owner.ID.String())
+				_ = adapter.GetCSRFToken(r.Context(), sm)
+			})
+			handler := sm.LoadAndSave(adapter.Authenticate(sm, repo)(mux))
+
+			seedRec := httptest.NewRecorder()
+			handler.ServeHTTP(seedRec, httptest.NewRequest(http.MethodGet, "/seed", nil))
+			cookies := seedRec.Result().Cookies()
+
+			form := url.Values{
+				"csrf_token":   {readSessionCSRF(t, sm, cookies)},
+				"display_name": {"Jamie"},
+				"role":         {"adult"},
+				"email":        {tc.email},
+				"password":     {tc.password},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/members", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			for _, c := range cookies {
+				req.AddCookie(c)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422", rec.Code)
+			}
+			if prov.memberCalls != 0 {
+				t.Errorf("ProvisionMember called %d times, want 0", prov.memberCalls)
+			}
+		})
+	}
+}
