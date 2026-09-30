@@ -173,7 +173,13 @@ class PrivateServer {
 // built, so a recycled pid is never signalled.
 function isHarnessServer(pid) {
   try {
-    return fs.readlinkSync(`/proc/${pid}/exe`) === path.join(BIN_DIR, 'server');
+    // A binary replaced by a rebuild since the process started reads as
+    // "<path> (deleted)"; start() rebuilds before freePort(), so that is the
+    // usual state of this harness's own orphan.
+    const DELETED = ' (deleted)';
+    let exe = fs.readlinkSync(`/proc/${pid}/exe`);
+    if (exe.endsWith(DELETED)) exe = exe.slice(0, -DELETED.length);
+    return exe === path.join(BIN_DIR, 'server');
   } catch {
     return false;
   }
