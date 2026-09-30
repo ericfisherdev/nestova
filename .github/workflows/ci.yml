@@ -198,6 +198,11 @@ jobs:
       - name: Check formatting
         run: golangci-lint fmt --diff
 
+      - name: Check SonarCloud exclusions
+        # Automatic analysis takes no wildcards, so every generated templ file is
+        # listed in .sonarcloud.properties; this fails when the list drifts (NES-208).
+        run: make check-sonarcloud-exclusions
+
       - name: Save Go caches
         if: always() && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
