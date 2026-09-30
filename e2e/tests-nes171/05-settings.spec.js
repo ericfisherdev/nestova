@@ -380,6 +380,26 @@ test.describe('§3.1 notification channel preferences', () => {
     expect(sms.status, 'an SMS preference must be refused when SMS cannot be delivered').toBe(400);
     expect(preferenceOf(member.id, TRADE_PROPOSED)).toBe('inapp');
   });
+
+  test('NES-206 a stored phone and consent can still be withdrawn when no SMS sender is configured', async ({ page }) => {
+    const member = seedPersona('Consent withdrawn');
+    // Stored while SMS was wired: the only way to have contact data on a server without a sender.
+    psql(`INSERT INTO nestova.member_contact (member_id, phone_e164, sms_opted_in_at)
+          VALUES ('${member.id}', '+15555550123', now());`);
+    await login(page, member);
+    await page.goto('/settings');
+
+    await expect(page.locator('#notify-phone'), 'no way to enter a number').toHaveCount(0);
+    await expect(page.locator('#notify-opted-in'), 'no way to give consent').toHaveCount(0);
+    await page.getByRole('button', { name: 'Withdraw text message consent' }).click();
+    await expect(page.getByRole('button', { name: 'Remove phone number' })).toBeVisible();
+    expect(contactOf(member.id), 'consent is withdrawn, the number is kept').toEqual({ phone: '+15555550123', optedIn: false });
+    await expect(page.getByRole('button', { name: 'Withdraw text message consent' }), 'nothing left to withdraw').toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Remove phone number' }).click();
+    expect(contactOf(member.id), 'the number is removed').toEqual({ phone: '', optedIn: false });
+    await expect(page.getByRole('button', { name: 'Remove phone number' }), 'nothing left to remove').toHaveCount(0);
+  });
 });
 
 test.describe('§3.2 quiet-hours behaviour (senders wired)', () => {
