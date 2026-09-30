@@ -27,8 +27,8 @@ function weekStart() {
 }
 
 function isoDate(offsetDays = 0) {
-  const d = new Date(weekStart());
-  d.setDate(d.getDate() + offsetDays);
+  const [y, m, day] = weekStart().split('-').map(Number);
+  const d = new Date(y, m - 1, day + offsetDays);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
