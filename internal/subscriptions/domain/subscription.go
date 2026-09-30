@@ -50,7 +50,7 @@ type Subscription struct {
 
 // MaxNameLength bounds a subscription's name, counted in runes rather than
 // bytes (see the tasks domain's MaxTitleLength). The subscription.name CHECK
-// constraint in 00044_text_field_length_caps.sql carries the same number.
+// constraint in 00045_text_field_length_caps.sql carries the same number.
 const MaxNameLength = 200
 
 // Validate reports whether the subscription is well-formed, wrapping

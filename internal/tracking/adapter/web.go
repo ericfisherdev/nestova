@@ -464,6 +464,8 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, domain.ErrShoppingListItemNameTooLong):
 		http.Error(w, fmt.Sprintf("item name must be %d characters or fewer", domain.MaxShoppingListItemNameLength), http.StatusUnprocessableEntity)
+	case errors.Is(err, domain.ErrTrackedItemNameTooLong):
+		http.Error(w, fmt.Sprintf("item name must be %d characters or fewer", domain.MaxTrackedItemNameLength), http.StatusUnprocessableEntity)
 	case errors.Is(err, domain.ErrIngredientNameTooLong):
 		http.Error(w, fmt.Sprintf("ingredient name must be %d characters or fewer", domain.MaxIngredientNameLength), http.StatusUnprocessableEntity)
 	case errors.Is(err, household.ErrInvalidQuantity),

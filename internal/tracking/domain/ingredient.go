@@ -25,7 +25,7 @@ var (
 // MaxIngredientNameLength bounds a catalogue ingredient's canonical name,
 // counted in runes rather than bytes (see the tasks domain's MaxTitleLength).
 // The ingredient.canonical_name CHECK constraint in
-// 00044_text_field_length_caps.sql carries the same number.
+// 00045_text_field_length_caps.sql carries the same number.
 const MaxIngredientNameLength = 200
 
 // ValidateNormalizedName reports whether a normalized ingredient name is usable:

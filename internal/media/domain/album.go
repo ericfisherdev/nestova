@@ -148,7 +148,7 @@ type Album struct {
 
 // MaxAlbumNameLength bounds an album's name, counted in runes rather than bytes
 // (see the tasks domain's MaxTitleLength). The album.name CHECK constraint in
-// 00044_text_field_length_caps.sql carries the same number.
+// 00045_text_field_length_caps.sql carries the same number.
 const MaxAlbumNameLength = 200
 
 // Validate reports whether the album is well-formed, wrapping ErrInvalidAlbum;

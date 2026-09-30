@@ -63,6 +63,10 @@ func TestTextFieldLengthCaps(t *testing.T) {
 			 VALUES (gen_random_uuid(), ` + householdID + `, $1, 1, 'count', 'manual')`,
 		},
 		{
+			"tracked_item_name_length", 200,
+			`INSERT INTO tracked_item (id, household_id, name) VALUES (gen_random_uuid(), ` + householdID + `, $1)`,
+		},
+		{
 			"kiosk_device_name_length", 200,
 			`INSERT INTO kiosk_device (id, household_id, token_hash, name) VALUES (gen_random_uuid(), ` + householdID + `, md5(random()::text), $1)`,
 		},

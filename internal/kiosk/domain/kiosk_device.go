@@ -50,7 +50,7 @@ type KioskDevice struct {
 // MaxDeviceNameLength bounds a kiosk device's name, counted in runes rather than
 // bytes (see the tasks domain's MaxTitleLength). The kiosk_device.name and
 // kiosk_activation_code.name CHECK constraints in
-// 00044_text_field_length_caps.sql carry the same number.
+// 00045_text_field_length_caps.sql carry the same number.
 const MaxDeviceNameLength = 200
 
 // Validate reports whether the device is well-formed, wrapping

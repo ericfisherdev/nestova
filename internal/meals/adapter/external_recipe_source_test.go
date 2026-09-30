@@ -567,3 +567,38 @@ func TestExternalRecipeSourceLeaderContextCancellation_DoesNotAffectWaiters(t *t
 		t.Errorf("provider handler was hit %d times, want exactly 1 (the waiter must have joined the leader's in-flight call, not started a second upstream request)", got)
 	}
 }
+
+// TestExternalRecipeSourceClampsOverLengthProviderText proves provider text past
+// the domain bounds is shortened rather than failing the search (NES-194): the
+// recipe title is clamped before caching, and an over-length missed ingredient
+// still counts toward Missing.
+func TestExternalRecipeSourceClampsOverLengthProviderText(t *testing.T) {
+	flour := tracking.NewIngredientID()
+	longTitle := strings.Repeat("家", domain.MaxRecipeTitleLength+50)
+	longIngredient := strings.Repeat("i", tracking.MaxIngredientNameLength+50)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":7,"title":"` + longTitle + `",
+			"usedIngredients":[{"name":"flour"}],
+			"missedIngredients":[{"name":"` + longIngredient + `"}]}]`))
+	}))
+	defer server.Close()
+
+	repo := &capturingRecipeRepo{}
+	namer := fakeNamer{names: map[tracking.IngredientID]string{flour: "flour"}}
+	src := newExternalSource(t, server.URL, repo, newFakeEnsurer(), namer, cache.NewMemoryCache())
+
+	matches, err := src.FindByIngredients(context.Background(), household.NewHouseholdID(), []tracking.IngredientID{flour})
+	if err != nil {
+		t.Fatalf("FindByIngredients: %v", err)
+	}
+	if len(matches) != 1 || len(repo.upserted) != 1 {
+		t.Fatalf("matches = %d, upserted = %d, want 1 and 1", len(matches), len(repo.upserted))
+	}
+	if got := len([]rune(repo.upserted[0].Title)); got != domain.MaxRecipeTitleLength {
+		t.Errorf("cached title has %d runes, want it clamped to %d", got, domain.MaxRecipeTitleLength)
+	}
+	if len(matches[0].Missing) != 1 {
+		t.Errorf("Missing = %d, want the over-length ingredient kept", len(matches[0].Missing))
+	}
+}

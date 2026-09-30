@@ -13,6 +13,7 @@
 --   album.name                      media.MaxAlbumNameLength
 --   recipe.title                    meals.MaxRecipeTitleLength
 --   ingredient.canonical_name       tracking.MaxIngredientNameLength
+--   tracked_item.name               tracking.MaxTrackedItemNameLength
 --   subscription.name               subscriptions.MaxNameLength
 --   shopping_list_item.name         tracking.MaxShoppingListItemNameLength
 --   kiosk_device.name and
@@ -34,6 +35,7 @@ UPDATE reward SET description = left(description, 1000) WHERE char_length(descri
 UPDATE album SET name = left(name, 200) WHERE char_length(name) > 200;
 UPDATE recipe SET title = left(title, 200) WHERE char_length(title) > 200;
 UPDATE subscription SET name = left(name, 200) WHERE char_length(name) > 200;
+UPDATE tracked_item SET name = left(name, 200) WHERE char_length(name) > 200;
 UPDATE shopping_list_item SET name = left(name, 200) WHERE char_length(name) > 200;
 UPDATE kiosk_device SET name = left(name, 200) WHERE char_length(name) > 200;
 UPDATE kiosk_activation_code SET name = left(name, 200) WHERE char_length(name) > 200;
@@ -49,6 +51,8 @@ ALTER TABLE subscription
     ADD CONSTRAINT subscription_name_length CHECK (char_length(name) <= 200);
 ALTER TABLE shopping_list_item
     ADD CONSTRAINT shopping_list_item_name_length CHECK (char_length(name) <= 200);
+ALTER TABLE tracked_item
+    ADD CONSTRAINT tracked_item_name_length CHECK (char_length(name) <= 200);
 ALTER TABLE kiosk_device
     ADD CONSTRAINT kiosk_device_name_length CHECK (char_length(name) <= 200);
 ALTER TABLE kiosk_activation_code
@@ -67,6 +71,7 @@ ALTER TABLE ingredient
 -- above is not reversible, and this deliberately does not try to fake it.
 ALTER TABLE ingredient DROP CONSTRAINT IF EXISTS ingredient_canonical_name_length;
 ALTER TABLE kiosk_activation_code DROP CONSTRAINT IF EXISTS kiosk_activation_code_name_length;
+ALTER TABLE tracked_item DROP CONSTRAINT IF EXISTS tracked_item_name_length;
 ALTER TABLE kiosk_device DROP CONSTRAINT IF EXISTS kiosk_device_name_length;
 ALTER TABLE shopping_list_item DROP CONSTRAINT IF EXISTS shopping_list_item_name_length;
 ALTER TABLE subscription DROP CONSTRAINT IF EXISTS subscription_name_length;
