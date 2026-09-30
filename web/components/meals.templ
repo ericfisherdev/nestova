@@ -164,6 +164,8 @@ templ recipeForm(action, submitLabel, title string, servings int, instructions s
 		method="post"
 		action={ templ.SafeURL(action) }
 		hx-post={ action }
+		hx-sync="this:drop"
+		hx-disabled-elt="find button[type='submit']"
 		class="mt-2 flex flex-col gap-2"
 		x-data={ mealRecipeFormState(lines) }
 	>
@@ -245,7 +247,7 @@ templ plannerDay(day MealDayView, csrfToken string) {
 }
 
 templ assignMealForm(week MealWeekView, options []MealRecipeOption, csrfToken string) {
-	<form method="post" action="/meals/plan" hx-post="/meals/plan" class="mt-3 flex flex-wrap items-end gap-2 border-t border-sidebar-border pt-3">
+	<form method="post" action="/meals/plan" hx-post="/meals/plan" hx-sync="this:drop" hx-disabled-elt="find button[type='submit']" class="mt-3 flex flex-wrap items-end gap-2 border-t border-sidebar-border pt-3">
 		<input type="hidden" name="csrf_token" value={ csrfToken }/>
 		<div class="flex flex-col gap-1">
 			<label class="text-xs font-medium text-ink-muted">Day</label>

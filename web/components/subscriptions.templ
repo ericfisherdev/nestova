@@ -129,6 +129,8 @@ templ subscriptionForm(mode, idPrefix, action string, row SubscriptionRow, membe
 		method="post"
 		action={ templ.URL(action) }
 		hx-post={ action }
+		hx-sync="this:drop"
+		hx-disabled-elt="find button[type='submit']"
 		class="flex flex-col gap-2 rounded-control border border-sidebar-border bg-surface p-3"
 	>
 		<input type="hidden" name="csrf_token" value={ csrfToken }/>

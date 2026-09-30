@@ -179,8 +179,9 @@ func TestCreateRewardSuccessRedirects(t *testing.T) {
 	repo := &configurableRewardRepo{}
 	handler, sm := buildGamificationTestHandler(repo, adult)
 	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+	formToken := issueRewardFormToken(t, handler, cookie)
 
-	body := "csrf_token=" + csrfToken +
+	body := "csrf_token=" + csrfToken + "&form_token=" + formToken +
 		"&name=Extra+screen+time&description=30+minutes&cost_points=20&image_ref=%F0%9F%8E%AE&quantity_available=5"
 	req := httptest.NewRequest(http.MethodPost, "/admin/rewards", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -212,6 +213,99 @@ func TestCreateRewardSuccessRedirects(t *testing.T) {
 	}
 	if created.QuantityAvailable == nil || *created.QuantityAvailable != 5 {
 		t.Errorf("created reward QuantityAvailable = %v, want 5", created.QuantityAvailable)
+	}
+}
+
+// issueRewardFormToken loads the create-reward form as the session in cookie
+// and returns the one-time form token embedded in it.
+func issueRewardFormToken(t *testing.T, handler http.Handler, cookie string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/admin/rewards/new", nil)
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	const marker = `name="form_token" value="`
+	body := rec.Body.String()
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("create-reward form carries no form_token: %q", body)
+	}
+	rest := body[start+len(marker):]
+	return rest[:strings.Index(rest, `"`)]
+}
+
+func postCreateReward(handler http.Handler, cookie, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/admin/rewards", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// Going Back and pressing submit again replays a form whose token is spent:
+// no second reward, and a message the member can act on (NES-201).
+func TestCreateRewardResubmissionCreatesNoDuplicate(t *testing.T) {
+	adult := adminTestAdult()
+	repo := &configurableRewardRepo{}
+	handler, sm := buildGamificationTestHandler(repo, adult)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+	body := "csrf_token=" + csrfToken + "&form_token=" + issueRewardFormToken(t, handler, cookie) + "&name=Toy&cost_points=10"
+
+	first := postCreateReward(handler, cookie, body)
+	second := postCreateReward(handler, cookie, body)
+
+	if first.Code != http.StatusSeeOther {
+		t.Fatalf("first submit: status = %d, want 303", first.Code)
+	}
+	if second.Code != http.StatusConflict {
+		t.Fatalf("resubmit: status = %d, want 409", second.Code)
+	}
+	if !strings.Contains(second.Body.String(), "already submitted") {
+		t.Errorf("409 response missing the already-submitted message")
+	}
+	if len(repo.createCalls) != 1 {
+		t.Errorf("CreateReward called %d times, want 1", len(repo.createCalls))
+	}
+}
+
+func TestCreateRewardWithoutFormTokenIsRejected(t *testing.T) {
+	adult := adminTestAdult()
+	repo := &configurableRewardRepo{}
+	handler, sm := buildGamificationTestHandler(repo, adult)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+	rec := postCreateReward(handler, cookie, "csrf_token="+csrfToken+"&name=Toy&cost_points=10")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("no form token: status = %d, want 409", rec.Code)
+	}
+	if len(repo.createCalls) != 0 {
+		t.Errorf("CreateReward called %d times without a form token, want 0", len(repo.createCalls))
+	}
+}
+
+// A submission that fails validation must not spend the token, or the member
+// could not correct the entry and resubmit it.
+func TestCreateRewardValidationFailureKeepsFormTokenUsable(t *testing.T) {
+	adult := adminTestAdult()
+	repo := &configurableRewardRepo{}
+	handler, sm := buildGamificationTestHandler(repo, adult)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+	prefix := "csrf_token=" + csrfToken + "&form_token=" + issueRewardFormToken(t, handler, cookie)
+
+	invalid := postCreateReward(handler, cookie, prefix+"&cost_points=10")
+	corrected := postCreateReward(handler, cookie, prefix+"&name=Toy&cost_points=10")
+
+	if invalid.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid submit: status = %d, want 422", invalid.Code)
+	}
+	if corrected.Code != http.StatusSeeOther {
+		t.Fatalf("corrected submit: status = %d, want 303; body: %s", corrected.Code, corrected.Body.String())
+	}
+	if len(repo.createCalls) != 1 {
+		t.Errorf("CreateReward called %d times, want 1", len(repo.createCalls))
 	}
 }
 
