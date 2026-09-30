@@ -22,6 +22,10 @@ import (
 // submitted quiet-hours form fields.
 const clockTimeLayout = "15:04"
 
+// errSMSNotConfigured is the inline message shown when a phone or opt-in
+// write is refused because this deployment has no SMS sender (NES-206).
+const errSMSNotConfigured = "Text messages aren't set up on this server, so a phone number can't be added."
+
 // NotifyWebHandlers serves the notify context's two /settings page
 // sections (NES-139): the SMS notification section (phone entry, opt-in
 // consent, per-event-type preferences — every member, any role) and the
@@ -89,11 +93,13 @@ func (h *NotifyWebHandlers) SMSSectionView(ctx context.Context, member *househol
 		phone = contact.Phone.String()
 	}
 	return components.NotifySettingsView{
-		Phone:       phone,
-		OptedIn:     contact.SMSOptedIn,
-		Preferences: rows,
-		CSRFToken:   authadapter.GetCSRFToken(ctx, h.sm),
-		Error:       errMsg,
+		Phone:          phone,
+		OptedIn:        contact.SMSOptedIn,
+		SMSAvailable:   h.settings.ChannelDeliverable(domain.ChannelSMS),
+		EmailAvailable: h.settings.ChannelDeliverable(domain.ChannelEmail),
+		Preferences:    rows,
+		CSRFToken:      authadapter.GetCSRFToken(ctx, h.sm),
+		Error:          errMsg,
 	}, nil
 }
 
@@ -142,6 +148,9 @@ func (h *NotifyWebHandlers) UpdatePhone(w http.ResponseWriter, r *http.Request) 
 		if errors.Is(err, domain.ErrInvalidPhoneFormat) {
 			return member, "Enter a valid phone number, e.g. +15551234567.", http.StatusBadRequest, true
 		}
+		if errors.Is(err, domain.ErrChannelNotDeliverable) {
+			return member, errSMSNotConfigured, http.StatusBadRequest, true
+		}
 		h.logger.ErrorContext(r.Context(), "notify settings: update phone", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return nil, "", 0, false
@@ -171,6 +180,9 @@ func (h *NotifyWebHandlers) UpdateOptIn(w http.ResponseWriter, r *http.Request) 
 	if err := h.settings.SetOptIn(r.Context(), member.ID, present); err != nil {
 		if errors.Is(err, domain.ErrPhoneRequiredForOptIn) {
 			return member, "Add a phone number before turning on text messages.", http.StatusBadRequest, true
+		}
+		if errors.Is(err, domain.ErrChannelNotDeliverable) {
+			return member, errSMSNotConfigured, http.StatusBadRequest, true
 		}
 		h.logger.ErrorContext(r.Context(), "notify settings: update opt-in", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

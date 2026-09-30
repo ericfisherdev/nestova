@@ -30,9 +30,9 @@ var ErrPreferenceNotFound = errors.New("notify: no preference set for this event
 // ErrChannelNotDeliverable is returned by app.SettingsService.SetPreferences
 // (NES-139) when a requested channel, though a syntactically valid
 // Channel value (Channel.Valid() would accept it), has no wired Sender in
-// this deployment — today, push (see SettingsService's own
-// deliverablePreferenceChannels; email joined the deliverable set in
-// NES-141). Persisting a preference for such a channel would let
+// this deployment — push always, and SMS or email when their optional
+// sender is not enabled (see SettingsService's injected deliverable set,
+// NES-206). Persisting a preference for such a channel would let
 // routing.RoutingEnqueuer route a future notification to it, which the
 // dispatcher would then fail with NO fallback (Dispatcher.fallbackToInApp
 // covers only the channels with real-world preconditions that can go

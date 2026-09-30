@@ -30,9 +30,16 @@ type NotifySettingsView struct {
 	Phone string
 	// OptedIn is true only after the member has explicitly consented —
 	// see docs/aws-sms.md's production consent gate.
-	OptedIn     bool
-	Preferences []NotifyPreferenceRow
-	CSRFToken   string
+	OptedIn bool
+	// SMSAvailable is true only when this deployment has an SMS sender
+	// wired (NES-206). When false the text-message option, the phone
+	// field and the consent checkbox are all hidden.
+	SMSAvailable bool
+	// EmailAvailable is true only when this deployment has an email
+	// sender wired (NES-206); when false the email option is hidden.
+	EmailAvailable bool
+	Preferences    []NotifyPreferenceRow
+	CSRFToken      string
 	// Error re-shows an inline failure message from a mutation on this
 	// same response (an invalid phone, opting in with no phone on file,
 	// or choosing SMS for a preference without current opt-in consent).
@@ -55,22 +62,26 @@ type QuietHoursSettingsView struct {
 templ notifySection(view NotifySettingsView) {
 	@Card("Notification delivery") {
 		<p class="mb-4 text-sm text-ink-secondary">
-			Choose how you get notified, per event type, below: in-app only
-			(the default), email, or text message. Add your phone number and
-			turn on text messages to get urgent, time-sensitive alerts by SMS —
-			like a chore claim about to expire — even when you're not looking
-			at the app. By checking the box below, you agree to receive
-			automated SMS messages from this household; message and data rates
-			may apply, and you can turn it off here at any time.
+			Choose how you get notified, per event type, below.
+			if view.SMSAvailable {
+				Add your phone number and turn on text messages to get urgent,
+				time-sensitive alerts by SMS — like a chore claim about to
+				expire — even when you're not looking at the app. By checking
+				the box below, you agree to receive automated SMS messages from
+				this household; message and data rates may apply, and you can
+				turn it off here at any time.
+			}
 		</p>
 		if view.Error != "" {
 			<p class="mb-4 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
 				{ view.Error }
 			</p>
 		}
-		@notifyPhoneForm(view)
-		if view.Phone != "" {
-			@notifyOptInForm(view)
+		if view.SMSAvailable {
+			@notifyPhoneForm(view)
+			if view.Phone != "" {
+				@notifyOptInForm(view)
+			}
 		}
 		@notifyPreferencesForm(view)
 	}
@@ -144,8 +155,12 @@ templ notifyPreferencesForm(view NotifySettingsView) {
 								class="rounded-control border border-sidebar-border px-2 py-1"
 							>
 								<option value="inapp" selected?={ row.Channel == "inapp" }>In-app only</option>
-								<option value="sms" disabled?={ !view.OptedIn } selected?={ row.Channel == "sms" }>Text message</option>
-								<option value="email" selected?={ row.Channel == "email" }>Email</option>
+								if view.SMSAvailable || row.Channel == "sms" {
+									<option value="sms" disabled?={ !view.SMSAvailable || !view.OptedIn } selected?={ row.Channel == "sms" }>Text message</option>
+								}
+								if view.EmailAvailable || row.Channel == "email" {
+									<option value="email" disabled?={ !view.EmailAvailable } selected?={ row.Channel == "email" }>Email</option>
+								}
 							</select>
 						</td>
 					</tr>
