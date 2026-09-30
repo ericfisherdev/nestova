@@ -36,7 +36,10 @@ type RememberedDevice struct {
 // records. Implementations live in the adapter package.
 //
 // Error contracts:
-//   - Create returns household.ErrMemberNotFound when MemberID does not exist.
+//   - Create returns ErrMFANotEnrolled when MemberID has no confirmed MFA
+//     enrollment at write time (none, unconfirmed, confirmed after
+//     CreatedAt, or deleted by a concurrent disenrol or reset) or does not
+//     exist. Nothing is stored in that case.
 //   - MarkUsed atomically checks that a row with tokenHash exists for
 //     memberID and has not expired as of now, stamps last_used_at, and returns
 //     ErrRememberedDeviceNotFound otherwise.

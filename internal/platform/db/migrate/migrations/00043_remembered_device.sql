@@ -9,6 +9,11 @@
 -- app-scoped, so the record is too, and no identity migration is needed. The
 -- FK cascades so a removed member takes their remembered devices with them.
 --
+-- A device is only as live as the MFA enrollment it bypasses, so it also
+-- references identity.member_mfa. Deleting the enrollment (disenrol or owner
+-- reset) removes the member's devices in the same statement, and an insert
+-- racing that delete fails the FK instead of surviving it.
+--
 -- token_hash is UNIQUE (the lookup key). The 32-byte check pins the SHA-256
 -- length the domain always writes; user_agent is display-only metadata, bounded
 -- to match the domain's truncation.
@@ -20,7 +25,9 @@ CREATE TABLE remembered_device (
     created_at   timestamptz NOT NULL,
     expires_at   timestamptz NOT NULL,
     last_used_at timestamptz NOT NULL,
-    CONSTRAINT remembered_device_expiry_chk CHECK (expires_at > created_at)
+    CONSTRAINT remembered_device_expiry_chk CHECK (expires_at > created_at),
+    CONSTRAINT remembered_device_enrollment_fkey FOREIGN KEY (member_id)
+        REFERENCES identity.member_mfa (member_id) ON DELETE CASCADE
 );
 
 -- Supports RevokeAllForMember and the per-member expired-row sweep.
