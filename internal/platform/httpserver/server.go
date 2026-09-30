@@ -99,7 +99,9 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	// through that shared wrapper) is recorded with the real final status;
 	// recovery turns panics into 500s; the per-request timeout comes next so its
 	// deadline also bounds the session/auth feature middleware (which do database
-	// work), not just the final handler; feature middleware (session/auth) runs
+	// work), not just the final handler; refuseNULBytes (NES-195) then turns away a
+	// form no text column can store before session/auth or a handler sees it;
+	// feature middleware (session/auth) runs
 	// last before the route handler. CaptureRoutePattern is appended innermost
 	// (directly wrapping the mux) to relay the matched route pattern back to the
 	// metrics middleware: Timeout and the feature middleware derive request copies
@@ -113,6 +115,7 @@ func New(cfg config.Config, deps Deps) *http.Server {
 		middleware.Metrics(deps.HTTPMetrics),
 		middleware.Recoverer(deps.Logger),
 		middleware.Timeout(requestTimeout),
+		refuseNULBytes,
 	}
 	chain = append(chain, deps.Middleware...)
 	chain = append(chain, middleware.CaptureRoutePattern)
