@@ -459,7 +459,6 @@ test.describe('A.1 passkey nickname', () => {
 // ---------------------------------------------------------------------------
 test.describe('A.2 password length', () => {
   test('A.2 [!] a 1 MB password is refused before it is hashed', async ({ page }) => {
-    test.fail(true, 'DEFECT (A.2): add-member accepts and argon2id-hashes a 1,000,000-character password; no upper bound exists');
     await login(page, PERSONAS.owner);
     const csrf_token = await fuzz.csrfFor(page, '/members/new');
     const member = (label) => {

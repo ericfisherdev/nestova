@@ -400,7 +400,6 @@ test.describe('§1 onboarding on an empty database', () => {
   });
 
   test('T-1.2.7 malformed emails are refused: a@@b.com and a 300-character local part', async ({ page }) => {
-    test.fail(true, 'DEFECT: email validation is only strings.Contains(email, "@"), so a@@b.com and a 300-char local part are stored');
     await signInFreshOwner(page);
     const stamp = Date.now();
     const malformed = {
