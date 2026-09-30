@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
@@ -49,7 +50,8 @@ type ActivationCode struct {
 }
 
 // Validate reports whether the code is well-formed, wrapping
-// ErrInvalidActivationCode.
+// ErrInvalidActivationCode; a name over MaxDeviceNameLength runes yields
+// ErrDeviceNameTooLong.
 func (c *ActivationCode) Validate() error {
 	if c.ID == (ActivationCodeID{}) {
 		return fmt.Errorf("%w: id is required", ErrInvalidActivationCode)
@@ -59,6 +61,9 @@ func (c *ActivationCode) Validate() error {
 	}
 	if strings.TrimSpace(c.Name) == "" {
 		return fmt.Errorf("%w: name must not be blank", ErrInvalidActivationCode)
+	}
+	if utf8.RuneCountInString(c.Name) > MaxDeviceNameLength {
+		return ErrDeviceNameTooLong
 	}
 	if strings.TrimSpace(c.CodeHash) == "" {
 		return fmt.Errorf("%w: code hash must not be blank", ErrInvalidActivationCode)

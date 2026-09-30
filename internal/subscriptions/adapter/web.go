@@ -312,6 +312,8 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 		errors.Is(err, household.ErrHouseholdNotFound),
 		errors.Is(err, household.ErrMemberNotFound):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, domain.ErrSubscriptionNameTooLong):
+		http.Error(w, fmt.Sprintf("subscription name must be %d characters or fewer", domain.MaxNameLength), http.StatusUnprocessableEntity)
 	case errors.Is(err, domain.ErrInvalidSubscription),
 		errors.Is(err, household.ErrInvalidMoney):
 		http.Error(w, "invalid subscription", http.StatusBadRequest)

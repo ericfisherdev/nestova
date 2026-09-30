@@ -3,7 +3,9 @@ package domain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Ingredient errors.
@@ -14,7 +16,31 @@ var (
 	ErrIngredientNotFound = errors.New("tracking: ingredient not found")
 	// ErrInvalidIngredient is returned when a name is empty after normalization.
 	ErrInvalidIngredient = errors.New("tracking: invalid ingredient name")
+	// ErrIngredientNameTooLong is returned when a normalized name exceeds
+	// MaxIngredientNameLength runes (NES-194). It wraps ErrInvalidIngredient, so
+	// callers that already skip an invalid line skip an over-length one too.
+	ErrIngredientNameTooLong = fmt.Errorf("%w: name is too long", ErrInvalidIngredient)
 )
+
+// MaxIngredientNameLength bounds a catalogue ingredient's canonical name,
+// counted in runes rather than bytes (see the tasks domain's MaxTitleLength).
+// The ingredient.canonical_name CHECK constraint in
+// 00044_text_field_length_caps.sql carries the same number.
+const MaxIngredientNameLength = 200
+
+// ValidateNormalizedName reports whether a normalized ingredient name is usable:
+// ErrInvalidIngredient when empty, ErrIngredientNameTooLong when over
+// MaxIngredientNameLength runes.
+func ValidateNormalizedName(canonical string) error {
+	switch {
+	case canonical == "":
+		return ErrInvalidIngredient
+	case utf8.RuneCountInString(canonical) > MaxIngredientNameLength:
+		return ErrIngredientNameTooLong
+	default:
+		return nil
+	}
+}
 
 // Ingredient is the canonical, household-agnostic catalogue entry that pantry,
 // shopping, and (later) meals all key off of. CanonicalName is the normalized

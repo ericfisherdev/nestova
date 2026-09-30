@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
@@ -16,6 +17,9 @@ var (
 	ErrSubscriptionNotFound = errors.New("subscriptions: subscription not found")
 	// ErrInvalidSubscription is returned by Validate for a malformed subscription.
 	ErrInvalidSubscription = errors.New("subscriptions: invalid subscription")
+	// ErrSubscriptionNameTooLong is returned by Validate when the name exceeds
+	// MaxNameLength runes (NES-194). It wraps ErrInvalidSubscription.
+	ErrSubscriptionNameTooLong = fmt.Errorf("%w: name is too long", ErrInvalidSubscription)
 )
 
 // Subscription is a recurring household expense billed on a Cycle. Amount is the
@@ -44,11 +48,20 @@ type Subscription struct {
 	UpdatedAt        time.Time
 }
 
+// MaxNameLength bounds a subscription's name, counted in runes rather than
+// bytes (see the tasks domain's MaxTitleLength). The subscription.name CHECK
+// constraint in 00044_text_field_length_caps.sql carries the same number.
+const MaxNameLength = 200
+
 // Validate reports whether the subscription is well-formed, wrapping
-// ErrInvalidSubscription (or the underlying value-object error) with detail.
+// ErrInvalidSubscription (or the underlying value-object error) with detail; a
+// name over MaxNameLength runes yields ErrSubscriptionNameTooLong.
 func (s Subscription) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("%w: name must not be blank", ErrInvalidSubscription)
+	}
+	if utf8.RuneCountInString(s.Name) > MaxNameLength {
+		return ErrSubscriptionNameTooLong
 	}
 	if err := s.Amount.Validate(); err != nil {
 		return err

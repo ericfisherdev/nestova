@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -149,6 +150,30 @@ type PointEntry struct {
 	CreatedAt time.Time
 }
 
+// Length bounds for a reward's free-text fields, counted in runes rather than
+// bytes (see MaxTitleLength). The reward.name and reward.description CHECK
+// constraints in 00044_text_field_length_caps.sql carry the same numbers, so a
+// caller that bypasses ValidateRewardText still cannot write an unbounded value.
+const (
+	MaxRewardNameLength        = 200
+	MaxRewardDescriptionLength = 1000
+)
+
+// ValidateRewardText reports whether name and description fit their length
+// bounds. It returns ErrRewardNameTooLong or ErrRewardDescriptionTooLong so the
+// caller can map the failure to its own presentation. Both arguments are
+// expected to be trimmed already.
+func ValidateRewardText(name, description string) error {
+	switch {
+	case utf8.RuneCountInString(name) > MaxRewardNameLength:
+		return ErrRewardNameTooLong
+	case utf8.RuneCountInString(description) > MaxRewardDescriptionLength:
+		return ErrRewardDescriptionTooLong
+	default:
+		return nil
+	}
+}
+
 // Reward is a redeemable item in the household's reward catalogue. A reward
 // with Active=false is retired: existing redemptions remain, but no new ones
 // can be created against it.
@@ -271,6 +296,15 @@ var (
 	// ErrInvalidRewardName is returned by the reward admin use-cases (NES-126)
 	// when the submitted reward name is empty after trimming whitespace.
 	ErrInvalidRewardName = errors.New("tasks: reward name is required")
+
+	// ErrRewardNameTooLong is returned by the reward admin use-cases when the
+	// submitted reward name exceeds MaxRewardNameLength runes (NES-194).
+	ErrRewardNameTooLong = errors.New("tasks: reward name is too long")
+
+	// ErrRewardDescriptionTooLong is returned by the reward admin use-cases when
+	// the submitted description exceeds MaxRewardDescriptionLength runes
+	// (NES-194).
+	ErrRewardDescriptionTooLong = errors.New("tasks: reward description is too long")
 
 	// ErrInvalidRewardCost is returned by the reward admin use-cases (NES-126)
 	// when the submitted cost is not a positive number of points, mirroring

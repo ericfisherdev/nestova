@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"time"
+	"unicode/utf8"
 )
 
 // Household is the aggregate root for the household bounded context.
@@ -31,7 +32,41 @@ var (
 	// ErrHouseholdExists is returned by first-run provisioning when a household
 	// already exists, so the (single-household) onboarding flow is a no-op.
 	ErrHouseholdExists = errors.New("household: a household already exists")
+	// ErrHouseholdNameTooLong is returned by ValidateHouseholdName when the name
+	// exceeds MaxHouseholdNameLength runes (NES-194).
+	ErrHouseholdNameTooLong = errors.New("household: household name is too long")
+	// ErrDisplayNameTooLong is returned by ValidateDisplayName when the name
+	// exceeds MaxDisplayNameLength runes (NES-194).
+	ErrDisplayNameTooLong = errors.New("household: member display name is too long")
 )
+
+// Length bounds for the identity-shaped names, counted in runes rather than
+// bytes (see the tasks domain's MaxTitleLength). identity.household.name and
+// identity.member.display_name are owned by nestcore, so a database backstop
+// for these two lives there rather than in this repository's migrations.
+const (
+	MaxHouseholdNameLength = 200
+	MaxDisplayNameLength   = 100
+)
+
+// ValidateHouseholdName returns ErrHouseholdNameTooLong when name exceeds
+// MaxHouseholdNameLength runes. Blank-name handling stays with the caller,
+// which words its own "required" message.
+func ValidateHouseholdName(name string) error {
+	if utf8.RuneCountInString(name) > MaxHouseholdNameLength {
+		return ErrHouseholdNameTooLong
+	}
+	return nil
+}
+
+// ValidateDisplayName returns ErrDisplayNameTooLong when name exceeds
+// MaxDisplayNameLength runes. Blank-name handling stays with the caller.
+func ValidateDisplayName(name string) error {
+	if utf8.RuneCountInString(name) > MaxDisplayNameLength {
+		return ErrDisplayNameTooLong
+	}
+	return nil
+}
 
 // HouseholdRepository persists households and their members. Member is a child
 // entity of the Household aggregate, so its operations live on this one

@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
@@ -102,6 +103,7 @@ func TestRewardAdminService_Create_Validation(t *testing.T) {
 	tests := []struct {
 		name              string
 		rewardName        string
+		rewardDescription string
 		costPoints        int
 		quantityAvailable *int
 		wantErr           error
@@ -112,6 +114,8 @@ func TestRewardAdminService_Create_Validation(t *testing.T) {
 		{name: "negative quantity", rewardName: "Toy", costPoints: 10, quantityAvailable: &negativeQty, wantErr: domain.ErrInvalidRewardQuantity},
 		{name: "cost above int4", rewardName: "Toy", costPoints: domain.MaxInt4 + 1, wantErr: domain.ErrInvalidRewardCost},
 		{name: "quantity above int4", rewardName: "Toy", costPoints: 10, quantityAvailable: &overQty, wantErr: domain.ErrInvalidRewardQuantity},
+		{name: "name over the cap", rewardName: strings.Repeat("a", domain.MaxRewardNameLength+1), costPoints: 10, wantErr: domain.ErrRewardNameTooLong},
+		{name: "description over the cap", rewardName: "Toy", rewardDescription: strings.Repeat("d", domain.MaxRewardDescriptionLength+1), costPoints: 10, wantErr: domain.ErrRewardDescriptionTooLong},
 	}
 
 	for _, tt := range tests {
@@ -119,7 +123,7 @@ func TestRewardAdminService_Create_Validation(t *testing.T) {
 			repo := &fakeRewardCatalogManager{}
 			svc := app.NewRewardAdminService(repo, newTestLogger())
 
-			_, err := svc.Create(t.Context(), household.NewHouseholdID(), tt.rewardName, "", tt.costPoints, nil, tt.quantityAvailable)
+			_, err := svc.Create(t.Context(), household.NewHouseholdID(), tt.rewardName, tt.rewardDescription, tt.costPoints, nil, tt.quantityAvailable)
 			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("Create() error = %v, want %v", err, tt.wantErr)
 			}

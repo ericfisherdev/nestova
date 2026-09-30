@@ -68,6 +68,9 @@ func NewRewardAdminService(repo RewardCatalogManager, logger *slog.Logger) *Rewa
 //
 // Error contracts:
 //   - Returns [domain.ErrInvalidRewardName] when name is empty after trimming.
+//   - Returns [domain.ErrRewardNameTooLong] or
+//     [domain.ErrRewardDescriptionTooLong] when a field exceeds its rune bound
+//     (NES-194).
 //   - Returns [domain.ErrInvalidRewardCost] when costPoints is not positive.
 //   - Returns [domain.ErrInvalidRewardQuantity] when quantityAvailable is
 //     non-nil and negative.
@@ -81,7 +84,8 @@ func (s *RewardAdminService) Create(
 	quantityAvailable *int,
 ) (*domain.Reward, error) {
 	name = strings.TrimSpace(name)
-	if err := validateRewardFields(name, costPoints, quantityAvailable); err != nil {
+	description = strings.TrimSpace(description)
+	if err := validateRewardFields(name, description, costPoints, quantityAvailable); err != nil {
 		return nil, err
 	}
 
@@ -89,7 +93,7 @@ func (s *RewardAdminService) Create(
 		ID:                domain.NewRewardID(),
 		HouseholdID:       householdID,
 		Name:              name,
-		Description:       strings.TrimSpace(description),
+		Description:       description,
 		CostPoints:        costPoints,
 		ImageRef:          imageRef,
 		QuantityAvailable: quantityAvailable,
@@ -114,7 +118,8 @@ func (s *RewardAdminService) Create(
 // Error contracts:
 //   - Returns [domain.ErrRewardNotFound] when id is unknown or belongs to
 //     another household.
-//   - Returns [domain.ErrInvalidRewardName], [domain.ErrInvalidRewardCost], or
+//   - Returns [domain.ErrInvalidRewardName], [domain.ErrRewardNameTooLong],
+//     [domain.ErrRewardDescriptionTooLong], [domain.ErrInvalidRewardCost], or
 //     [domain.ErrInvalidRewardQuantity] on a local validation failure — the
 //     existing reward is left unchanged.
 //   - Propagates unexpected repository errors unchanged.
@@ -128,7 +133,8 @@ func (s *RewardAdminService) Update(
 	quantityAvailable *int,
 ) (*domain.Reward, error) {
 	name = strings.TrimSpace(name)
-	if err := validateRewardFields(name, costPoints, quantityAvailable); err != nil {
+	description = strings.TrimSpace(description)
+	if err := validateRewardFields(name, description, costPoints, quantityAvailable); err != nil {
 		return nil, err
 	}
 
@@ -141,7 +147,7 @@ func (s *RewardAdminService) Update(
 	}
 
 	existing.Name = name
-	existing.Description = strings.TrimSpace(description)
+	existing.Description = description
 	existing.CostPoints = costPoints
 	existing.ImageRef = imageRef
 	existing.QuantityAvailable = quantityAvailable
@@ -187,9 +193,12 @@ func (s *RewardAdminService) Archive(ctx context.Context, householdID household.
 // quantity_available IS NULL OR quantity_available >= 0) and the int4 column
 // range (domain.MaxInt4) so a violation is
 // caught before it ever reaches the database.
-func validateRewardFields(name string, costPoints int, quantityAvailable *int) error {
+func validateRewardFields(name, description string, costPoints int, quantityAvailable *int) error {
 	if name == "" {
 		return domain.ErrInvalidRewardName
+	}
+	if err := domain.ValidateRewardText(name, description); err != nil {
+		return err
 	}
 	if costPoints <= 0 || costPoints > domain.MaxInt4 {
 		return domain.ErrInvalidRewardCost

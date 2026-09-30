@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
@@ -18,6 +19,9 @@ var (
 	ErrAlbumNotFound = errors.New("media: album not found")
 	// ErrInvalidAlbum is returned by Album.Validate for a malformed album.
 	ErrInvalidAlbum = errors.New("media: invalid album")
+	// ErrAlbumNameTooLong is returned by Album.Validate when the name exceeds
+	// MaxAlbumNameLength runes (NES-194). It wraps ErrInvalidAlbum.
+	ErrAlbumNameTooLong = fmt.Errorf("%w: name is too long", ErrInvalidAlbum)
 )
 
 // RotationInterval is the time each photo is shown before the album advances. It
@@ -142,10 +146,19 @@ type Album struct {
 	CreatedAt   time.Time
 }
 
-// Validate reports whether the album is well-formed, wrapping ErrInvalidAlbum.
+// MaxAlbumNameLength bounds an album's name, counted in runes rather than bytes
+// (see the tasks domain's MaxTitleLength). The album.name CHECK constraint in
+// 00044_text_field_length_caps.sql carries the same number.
+const MaxAlbumNameLength = 200
+
+// Validate reports whether the album is well-formed, wrapping ErrInvalidAlbum;
+// a name over MaxAlbumNameLength runes yields ErrAlbumNameTooLong.
 func (a Album) Validate() error {
 	if strings.TrimSpace(a.Name) == "" {
 		return fmt.Errorf("%w: name must not be blank", ErrInvalidAlbum)
+	}
+	if utf8.RuneCountInString(a.Name) > MaxAlbumNameLength {
+		return ErrAlbumNameTooLong
 	}
 	// A zero-value RotationInterval (seconds == 0) is invalid; NewRotationInterval
 	// is the only way to a positive one, so guard direct struct construction.

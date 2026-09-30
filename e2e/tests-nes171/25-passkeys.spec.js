@@ -174,7 +174,6 @@ test.describe('wired server', () => {
   });
 
   test('T-2.3.2 [!] renaming a passkey to 10,000 characters is refused', async ({ page }) => {
-    test.fail(true, 'DEFECT: passkey nickname has no length cap (service, handler or DB); 10,000 chars are stored');
     const { user } = await passkeyMember(page, { email: 'pk-rename-long@test.local', displayName: 'PK Rename Long' });
     const rename = `/settings/webauthn/${credentialRowId(user)}/rename`;
 

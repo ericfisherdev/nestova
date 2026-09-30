@@ -44,6 +44,10 @@ func NewKioskService(devices domain.KioskDeviceRepository, codes domain.Activati
 // hash is stored). name labels the device this code will provision once
 // redeemed (e.g. "Kitchen wall display"). The settings page never displays a
 // long-lived device token: that is generated only inside Redeem.
+//
+// Returns domain.ErrDeviceNameTooLong when name exceeds
+// domain.MaxDeviceNameLength runes, or domain.ErrInvalidActivationCode for a
+// blank one.
 func (s *KioskService) CreateActivationCode(ctx context.Context, householdID household.HouseholdID, name string) (*domain.ActivationCode, string, error) {
 	raw, err := domain.GenerateActivationCode()
 	if err != nil {

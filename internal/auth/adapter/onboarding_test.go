@@ -657,3 +657,55 @@ func extractCSRF(t *testing.T, html string) string {
 	}
 	return token
 }
+
+// TestOnboardingPOST_RejectsOverLengthNames confirms that a household name or
+// owner display name past its rune cap is refused with 422 and provisions
+// nothing (NES-194), while a value at the cap is accepted.
+func TestOnboardingPOST_RejectsOverLengthNames(t *testing.T) {
+	tests := []struct {
+		label         string
+		householdName string
+		displayName   string
+		wantStatus    int
+	}{
+		{"household name at the cap", strings.Repeat("家", household.MaxHouseholdNameLength), "Alex", http.StatusSeeOther},
+		{"household name over the cap", strings.Repeat("H", household.MaxHouseholdNameLength+1), "Alex", http.StatusUnprocessableEntity},
+		{"household name far over the cap", strings.Repeat("H", 10_000), "Alex", http.StatusUnprocessableEntity},
+		{"display name at the cap", "The Smiths", strings.Repeat("家", household.MaxDisplayNameLength), http.StatusSeeOther},
+		{"display name over the cap", "The Smiths", strings.Repeat("N", household.MaxDisplayNameLength+1), http.StatusUnprocessableEntity},
+	}
+	for _, tc := range tests {
+		t.Run(tc.label, func(t *testing.T) {
+			prov := &fakeProvisioner{}
+			_, handler := buildOnboardingHandler(&fakeHouseholdRepo{}, prov)
+
+			getRec := httptest.NewRecorder()
+			handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/onboarding", nil))
+			form := url.Values{
+				"csrf_token":     {extractCSRF(t, getRec.Body.String())},
+				"household_name": {tc.householdName},
+				"display_name":   {tc.displayName},
+				"email":          {"alex@example.com"},
+				"password":       {"supersecret"},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/onboarding", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			for _, c := range getRec.Result().Cookies() {
+				req.AddCookie(c)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			wantCalls := 0
+			if tc.wantStatus == http.StatusSeeOther {
+				wantCalls = 1
+			}
+			if prov.householdCalls != wantCalls {
+				t.Errorf("ProvisionHousehold called %d times, want %d", prov.householdCalls, wantCalls)
+			}
+		})
+	}
+}

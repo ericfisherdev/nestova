@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -46,6 +47,10 @@ const WebAuthnRegChallengeSessionKeyForTests = sessionKeyWebAuthnRegChallenge
 // shown for any failed registration attempt, mirroring genericMFAError's
 // (mfa_web.go) convention.
 const webauthnRegistrationErrorMessage = "Registration could not be completed. Please try again."
+
+// nicknameTooLongMessage is the 422 body for a passkey nickname over
+// authdomain.MaxNicknameLength runes, on both registration and rename.
+var nicknameTooLongMessage = fmt.Sprintf("Passkey name must be %d characters or fewer.", authdomain.MaxNicknameLength)
 
 // webauthnDisplayDateLayout is the human-readable date layout shown for a
 // device's registered/last-used timestamps, matching
@@ -247,6 +252,10 @@ func (h *WebAuthnWebHandlers) RegisterFinish(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.webauthn.FinishRegistration(r.Context(), member.ID, member.HouseholdID, member.DisplayName, payload.Nickname, session, parsed); err != nil {
+		if errors.Is(err, authdomain.ErrNicknameTooLong) {
+			http.Error(w, nicknameTooLongMessage, http.StatusUnprocessableEntity)
+			return
+		}
 		if errors.Is(err, authdomain.ErrWebAuthnVerificationFailed) {
 			http.Error(w, webauthnRegistrationErrorMessage, http.StatusUnauthorized)
 			return
@@ -288,6 +297,10 @@ func (h *WebAuthnWebHandlers) Rename(w http.ResponseWriter, r *http.Request) (me
 	if err := h.webauthn.Rename(r.Context(), member.HouseholdID, member.ID, id, r.FormValue("nickname")); err != nil {
 		if errors.Is(err, authdomain.ErrWebAuthnCredentialNotFound) {
 			http.Error(w, "credential not found", http.StatusNotFound)
+			return nil, false
+		}
+		if errors.Is(err, authdomain.ErrNicknameTooLong) {
+			http.Error(w, nicknameTooLongMessage, http.StatusUnprocessableEntity)
 			return nil, false
 		}
 		h.logger.ErrorContext(r.Context(), "webauthn: rename credential", "error", err)

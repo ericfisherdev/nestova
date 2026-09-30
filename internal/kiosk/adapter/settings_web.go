@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -113,6 +114,10 @@ func (h *SettingsWebHandlers) CreateActivationCode(w http.ResponseWriter, r *htt
 		name = "Kiosk"
 	}
 	code, rawCode, err := h.kiosk.CreateActivationCode(r.Context(), member.HouseholdID, name)
+	if errors.Is(err, domain.ErrDeviceNameTooLong) {
+		http.Error(w, fmt.Sprintf("device name must be %d characters or fewer", domain.MaxDeviceNameLength), http.StatusUnprocessableEntity)
+		return nil, nil, false
+	}
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "settings: create activation code", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

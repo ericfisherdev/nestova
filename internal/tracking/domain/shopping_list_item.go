@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
@@ -17,6 +18,9 @@ var (
 	// ErrInvalidShoppingListItem is returned when an item is not identified by
 	// exactly one of an ingredient or a free-text name.
 	ErrInvalidShoppingListItem = errors.New("tracking: shopping list item must have exactly one of ingredient or name")
+	// ErrShoppingListItemNameTooLong is returned by ShoppingListItem.Validate when
+	// the name exceeds MaxShoppingListItemNameLength runes (NES-194).
+	ErrShoppingListItemNameTooLong = errors.New("tracking: shopping list item name is too long")
 	// ErrShoppingListItemNotInCartable is returned by MarkInCart when the item
 	// exists but its current status is neither needed nor in_cart (i.e. it is
 	// already purchased) — the item cannot move backward into in_cart.
@@ -40,14 +44,24 @@ type ShoppingListItem struct {
 	CreatedAt    time.Time
 }
 
+// MaxShoppingListItemNameLength bounds a free-text shopping-list item name,
+// counted in runes rather than bytes (see the tasks domain's MaxTitleLength).
+// The shopping_list_item.name CHECK constraint in
+// 00044_text_field_length_caps.sql carries the same number.
+const MaxShoppingListItemNameLength = 200
+
 // Validate reports whether the item is well-formed: identified by exactly one of
-// IngredientID or a non-blank Name (ErrInvalidShoppingListItem otherwise), with a
-// valid Quantity (ErrInvalidQuantity) and known Source and Status.
+// IngredientID or a non-blank Name (ErrInvalidShoppingListItem otherwise), a Name
+// of at most MaxShoppingListItemNameLength runes (ErrShoppingListItemNameTooLong),
+// with a valid Quantity (ErrInvalidQuantity) and known Source and Status.
 func (i *ShoppingListItem) Validate() error {
 	hasIngredient := i.IngredientID != nil
 	hasName := strings.TrimSpace(i.Name) != ""
 	if hasIngredient == hasName {
 		return ErrInvalidShoppingListItem
+	}
+	if utf8.RuneCountInString(i.Name) > MaxShoppingListItemNameLength {
+		return ErrShoppingListItemNameTooLong
 	}
 	if err := i.Quantity.Validate(); err != nil {
 		return err

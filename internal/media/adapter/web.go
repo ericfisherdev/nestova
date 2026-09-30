@@ -655,6 +655,8 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 		http.Error(w, "unsupported photo type — please upload a JPEG, PNG, or WEBP image", http.StatusUnsupportedMediaType)
 	case errors.Is(err, domain.ErrPhotoTooLarge):
 		http.Error(w, "photo exceeds the maximum upload size", http.StatusRequestEntityTooLarge)
+	case errors.Is(err, domain.ErrAlbumNameTooLong):
+		http.Error(w, fmt.Sprintf("album name must be %d characters or fewer", domain.MaxAlbumNameLength), http.StatusUnprocessableEntity)
 	case errors.Is(err, domain.ErrInvalidAlbum), errors.Is(err, domain.ErrInvalidPhoto):
 		http.Error(w, "invalid request", http.StatusBadRequest)
 	default:

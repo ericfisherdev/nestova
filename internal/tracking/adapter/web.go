@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -461,6 +462,10 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 		errors.Is(err, household.ErrHouseholdNotFound),
 		errors.Is(err, household.ErrMemberNotFound):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, domain.ErrShoppingListItemNameTooLong):
+		http.Error(w, fmt.Sprintf("item name must be %d characters or fewer", domain.MaxShoppingListItemNameLength), http.StatusUnprocessableEntity)
+	case errors.Is(err, domain.ErrIngredientNameTooLong):
+		http.Error(w, fmt.Sprintf("ingredient name must be %d characters or fewer", domain.MaxIngredientNameLength), http.StatusUnprocessableEntity)
 	case errors.Is(err, household.ErrInvalidQuantity),
 		errors.Is(err, household.ErrUnitMismatch),
 		errors.Is(err, domain.ErrInvalidShoppingListItem),

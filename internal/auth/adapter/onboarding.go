@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -399,8 +400,12 @@ func validateOnboardingForm(householdName, displayName, email, password string) 
 	switch {
 	case householdName == "":
 		return "Household name is required."
+	case household.ValidateHouseholdName(householdName) != nil:
+		return fmt.Sprintf("Household name must be %d characters or fewer.", household.MaxHouseholdNameLength)
 	case displayName == "":
 		return "Your name is required."
+	case household.ValidateDisplayName(displayName) != nil:
+		return fmt.Sprintf("Your name must be %d characters or fewer.", household.MaxDisplayNameLength)
 	case email == "":
 		return "Email is required."
 	case !strings.Contains(email, "@"):
@@ -419,6 +424,8 @@ func validateAddMemberForm(displayName, email, password string) string {
 	switch {
 	case displayName == "":
 		return "Display name is required."
+	case household.ValidateDisplayName(displayName) != nil:
+		return fmt.Sprintf("Display name must be %d characters or fewer.", household.MaxDisplayNameLength)
 	case (email == "") != (password == ""):
 		return "Provide both email and password, or leave both blank."
 	case email != "" && !strings.Contains(email, "@"):
