@@ -1566,8 +1566,8 @@ func TestTaskService_CreateRecurringTask_CountsOutOfRange(t *testing.T) {
 	}{
 		{name: "points above int4", points: domain.MaxInt4 + 1, wantErr: domain.ErrInvalidTaskPoints},
 		{name: "negative points", points: -1, wantErr: domain.ErrInvalidTaskPoints},
-		{name: "lead time above int4", leadDays: domain.MaxInt4 + 1, wantErr: domain.ErrInvalidLeadTime},
-		{name: "largest in-range values", points: domain.MaxInt4, leadDays: domain.MaxInt4},
+		{name: "lead time above int4", leadDays: domain.MaxLeadTimeDays + 1, wantErr: domain.ErrInvalidLeadTime},
+		{name: "largest in-range values", points: domain.MaxInt4, leadDays: domain.MaxLeadTimeDays},
 	}
 
 	for _, tc := range tests {

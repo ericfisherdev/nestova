@@ -68,8 +68,9 @@ func NewTaskService(
 //     trimming, and [domain.ErrTitleTooLong] when it exceeds
 //     [domain.MaxTitleLength] runes (NES-172). The title is stored trimmed.
 //   - Returns [domain.ErrInvalidTaskPoints] or [domain.ErrInvalidLeadTime]
-//     when task.Points or task.LeadTimeDays is negative or above
-//     [domain.MaxInt4] (NES-191).
+//     when task.Points is negative or above [domain.MaxInt4], or
+//     task.LeadTimeDays is negative or above [domain.MaxLeadTimeDays]
+//     (NES-191).
 //   - Returns [domain.ErrAsNeededRequiresClaimable] when task.Cadence.Freq is
 //     household.FreqAsNeeded and task.RotationPolicy is not
 //     [domain.RotationClaimable] (NES-116).
