@@ -170,6 +170,27 @@ async function proposeTrade(owner) {
 }
 
 test.describe('§0.7 concurrency and double-submit', () => {
+  // Kept apart from T-0.7.1 because test.fail accepts any failure: a broken fill
+  // inside that test would be reported as the expected defect.
+  test('sanity: every create form makes one record on a single click', async ({ page }) => {
+    test.setTimeout(180_000);
+    await login(page, PERSONAS.owner);
+
+    for (const spec of CREATE_FORMS) {
+      const marker = fuzz.uniqueMarker('one');
+      try {
+        await page.goto(spec.page);
+        if (spec.open) await spec.open(page);
+        const form = page.locator(spec.form);
+        await spec.fill(form, marker);
+        await form.locator('button[type="submit"]').click();
+        await expect.poll(() => countRows(spec.table, spec.column, marker), { message: `${spec.name} records` }).toBe(1);
+      } finally {
+        if (spec.cleanup) spec.cleanup(marker);
+      }
+    }
+  });
+
   test('T-0.7.1 [!] double-clicking a create form\'s submit button makes one record', async ({ page }) => {
     test.fail(true, 'DEFECT: the hx-post create forms (album, recipe, subscription, shopping item) send both clicks of a double click and create two records');
     test.setTimeout(180_000);
@@ -188,9 +209,6 @@ test.describe('§0.7 concurrency and double-submit', () => {
       if (spec.cleanup) spec.cleanup(marker);
       if (rows !== 1) failures.push(`${spec.name}: ${rows} records`);
     }
-    // Sanity: a zero means the form was not submitted at all, which is a
-    // broken fill, not a guarded double click.
-    expect(failures.filter((f) => f.endsWith(': 0 records')), 'forms the test failed to submit').toEqual([]);
     expect(failures, 'forms that created more than one record from a double click').toEqual([]);
   });
 

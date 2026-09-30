@@ -143,20 +143,28 @@ test.describe('§6 rewards', () => {
     expect(remaining, 'remaining stock must not go negative').toBeGreaterThanOrEqual(0);
   });
 
+  // Kept apart from T-6.2.3 because test.fail accepts any failure: a broken
+  // redemption inside that test would be reported as the expected defect.
+  test('sanity: an in-stock reward is redeemable and debits the balance', async ({ page }) => {
+    const { id: kid, persona } = seedRewardsMember('InStock');
+    grantPoints(kid, 100);
+    const inStock = seedReward({ cost: 5, quantity: 1 });
+
+    await login(page, persona);
+    expect(await redeem(page, inStock)).toBe(303);
+    expect(balance(kid)).toBe(95);
+  });
+
   test('T-6.2.3 an out-of-stock reward is refused with 409, not 500', async ({ page }) => {
     test.fail(true, 'DEFECT: Redeem maps ErrRewardOutOfStock to 500 instead of a 409 conflict');
     const { id: kid, persona } = seedRewardsMember('Stock');
     grantPoints(kid, 100);
     const soldOut = seedReward({ cost: 5, quantity: 0 });
-    const inStock = seedReward({ cost: 5, quantity: 1 });
 
     await login(page, persona);
-    expect(await redeem(page, inStock), 'sanity: an in-stock reward is redeemable').toBe(303);
-    expect(balance(kid)).toBe(95);
-
     const status = await redeem(page, soldOut);
     expect(redemptions(kid, soldOut), 'no redemption may be recorded').toEqual([]);
-    expect(balance(kid), 'a refused redemption must not move the balance').toBe(95);
+    expect(balance(kid), 'a refused redemption must not move the balance').toBe(100);
     expect(status, 'out of stock is a conflict, and any 500 is a failure').toBe(409);
   });
 
@@ -422,17 +430,25 @@ test.describe('§6 rewards', () => {
     expect(status, 'any 500 is a failure').toBe(409);
   });
 
+  test('sanity: the reward form accepts a valid cost', async ({ page }) => {
+    const name = `Valid cost ${Date.now()}`;
+    await login(page, PERSONAS.owner);
+    await page.goto('/admin/rewards/new');
+    const csrf_token = await page.locator('input[name="csrf_token"]').first().inputValue();
+
+    const valid = await postForm(page, '/admin/rewards', {
+      csrf_token, name, cost_points: '10', quantity_available: '',
+    });
+    expect(valid, 'a valid reward is accepted').toBe(303);
+    expect(psql(`SELECT count(*) FROM nestova.reward WHERE name = '${name}';`).trim()).toBe('1');
+  });
+
   test('T-6.3.4 [!] a MaxInt64 cost is refused with 422, not 500', async ({ page }) => {
     test.fail(true, 'DEFECT: cost_points is Atoi-parsed to int64 but stored in an int4 column; overflow returns 500');
     const name = `Huge cost ${Date.now()}`;
     await login(page, PERSONAS.owner);
     await page.goto('/admin/rewards/new');
     const csrf_token = await page.locator('input[name="csrf_token"]').first().inputValue();
-
-    const valid = await postForm(page, '/admin/rewards', {
-      csrf_token, name: `${name} valid`, cost_points: '10', quantity_available: '',
-    });
-    expect(valid, 'sanity: a valid reward is accepted').toBe(303);
 
     const huge = await postForm(page, '/admin/rewards', {
       csrf_token, name, cost_points: '9223372036854775807', quantity_available: '',
