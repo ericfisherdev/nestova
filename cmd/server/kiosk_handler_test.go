@@ -672,6 +672,26 @@ func TestSettingsGenerateActivationCode_WhitespaceOnlyNameFallsBackToDefault(t *
 	}
 }
 
+func TestSettingsGenerateActivationCode_OverLengthNameIs422AndStoresNothing(t *testing.T) {
+	adult := adminTestAdult()
+	handler, sm, _, fakes := buildKioskTestHandler(t, adult)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, adult.ID.String())
+
+	body := "csrf_token=" + csrfToken + "&name=" + strings.Repeat("k", kioskdomain.MaxDeviceNameLength+1)
+	req := httptest.NewRequest(http.MethodPost, "/settings/kiosk/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST /settings/kiosk/generate with an over-length name: status = %d, want 422; body: %s", rec.Code, rec.Body.String())
+	}
+	if n := len(fakes.codes.byHash); n != 0 {
+		t.Errorf("stored %d activation codes, want 0", n)
+	}
+}
+
 // extractInputValue pulls the value="..." attribute out of the first element
 // carrying id="elementID" in a rendered page body.
 func extractInputValue(body, elementID string) string {

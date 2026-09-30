@@ -542,6 +542,34 @@ func TestWebAuthnSettings_Rename_UpdatesNicknameAndRedirects(t *testing.T) {
 	}
 }
 
+func TestWebAuthnSettings_Rename_OverLengthNicknameIs422AndKeepsOldName(t *testing.T) {
+	handler, sm, repo, hhRepo, _ := buildWebAuthnSettingsTestHandler(t)
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo.members[member.ID] = member
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	id := authdomain.NewWebAuthnCredentialID()
+	if err := repo.Create(context.Background(), member.HouseholdID, &authdomain.WebAuthnCredential{
+		ID: id, MemberID: member.ID, CredentialID: []byte("cred-rename-long"), PublicKey: []byte("pk"), Nickname: "Old",
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	body := "csrf_token=" + csrfToken + "&nickname=" + strings.Repeat("n", authdomain.MaxNicknameLength+1)
+	req := httptest.NewRequest(http.MethodPost, "/settings/webauthn/"+id.String()+"/rename", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("POST rename with an over-length nickname: status = %d, want 422; body: %s", rec.Code, rec.Body.String())
+	}
+	creds, _ := repo.ListByMember(context.Background(), member.ID)
+	if len(creds) != 1 || creds[0].Nickname != "Old" {
+		t.Errorf("Nickname after refused rename = %+v, want Old", creds)
+	}
+}
+
 func TestWebAuthnSettings_Revoke_RemovesDeviceImmediately(t *testing.T) {
 	handler, sm, repo, hhRepo, _ := buildWebAuthnSettingsTestHandler(t)
 	member := settingsTestAdultInHousehold(household.NewHouseholdID())

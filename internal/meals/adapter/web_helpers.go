@@ -348,6 +348,10 @@ func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request
 		errors.Is(err, household.ErrHouseholdNotFound),
 		errors.Is(err, tracking.ErrIngredientNotFound):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, domain.ErrRecipeTitleTooLong):
+		http.Error(w, fmt.Sprintf("recipe title must be %d characters or fewer", domain.MaxRecipeTitleLength), http.StatusUnprocessableEntity)
+	case errors.Is(err, tracking.ErrIngredientNameTooLong):
+		http.Error(w, fmt.Sprintf("ingredient names must be %d characters or fewer", tracking.MaxIngredientNameLength), http.StatusUnprocessableEntity)
 	case errors.Is(err, domain.ErrInvalidRecipe),
 		errors.Is(err, domain.ErrInvalidMealPlanEntry),
 		errors.Is(err, household.ErrInvalidQuantity),

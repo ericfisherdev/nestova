@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
@@ -22,6 +23,11 @@ var (
 	// ErrInvalidKioskDevice is returned by KioskDevice.Validate for a malformed
 	// device.
 	ErrInvalidKioskDevice = errors.New("kiosk: invalid device")
+	// ErrDeviceNameTooLong is returned by KioskDevice.Validate and
+	// ActivationCode.Validate when the name exceeds MaxDeviceNameLength runes
+	// (NES-194). It wraps both ErrInvalidKioskDevice and
+	// ErrInvalidActivationCode, so either aggregate's callers match it.
+	ErrDeviceNameTooLong = fmt.Errorf("%w: %w: name is too long", ErrInvalidKioskDevice, ErrInvalidActivationCode)
 	// ErrKioskDeviceRevoked is returned when a token resolves to a device whose
 	// access has been revoked.
 	ErrKioskDeviceRevoked = errors.New("kiosk: device revoked")
@@ -41,8 +47,15 @@ type KioskDevice struct {
 	RevokedAt   *time.Time
 }
 
+// MaxDeviceNameLength bounds a kiosk device's name, counted in runes rather than
+// bytes (see the tasks domain's MaxTitleLength). The kiosk_device.name and
+// kiosk_activation_code.name CHECK constraints in
+// 00044_text_field_length_caps.sql carry the same number.
+const MaxDeviceNameLength = 200
+
 // Validate reports whether the device is well-formed, wrapping
-// ErrInvalidKioskDevice.
+// ErrInvalidKioskDevice; a name over MaxDeviceNameLength runes yields
+// ErrDeviceNameTooLong.
 func (d *KioskDevice) Validate() error {
 	if d.ID == (KioskDeviceID{}) {
 		return fmt.Errorf("%w: id is required", ErrInvalidKioskDevice)
@@ -52,6 +65,9 @@ func (d *KioskDevice) Validate() error {
 	}
 	if strings.TrimSpace(d.Name) == "" {
 		return fmt.Errorf("%w: name must not be blank", ErrInvalidKioskDevice)
+	}
+	if utf8.RuneCountInString(d.Name) > MaxDeviceNameLength {
+		return ErrDeviceNameTooLong
 	}
 	if strings.TrimSpace(d.TokenHash) == "" {
 		return fmt.Errorf("%w: token hash must not be blank", ErrInvalidKioskDevice)

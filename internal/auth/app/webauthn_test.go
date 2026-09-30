@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -1007,6 +1008,33 @@ func TestWebAuthnService_Rename_BlankNickname_Defaults(t *testing.T) {
 	creds, _ := repo.ListByMember(context.Background(), memberID)
 	if len(creds) != 1 || creds[0].Nickname != "Passkey" {
 		t.Errorf("Nickname after blank rename = %+v, want the default %q", creds, "Passkey")
+	}
+}
+
+func TestWebAuthnService_Rename_OverLengthNickname_Refused(t *testing.T) {
+	t.Parallel()
+	svc, repo, _, _ := newWebAuthnServiceFixture(t)
+	memberID := household.NewMemberID()
+	householdID := household.NewHouseholdID()
+	id := authdomain.NewWebAuthnCredentialID()
+	if err := repo.Create(context.Background(), householdID, &authdomain.WebAuthnCredential{
+		ID: id, MemberID: memberID, CredentialID: []byte("cred"), PublicKey: []byte("pk"), Nickname: "Old",
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+
+	atCap := strings.Repeat("家", authdomain.MaxNicknameLength)
+	if err := svc.Rename(context.Background(), householdID, memberID, id, atCap); err != nil {
+		t.Fatalf("Rename to exactly %d runes: %v", authdomain.MaxNicknameLength, err)
+	}
+
+	err := svc.Rename(context.Background(), householdID, memberID, id, strings.Repeat("n", 10_000))
+	if !errors.Is(err, authdomain.ErrNicknameTooLong) {
+		t.Fatalf("Rename(10,000 chars) = %v, want ErrNicknameTooLong", err)
+	}
+	creds, _ := repo.ListByMember(context.Background(), memberID)
+	if len(creds) != 1 || creds[0].Nickname != atCap {
+		t.Errorf("Nickname after refused rename = %+v, want it unchanged", creds)
 	}
 }
 

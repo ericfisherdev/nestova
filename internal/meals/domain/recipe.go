@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 	tracking "github.com/ericfisherdev/nestova/internal/tracking/domain"
@@ -20,7 +21,15 @@ var (
 	// not match RecipeSourceKind (local recipes are household-owned with no
 	// external ref; external recipes are household-agnostic and carry one).
 	ErrInvalidRecipe = errors.New("meals: invalid recipe")
+	// ErrRecipeTitleTooLong is returned by Recipe.Validate when the title exceeds
+	// MaxRecipeTitleLength runes (NES-194). It wraps ErrInvalidRecipe.
+	ErrRecipeTitleTooLong = fmt.Errorf("%w: title is too long", ErrInvalidRecipe)
 )
+
+// MaxRecipeTitleLength bounds a recipe's title, counted in runes rather than
+// bytes (see the tasks domain's MaxTitleLength). The recipe.title CHECK
+// constraint in 00044_text_field_length_caps.sql carries the same number.
+const MaxRecipeTitleLength = 200
 
 // RecipeIngredient is one normalized ingredient line of a recipe, keyed to the
 // shared catalogue (NES-38). Optional lines are not required to cook the recipe
@@ -67,7 +76,7 @@ type Recipe struct {
 }
 
 // Validate reports whether the recipe is well-formed, returning ErrInvalidRecipe
-// for a blank title, non-positive servings, or a source/ownership mismatch, and
+// for a blank or over-length title (ErrRecipeTitleTooLong wraps it), non-positive servings, or a source/ownership mismatch, and
 // the wrapped household.ErrInvalidQuantity for a malformed ingredient line. The
 // ingredient set may be empty: a box recipe can be saved before its lines are
 // filled and an external/cached recipe may arrive without parsed ingredients, so
@@ -76,6 +85,9 @@ type Recipe struct {
 func (r *Recipe) Validate() error {
 	if strings.TrimSpace(r.Title) == "" {
 		return fmt.Errorf("%w: title must not be blank", ErrInvalidRecipe)
+	}
+	if utf8.RuneCountInString(r.Title) > MaxRecipeTitleLength {
+		return ErrRecipeTitleTooLong
 	}
 	if r.Servings <= 0 {
 		return fmt.Errorf("%w: servings must be positive, got %d", ErrInvalidRecipe, r.Servings)

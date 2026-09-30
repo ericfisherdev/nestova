@@ -301,7 +301,6 @@ test.describe('§1 onboarding on an empty database', () => {
   });
 
   test('T-1.3.5 [!] a 10,000-character household name is refused', async ({ page }) => {
-    test.fail(true, 'DEFECT: onboarding stores a 10,000-character household name (no length cap in handler, domain or schema)');
     const csrf_token = await csrfToken(page, at('/onboarding'));
     const status = await postForm(page, '/onboarding', {
       csrf_token, ...onboardingFields({ household_name: 'H'.repeat(10_000) }),

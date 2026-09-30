@@ -388,7 +388,6 @@ test.describe('§0.5 every text field', () => {
   });
 
   test('T-0.5.3/A.1 [!] every text field refuses 10,000 characters', async ({ page }) => {
-    test.fail(true, 'DEFECT (A.1): only the task title (NES-172) caps its length; every other text field stores 10,000 characters');
     const csrf_token = await fuzz.csrfFor(page);
     const failures = await sweep(fuzz.TEXT_FIELDS, async (field) => {
       const marker = fuzz.uniqueMarker('huge');
@@ -413,7 +412,6 @@ test.describe('A.1 passkey nickname', () => {
 
   test('T-0.5.3/A.1 [!] a passkey nickname refuses 10,000 characters', async ({ browser }) => {
     test.skip(!webauthnBaseURL, 'needs NESTOVA_WEBAUTHN_BASE_URL: a server on this database started with PUBLIC_BASE_URL set to its own origin');
-    test.fail(true, 'DEFECT (A.1): WebAuthnService.Rename trims but never bounds the nickname; 10,000 characters are stored');
 
     // A seeded member: a credential on a shared persona would put a passkey
     // step-up in front of every later password login.

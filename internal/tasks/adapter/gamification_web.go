@@ -922,6 +922,10 @@ func rewardAdminErrMessage(err error) string {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRewardName):
 		return "Name is required."
+	case errors.Is(err, domain.ErrRewardNameTooLong):
+		return fmt.Sprintf("Name must be %d characters or fewer.", domain.MaxRewardNameLength)
+	case errors.Is(err, domain.ErrRewardDescriptionTooLong):
+		return fmt.Sprintf("Description must be %d characters or fewer.", domain.MaxRewardDescriptionLength)
 	case errors.Is(err, domain.ErrInvalidRewardCost):
 		return fmt.Sprintf("Cost must be a whole number of points from 1 to %d.", domain.MaxInt4)
 	case errors.Is(err, domain.ErrInvalidRewardQuantity):

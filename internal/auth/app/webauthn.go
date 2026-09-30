@@ -122,11 +122,18 @@ func (s *WebAuthnService) BeginRegistration(ctx context.Context, memberID househ
 // BeginRegistration returned), and — on success — persists a new credential
 // row under nickname (defaulted to defaultCredentialNickname when blank).
 //
+// Returns authdomain.ErrNicknameTooLong, before touching the ceremony, when
+// nickname exceeds authdomain.MaxNicknameLength runes (NES-194).
+//
 // Returns authdomain.ErrWebAuthnVerificationFailed when verification fails
 // for any reason (challenge mismatch, expired challenge, replayed
 // challenge, RP ID/origin mismatch, signature invalid) — deliberately
 // undifferentiated; see that sentinel's own doc.
 func (s *WebAuthnService) FinishRegistration(ctx context.Context, memberID household.MemberID, householdID household.HouseholdID, displayName, nickname string, session webauthn.SessionData, parsedResponse *protocol.ParsedCredentialCreationData) error {
+	nickname = strings.TrimSpace(nickname)
+	if err := authdomain.ValidateNickname(nickname); err != nil {
+		return err
+	}
 	existing, err := s.repo.ListByMember(ctx, memberID)
 	if err != nil {
 		return fmt.Errorf("webauthn: finish registration: list existing credentials: %w", err)
@@ -138,7 +145,6 @@ func (s *WebAuthnService) FinishRegistration(ctx context.Context, memberID house
 		return fmt.Errorf("%w: %v", authdomain.ErrWebAuthnVerificationFailed, err)
 	}
 
-	nickname = strings.TrimSpace(nickname)
 	if nickname == "" {
 		nickname = defaultCredentialNickname
 	}
@@ -161,9 +167,15 @@ func (s *WebAuthnService) FinishRegistration(ctx context.Context, memberID house
 	return nil
 }
 
-// Rename updates the nickname on memberID's credential id.
+// Rename updates the nickname on memberID's credential id. It returns
+// authdomain.ErrNicknameTooLong when the trimmed nickname exceeds
+// authdomain.MaxNicknameLength runes and authdomain.ErrWebAuthnCredentialNotFound
+// when no credential matches.
 func (s *WebAuthnService) Rename(ctx context.Context, householdID household.HouseholdID, memberID household.MemberID, id authdomain.WebAuthnCredentialID, nickname string) error {
 	nickname = strings.TrimSpace(nickname)
+	if err := authdomain.ValidateNickname(nickname); err != nil {
+		return err
+	}
 	if nickname == "" {
 		nickname = defaultCredentialNickname
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -54,7 +55,25 @@ var (
 	// caller cannot distinguish which one occurred (mirroring
 	// ErrInvalidTOTPCode's no-oracle convention).
 	ErrWebAuthnVerificationFailed = errors.New("auth: webauthn verification failed")
+	// ErrNicknameTooLong is returned by ValidateNickname when a passkey nickname
+	// exceeds MaxNicknameLength runes (NES-194).
+	ErrNicknameTooLong = errors.New("auth: passkey nickname is too long")
 )
+
+// MaxNicknameLength bounds a passkey nickname, counted in runes rather than
+// bytes (see the tasks domain's MaxTitleLength). identity.member_credential is
+// owned by nestcore, so a database backstop for this bound lives there.
+const MaxNicknameLength = 100
+
+// ValidateNickname returns ErrNicknameTooLong when nickname exceeds
+// MaxNicknameLength runes. A blank nickname is valid: the service substitutes a
+// default.
+func ValidateNickname(nickname string) error {
+	if utf8.RuneCountInString(nickname) > MaxNicknameLength {
+		return ErrNicknameTooLong
+	}
+	return nil
+}
 
 // WebAuthnCredential is one member's registered platform passkey. A member
 // may register several (phone, laptop, security key); each row is

@@ -72,11 +72,13 @@ func (r *IngredientRepository) Resolve(ctx context.Context, name string) (*domai
 // returns it. It is race-safe: INSERT ... ON CONFLICT DO NOTHING leaves any
 // concurrently-inserted row intact, and the subsequent re-select returns the
 // surviving row whether this call or another created it. Returns
-// domain.ErrInvalidIngredient for input that normalizes to empty.
+// domain.ErrInvalidIngredient for input that normalizes to empty and
+// domain.ErrIngredientNameTooLong (which wraps it) for one over
+// domain.MaxIngredientNameLength runes.
 func (r *IngredientRepository) EnsureIngredient(ctx context.Context, name string) (*domain.Ingredient, error) {
 	canonical := domain.NormalizeName(name)
-	if canonical == "" {
-		return nil, domain.ErrInvalidIngredient
+	if err := domain.ValidateNormalizedName(canonical); err != nil {
+		return nil, err
 	}
 
 	const insert = `
