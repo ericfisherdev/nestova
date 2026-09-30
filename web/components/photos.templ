@@ -279,7 +279,7 @@ templ photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) {
 			if len(albums) > 0 {
 				<form method="post" action={ templ.URL(photosPath + "/" + photo.ID + "/add-to-album") } hx-post={ photosPath + "/" + photo.ID + "/add-to-album" } class="flex gap-1">
 					<input type="hidden" name="csrf_token" value={ csrfToken }/>
-					<select name="album_id" aria-label="Add to album" class="w-full rounded-control border border-sidebar-border bg-surface px-1 py-1 text-xs text-ink">
+					<select name="album_id" aria-label="Add to album" class="w-full min-w-0 rounded-control border border-sidebar-border bg-surface px-1 py-1 text-xs text-ink">
 						for _, a := range albums {
 							<option value={ a.ID }>{ a.Name }</option>
 						}
@@ -308,9 +308,9 @@ templ albumForm(mode, action, csrfToken, nameValue string, rotationValue int, me
 		if len(members) > 0 {
 			<span class="text-xs font-medium text-ink-muted">Only show photos from (optional)</span>
 			for _, m := range members {
-				<label class="flex items-center gap-2 text-sm text-ink">
-					<input type="checkbox" name="member_ids" value={ m.ID }/>
-					{ m.Name }
+				<label class="flex min-w-0 items-center gap-2 text-sm text-ink">
+					<input type="checkbox" name="member_ids" value={ m.ID } class="shrink-0"/>
+					<span class="min-w-0 break-words">{ m.Name }</span>
 				</label>
 			}
 		}
