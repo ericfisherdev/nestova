@@ -195,6 +195,16 @@ function contactOf(member) {
   return { phone, optedIn: optedIn === 't' };
 }
 
+// submitAndWait clicks a button and returns the response of the POST it
+// triggers, so the caller reads the database only after the write finished.
+async function submitAndWait(page, path, buttonName) {
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === path),
+    page.getByRole('button', { name: buttonName }).click(),
+  ]);
+  return response;
+}
+
 function preferenceOf(member, eventType) {
   return psql(
     `SELECT channel FROM nestova.member_notification_pref WHERE member_id = '${member}' AND event_type = '${eventType}';`,
@@ -391,12 +401,13 @@ test.describe('§3.1 notification channel preferences', () => {
 
     await expect(page.locator('#notify-phone'), 'no way to enter a number').toHaveCount(0);
     await expect(page.locator('#notify-opted-in'), 'no way to give consent').toHaveCount(0);
-    await page.getByRole('button', { name: 'Withdraw text message consent' }).click();
-    await expect(page.getByRole('button', { name: 'Remove phone number' })).toBeVisible();
+    const withdrawn = await submitAndWait(page, '/settings/notify/opt-in', 'Withdraw text message consent');
+    expect(withdrawn.status(), 'withdrawing consent').toBe(200);
     expect(contactOf(member.id), 'consent is withdrawn, the number is kept').toEqual({ phone: '+15555550123', optedIn: false });
     await expect(page.getByRole('button', { name: 'Withdraw text message consent' }), 'nothing left to withdraw').toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Remove phone number' }).click();
+    const removed = await submitAndWait(page, '/settings/notify/phone', 'Remove phone number');
+    expect(removed.status(), 'removing the phone').toBe(200);
     expect(contactOf(member.id), 'the number is removed').toEqual({ phone: '', optedIn: false });
     await expect(page.getByRole('button', { name: 'Remove phone number' }), 'nothing left to remove').toHaveCount(0);
   });
