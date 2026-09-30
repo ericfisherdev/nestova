@@ -655,7 +655,10 @@ test.describe('§0.6 every numeric field', () => {
     expect(failures, 'int4 fields without an upper bound').toEqual([]);
   });
 
-  test('A.4/T-0.6.4 pantry and subscription amounts have an upper bound', async ({ page }) => {
+  // Kept apart from the int4 sweep above because test.fail accepts any failure:
+  // the pantry and subscription bounds are separate defects from NES-191.
+  test('A.4/T-0.6.4 [!] pantry and subscription amounts have an upper bound', async ({ page }) => {
+    test.fail(true, 'DEFECT (A.4): a huge weekly subscription is accepted and then 500s /subscriptions; pantry quantity has no bound');
     const csrf_token = await fuzz.csrfFor(page);
     const byName = (n) => fields.find((f) => f.name === n);
     const cost = byName('subscription cost');
