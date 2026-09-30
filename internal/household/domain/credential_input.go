@@ -21,8 +21,10 @@ var (
 )
 
 // Bounds for member credentials. The email limits come from RFC 5321
-// (64-octet local part, 254-octet address); the password cap keeps an
-// arbitrarily large input from reaching the password hasher.
+// (64-octet local part, 254-octet address). The password cap bounds what
+// onboarding and add-member will hash and store as a new credential. Login and
+// password re-verification are deliberately not capped: a member whose
+// password predates the cap must still be able to sign in.
 const (
 	MaxEmailLocalPartLength = 64
 	MaxEmailLength          = 254
