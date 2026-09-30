@@ -773,20 +773,20 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		var templ_7745c5c3_Var35 templ.SafeURL
 		templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinURLErrs(rewardFormAction(form))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 261, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 263, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" novalidate x-data x-on:submit=\"$el.querySelectorAll('button[type=submit]').forEach((b) => b.disabled = true)\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 262, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 268, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var36)
 		if templ_7745c5c3_Err != nil {
@@ -804,7 +804,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.FormToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 264, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 270, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var37)
 			if templ_7745c5c3_Err != nil {
@@ -822,7 +822,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		var templ_7745c5c3_Var38 string
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 274, Col: 24}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 280, Col: 24}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var38)
 		if templ_7745c5c3_Err != nil {
@@ -835,7 +835,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(form.Description)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 290, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 296, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 		if templ_7745c5c3_Err != nil {
@@ -848,7 +848,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		var templ_7745c5c3_Var40 string
 		templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.ImageRef)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 299, Col: 28}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 305, Col: 28}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var40)
 		if templ_7745c5c3_Err != nil {
@@ -861,7 +861,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		var templ_7745c5c3_Var41 string
 		templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.CostPoints)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 313, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 319, Col: 31}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var41)
 		if templ_7745c5c3_Err != nil {
@@ -874,7 +874,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		var templ_7745c5c3_Var42 string
 		templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.QuantityAvailable)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 326, Col: 38}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 332, Col: 38}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var42)
 		if templ_7745c5c3_Err != nil {
@@ -892,7 +892,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 			var templ_7745c5c3_Var43 string
 			templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 335, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewardsadmin.templ`, Line: 341, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 			if templ_7745c5c3_Err != nil {

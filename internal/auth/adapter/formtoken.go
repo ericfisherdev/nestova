@@ -58,9 +58,12 @@ func HasFormToken(r *http.Request, sm *scs.SessionManager) bool {
 // no-op.
 //
 // The session is read and written per request without a lock, so two POSTs
-// carrying the same token at the same instant can both pass HasFormToken. The
-// double-click case is closed client-side (hx-sync and hx-disabled-elt); this
-// token closes the sequential resubmit.
+// carrying the same token at the same instant can both pass HasFormToken, and
+// a stale session write from another tab can bring a spent token back. This
+// token closes the sequential resubmit only; a form that uses it must also
+// stop a double click in the browser (the reward form disables its submit
+// button on submit). An atomic claim would need the token persisted with the
+// row it guards.
 func ConsumeFormToken(r *http.Request, sm *scs.SessionManager) {
 	presented := r.FormValue(FormTokenField)
 	pending := pendingFormTokens(r.Context(), sm)

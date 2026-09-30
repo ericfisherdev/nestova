@@ -294,8 +294,12 @@ test.describe('§0.7 concurrency and double-submit', () => {
     // If the browser did not restore the values, re-enter the same ones.
     const form = page.locator(reward.form);
     if ((await form.locator('input[name="name"]').inputValue()) === '') await reward.fill(form, marker);
-    await form.locator('button[type="submit"]').click();
-    await page.waitForLoadState('load');
+    const [resubmit] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/admin/rewards'),
+      form.locator('button[type="submit"]').click(),
+    ]);
+    expect(resubmit.status(), 'a spent form token must be rejected with 409').toBe(409);
+    await expect(page.getByRole('alert')).toContainText('already submitted');
     expect(countRows(reward.table, reward.column, marker), 'a resubmitted form must not create a duplicate').toBe(1);
   });
 
