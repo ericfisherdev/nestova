@@ -143,7 +143,6 @@ test.describe('§14 the worker in use', () => {
   });
 
   test('T-14.2.1 going offline mid-HTMX-request shows a failure and leaves no stuck request state', async ({ page, context }) => {
-    test.fail(true, 'DEFECT: a failed HTMX request (offline) gives no visible feedback; no htmx:sendError handler exists');
     await login(page, PERSONAS.owner);
     await page.goto('/groceries');
     await waitForController(page);

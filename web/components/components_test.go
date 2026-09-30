@@ -204,3 +204,22 @@ func TestLayout_RendersPWAHead(t *testing.T) {
 		}
 	}
 }
+
+// TestLayout_RendersHiddenNetworkAlert guards the offline notice from NES-202:
+// the alert must exist but stay hidden until network-alert.js reveals it, or
+// every page would announce an offline error on load.
+func TestLayout_RendersHiddenNetworkAlert(t *testing.T) {
+	out := renderString(t, components.Layout(components.ShellProps{}, nil, templ.Raw("")))
+
+	for _, want := range []string{
+		`id="network-alert"`,
+		`role="alert"`,
+		`hidden`,
+		`Nothing was saved`,
+		`src="/static/js/network-alert.js" defer`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("layout missing %s: %q", want, out)
+		}
+	}
+}
