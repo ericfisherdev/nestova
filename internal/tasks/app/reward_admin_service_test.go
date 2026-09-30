@@ -97,6 +97,7 @@ func TestNewRewardAdminService_NilLogger_Panics(t *testing.T) {
 
 func TestRewardAdminService_Create_Validation(t *testing.T) {
 	negativeQty := -1
+	overQty := domain.MaxInt4 + 1
 
 	tests := []struct {
 		name              string
@@ -109,6 +110,8 @@ func TestRewardAdminService_Create_Validation(t *testing.T) {
 		{name: "zero cost", rewardName: "Toy", costPoints: 0, wantErr: domain.ErrInvalidRewardCost},
 		{name: "negative cost", rewardName: "Toy", costPoints: -5, wantErr: domain.ErrInvalidRewardCost},
 		{name: "negative quantity", rewardName: "Toy", costPoints: 10, quantityAvailable: &negativeQty, wantErr: domain.ErrInvalidRewardQuantity},
+		{name: "cost above int4", rewardName: "Toy", costPoints: domain.MaxInt4 + 1, wantErr: domain.ErrInvalidRewardCost},
+		{name: "quantity above int4", rewardName: "Toy", costPoints: 10, quantityAvailable: &overQty, wantErr: domain.ErrInvalidRewardQuantity},
 	}
 
 	for _, tt := range tests {

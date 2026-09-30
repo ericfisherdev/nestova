@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"math"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -139,6 +140,12 @@ type TaskInstance struct {
 // that bypasses this validation still cannot write an unbounded title.
 const MaxTitleLength = 200
 
+// MaxInt4 is the largest value the schema's int4 columns hold (points, lead
+// time, reward cost, reward quantity). Form input is parsed as a 64-bit int, so
+// without this ceiling a larger value reaches Postgres and fails as a 500
+// instead of a validation error (NES-191).
+const MaxInt4 = math.MaxInt32
+
 // ValidateTitle reports whether title is an acceptable recurring-task title:
 // non-empty after trimming, and no longer than MaxTitleLength runes. It
 // returns ErrTitleRequired or ErrTitleTooLong so the caller can map the
@@ -150,6 +157,20 @@ func ValidateTitle(title string) error {
 		return ErrTitleRequired
 	case utf8.RuneCountInString(trimmed) > MaxTitleLength:
 		return ErrTitleTooLong
+	default:
+		return nil
+	}
+}
+
+// ValidateTaskCounts reports whether points and leadTimeDays are within
+// 0..MaxInt4. It returns ErrInvalidTaskPoints or ErrInvalidLeadTime so the
+// caller can map the failure to its own presentation.
+func ValidateTaskCounts(points, leadTimeDays int) error {
+	switch {
+	case points < 0 || points > MaxInt4:
+		return ErrInvalidTaskPoints
+	case leadTimeDays < 0 || leadTimeDays > MaxInt4:
+		return ErrInvalidLeadTime
 	default:
 		return nil
 	}

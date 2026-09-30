@@ -645,13 +645,10 @@ test.describe('§0.6 every numeric field', () => {
     expect(failures, 'money input that was not refused readably').toEqual([]);
   });
 
-  test('A.4/T-0.6.4 [!] numeric fields have an upper bound and never overflow into a 500', async ({ page }) => {
-    test.fail(true, 'DEFECT (A.4): int4 columns 500 on values past 2^31-1; a huge weekly subscription is accepted and then 500s /subscriptions; pantry quantity has no bound');
+  test('A.4/T-0.6.4 [!] integer form fields past the int4 range are refused, not a 500', async ({ page }) => {
     const csrf_token = await fuzz.csrfFor(page);
     const byName = (n) => fields.find((f) => f.name === n);
     const int4Fields = ['task points', 'task lead time', 'reward cost', 'reward quantity'].map(byName);
-    const cost = byName('subscription cost');
-    const pantry = byName('pantry quantity');
 
     const failures = await sweep(int4Fields, async (field) => {
       const problems = [];
@@ -661,6 +658,19 @@ test.describe('§0.6 every numeric field', () => {
       }
       return problems;
     });
+
+    expect(failures, 'int4 fields without an upper bound').toEqual([]);
+  });
+
+  // Kept apart from the int4 sweep above because test.fail accepts any failure:
+  // the pantry and subscription bounds are separate defects from NES-191.
+  test('A.4/T-0.6.4 [!] pantry and subscription amounts have an upper bound', async ({ page }) => {
+    test.fail(true, 'DEFECT (A.4): a huge weekly subscription is accepted and then 500s /subscriptions; pantry quantity has no bound');
+    const csrf_token = await fuzz.csrfFor(page);
+    const byName = (n) => fields.find((f) => f.name === n);
+    const cost = byName('subscription cost');
+    const pantry = byName('pantry quantity');
+    const failures = [];
 
     const hugePantry = await expectRefused(page, csrf_token, pantry, '1e300');
     if (hugePantry) failures.push(`pantry quantity: ${hugePantry}`);
