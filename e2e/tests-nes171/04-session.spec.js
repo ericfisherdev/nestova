@@ -55,9 +55,8 @@ test.describe('§0.4 session and auth state', () => {
 
     const after = (await context.cookies()).find((c) => c.name === 'session');
     expect(after, 'a session cookie must exist after login').toBeTruthy();
-    if (before) {
-      expect(after.value, 'the pre-login token must not survive login').not.toBe(before.value);
-    }
+    expect(before, 'GET /login must issue a pre-login session (it holds the CSRF token)').toBeTruthy();
+    expect(after.value, 'the pre-login token must not survive login').not.toBe(before.value);
   });
 
   test('T-0.4.4 logout invalidates the session server-side', async ({ page }) => {
