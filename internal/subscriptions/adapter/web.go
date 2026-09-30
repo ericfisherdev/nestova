@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,9 +30,13 @@ const dateLayout = "2006-01-02"
 // displayDateLayout is the human-readable date layout shown in the UI.
 const displayDateLayout = "Jan 2, 2006"
 
-// maxAmountUnits caps the major-unit amount so amount*100 cannot overflow int64
-// (math.MaxInt64 / 100).
-const maxAmountUnits = 92233720368547758.0
+// Member-facing parse errors. They are sentences shown verbatim in a 400
+// response, so they must never wrap a domain error and leak its Go prefix.
+var (
+	errInvalidAmount   = errors.New("amount must be a plain number such as 9.99, with at most two decimal places")
+	errInvalidCurrency = errors.New("currency must be a three-letter code such as USD")
+	errInvalidCycle    = errors.New("invalid billing cycle")
+)
 
 // mixedCurrencyLabel is shown for the monthly rollup when a household's active
 // subscriptions span more than one currency (no single total exists).
@@ -229,11 +232,11 @@ func parseSubscriptionInput(r *http.Request) (app.SubscriptionInput, error) {
 	}
 	amount, err := household.NewMoney(cents, currency)
 	if err != nil {
-		return app.SubscriptionInput{}, err
+		return app.SubscriptionInput{}, errInvalidCurrency
 	}
 	cycle, err := domain.ParseCycle(strings.TrimSpace(r.FormValue("cycle")))
 	if err != nil {
-		return app.SubscriptionInput{}, err
+		return app.SubscriptionInput{}, errInvalidCycle
 	}
 	next, err := time.Parse(dateLayout, strings.TrimSpace(r.FormValue("next_renewal_on")))
 	if err != nil {
@@ -265,26 +268,14 @@ func parseSubscriptionInput(r *http.Request) (app.SubscriptionInput, error) {
 	}, nil
 }
 
-// parseAmountCents parses a decimal money string (e.g. "9.99") into integer cents.
+// parseAmountCents parses a plain decimal money string (e.g. "9.99") into
+// integer cents, returning a member-facing error for anything else.
 func parseAmountCents(s string) (int64, error) {
-	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	cents, err := household.ParseMoneyCents(strings.TrimSpace(s))
 	if err != nil {
-		return 0, fmt.Errorf("invalid amount")
+		return 0, errInvalidAmount
 	}
-	// Reject NaN/±Inf, which ParseFloat accepts and which would slip past the
-	// range checks below and corrupt the cents conversion.
-	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return 0, fmt.Errorf("invalid amount")
-	}
-	if f < 0 {
-		return 0, fmt.Errorf("amount must not be negative")
-	}
-	// Guard the cents conversion against int64 overflow so a huge value fails
-	// with a clear error rather than wrapping to a negative amount.
-	if f > maxAmountUnits {
-		return 0, fmt.Errorf("amount is too large")
-	}
-	return int64(math.Round(f * 100)), nil
+	return cents, nil
 }
 
 func (h *WebHandlers) beginMutation(w http.ResponseWriter, r *http.Request) (*household.Member, bool) {

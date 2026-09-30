@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 )
 
 // Unit is a measurement unit for a Quantity. Stored as text, validated here,
@@ -51,10 +52,33 @@ func ParseUnit(s string) (Unit, error) {
 	return u, nil
 }
 
+// MaxQuantityAmount is the largest amount a Quantity may hold. It is far above
+// any real household quantity but keeps a typo such as an extra run of zeros
+// from being stored.
+const MaxQuantityAmount = 1_000_000_000
+
+// quantityFractionDigits is the number of decimal places ParseQuantityAmount
+// accepts.
+const quantityFractionDigits = 6
+
+// ParseQuantityAmount parses a plain decimal quantity amount such as "1.5".
+// Exponents, signs and separators are rejected. It returns ErrInvalidQuantity
+// for a malformed amount.
+func ParseQuantityAmount(s string) (float64, error) {
+	if _, _, ok := splitPlainDecimal(s, quantityFractionDigits); !ok {
+		return 0, fmt.Errorf("%w: amount must be a plain decimal number", ErrInvalidQuantity)
+	}
+	amount, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: amount must be a plain decimal number", ErrInvalidQuantity)
+	}
+	return amount, nil
+}
+
 // Quantity errors.
 var (
 	// ErrInvalidQuantity is returned for a malformed quantity: an unknown unit,
-	// a non-finite amount, or a negative amount (including a Subtract that would
+	// a non-finite, negative or oversized amount (including a Subtract that would
 	// drop below zero).
 	ErrInvalidQuantity = errors.New("household: invalid quantity")
 	// ErrUnitMismatch is returned by Add/Subtract when the operands carry
@@ -96,6 +120,9 @@ func (q Quantity) Validate() error {
 	}
 	if q.Amount < 0 {
 		return fmt.Errorf("%w: amount must be non-negative, got %v", ErrInvalidQuantity, q.Amount)
+	}
+	if q.Amount > MaxQuantityAmount {
+		return fmt.Errorf("%w: amount must not exceed %d, got %v", ErrInvalidQuantity, MaxQuantityAmount, q.Amount)
 	}
 	return nil
 }

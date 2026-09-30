@@ -25,9 +25,9 @@ func parseLeadDays(raw string) int {
 // form values, returning household.ErrInvalidQuantity for a malformed amount or
 // unknown unit so the handler can map it to a 400.
 func parseQuantity(amountRaw, unitRaw string) (household.Quantity, error) {
-	amount, err := strconv.ParseFloat(strings.TrimSpace(amountRaw), 64)
+	amount, err := household.ParseQuantityAmount(strings.TrimSpace(amountRaw))
 	if err != nil {
-		return household.Quantity{}, household.ErrInvalidQuantity
+		return household.Quantity{}, err
 	}
 	unit, err := household.ParseUnit(strings.TrimSpace(unitRaw))
 	if err != nil {

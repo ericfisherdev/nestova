@@ -556,7 +556,6 @@ test.describe('§0.6 every numeric field', () => {
   });
 
   test('T-0.6.6 [!] scientific notation is refused', async ({ page }) => {
-    test.fail(true, 'DEFECT: subscription cost and pantry quantity parse with ParseFloat and accept 1e10');
     const csrf_token = await fuzz.csrfFor(page);
 
     const failures = await sweep(fields, (field) => expectRefused(page, csrf_token, field, '1e10'));
@@ -608,7 +607,6 @@ test.describe('§0.6 every numeric field', () => {
   });
 
   test('T-0.6.9 [!] a sub-cent amount is refused and money errors read as sentences', async ({ page }) => {
-    test.fail(true, 'DEFECT: 9.999 is silently rounded to $10.00, and a bad currency returns the raw Go error "household: invalid money: ..."');
     const csrf_token = await fuzz.csrfFor(page);
     const cost = fields.find((f) => f.name === 'subscription cost');
 
