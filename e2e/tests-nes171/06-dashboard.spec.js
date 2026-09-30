@@ -179,7 +179,6 @@ test.describe('§4 dashboard on a private household', () => {
   });
 
   test('T-4.3.2 long member names do not break the sidebar layout', async ({ page }) => {
-    test.fail(true, 'DEFECT: a long member name squeezes its avatar to nothing and an unbroken one spills past the 264px rail, giving the sidebar a horizontal scrollbar');
     await newHousehold(page, `Owner ${'Longname '.repeat(12).trim()}`);
     const csrf_token = await csrfToken(page, at('/members/new'));
     const names = [
