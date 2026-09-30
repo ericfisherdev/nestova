@@ -40,8 +40,6 @@ func seedThirdMember(t *testing.T, pool *pgxpool.Pool, householdID household.Hou
 	return m.ID
 }
 
-// proposeTrade builds a domain.ChoreTrade from the given parties/instances and
-// persists it via tradeRepo.Propose, failing the test on error.
 // newTradeRepo builds a TradeRepository whose clock sits at refDate, in UTC, so
 // fixtures dated relative to refDate (all in the past against the wall clock)
 // still have an open trade window (NES-198).
@@ -51,6 +49,8 @@ func newTradeRepo(pool *pgxpool.Pool) *adapter.TradeRepository {
 		adapter.WithTradeLocation(time.UTC))
 }
 
+// proposeTrade builds a domain.ChoreTrade from the given parties/instances and
+// persists it via tradeRepo.Propose, failing the test on error.
 func proposeTrade(
 	t *testing.T,
 	tradeRepo *adapter.TradeRepository,
@@ -237,7 +237,11 @@ func TestTrade_Propose_TomorrowStillTradeableInTheEvening(t *testing.T) {
 		adapter.WithTradeLocation(chicago))
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate)
-	proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
+	trade := proposeTrade(t, tradeRepo, h.ID, m1, m2, offered.ID, requested.ID)
+
+	if _, err := tradeRepo.Accept(testCtx(t), h.ID, trade.ID, m2, now); err != nil {
+		t.Errorf("Accept at the proposal instant: %v, want nil", err)
+	}
 }
 
 // TestTrade_Propose_DueDayEnded_ReturnsErrTradeWindowClosed covers NES-198: a

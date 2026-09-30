@@ -39,7 +39,8 @@ type TradeRepository struct {
 type TradeRepositoryOption func(*TradeRepository)
 
 // WithTradeLocation sets the time zone whose day boundary ends a trade
-// window (NES-198). The default is time.Local.
+// window (NES-198). The default is time.Local, which the web handlers'
+// Trade-link and picker gates also use; change them together.
 func WithTradeLocation(loc *time.Location) TradeRepositoryOption {
 	return func(r *TradeRepository) { r.loc = loc }
 }
