@@ -125,6 +125,9 @@ func RequireMember(_ *scs.SessionManager) middleware.Middleware {
 				http.Redirect(w, r, target, http.StatusSeeOther)
 				return
 			}
+			// Without no-store the browser keeps the member's page in its HTTP
+			// cache, and Back after logout re-renders it for the next person.
+			w.Header().Set("Cache-Control", "no-store")
 			next.ServeHTTP(w, r)
 		})
 	}
