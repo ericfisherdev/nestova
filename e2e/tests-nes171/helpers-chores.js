@@ -43,17 +43,27 @@ function signIn(page, member) {
   return login(page, { email: member.email, password: member.password });
 }
 
-// todayISO is today's UTC date. The app stamps due dates with domain.DateOf,
-// which is UTC, so a UTC date is the one the server compares against.
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+// localDateISO formats d's calendar date in local time as YYYY-MM-DD. Built from
+// the local getters, never toISOString, which would give the UTC date.
+function localDateISO(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-// daysFromTodayISO returns the UTC date `days` away from today.
+// todayISO is today's date in the server's local time zone. The app builds due
+// dates with domain.DateOf, which reads the year, month and day in the time's
+// own location, so on this machine (server and tests share a zone) the app's
+// "today" is the local date. After 19:00 CDT that is a day behind UTC, and the
+// database's current_date (UTC) disagrees with it.
+function todayISO() {
+  return localDateISO(new Date());
+}
+
+// daysFromTodayISO returns the local date `days` away from today.
 function daysFromTodayISO(days) {
   const d = new Date();
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  d.setDate(d.getDate() + days);
+  return localDateISO(d);
 }
 
 // seedTask inserts an active recurring task. The cadence is daily and anchored

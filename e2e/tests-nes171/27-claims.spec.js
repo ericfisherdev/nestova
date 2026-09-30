@@ -272,7 +272,7 @@ test.describe.serial('§5.3/§5.1 after a scheduler tick (opt-in)', () => {
     expect(dates).toContain(todayISO());
     const overdue = psql(`
       SELECT count(*) FROM nestova.task_instance
-       WHERE recurring_task_id = '${s.pastDaily.id}' AND due_on < current_date AND status = 'overdue';`).trim();
+       WHERE recurring_task_id = '${s.pastDaily.id}' AND due_on < '${todayISO()}' AND status = 'overdue';`).trim();
     expect(overdue).toBe('2');
     expect(dueDates(s.year3000.id)).toEqual([]);
   });
