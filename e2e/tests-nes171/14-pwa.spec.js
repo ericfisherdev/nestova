@@ -161,7 +161,10 @@ test.describe('§14 the worker in use', () => {
     // Whatever counts as "reported" must not already be on the page, or the
     // final assertion could pass on unrelated text.
     const failureNotice = page.getByRole('alert')
-      .or(page.getByText(/offline|no connection|could ?n.t|failed|try again/i));
+      .or(page.getByText(/offline|no connection|could ?n.t|failed|try again/i))
+      // The shell always carries a hidden #network-alert; getByText ignores
+      // visibility, so count only notices the member can actually see.
+      .filter({ visible: true });
     await expect(failureNotice).toHaveCount(0);
 
     await shoppingAddButton(page).click();
