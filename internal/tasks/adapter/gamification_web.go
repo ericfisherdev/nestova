@@ -170,6 +170,7 @@ func (h *GamificationWebHandlers) RewardsPage(layoutFn LayoutFunc) http.HandlerF
 //   - Malformed reward id          → 400
 //   - ErrRewardNotFound            → 404
 //   - ErrInsufficientPoints        → 409 (re-render /rewards with a message)
+//   - ErrRewardOutOfStock          → 409 (re-render /rewards with a message)
 //   - Other                        → 500
 func (h *GamificationWebHandlers) Redeem(layoutFn LayoutFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -243,12 +244,12 @@ func (h *GamificationWebHandlers) renderRedeemConflict(
 	}
 }
 
-// buildRewardsPage assembles the RewardsPage view model. insufficientMessage
+// buildRewardsPage assembles the RewardsPage view model. redeemErrorMessage
 // is passed through to the page when a prior redeem attempt was rejected.
 func (h *GamificationWebHandlers) buildRewardsPage(
 	r *http.Request,
 	member *household.Member,
-	insufficientMessage string,
+	redeemErrorMessage string,
 ) (components.RewardsPage, error) {
 	ctx := r.Context()
 
@@ -349,13 +350,13 @@ func (h *GamificationWebHandlers) buildRewardsPage(
 	}
 
 	return components.RewardsPage{
-		Leaderboard:         rows,
-		Balance:             balance,
-		Rewards:             rewardItems,
-		History:             historyRows,
-		MyRedemptions:       myRedemptionItems,
-		CSRFToken:           csrfToken,
-		InsufficientMessage: insufficientMessage,
+		Leaderboard:        rows,
+		Balance:            balance,
+		Rewards:            rewardItems,
+		History:            historyRows,
+		MyRedemptions:      myRedemptionItems,
+		CSRFToken:          csrfToken,
+		RedeemErrorMessage: redeemErrorMessage,
 		// CanManageRewards gates the "Manage rewards" link to parents (owner or
 		// adult), mirroring TradeSections.CanViewHistory's role gate (NES-122).
 		CanManageRewards: isParent(member),

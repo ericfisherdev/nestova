@@ -72,9 +72,10 @@ type RewardsPage struct {
 	MyRedemptions []MyRedemptionItem
 	// CSRFToken is the per-session CSRF token embedded in every redeem form.
 	CSRFToken string
-	// InsufficientMessage is set when the previous redeem attempt was rejected
-	// due to insufficient points; empty means no error banner is shown.
-	InsufficientMessage string
+	// RedeemErrorMessage is set when the previous redeem attempt was rejected
+	// with a conflict (insufficient points or out of stock); empty means no
+	// error banner is shown.
+	RedeemErrorMessage string
 	// CanManageRewards is true for parents (owner or adult roles), who get a
 	// link to the reward admin catalogue (NES-126), mirroring
 	// TradeSections.CanViewHistory's role gate (NES-122).
@@ -153,19 +154,19 @@ func RewardsPageComponent(page RewardsPage) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</div><!-- Insufficient points error banner -->")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</div><!-- Redeem conflict error banner -->")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		if page.InsufficientMessage != "" {
+		if page.RedeemErrorMessage != "" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div role=\"alert\" class=\"mb-4 rounded-card border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var2 string
-			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(page.InsufficientMessage)
+			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(page.RedeemErrorMessage)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 131, Col: 30}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 132, Col: 29}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 			if templ_7745c5c3_Err != nil {
@@ -245,7 +246,7 @@ func BalanceCard(balance int) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", balance))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 156, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 157, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -369,7 +370,7 @@ func leaderboardRow(rank int, row LeaderboardRow) templ.Component {
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", rank))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 190, Col: 93}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 191, Col: 93}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
@@ -404,7 +405,7 @@ func leaderboardRow(rank int, row LeaderboardRow) templ.Component {
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(row.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 195, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 196, Col: 71}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -427,7 +428,7 @@ func leaderboardRow(rank int, row LeaderboardRow) templ.Component {
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d pts", row.Points))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 199, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 200, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -476,7 +477,7 @@ func StreakBadge(days int) templ.Component {
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d day streak", days))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 212, Col: 38}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 213, Col: 38}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {
@@ -581,7 +582,7 @@ func pointHistoryRow(row PointHistoryRow) templ.Component {
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(row.Reason)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 243, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 244, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
@@ -594,7 +595,7 @@ func pointHistoryRow(row PointHistoryRow) templ.Component {
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(row.CreatedAt)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 244, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 245, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 		if templ_7745c5c3_Err != nil {
@@ -632,7 +633,7 @@ func pointHistoryRow(row PointHistoryRow) templ.Component {
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%+d", row.Points))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 253, Col: 35}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 254, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -725,7 +726,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("my-redemption-%s", item.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 282, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 283, Col: 50}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var25)
 		if templ_7745c5c3_Err != nil {
@@ -738,7 +739,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 		var templ_7745c5c3_Var26 string
 		templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(item.RewardName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 284, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 285, Col: 57}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 		if templ_7745c5c3_Err != nil {
@@ -751,7 +752,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 		var templ_7745c5c3_Var27 string
 		templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinStringErrs(item.CreatedAt)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 286, Col: 20}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 287, Col: 20}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 		if templ_7745c5c3_Err != nil {
@@ -765,7 +766,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 			var templ_7745c5c3_Var28 string
 			templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + item.DeniedReason)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 288, Col: 33}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 289, Col: 33}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 			if templ_7745c5c3_Err != nil {
@@ -788,7 +789,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 			var templ_7745c5c3_Var29 templ.SafeURL
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(fmt.Sprintf("/rewards/redemptions/%s/cancel", item.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 297, Col: 83}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 298, Col: 83}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 			if templ_7745c5c3_Err != nil {
@@ -801,7 +802,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.ResolveAttributeValue(fmt.Sprintf("/rewards/redemptions/%s/cancel", item.ID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 298, Col: 69}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 299, Col: 69}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var30)
 			if templ_7745c5c3_Err != nil {
@@ -814,7 +815,7 @@ func myRedemptionRow(item MyRedemptionItem) templ.Component {
 			var templ_7745c5c3_Var31 string
 			templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.ResolveAttributeValue(item.CSRFToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 300, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 301, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var31)
 			if templ_7745c5c3_Err != nil {
@@ -986,7 +987,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var35 string
 			templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(r.ImageRef + " ")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 352, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 353, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 			if templ_7745c5c3_Err != nil {
@@ -1000,7 +1001,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(r.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 354, Col: 12}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 355, Col: 12}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 		if templ_7745c5c3_Err != nil {
@@ -1018,7 +1019,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(r.Description)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 357, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 358, Col: 62}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -1036,7 +1037,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 		var templ_7745c5c3_Var38 string
 		templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d pts", r.CostPoints))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 360, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 361, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 		if templ_7745c5c3_Err != nil {
@@ -1050,7 +1051,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var39 string
 			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(" · " + r.StockLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 362, Col: 28}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 363, Col: 28}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 			if templ_7745c5c3_Err != nil {
@@ -1069,7 +1070,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var40 templ.SafeURL
 			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(fmt.Sprintf("/rewards/%s/redeem", r.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 367, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 368, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 			if templ_7745c5c3_Err != nil {
@@ -1082,7 +1083,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var41 string
 			templ_7745c5c3_Var41, templ_7745c5c3_Err = templ.ResolveAttributeValue(csrfToken)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 368, Col: 60}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 369, Col: 60}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var41)
 			if templ_7745c5c3_Err != nil {
@@ -1108,7 +1109,7 @@ func RewardCard(r RewardItem, csrfToken string) templ.Component {
 			var templ_7745c5c3_Var42 string
 			templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("You need %d more", r.NeedMore))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 379, Col: 86}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/rewards.templ`, Line: 380, Col: 86}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 			if templ_7745c5c3_Err != nil {
