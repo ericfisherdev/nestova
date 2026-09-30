@@ -176,7 +176,6 @@ func TestSettingsPage_QuietHoursSection_ErrorMessage_RendersInline(t *testing.T)
 func TestSettingsPage_NotifySection_NoSMSSender_HidesSMSControls(t *testing.T) {
 	view := components.SettingsView{
 		Notify: components.NotifySettingsView{
-			Phone:     "+15551234567",
 			CSRFToken: "csrf-test",
 			Preferences: []components.NotifyPreferenceRow{
 				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "inapp"},
@@ -193,6 +192,50 @@ func TestSettingsPage_NotifySection_NoSMSSender_HidesSMSControls(t *testing.T) {
 	}
 	if !strings.Contains(out, `value="inapp"`) {
 		t.Errorf("the in-app option must always be offered: %q", out)
+	}
+}
+
+// A member whose number and consent were stored while SMS was wired must
+// still be able to remove the number and withdraw consent once it is not,
+// but must not be able to add a number or give consent.
+func TestSettingsPage_NotifySection_NoSMSSender_StoredContact_OffersWithdrawalOnly(t *testing.T) {
+	view := components.SettingsView{
+		Notify:    components.NotifySettingsView{Phone: "+15551234567", OptedIn: true, CSRFToken: "csrf-test"},
+		CSRFToken: "csrf-test",
+	}
+	out := renderString(t, components.SettingsPage(view))
+
+	for _, want := range []string{
+		`action="/settings/notify/phone"`,
+		`<input type="hidden" name="phone" value="">`,
+		"Remove phone number",
+		`action="/settings/notify/opt-in"`,
+		"Withdraw text message consent",
+		"+15551234567",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("notify section missing %q for a member with a stored phone and consent: %q", want, out)
+		}
+	}
+	for _, hidden := range []string{`id="notify-phone"`, `type="tel"`, `type="checkbox" name="opted_in"`, `id="notify-opted-in"`, "SMS messages"} {
+		if strings.Contains(out, hidden) {
+			t.Errorf("notify section must not let the member add a number or consent, found %q: %q", hidden, out)
+		}
+	}
+}
+
+func TestSettingsPage_NotifySection_NoSMSSender_PhoneWithoutConsent_OffersRemovalOnly(t *testing.T) {
+	view := components.SettingsView{
+		Notify:    components.NotifySettingsView{Phone: "+15551234567", CSRFToken: "csrf-test"},
+		CSRFToken: "csrf-test",
+	}
+	out := renderString(t, components.SettingsPage(view))
+
+	if !strings.Contains(out, "Remove phone number") {
+		t.Errorf("notify section missing the phone removal control: %q", out)
+	}
+	if strings.Contains(out, `action="/settings/notify/opt-in"`) {
+		t.Errorf("notify section must not offer consent withdrawal when no consent is on file: %q", out)
 	}
 }
 
