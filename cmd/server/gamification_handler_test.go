@@ -527,6 +527,40 @@ func TestRedeemInsufficientPointsReturns409(t *testing.T) {
 	}
 }
 
+func TestRedeemOutOfStockReturns409(t *testing.T) {
+	member := testMember()
+	reward := &tasksdomain.Reward{
+		ID:          tasksdomain.NewRewardID(),
+		HouseholdID: member.HouseholdID,
+		Name:        "Sold out",
+		CostPoints:  5,
+		Active:      true,
+	}
+	handler, sm := buildGamificationTestHandler(&configurableRewardRepo{
+		reward:    reward,
+		redeemErr: tasksdomain.ErrRewardOutOfStock,
+	}, member)
+
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/rewards/"+reward.ID.String()+"/redeem",
+		strings.NewReader("csrf_token="+csrfToken),
+	)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("out-of-stock redeem: status = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "out of stock") {
+		t.Errorf("409 response missing out-of-stock message: %q", rec.Body.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tests: POST /rewards/{id}/redeem — ErrRewardNotFound → 404
 // ---------------------------------------------------------------------------

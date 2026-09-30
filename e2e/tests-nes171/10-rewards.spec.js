@@ -156,7 +156,6 @@ test.describe('§6 rewards', () => {
   });
 
   test('T-6.2.3 an out-of-stock reward is refused with 409, not 500', async ({ page }) => {
-    test.fail(true, 'DEFECT: Redeem maps ErrRewardOutOfStock to 500 instead of a 409 conflict');
     const { id: kid, persona } = seedRewardsMember('Stock');
     grantPoints(kid, 100);
     const soldOut = seedReward({ cost: 5, quantity: 0 });
@@ -418,7 +417,6 @@ test.describe('§6 rewards', () => {
   });
 
   test('T-6.3.3 a quantity-0 reward is refused at redeem with 409, not 500', async ({ page }) => {
-    test.fail(true, 'DEFECT: Redeem maps ErrRewardOutOfStock to 500 instead of a 409 conflict');
     const { id: kid, persona } = seedRewardsMember('ZeroRedeem');
     grantPoints(kid, 100);
     const reward = seedReward({ cost: 5, quantity: 0 });
