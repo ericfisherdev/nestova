@@ -17,6 +17,7 @@ const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
 const { login, postForm } = require('./helpers');
 const { psql } = require('../tests/db');
+const { grantPoints } = require('./helpers-rewards');
 const {
   newMember, signIn, todayISO, daysFromTodayISO, seedInstance, seedClaim, instanceRow, ledgerFor,
   balanceOf, tasksToken, taskRow, postPairs, choreForm, titleOf, storedTask,
@@ -64,8 +65,8 @@ test.describe('§5.3 claims', () => {
   });
 
   test('sanity: completing a claim at 11:59 of its window carries no penalty', async ({ page }) => {
-    // The in-window half of T-5.3.5, kept separate so the expected-to-fail
-    // T-5.3.5 test below cannot mask a regression here.
+    // The in-window half of T-5.3.5, kept separate so a regression in
+    // the T-5.3.5 test below cannot mask this one.
     const member = newMember('OnTime');
     const inst = seedClaim({ claimant: member.id, expiresIn: '1 minute', points: 10 });
     await signIn(page, member);
@@ -77,8 +78,8 @@ test.describe('§5.3 claims', () => {
   });
 
   test('T-5.3.5 completing a claim at 12:01 treats it as expired', async ({ page }) => {
-    test.fail(true, 'DEFECT: a lapsed claim completes penalty-free with full points until the 5-minute sweep reverts it');
     const member = newMember('Late');
+    grantPoints(member.id, 20); // a penalty is capped at the balance, so there must be one
     const inst = seedClaim({ claimant: member.id, expiresIn: '-1 minute', points: 10 });
     await signIn(page, member);
     const csrf_token = await tasksToken(page);
@@ -90,10 +91,10 @@ test.describe('§5.3 claims', () => {
        WHERE l.source_id = '${inst.id}' AND l.source_type = 'claim_expiry' AND l.created_at < t.completed_at;`).trim();
     test.skip(sweptFirst !== '0', 'the background sweep reverted the claim before the completion landed');
 
-    // Expired means one of two things, and the app does neither: the
-    // completion is refused, or the claimant still incurs the lapse penalty.
-    expect(status === 303 && penalties.length === 0,
-      `completion returned ${status}, penalties recorded: ${penalties.length}`).toBe(false);
+    // The completion goes through and the claimant still incurs the lapse
+    // penalty: half of the 10 points, as the sweep would have applied.
+    expect(status).toBe(303);
+    expect(penalties).toEqual([{ memberId: member.id, sourceType: 'claim_expiry', points: -5 }]);
   });
 
   test.describe('T-5.3.8 countdown across a DST boundary', () => {

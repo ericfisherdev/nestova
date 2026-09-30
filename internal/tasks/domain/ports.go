@@ -217,6 +217,11 @@ type TaskInstanceRepository interface {
 	// This applies to every terminal transition ([Complete], [CompleteAndAward],
 	// and [Skip] alike).
 	//
+	// NES-199: a claim whose ClaimExpiresAt is at or before at is penalized
+	// ([ClaimExpiryPenalty]) in the same transaction, as the sweep would have,
+	// and the completion still goes through. [CompleteAndAward] and
+	// [CompleteAndAwardAsAssignee] behave the same way.
+	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
 	Complete(ctx context.Context, householdID household.HouseholdID, id TaskInstanceID, by household.MemberID, at time.Time) error

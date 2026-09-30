@@ -955,6 +955,10 @@ func (r *TaskInstanceRepository) Complete(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := penalizeLapsedClaim(ctx, tx, householdID, id, at); err != nil {
+		return fmt.Errorf("complete task instance: %w", err)
+	}
+
 	const q = `
 		UPDATE task_instance
 		   SET status           = 'done',
@@ -1054,6 +1058,12 @@ func (r *TaskInstanceRepository) completeAndAward(
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Step 0: a claim whose window already lapsed is penalized here, exactly
+	// as the sweep would, so the outcome does not depend on sweep timing.
+	if err := penalizeLapsedClaim(ctx, tx, householdID, id, at); err != nil {
+		return fmt.Errorf("complete and award: %w", err)
+	}
 
 	// Step 1: mark instance done and return the parent recurring_task_id and
 	// kind so we can look up the points value in step 2, and respawn a standing
@@ -1907,6 +1917,69 @@ func revertExpiredClaims(ctx context.Context, tx pgx.Tx, asOf time.Time) ([]expi
 		return nil, fmt.Errorf("revert: %w", err)
 	}
 	return reverted, nil
+}
+
+// penalizeLapsedClaim appends the claim-expiry penalty when the instance's
+// claim window had already lapsed at at, inside the caller's completion
+// transaction (NES-199). The background sweep only runs every few minutes, so
+// without this a claim that lapsed a minute ago would complete for full points
+// and no penalty. The completion itself still proceeds: the claimant is
+// charged as if the sweep had run first, and the UPDATE that follows clears
+// the claim fields.
+//
+// The row is locked FOR UPDATE, as the sweep does, so the two never both
+// penalize one claim window: a sweep that already reverted the claim leaves
+// claim_expires_at NULL and this finds nothing, and the ledger's
+// point_ledger_claim_expiry_uniq index backs that up. The comparison is <=,
+// matching revertExpiredClaims. A missing, terminal, unclaimed, or unexpired
+// instance is a no-op; the caller's UPDATE reports the precise sentinel.
+func penalizeLapsedClaim(
+	ctx context.Context,
+	tx pgx.Tx,
+	householdID household.HouseholdID,
+	id domain.TaskInstanceID,
+	at time.Time,
+) error {
+	const q = `
+		SELECT ti.claimed_by, ti.claimed_at, rt.points
+		  FROM task_instance ti
+		  JOIN recurring_task rt ON rt.id = ti.recurring_task_id
+		 WHERE ti.id                = $1
+		   AND ti.household_id      = $2
+		   AND ti.status            IN ('pending', 'overdue')
+		   AND ti.claim_expires_at <= $3
+		   FOR UPDATE OF ti`
+	var (
+		claimedByStr *string
+		claimedAt    *time.Time
+		points       int
+	)
+	err := tx.QueryRow(ctx, q, id.String(), householdID.String(), at).
+		Scan(&claimedByStr, &claimedAt, &points)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("penalize lapsed claim: %w", err)
+	}
+	if claimedByStr == nil || claimedAt == nil {
+		// Claimant deleted (ON DELETE SET NULL): no one to penalize.
+		return nil
+	}
+	claimedBy, err := household.ParseMemberID(*claimedByStr)
+	if err != nil {
+		return fmt.Errorf("penalize lapsed claim: parse claimed_by id: %w", err)
+	}
+	row := expiredClaimRow{
+		instanceID:  id,
+		householdID: householdID,
+		claimedBy:   claimedBy,
+		claimedAt:   *claimedAt,
+	}
+	if _, err := insertClaimExpiryPenalty(ctx, tx, row, domain.ClaimExpiryPenalty(points)); err != nil {
+		return fmt.Errorf("penalize lapsed claim: %w", err)
+	}
+	return nil
 }
 
 // claimTaskMeta holds the recurring_task fields SweepExpiredClaims needs to
