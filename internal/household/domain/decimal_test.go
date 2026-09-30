@@ -25,7 +25,7 @@ func TestParseMoneyCents(t *testing.T) {
 			t.Errorf("ParseMoneyCents(%q) = %d, %v; want %d, nil", tc.in, got, err, tc.want)
 		}
 	}
-	invalid := []string{"", " ", "1e10", "1E2", "9.999", "+5", "-5", "1,000", ".5", "5.", "0x10", "NaN", "Inf", "١٢", "1000000000000", "99999999999999999999"}
+	invalid := []string{"", " ", "1e10", "1E2", "9.999", "+5", "-5", "-0.01", "-", "-.", "1,000", ".5", "5.", "0x10", "NaN", "Inf", "١٢", "1000000000000", "99999999999999999999"}
 	for _, in := range invalid {
 		if _, err := household.ParseMoneyCents(in); !errors.Is(err, household.ErrInvalidMoney) {
 			t.Errorf("ParseMoneyCents(%q) error = %v, want ErrInvalidMoney", in, err)
@@ -34,7 +34,7 @@ func TestParseMoneyCents(t *testing.T) {
 }
 
 func TestParseQuantityAmount(t *testing.T) {
-	valid := map[string]float64{"0": 0, "2": 2, "1.5": 1.5, "0007": 7, "0.000001": 0.000001}
+	valid := map[string]float64{"0": 0, "-0": 0, "2": 2, "1.5": 1.5, "0007": 7, "0.000001": 0.000001}
 	for in, want := range valid {
 		got, err := household.ParseQuantityAmount(in)
 		if err != nil || got != want {
