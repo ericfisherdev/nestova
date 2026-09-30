@@ -200,18 +200,9 @@ func (h *GamificationWebHandlers) Redeem(layoutFn LayoutFunc) http.HandlerFunc {
 			case errors.Is(err, domain.ErrRewardNotFound):
 				http.Error(w, "reward not found", http.StatusNotFound)
 			case errors.Is(err, domain.ErrInsufficientPoints):
-				// Re-render the rewards page with a user-facing message at 409 so
-				// the member understands why the action was rejected.
-				page, buildErr := h.buildRewardsPage(r, member, "You don't have enough points to redeem this reward.")
-				if buildErr != nil {
-					h.logger.ErrorContext(r.Context(), "rewards redeem: rebuild page on insufficient", "error", buildErr)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-				content := components.RewardsPageComponent(page)
-				if renderErr := render.Render(r.Context(), w, http.StatusConflict, layoutFn(member)(content)); renderErr != nil {
-					h.logger.ErrorContext(r.Context(), "rewards redeem: render insufficient page", "error", renderErr)
-				}
+				h.renderRedeemConflict(w, r, member, layoutFn, "You don't have enough points to redeem this reward.")
+			case errors.Is(err, domain.ErrRewardOutOfStock):
+				h.renderRedeemConflict(w, r, member, layoutFn, "This reward is out of stock right now.")
 			default:
 				h.logger.ErrorContext(r.Context(), "rewards redeem: service error",
 					"reward_id", rawID,
@@ -228,6 +219,27 @@ func (h *GamificationWebHandlers) Redeem(layoutFn LayoutFunc) http.HandlerFunc {
 			return
 		}
 		http.Redirect(w, r, "/rewards", http.StatusSeeOther)
+	}
+}
+
+// renderRedeemConflict re-renders the rewards page with a user-facing message
+// at 409 so the member understands why the redeem was rejected.
+func (h *GamificationWebHandlers) renderRedeemConflict(
+	w http.ResponseWriter,
+	r *http.Request,
+	member *household.Member,
+	layoutFn LayoutFunc,
+	message string,
+) {
+	page, buildErr := h.buildRewardsPage(r, member, message)
+	if buildErr != nil {
+		h.logger.ErrorContext(r.Context(), "rewards redeem: rebuild page on conflict", "error", buildErr)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	content := components.RewardsPageComponent(page)
+	if renderErr := render.Render(r.Context(), w, http.StatusConflict, layoutFn(member)(content)); renderErr != nil {
+		h.logger.ErrorContext(r.Context(), "rewards redeem: render conflict page", "error", renderErr)
 	}
 }
 
