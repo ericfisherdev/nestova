@@ -394,7 +394,7 @@ test.describe('§7.3 automation and numeric limits', () => {
     expect(rows).toBeLessThanOrEqual(1);
   });
 
-  test('T-7.3.3 [!] an astronomically large quantity does not overflow the stored amount', async ({
+  test('T-7.3.3 an astronomically large quantity does not overflow the stored amount', async ({
     page,
   }) => {
     await login(page, PERSONAS.owner);
@@ -403,9 +403,9 @@ test.describe('§7.3 automation and numeric limits', () => {
     const id = await pantryItemId(page, item);
     const token = await csrfToken(page, '/groceries');
 
-    // 1e308 is finite, so nothing rejects it on the way in; adding it twice is
-    // what would reach +Inf. Either the write is refused or the stored amount
-    // stays finite — an Infinity in the column is the failure.
+    // Exponent notation is not a plain decimal, so both writes are refused
+    // before they reach Quantity, and a plain decimal above the cap is refused
+    // by Quantity itself.
     const first = await postForm(page, `/groceries/pantry/${id}/adjust`, {
       csrf_token: token,
       amount: '1e308',
@@ -413,15 +413,10 @@ test.describe('§7.3 automation and numeric limits', () => {
     });
     const second = await postForm(page, `/groceries/pantry/${id}/adjust`, {
       csrf_token: token,
-      amount: '1e308',
+      amount: '1000000001',
       unit: 'count',
     });
-
-    // Observed contract: the first 1e308 is ACCEPTED and persisted — nothing
-    // bounds a pantry quantity from above (Appendix A.4). The second is refused,
-    // because 1e308 + 1e308 is not finite and Quantity rejects a non-finite
-    // amount, so the overflow itself never reaches the column.
-    expect(first).toBe(303);
+    expect(first).toBe(400);
     expect(second).toBe(400);
 
     const stored = quantityOf(item);
