@@ -711,17 +711,22 @@ func TestOnboardingPOST_RejectsOverLengthNames(t *testing.T) {
 }
 
 // TestAddMember_RejectsMalformedEmailAndOversizedPassword confirms the
-// add-member flow answers 422 and provisions nothing when the email is
-// malformed or the password exceeds its cap (NES-196).
+// add-member flow answers 422 with the field message and provisions nothing
+// when the email is malformed or the password exceeds its cap, while values at
+// the caps are accepted (NES-196).
 func TestAddMember_RejectsMalformedEmailAndOversizedPassword(t *testing.T) {
 	tests := []struct {
 		name     string
 		email    string
 		password string
+		wantCode int
+		wantMsg  string
 	}{
-		{"double at", "a@@b.com", "supersecret"},
-		{"300 character local part", strings.Repeat("l", 300) + "@test.local", "supersecret"},
-		{"oversized password", "jamie@example.com", strings.Repeat("p", 1_000_000)},
+		{"double at", "a@@b.com", "supersecret", http.StatusUnprocessableEntity, "valid email address"},
+		{"300 character local part", strings.Repeat("l", 300) + "@test.local", "supersecret", http.StatusUnprocessableEntity, "valid email address"},
+		{"oversized password", "jamie@example.com", strings.Repeat("p", 1_000_000), http.StatusUnprocessableEntity, "characters or fewer"},
+		{"password at the cap", "jamie@example.com", strings.Repeat("家", household.MaxPasswordLength), http.StatusSeeOther, ""},
+		{"local part at the cap", strings.Repeat("l", household.MaxEmailLocalPartLength) + "@example.com", "supersecret", http.StatusSeeOther, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -766,11 +771,75 @@ func TestAddMember_RejectsMalformedEmailAndOversizedPassword(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("status = %d, want 422", rec.Code)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
 			}
-			if prov.memberCalls != 0 {
-				t.Errorf("ProvisionMember called %d times, want 0", prov.memberCalls)
+			if tc.wantMsg != "" && !strings.Contains(rec.Body.String(), tc.wantMsg) {
+				t.Errorf("body missing %q", tc.wantMsg)
+			}
+			wantCalls := 0
+			if tc.wantCode == http.StatusSeeOther {
+				wantCalls = 1
+			}
+			if prov.memberCalls != wantCalls {
+				t.Errorf("ProvisionMember called %d times, want %d", prov.memberCalls, wantCalls)
+			}
+		})
+	}
+}
+
+// TestOnboardingPOST_RejectsMalformedEmailAndOversizedPassword confirms the
+// first-run form answers 422 with the field message and provisions nothing
+// for a malformed email or an over-cap password, while values at the caps are
+// accepted (NES-196).
+func TestOnboardingPOST_RejectsMalformedEmailAndOversizedPassword(t *testing.T) {
+	tests := []struct {
+		label    string
+		email    string
+		password string
+		wantCode int
+		wantMsg  string
+	}{
+		{"double at", "a@@b.com", "supersecret", http.StatusUnprocessableEntity, "valid email address"},
+		{"300 character local part", strings.Repeat("l", 300) + "@test.local", "supersecret", http.StatusUnprocessableEntity, "valid email address"},
+		{"oversized password", "alex@example.com", strings.Repeat("p", 1_000_000), http.StatusUnprocessableEntity, "characters or fewer"},
+		{"password at the cap", "alex@example.com", strings.Repeat("家", household.MaxPasswordLength), http.StatusSeeOther, ""},
+		{"local part at the cap", strings.Repeat("l", household.MaxEmailLocalPartLength) + "@example.com", "supersecret", http.StatusSeeOther, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.label, func(t *testing.T) {
+			prov := &fakeProvisioner{}
+			_, handler := buildOnboardingHandler(&fakeHouseholdRepo{}, prov)
+
+			getRec := httptest.NewRecorder()
+			handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/onboarding", nil))
+			form := url.Values{
+				"csrf_token":     {extractCSRF(t, getRec.Body.String())},
+				"household_name": {"The Smiths"},
+				"display_name":   {"Alex"},
+				"email":          {tc.email},
+				"password":       {tc.password},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/onboarding", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			for _, c := range getRec.Result().Cookies() {
+				req.AddCookie(c)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+			if tc.wantMsg != "" && !strings.Contains(rec.Body.String(), tc.wantMsg) {
+				t.Errorf("body missing %q", tc.wantMsg)
+			}
+			wantCalls := 0
+			if tc.wantCode == http.StatusSeeOther {
+				wantCalls = 1
+			}
+			if prov.householdCalls != wantCalls {
+				t.Errorf("ProvisionHousehold called %d times, want %d", prov.householdCalls, wantCalls)
 			}
 		})
 	}
