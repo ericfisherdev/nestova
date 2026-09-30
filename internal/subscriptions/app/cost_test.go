@@ -105,3 +105,34 @@ func TestMonthlyCostPropagatesListError(t *testing.T) {
 		t.Fatalf("MonthlyCost() error = %v, want wrapped %v", err, wantErr)
 	}
 }
+
+func TestMonthlyCostSkipsOversizedRow(t *testing.T) {
+	// A weekly amount stored before amounts were capped cannot be normalized
+	// without overflow; it must not fail the rollup for the healthy rows.
+	lister := &fakeLister{subs: []*domain.Subscription{
+		sub(t, 1500, "USD", domain.CycleMonthly),
+		sub(t, 5_000_000_000_000_000_000, "USD", domain.CycleWeekly),
+	}}
+	got, err := app.NewCostService(lister).MonthlyCost(context.Background(), household.NewHouseholdID())
+	if err != nil {
+		t.Fatalf("MonthlyCost() error = %v, want nil", err)
+	}
+	if got.Cents != 1500 {
+		t.Fatalf("MonthlyCost() = %+v, want {1500 USD} (oversized row excluded)", got)
+	}
+}
+
+func TestMonthlyCostSkipsRowWhoseSumOverflows(t *testing.T) {
+	const nearMax = 9_000_000_000_000_000_000
+	lister := &fakeLister{subs: []*domain.Subscription{
+		sub(t, nearMax, "USD", domain.CycleMonthly),
+		sub(t, nearMax, "USD", domain.CycleMonthly),
+	}}
+	got, err := app.NewCostService(lister).MonthlyCost(context.Background(), household.NewHouseholdID())
+	if err != nil {
+		t.Fatalf("MonthlyCost() error = %v, want nil", err)
+	}
+	if got.Cents != nearMax {
+		t.Fatalf("MonthlyCost() = %+v, want the first row only", got)
+	}
+}
