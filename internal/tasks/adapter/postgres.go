@@ -1189,6 +1189,12 @@ func (r *TaskInstanceRepository) skip(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Skipping also clears the claim, so a lapsed one is penalized here too:
+	// otherwise skipping after the window but before the sweep would escape it.
+	if err := penalizeLapsedClaim(ctx, tx, householdID, id, time.Now()); err != nil {
+		return fmt.Errorf("skip task instance: %w", err)
+	}
+
 	q := `
 		UPDATE task_instance
 		   SET status           = 'skipped',

@@ -104,3 +104,39 @@ func TestComplete_LapsedClaimIncursPenalty(t *testing.T) {
 		t.Errorf("Balance = %d, want %d", balance, want)
 	}
 }
+
+// TestSkip_LapsedClaimIncursPenalty proves skipping cannot dodge the claim
+// penalty by landing between the window's end and the sweep.
+func TestSkip_LapsedClaimIncursPenalty(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
+	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
+
+	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10)
+	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	// Age the claim past its window without waiting 12 hours.
+	if _, err := pool.Exec(testCtx(t), `
+		UPDATE task_instance
+		   SET claimed_at = claimed_at - interval '13 hours',
+		       claim_expires_at = claim_expires_at - interval '13 hours'
+		 WHERE id = $1`, inst.ID.String()); err != nil {
+		t.Fatalf("age claim: %v", err)
+	}
+
+	if err := instRepo.Skip(testCtx(t), h.ID, inst.ID); err != nil {
+		t.Fatalf("Skip: %v", err)
+	}
+	balance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)
+	if err != nil {
+		t.Fatalf("Balance: %v", err)
+	}
+	if want := 20 - domain.ClaimExpiryPenalty(10); balance != want {
+		t.Errorf("Balance = %d, want %d", balance, want)
+	}
+}

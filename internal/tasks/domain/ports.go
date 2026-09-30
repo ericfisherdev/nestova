@@ -219,8 +219,10 @@ type TaskInstanceRepository interface {
 	//
 	// NES-199: a claim whose ClaimExpiresAt is at or before at is penalized
 	// ([ClaimExpiryPenalty]) in the same transaction, as the sweep would have,
-	// and the completion still goes through. [CompleteAndAward] and
-	// [CompleteAndAwardAsAssignee] behave the same way.
+	// and the completion still goes through. [CompleteAndAward],
+	// [CompleteAndAwardAsAssignee], [Skip] and [SkipAsAssignee] behave the same
+	// way (Skip measures the window against the current time), so no path
+	// that clears a claim escapes the penalty by beating the sweep.
 	//
 	// Returns [ErrInstanceNotFound] when id is unknown or belongs to another household.
 	// Returns [ErrInstanceInTerminalState] when the instance is already done or skipped.
