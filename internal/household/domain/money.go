@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 )
 
 // Money errors.
@@ -35,6 +36,38 @@ type Money struct {
 	// Currency is the ISO-4217 alphabetic code (three uppercase ASCII letters,
 	// e.g. "USD").
 	Currency string
+}
+
+// MaxMoneyMajorUnits is the largest whole-unit amount ParseMoneyCents accepts.
+// It keeps the cents conversion far from int64 overflow.
+const MaxMoneyMajorUnits = 999_999_999_999
+
+// centsPerMajorUnit is the number of minor units in one major unit.
+const centsPerMajorUnit = 100
+
+// moneyFractionDigits is the number of decimal places a money string may carry.
+const moneyFractionDigits = 2
+
+// ParseMoneyCents parses a plain decimal money string such as "9.99" into
+// integer cents. Only digits with an optional one- or two-place fraction are
+// accepted: exponents, signs, separators and sub-cent precision are rejected
+// rather than rounded. It returns ErrInvalidMoney for a malformed or
+// out-of-range amount.
+func ParseMoneyCents(s string) (int64, error) {
+	whole, fraction, ok := splitPlainDecimal(s, moneyFractionDigits)
+	if !ok {
+		return 0, fmt.Errorf("%w: amount must be a plain decimal with at most two decimal places", ErrInvalidMoney)
+	}
+	units, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || units > MaxMoneyMajorUnits {
+		return 0, fmt.Errorf("%w: amount is too large", ErrInvalidMoney)
+	}
+	cents := int64(0)
+	if fraction != "" {
+		// Right-pad a one-digit fraction so "9.5" reads as 50 cents.
+		cents, _ = strconv.ParseInt((fraction + "0")[:moneyFractionDigits], 10, 64)
+	}
+	return units*centsPerMajorUnit + cents, nil
 }
 
 // NewMoney constructs a validated Money, returning ErrInvalidMoney for a
