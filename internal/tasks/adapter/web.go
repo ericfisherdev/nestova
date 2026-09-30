@@ -877,7 +877,7 @@ func taskCountErrMessage(err error) string {
 	case errors.Is(err, domain.ErrInvalidTaskPoints):
 		return fmt.Sprintf("Points must be a whole number from 0 to %d.", domain.MaxInt4)
 	case errors.Is(err, domain.ErrInvalidLeadTime):
-		return fmt.Sprintf("Lead time must be a whole number from 0 to %d.", domain.MaxInt4)
+		return fmt.Sprintf("Lead time must be a whole number of days from 0 to %d.", domain.MaxLeadTimeDays)
 	default:
 		return ""
 	}

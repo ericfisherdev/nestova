@@ -162,14 +162,20 @@ func ValidateTitle(title string) error {
 	}
 }
 
-// ValidateTaskCounts reports whether points and leadTimeDays are within
-// 0..MaxInt4. It returns ErrInvalidTaskPoints or ErrInvalidLeadTime so the
+// MaxLeadTimeDays bounds how far ahead of due_on an instance becomes due-soon.
+// It is a domain limit, not the int4 column limit: lead time feeds the date
+// arithmetic in ClaimDueSoonReminders, which overflows Postgres' timestamp
+// range near 106 million days, far below MaxInt4.
+const MaxLeadTimeDays = 365
+
+// ValidateTaskCounts reports whether points is within 0..MaxInt4 and
+// leadTimeDays within 0..MaxLeadTimeDays. It returns ErrInvalidTaskPoints or ErrInvalidLeadTime so the
 // caller can map the failure to its own presentation.
 func ValidateTaskCounts(points, leadTimeDays int) error {
 	switch {
 	case points < 0 || points > MaxInt4:
 		return ErrInvalidTaskPoints
-	case leadTimeDays < 0 || leadTimeDays > MaxInt4:
+	case leadTimeDays < 0 || leadTimeDays > MaxLeadTimeDays:
 		return ErrInvalidLeadTime
 	default:
 		return nil

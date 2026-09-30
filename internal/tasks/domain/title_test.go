@@ -51,11 +51,11 @@ func TestValidateTaskCounts(t *testing.T) {
 		want     error
 	}{
 		{name: "zeroes", want: nil},
-		{name: "largest in-range values", points: domain.MaxInt4, leadDays: domain.MaxInt4, want: nil},
+		{name: "largest in-range values", points: domain.MaxInt4, leadDays: domain.MaxLeadTimeDays, want: nil},
 		{name: "negative points", points: -1, want: domain.ErrInvalidTaskPoints},
 		{name: "points one over", points: domain.MaxInt4 + 1, want: domain.ErrInvalidTaskPoints},
 		{name: "negative lead time", leadDays: -1, want: domain.ErrInvalidLeadTime},
-		{name: "lead time one over", leadDays: domain.MaxInt4 + 1, want: domain.ErrInvalidLeadTime},
+		{name: "lead time one over", leadDays: domain.MaxLeadTimeDays + 1, want: domain.ErrInvalidLeadTime},
 	}
 
 	for _, tc := range tests {
