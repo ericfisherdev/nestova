@@ -64,15 +64,17 @@ test.describe('§0.1 CSRF', () => {
   });
 
   test('T-0.1.6 the CSRF refusal is a readable page, not a raw dump', async ({ page }) => {
-    const body = await page.evaluate(async () => {
+    const { status, body } = await page.evaluate(async () => {
       const res = await fetch('/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'title=probe&cadence_unit=daily&interval=1',
         redirect: 'manual',
       });
-      return res.text();
+      return { status: res.type === 'opaqueredirect' ? 303 : res.status, body: await res.text() };
     });
+    expect(status, 'the tokenless POST must be refused').toBe(403);
+    expect(body.trim(), 'the refusal must carry a message').not.toBe('');
     expect(body, 'refusal body should not leak a Go stack trace').not.toMatch(/goroutine|panic:|\.go:\d+/);
   });
 });
