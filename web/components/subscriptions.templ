@@ -96,8 +96,8 @@ templ SubscriptionsPage(view SubscriptionsView) {
 templ subscriptionRow(row SubscriptionRow, members []SubscriptionMemberOption, cycles []SubscriptionCycleOption, csrfToken string) {
 	<li class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-3">
 		<div class="flex items-center justify-between gap-3">
-			<div>
-				<p class="font-medium text-ink">{ row.Name }</p>
+			<div class="min-w-0">
+				<p class="break-words font-medium text-ink">{ row.Name }</p>
 				<p class="text-sm text-ink-muted">{ row.AmountLabel } · { row.CycleLabel } · renews { row.NextRenewal }</p>
 				if row.Category != "" {
 					<p class="text-xs text-ink-muted">{ row.Category }</p>

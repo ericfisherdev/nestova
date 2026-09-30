@@ -41,7 +41,7 @@ func MemberAvatar(m MemberView) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var2 = []any{"inline-flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold", memberTintClass(m.Color)}
+		var templ_7745c5c3_Var2 = []any{"inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold", memberTintClass(m.Color)}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var2...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err

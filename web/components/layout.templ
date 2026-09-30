@@ -184,9 +184,9 @@ templ sidebar(props ShellProps, nav []NavItem) {
 			<div class="flex flex-col gap-2">
 				<h2 class="px-1 text-sm font-semibold text-ink-muted">Family</h2>
 				for _, m := range props.Members {
-					<div class="flex items-center gap-2 px-1">
+					<div class="flex min-w-0 items-center gap-2 px-1">
 						@MemberAvatar(m)
-						<span class="text-sm">{ m.Name }</span>
+						<span class="min-w-0 break-words text-sm">{ m.Name }</span>
 					</div>
 				}
 			</div>

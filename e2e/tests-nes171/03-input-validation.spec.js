@@ -335,7 +335,6 @@ test.describe('§0.5 every text field', () => {
   });
 
   test('T-0.5.12 [!] a 500-character single word wraps without a horizontal scroll', async ({ page }) => {
-    test.fail(true, 'DEFECT: album, recipe and subscription names render in unwrapped <p> elements that push the page sideways, and a member name scrolls the sidebar');
     const csrf_token = await fuzz.csrfFor(page);
     const failures = await sweep(fuzz.renderedFields(), async (field) => {
       const marker = fuzz.uniqueMarker('word');

@@ -218,8 +218,8 @@ templ PhotoGridFragment(view PhotoGridView) {
 templ albumRow(album AlbumView, csrfToken string) {
 	<li class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-3">
 		<div class="flex items-center justify-between gap-3">
-			<div>
-				<p class="font-medium text-ink">{ album.Name }</p>
+			<div class="min-w-0">
+				<p class="break-words font-medium text-ink">{ album.Name }</p>
 				<p class="text-sm text-ink-muted">{ fmt.Sprintf("%d", album.RotationSeconds) }s per photo · { fmt.Sprintf("%d", len(album.Photos)) } photos</p>
 			</div>
 			<a href={ templ.URL(album.ViewURL) } class="text-sm font-medium text-accent underline">View slideshow</a>
