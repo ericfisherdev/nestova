@@ -9,7 +9,13 @@ const crypto = require('crypto');
 
 function base32Decode(input) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-  const clean = input.replace(/=+$/, '').replace(/\s+/g, '').toUpperCase();
+  // Strip whitespace, then trailing '=' padding with a linear scan. A regex
+  // like /=+$/ backtracks quadratically on a long run of '=' that is not at the
+  // end of the string.
+  const compact = input.replace(/\s+/g, '').toUpperCase();
+  let end = compact.length;
+  while (end > 0 && compact[end - 1] === '=') end--;
+  const clean = compact.slice(0, end);
   let bits = 0;
   let value = 0;
   const out = [];
