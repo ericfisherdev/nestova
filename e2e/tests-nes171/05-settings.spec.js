@@ -8,6 +8,7 @@ const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
 const { login, postForm } = require('./helpers');
 const { psql, seedHouseholdB } = require('../tests/db');
+const { SMS_BASE_URL, NO_SMS_SERVER } = require('./helpers-sms');
 const {
   householdId,
   memberId,
@@ -46,6 +47,9 @@ async function signedIn(browser, persona) {
 }
 
 test.describe('§3.1 notification contact', () => {
+  test.skip(!SMS_BASE_URL, NO_SMS_SERVER);
+  if (SMS_BASE_URL) test.use({ baseURL: SMS_BASE_URL });
+
   test('T-3.1.1 a valid phone number is accepted', async ({ page }) => {
     await login(page, PERSONAS.owner);
     const csrf_token = await settingsToken(page);
@@ -275,7 +279,10 @@ function storedQuietHours() {
   ).trim();
 }
 
-test.describe('§3.1 notification channel preferences', () => {
+test.describe('§3.1 notification channel preferences (senders wired)', () => {
+  test.skip(!SMS_BASE_URL, NO_SMS_SERVER);
+  if (SMS_BASE_URL) test.use({ baseURL: SMS_BASE_URL });
+
   test('T-3.1.4 choosing SMS without opting in is refused', async ({ page }) => {
     const member = seedPersona('No opt-in');
     await login(page, member);
@@ -335,7 +342,9 @@ test.describe('§3.1 notification channel preferences', () => {
     expect(unknown.body).toContain('not a valid notification channel');
     expect(preferenceOf(member.id, 'task_due_soon'), 'the refused write must not persist').toBe('inapp');
   });
+});
 
+test.describe('§3.1 notification channel preferences', () => {
   test('T-3.1.7 a channel with no wired sender is refused with a readable message', async ({ page }) => {
     const member = seedPersona('Push channel');
     await login(page, member);
@@ -353,7 +362,6 @@ test.describe('§3.1 notification channel preferences', () => {
   });
 
   test('NES-206 Text message is not offered when no SMS sender is configured', async ({ page }) => {
-    test.fail(true, 'DEFECT: NES-206 — the SMS channel is offered and accepted with NOTIFY_SMS_ENABLED unset');
     // Product decision 2026-09-29: only offer channels that can actually be
     // delivered. The suite's server runs without NOTIFY_SMS_ENABLED, so SMS
     // is not deliverable here.
@@ -374,7 +382,10 @@ test.describe('§3.1 notification channel preferences', () => {
   });
 });
 
-test.describe('§3.2 quiet-hours behaviour', () => {
+test.describe('§3.2 quiet-hours behaviour (senders wired)', () => {
+  test.skip(!SMS_BASE_URL, NO_SMS_SERVER);
+  if (SMS_BASE_URL) test.use({ baseURL: SMS_BASE_URL });
+
   test('T-3.2.3 a window crossing midnight defers SMS inside it and not outside it', async ({ page, browser }) => {
     const now = minutesNow();
     test.skip(now < 10 || now > 1430, 'the probe windows need ten minutes of headroom either side of local midnight');
@@ -417,28 +428,6 @@ test.describe('§3.2 quiet-hours behaviour', () => {
     } finally {
       await disableQuietHours(page);
     }
-  });
-
-  test('T-3.2.6 a non-owner adult cannot change quiet hours', async ({ page, browser }) => {
-    await login(page, PERSONAS.owner);
-    try {
-      // Sanity guard: the owner's identical payload is accepted.
-      await setQuietHours(page, '21:00', '06:00');
-
-      const adult = await signedIn(browser, PERSONAS.adult);
-      const csrf_token = await settingsToken(adult.page);
-      await expect(adult.page.locator(`form[action="${QUIET_HOURS}"]`), 'the adult must not be offered the form').toHaveCount(0);
-      const status = await postForm(adult.page, QUIET_HOURS, { csrf_token, quiet_enabled: 'on', quiet_start: '01:00', quiet_end: '02:00' });
-      expect(status, 'an adult must be refused').toBe(403);
-      expect(storedQuietHours(), 'the refused write must not persist').toBe('21:00-06:00');
-      await adult.context.close();
-    } finally {
-      await disableQuietHours(page);
-    }
-  });
-
-  test('T-3.2.7 a DST transition day neither crashes nor double-sends', async () => {
-    test.skip(true, 'needs the SERVER clock on a DST transition day; page.clock only fakes browser time and the server has no clock seam over HTTP');
   });
 
   // Extra case, not a checklist item: found while writing T-3.2.3.
@@ -822,5 +811,29 @@ test.describe('§3.4 kiosk activation codes', () => {
     expect(await postForm(page, `/settings/kiosk/${deviceB}/revoke`, { csrf_token }), "A's owner revoking B's device").toBe(404);
     expect(await statusOf(kioskB.page, '/kiosk/shopping'), "B's device must survive A's attempt").toBe(200);
     await kioskB.context.close();
+  });
+});
+
+test.describe('§3.2 quiet-hours behaviour', () => {
+  test('T-3.2.6 a non-owner adult cannot change quiet hours', async ({ page, browser }) => {
+    await login(page, PERSONAS.owner);
+    try {
+      // Sanity guard: the owner's identical payload is accepted.
+      await setQuietHours(page, '21:00', '06:00');
+
+      const adult = await signedIn(browser, PERSONAS.adult);
+      const csrf_token = await settingsToken(adult.page);
+      await expect(adult.page.locator(`form[action="${QUIET_HOURS}"]`), 'the adult must not be offered the form').toHaveCount(0);
+      const status = await postForm(adult.page, QUIET_HOURS, { csrf_token, quiet_enabled: 'on', quiet_start: '01:00', quiet_end: '02:00' });
+      expect(status, 'an adult must be refused').toBe(403);
+      expect(storedQuietHours(), 'the refused write must not persist').toBe('21:00-06:00');
+      await adult.context.close();
+    } finally {
+      await disableQuietHours(page);
+    }
+  });
+
+  test('T-3.2.7 a DST transition day neither crashes nor double-sends', async () => {
+    test.skip(true, 'needs the SERVER clock on a DST transition day; page.clock only fakes browser time and the server has no clock seam over HTTP');
   });
 });

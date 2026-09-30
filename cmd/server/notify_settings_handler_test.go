@@ -140,6 +140,14 @@ func (r *statefulPreferenceRepo) DowngradeChannel(_ context.Context, memberID ho
 // the handler for direct assertions.
 func buildNotifySettingsTestHandler(t *testing.T, hhRepo *multiMemberHouseholdRepo) (http.Handler, *scs.SessionManager, *statefulContactDirectory, *statefulPreferenceRepo) {
 	t.Helper()
+	return buildNotifySettingsTestHandlerWithChannels(t, hhRepo, notifydomain.ChannelSMS, notifydomain.ChannelEmail)
+}
+
+// buildNotifySettingsTestHandlerWithChannels is
+// buildNotifySettingsTestHandler with an explicit set of optional channels
+// that have a wired sender (NES-206).
+func buildNotifySettingsTestHandlerWithChannels(t *testing.T, hhRepo *multiMemberHouseholdRepo, channels ...notifydomain.Channel) (http.Handler, *scs.SessionManager, *statefulContactDirectory, *statefulPreferenceRepo) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	credRepo := newFakeMemberCredRepo()
@@ -164,7 +172,7 @@ func buildNotifySettingsTestHandler(t *testing.T, hhRepo *multiMemberHouseholdRe
 
 	contacts := newStatefulContactDirectory()
 	prefs := newStatefulPreferenceRepo()
-	settingsService := notifyapp.NewSettingsService(contacts, prefs, hhRepo)
+	settingsService := notifyapp.NewSettingsService(contacts, prefs, hhRepo, channels)
 	notifyHandlers := notifyadapter.NewNotifyWebHandlers(settingsService, sm, logger)
 
 	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
@@ -345,6 +353,78 @@ func TestNotifySettings_SetPreference_UndeliverableChannel_Rejected(t *testing.T
 			}
 			if _, err := prefs.Get(context.Background(), member.ID, notifydomain.EventTypeClaimExpiring); !errors.Is(err, notifydomain.ErrPreferenceNotFound) {
 				t.Errorf("a rejected %s preference must not be persisted", channel)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Optional channels without a wired sender (NES-206)
+// ---------------------------------------------------------------------------
+
+func TestNotifySettings_NoSMSSender_HidesSMSControls(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	handler, sm, _, _ := buildNotifySettingsTestHandlerWithChannels(t, hhRepo)
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	rec := doForm(t, handler, http.MethodGet, "/settings", cookie, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /settings: status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, hidden := range []string{`value="sms"`, `value="email"`, `id="notify-phone"`, `/settings/notify/phone`, `/settings/notify/opt-in`} {
+		if strings.Contains(body, hidden) {
+			t.Errorf("settings page must not contain %q when no SMS or email sender is wired", hidden)
+		}
+	}
+	if !strings.Contains(body, `value="inapp"`) {
+		t.Error("the in-app option must always be offered")
+	}
+}
+
+func TestNotifySettings_WithSMSSender_OffersSMSControls(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	handler, sm, _, _ := buildNotifySettingsTestHandler(t, hhRepo)
+	cookie, _ := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	body := doForm(t, handler, http.MethodGet, "/settings", cookie, "").Body.String()
+	for _, want := range []string{`value="sms"`, `value="email"`, `id="notify-phone"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings page missing %q when SMS and email senders are wired", want)
+		}
+	}
+}
+
+func TestNotifySettings_NoSMSSender_RefusesSMSWrites(t *testing.T) {
+	tests := []struct {
+		name, path, form, wantMessage string
+	}{
+		{"sms preference", "/settings/notify/preferences", "pref_" + notifydomain.EventTypeClaimExpiring.String() + "=sms", "available yet"},
+		{"email preference", "/settings/notify/preferences", "pref_" + notifydomain.EventTypeClaimExpiring.String() + "=email", "available yet"},
+		{"phone number", "/settings/notify/phone", "phone=%2B15551234567", "set up on this server"},
+		{"opt in", "/settings/notify/opt-in", "opted_in=on", "set up on this server"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			member := settingsTestAdultInHousehold(household.NewHouseholdID())
+			hhRepo := newMultiMemberHouseholdRepo(member)
+			handler, sm, contacts, prefs := buildNotifySettingsTestHandlerWithChannels(t, hhRepo)
+			cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+			rec := doForm(t, handler, http.MethodPost, tt.path, cookie, "csrf_token="+csrfToken+"&"+tt.form)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("POST %s: status = %d, want 400; body: %s", tt.path, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantMessage) {
+				t.Errorf("response missing readable refusal message: %s", rec.Body.String())
+			}
+			if _, err := prefs.Get(context.Background(), member.ID, notifydomain.EventTypeClaimExpiring); !errors.Is(err, notifydomain.ErrPreferenceNotFound) {
+				t.Error("a refused write must not persist a preference")
+			}
+			if contact, err := contacts.GetContact(context.Background(), member.ID); err != nil || contact.Phone != nil || contact.SMSOptedIn {
+				t.Errorf("a refused write must not change contact details, got (%v, %v)", contact, err)
 			}
 		})
 	}

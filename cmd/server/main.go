@@ -423,13 +423,19 @@ func runServer(logger *slog.Logger) error {
 	// whole channel administratively off still gets their notification,
 	// in-app, rather than silently losing it.
 	senders := []domain.Sender{inAppSender}
+	// NES-206: the settings page offers and accepts only the optional
+	// channels registered here, so it never presents a channel the
+	// dispatcher would silently fall back from.
+	var deliverableChannels []domain.Channel
 	if cfg.SMS.Enabled {
 		senders = append(senders, smsNotificationSender)
+		deliverableChannels = append(deliverableChannels, domain.ChannelSMS)
 	} else {
 		logger.Info("sms channel not registered with dispatcher (NOTIFY_SMS_ENABLED=false); any sms-preference notification falls back to in-app")
 	}
 	if cfg.Email.Enabled {
 		senders = append(senders, emailNotificationSender)
+		deliverableChannels = append(deliverableChannels, domain.ChannelEmail)
 	} else {
 		logger.Info("email channel not registered with dispatcher (NOTIFY_EMAIL_ENABLED=false); any email-preference notification falls back to in-app")
 	}
@@ -908,7 +914,7 @@ func runServer(logger *slog.Logger) error {
 	// preferences, and (owner-only) quiet hours. quietHoursRepo satisfies
 	// quietHoursStore (GetQuietHours + SetQuietHours), mirroring
 	// routingEnqueuer's own reuse of it above.
-	notifySettingsService := notifyapp.NewSettingsService(contactDirectory, preferenceRepo, quietHoursRepo)
+	notifySettingsService := notifyapp.NewSettingsService(contactDirectory, preferenceRepo, quietHoursRepo, deliverableChannels)
 	notifyWebHandlers := notifyadapter.NewNotifyWebHandlers(notifySettingsService, sm, logger)
 
 	kioskWebHandlers := kioskadapter.NewKioskWebHandlers(
