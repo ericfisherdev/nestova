@@ -306,6 +306,8 @@ test.describe('§14 the worker in use', () => {
     // and T-14.2.4b shows the worker's cache holds no pages.)
     await page.goBack();
     await page.waitForLoadState('load');
+    // The server was asked and, with no session, sent us back to /login.
+    await page.waitForURL((u) => new URL(u).pathname === '/login');
     await expect(page.locator('h2:has-text("Your Balance")'), 'a member-only page must not be shown after logout')
       .toHaveCount(0, { timeout: 3_000 });
   });

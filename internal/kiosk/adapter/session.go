@@ -133,6 +133,9 @@ func RequireKioskOrMember() middleware.Middleware {
 				return
 			}
 			if _, ok := authadapter.CurrentMember(r.Context()); ok {
+				// Same reason as authadapter.RequireMember (NES-203): a member's
+				// page must not survive logout in the browser's HTTP cache.
+				w.Header().Set("Cache-Control", "no-store")
 				next.ServeHTTP(w, r)
 				return
 			}
