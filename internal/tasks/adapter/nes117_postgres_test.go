@@ -183,6 +183,7 @@ func TestTaskInstance_Claim_ReclaimPreservesExpiry(t *testing.T) {
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
 
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
@@ -238,8 +239,8 @@ func TestTaskInstance_Claim_ReclaimPreservesExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
-	if balance != -5 {
-		t.Errorf("Balance = %d, want -5 (re-claim did not evade the penalty)", balance)
+	if balance != 15 {
+		t.Errorf("Balance = %d, want 15 (re-claim did not evade the penalty)", balance)
 	}
 }
 
@@ -257,6 +258,7 @@ func TestSweepExpiredClaims_RevertsAndPenalizesHalfPoints(t *testing.T) {
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
 
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
@@ -312,8 +314,8 @@ func TestSweepExpiredClaims_RevertsAndPenalizesHalfPoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
-	if balance != -5 {
-		t.Errorf("Balance = %d, want -5", balance)
+	if balance != 15 {
+		t.Errorf("Balance = %d, want 15", balance)
 	}
 
 	board, err := ledgerRepo.Leaderboard(testCtx(t), h.ID, refDate.AddDate(-1, 0, 0))
@@ -324,8 +326,8 @@ func TestSweepExpiredClaims_RevertsAndPenalizesHalfPoints(t *testing.T) {
 	for _, mp := range board {
 		if mp.MemberID == m1 {
 			found = true
-			if mp.Points != -5 {
-				t.Errorf("Leaderboard points for m1 = %d, want -5", mp.Points)
+			if mp.Points != 15 {
+				t.Errorf("Leaderboard points for m1 = %d, want 15", mp.Points)
 			}
 		}
 	}
@@ -342,6 +344,7 @@ func TestSweepExpiredClaims_MinimumOnePointFloor(t *testing.T) {
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
 
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 0)
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
@@ -362,61 +365,187 @@ func TestSweepExpiredClaims_MinimumOnePointFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
-	if balance != -1 {
-		t.Errorf("Balance = %d, want -1 (1-point floor on a zero-point task)", balance)
+	if balance != 19 {
+		t.Errorf("Balance = %d, want 19 (1-point floor on a zero-point task)", balance)
 	}
 }
 
-// TestSweepExpiredClaims_NegativeBalanceGoesFurtherNegative is the AC3 case:
-// a member who is already at a negative balance still receives the full
-// penalty, unclamped, and the balance goes further negative.
-func TestSweepExpiredClaims_NegativeBalanceGoesFurtherNegative(t *testing.T) {
+// TestSweepExpiredClaims_CapsPenaltyAtBalance covers the NES-205 floor: the
+// recorded penalty is the smaller of the formula and the claimant's balance,
+// and a balance already at or below zero is left untouched with no ledger row.
+func TestSweepExpiredClaims_CapsPenaltyAtBalance(t *testing.T) {
+	tests := []struct {
+		name        string
+		startBal    int
+		wantPenalty int
+		wantBal     int
+	}{
+		{name: "balance above penalty", startBal: 20, wantPenalty: 5, wantBal: 15},
+		{name: "balance equals penalty", startBal: 5, wantPenalty: 5, wantBal: 0},
+		{name: "balance below penalty", startBal: 3, wantPenalty: 3, wantBal: 0},
+		{name: "balance exactly zero", startBal: 0, wantPenalty: 0, wantBal: 0},
+		{name: "balance already negative", startBal: -3, wantPenalty: 0, wantBal: -3},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newTestPool(t)
+			taskRepo := adapter.NewRecurringTaskRepository(pool)
+			instRepo := adapter.NewTaskInstanceRepository(pool)
+			ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
+			h, m1, _ := seedHousehold(t, pool)
+			if tc.startBal != 0 {
+				seedBalanceForMember(t, ledgerRepo, h.ID, m1, tc.startBal)
+			}
+
+			rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
+			inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+			if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+
+			claims, err := instRepo.SweepExpiredClaims(testCtx(t), farFutureAsOf())
+			if err != nil {
+				t.Fatalf("SweepExpiredClaims: %v", err)
+			}
+			if len(claims) != 1 {
+				t.Fatalf("SweepExpiredClaims returned %d claims, want 1 (the claim reverts even with no penalty)", len(claims))
+			}
+			if claims[0].PenaltyPoints != tc.wantPenalty {
+				t.Errorf("PenaltyPoints = %d, want %d", claims[0].PenaltyPoints, tc.wantPenalty)
+			}
+
+			balance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)
+			if err != nil {
+				t.Fatalf("Balance: %v", err)
+			}
+			if balance != tc.wantBal {
+				t.Errorf("Balance = %d, want %d", balance, tc.wantBal)
+			}
+			if got := countClaimExpiryEntries(t, ledgerRepo, h.ID, m1); (got == 1) != (tc.wantPenalty > 0) {
+				t.Errorf("claim_expiry ledger rows = %d, want a row only when the penalty is positive (%d)", got, tc.wantPenalty)
+			}
+		})
+	}
+}
+
+// TestSweepExpiredClaims_SameClaimantTwoClaimsNeverGoNegative verifies the cap
+// applies cumulatively within one sweep: two expiring claims by a member with
+// 7 points take 5 and then 2, not 5 and 5.
+func TestSweepExpiredClaims_SameClaimantTwoClaimsNeverGoNegative(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 7)
 
-	// Put m1 at a negative balance via a manual ledger adjustment (source_id
-	// nil, matching the "manual adjustment" contract in PointEntry's doc).
-	if err := ledgerRepo.Append(testCtx(t), &domain.PointEntry{
-		ID:          domain.NewPointEntryID(),
-		HouseholdID: h.ID,
-		MemberID:    m1,
-		SourceType:  "manual_adjustment",
-		Points:      -3,
-	}); err != nil {
-		t.Fatalf("seed negative balance: Append: %v", err)
-	}
-	preBalance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)
-	if err != nil {
-		t.Fatalf("Balance (pre): %v", err)
-	}
-	if preBalance != -3 {
-		t.Fatalf("Balance (pre) = %d, want -3", preBalance)
-	}
-
-	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
-	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
-	if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
-		t.Fatalf("Claim: %v", err)
+	for i := 0; i < 2; i++ {
+		rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
+		inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+		if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+			t.Fatalf("Claim #%d: %v", i, err)
+		}
 	}
 
 	claims, err := instRepo.SweepExpiredClaims(testCtx(t), farFutureAsOf())
 	if err != nil {
 		t.Fatalf("SweepExpiredClaims: %v", err)
 	}
-	if len(claims) != 1 {
-		t.Fatalf("SweepExpiredClaims returned %d claims, want 1", len(claims))
+	total := 0
+	for _, c := range claims {
+		total += c.PenaltyPoints
 	}
-
+	if len(claims) != 2 || total != 7 {
+		t.Errorf("claims = %d, total penalty = %d, want 2 claims totalling 7", len(claims), total)
+	}
 	balance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)
 	if err != nil {
-		t.Fatalf("Balance (post): %v", err)
+		t.Fatalf("Balance: %v", err)
 	}
-	if balance != -8 {
-		t.Errorf("Balance (post) = %d, want -8 (already -3, penalty -5, never floored at 0)", balance)
+	if balance != 0 {
+		t.Errorf("Balance = %d, want 0", balance)
 	}
+}
+
+// TestSweepExpiredClaims_RacingRedemptionNeverGoesNegative fires a redemption
+// and a sweep at the same member concurrently, many times. With 10 points, a
+// 10-point reward and a 5-point penalty, the two serial orders are: sweep
+// first (balance 5, redemption refused) or redemption first (balance 0, no
+// penalty left to take). Any other outcome means the two writers read the
+// balance unserialized.
+func TestSweepExpiredClaims_RacingRedemptionNeverGoesNegative(t *testing.T) {
+	pool := newTestPool(t)
+	taskRepo := adapter.NewRecurringTaskRepository(pool)
+	instRepo := adapter.NewTaskInstanceRepository(pool)
+	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
+	rewardRepo := adapter.NewRewardPostgresRepository(pool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for round := 0; round < 10; round++ {
+		h, m1, _ := seedHousehold(t, pool)
+		seedBalanceForMember(t, ledgerRepo, h.ID, m1, 10)
+		rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
+		inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
+		if err := instRepo.Claim(testCtx(t), h.ID, inst.ID, m1); err != nil {
+			t.Fatalf("round %d: Claim: %v", round, err)
+		}
+		reward := seedReward(t, rewardRepo, h.ID, "Racing reward", 10)
+		redemption := buildRedemption(h.ID, m1, reward.ID)
+
+		var (
+			wg                  sync.WaitGroup
+			redeemErr, sweepErr error
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, redeemErr = rewardRepo.RedeemWithDebit(ctx, redemption)
+		}()
+		go func() {
+			defer wg.Done()
+			_, sweepErr = instRepo.SweepExpiredClaims(ctx, farFutureAsOf())
+		}()
+		wg.Wait()
+
+		if sweepErr != nil {
+			t.Fatalf("round %d: SweepExpiredClaims: %v", round, sweepErr)
+		}
+		balance, err := ledgerRepo.Balance(testCtx(t), h.ID, m1)
+		if err != nil {
+			t.Fatalf("round %d: Balance: %v", round, err)
+		}
+		switch {
+		case redeemErr == nil && balance == 0:
+		case errors.Is(redeemErr, domain.ErrInsufficientPoints) && balance == 5:
+		default:
+			t.Fatalf("round %d: redeem err = %v, balance = %d, want (nil, 0) or (ErrInsufficientPoints, 5)",
+				round, redeemErr, balance)
+		}
+	}
+}
+
+// countClaimExpiryEntries returns how many claim_expiry rows the member's
+// ledger history holds.
+func countClaimExpiryEntries(
+	t *testing.T,
+	ledgerRepo *adapter.PointLedgerPostgresRepository,
+	householdID household.HouseholdID,
+	memberID household.MemberID,
+) int {
+	t.Helper()
+	entries, err := ledgerRepo.History(testCtx(t), householdID, memberID, 50)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.SourceType == domain.SourceTypeClaimExpiry {
+			n++
+		}
+	}
+	return n
 }
 
 // TestSweepExpiredClaims_CompletingBeforeExpiryAwardsNoPenalty is the AC4
@@ -513,6 +642,7 @@ func TestSweepExpiredClaims_SequentialDoubleSweep_ExactlyOnePenalty(t *testing.T
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
 
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10)
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
@@ -541,8 +671,8 @@ func TestSweepExpiredClaims_SequentialDoubleSweep_ExactlyOnePenalty(t *testing.T
 	if err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
-	if balance != -5 {
-		t.Errorf("Balance after double sweep = %d, want -5 (exactly one penalty)", balance)
+	if balance != 15 {
+		t.Errorf("Balance after double sweep = %d, want 15 (exactly one penalty)", balance)
 	}
 }
 
@@ -558,6 +688,7 @@ func TestSweepExpiredClaims_ConcurrentSweepsPenalizeOnce(t *testing.T) {
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
 
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10)
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
@@ -595,8 +726,8 @@ func TestSweepExpiredClaims_ConcurrentSweepsPenalizeOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
-	if balance != -5 {
-		t.Errorf("Balance after concurrent sweeps = %d, want -5 (exactly one penalty)", balance)
+	if balance != 15 {
+		t.Errorf("Balance after concurrent sweeps = %d, want 15 (exactly one penalty)", balance)
 	}
 }
 
@@ -614,6 +745,7 @@ func TestSweepExpiredClaims_StandingInstance_RevertsWithoutRespawnOrTermination(
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, adapter.NewPointLedgerPostgresRepository(pool), h.ID, m1, 20)
 
 	seedAsNeededTaskWithPoints(t, taskRepo, h.ID, 4) // penalty = 2
 	standing, err := instRepo.ListStanding(testCtx(t), h.ID)

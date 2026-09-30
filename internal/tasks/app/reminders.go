@@ -296,7 +296,7 @@ func (r *Reminders) enqueueClaimExpiry(ctx context.Context, asOf time.Time, clai
 		MemberID:     &claimedBy,
 		Channel:      notifydomain.ChannelInApp,
 		Title:        fmt.Sprintf("Claim expired: %s", claim.Title),
-		Body:         fmt.Sprintf("Your claim on %s expired, -%d points.", claim.Title, claim.PenaltyPoints),
+		Body:         claimExpiryBody(claim),
 		ScheduledFor: asOf,
 		Status:       notifydomain.StatusPending,
 		SourceType:   "task_instance",
@@ -378,4 +378,13 @@ func (r *Reminders) enqueueReminder(ctx context.Context, asOf time.Time, tgt dom
 		return fmt.Errorf("reminders: enqueue instance %s: %w", tgt.InstanceID.String(), err)
 	}
 	return nil
+}
+
+// claimExpiryBody words the expiry notification. A claimant with no points to
+// lose (NES-205) is told the claim lapsed without quoting a "-0 points" loss.
+func claimExpiryBody(claim domain.ExpiredClaim) string {
+	if claim.PenaltyPoints == 0 {
+		return fmt.Sprintf("Your claim on %s expired.", claim.Title)
+	}
+	return fmt.Sprintf("Your claim on %s expired, -%d points.", claim.Title, claim.PenaltyPoints)
 }

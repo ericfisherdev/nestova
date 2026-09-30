@@ -583,6 +583,7 @@ func TestPointLedger_History_ClaimExpiryPenalty(t *testing.T) {
 	instRepo := adapter.NewTaskInstanceRepository(pool)
 	ledgerRepo := adapter.NewPointLedgerPostgresRepository(pool)
 	h, m1, _ := seedHousehold(t, pool)
+	seedBalanceForMember(t, ledgerRepo, h.ID, m1, 20)
 
 	rt := seedRecurringTaskWithPoints(t, taskRepo, h.ID, 10) // penalty = 5
 	inst := seedTaskInstance(t, instRepo, rt, refDate.AddDate(0, 0, 7))
@@ -597,10 +598,15 @@ func TestPointLedger_History_ClaimExpiryPenalty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("History = %d entries, want 1", len(entries))
+	var e *domain.PointHistoryEntry
+	for i := range entries {
+		if entries[i].SourceType == domain.SourceTypeClaimExpiry {
+			e = &entries[i]
+		}
 	}
-	e := entries[0]
+	if e == nil {
+		t.Fatalf("History = %+v, want a claim_expiry entry", entries)
+	}
 	if e.SourceType != domain.SourceTypeClaimExpiry {
 		t.Errorf("SourceType = %q, want %q", e.SourceType, domain.SourceTypeClaimExpiry)
 	}
