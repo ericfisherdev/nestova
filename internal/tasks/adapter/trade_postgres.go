@@ -31,6 +31,23 @@ const (
 // so no pgx UUID codec registration is required.
 type TradeRepository struct {
 	dbtx db.TX
+	loc  *time.Location
+	now  func() time.Time
+}
+
+// TradeRepositoryOption customises a TradeRepository at construction.
+type TradeRepositoryOption func(*TradeRepository)
+
+// WithTradeLocation sets the time zone whose day boundary ends a trade
+// window (NES-198). The default is time.Local.
+func WithTradeLocation(loc *time.Location) TradeRepositoryOption {
+	return func(r *TradeRepository) { r.loc = loc }
+}
+
+// WithTradeClock sets the clock Propose uses to refuse a trade whose window
+// has already closed (NES-198). The default is time.Now.
+func WithTradeClock(now func() time.Time) TradeRepositoryOption {
+	return func(r *TradeRepository) { r.now = now }
 }
 
 // Compile-time assurance that TradeRepository satisfies the port.
@@ -39,11 +56,15 @@ var _ domain.ChoreTradeRepository = (*TradeRepository)(nil)
 // NewTradeRepository constructs a TradeRepository with an injected query
 // executor. The executor is a db.TX, satisfied by both *pgxpool.Pool (the
 // default composition) and pgx.Tx.
-func NewTradeRepository(dbtx db.TX) *TradeRepository {
+func NewTradeRepository(dbtx db.TX, opts ...TradeRepositoryOption) *TradeRepository {
 	if dbtx == nil {
 		panic("adapter: NewTradeRepository requires a non-nil db.TX")
 	}
-	return &TradeRepository{dbtx: dbtx}
+	r := &TradeRepository{dbtx: dbtx, loc: time.Local, now: time.Now}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Propose validates and persists a new trade proposal in a single
@@ -78,6 +99,10 @@ func (r *TradeRepository) Propose(
 	if !domain.IsInstanceTradeable(offered) || !domain.IsInstanceTradeable(requested) {
 		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
 	}
+	expiresAt := r.tradeExpiry(offered, requested)
+	if !expiresAt.After(r.now()) {
+		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrTradeWindowClosed)
+	}
 	if offered.AssigneeID == nil || *offered.AssigneeID != trade.ProposerID {
 		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrNotYourChore)
 	}
@@ -92,8 +117,6 @@ func (r *TradeRepository) Propose(
 	if live {
 		return domain.ProposedTrade{}, fmt.Errorf("propose trade: %w", domain.ErrInstanceNotTradeable)
 	}
-
-	expiresAt := earlierDueOn(offered, requested)
 
 	const insertQ = `
 		INSERT INTO chore_trade
@@ -263,12 +286,14 @@ func hasLiveTradeProposal(
 	return true, nil
 }
 
-// earlierDueOn returns the earlier of offered's and requested's DueOn. Callers
+// tradeExpiry returns the end, in the repository's location, of the earlier
+// of offered's and requested's due days (see domain.TradeExpiry). Callers
 // must only invoke this after confirming domain.IsInstanceTradeable for both
 // instances, which guarantees kind = scheduled and therefore a non-nil DueOn
 // on each (see validateInstanceKindDueOn's insert-time invariant).
-func earlierDueOn(offered, requested *domain.TaskInstance) time.Time {
-	o, req := *offered.DueOn, *requested.DueOn
+func (r *TradeRepository) tradeExpiry(offered, requested *domain.TaskInstance) time.Time {
+	o := domain.TradeExpiry(*offered.DueOn, r.loc)
+	req := domain.TradeExpiry(*requested.DueOn, r.loc)
 	if o.Before(req) {
 		return o
 	}

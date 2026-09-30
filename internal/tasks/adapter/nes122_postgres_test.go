@@ -171,7 +171,7 @@ func TestTrade_ListPendingByMember_ReturnsLiveTradesForBothRoles(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 	m3 := seedThirdMember(t, pool, h.ID)
 
@@ -212,7 +212,7 @@ func TestTrade_ListPendingByMember_ProjectsChoreTitlesAndPoints(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 5)
@@ -244,7 +244,7 @@ func TestTrade_ListPendingByMember_ExcludesResolvedTrades(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))
@@ -273,7 +273,7 @@ func TestTrade_ListHistory_ReturnsAllStatusesNewestFirst(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 5)
@@ -311,7 +311,7 @@ func TestTrade_ListHistory_TenantScoped(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h1, m1, m2 := seedHousehold(t, pool)
 	h2, n1, n2 := seedHousehold(t, pool)
 
@@ -340,7 +340,7 @@ func TestTrade_ListHistory_ArchivesInactiveRecurringTask(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 5)
@@ -385,7 +385,7 @@ func TestTrade_ListHistory_RespectsLimit(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 5)
@@ -429,7 +429,7 @@ func TestTrade_Propose_ReturnsProposedTradeWithTitles(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 5)
@@ -471,7 +471,7 @@ func TestTrade_Decline_ReturnsDeclinedTradeWithTitles(t *testing.T) {
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	due := refDate.AddDate(0, 0, 5)
@@ -506,7 +506,7 @@ func TestTrade_Decline_WrongResponder_ReturnsZeroValueDeclinedTrade(t *testing.T
 	pool := newTestPool(t)
 	taskRepo := adapter.NewRecurringTaskRepository(pool)
 	instRepo := adapter.NewTaskInstanceRepository(pool)
-	tradeRepo := adapter.NewTradeRepository(pool)
+	tradeRepo := newTradeRepo(pool)
 	h, m1, m2 := seedHousehold(t, pool)
 
 	offered, requested := seedTwoTradeableInstances(t, taskRepo, instRepo, h.ID, m1, m2, refDate.AddDate(0, 0, 5))

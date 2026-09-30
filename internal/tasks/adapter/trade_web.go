@@ -114,6 +114,7 @@ func isParent(member *household.Member) bool {
 //   - ErrInstanceNotFound   → 404
 //   - ErrNotYourChore       → 403
 //   - ErrInstanceNotTradeable → 409
+//   - ErrTradeWindowClosed    → 409
 //   - other                 → 500
 func (h *TradeWebHandlers) ProposePickerPage(layoutFn LayoutFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +153,8 @@ func (h *TradeWebHandlers) handlePickerBuildError(w http.ResponseWriter, r *http
 		http.Error(w, "that chore is not assigned to you", http.StatusForbidden)
 	case errors.Is(err, domain.ErrInstanceNotTradeable):
 		http.Error(w, "that chore is not tradeable", http.StatusConflict)
+	case errors.Is(err, domain.ErrTradeWindowClosed):
+		http.Error(w, "that chore's due day has ended, so it can no longer be traded", http.StatusConflict)
 	default:
 		h.logger.ErrorContext(r.Context(), "propose trade: build picker", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -182,6 +185,9 @@ func (h *TradeWebHandlers) buildProposeTradeForm(
 	}
 	if !domain.IsInstanceTradeable(offered) {
 		return components.ProposeTradeForm{}, domain.ErrInstanceNotTradeable
+	}
+	if !domain.IsInstanceTradeableAt(offered, time.Now(), time.Local) {
+		return components.ProposeTradeForm{}, domain.ErrTradeWindowClosed
 	}
 
 	candidates, err := h.instanceRepo.ListTradeableAssignedToOthers(ctx, member.HouseholdID, member.ID)
@@ -256,6 +262,7 @@ func (h *TradeWebHandlers) buildProposeTradeForm(
 //   - ErrTradeSelf                → 400 (re-render)
 //   - ErrNotYourChore             → 403 (re-render)
 //   - ErrInstanceNotTradeable     → 409 (re-render)
+//   - ErrTradeWindowClosed        → 409 (re-render)
 //   - ErrInstanceNotFound         → 404 (re-render)
 //   - other                       → 500
 func (h *TradeWebHandlers) ProposeTrade(layoutFn LayoutFunc) http.HandlerFunc {
@@ -326,6 +333,8 @@ func (h *TradeWebHandlers) handleProposeError(
 		msg, status = "One of the selected chores is no longer assigned as expected.", http.StatusForbidden
 	case errors.Is(err, domain.ErrInstanceNotTradeable):
 		msg, status = "One of the selected chores is no longer tradeable.", http.StatusConflict
+	case errors.Is(err, domain.ErrTradeWindowClosed):
+		msg, status = "One of the selected chores is past its due day, so it can no longer be traded.", http.StatusConflict
 	case errors.Is(err, domain.ErrInstanceNotFound):
 		msg, status = "One of the selected chores could not be found.", http.StatusNotFound
 	default:

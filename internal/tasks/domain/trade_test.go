@@ -198,3 +198,56 @@ func TestIsInstanceTradeable_RejectsNilDueOn(t *testing.T) {
 		t.Error("IsInstanceTradeable(scheduled, nil DueOn) = true, want false")
 	}
 }
+
+// TestTradeExpiry_IsEndOfDueDayInLocalTime covers NES-198: the trade window
+// closes at local midnight ending the due day, not at 00:00 UTC of the due
+// date.
+func TestTradeExpiry_IsEndOfDueDayInLocalTime(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	due := domain.DateOf(time.Date(2025, 3, 10, 0, 0, 0, 0, time.UTC))
+
+	got := domain.TradeExpiry(due, chicago)
+
+	want := time.Date(2025, 3, 11, 0, 0, 0, 0, chicago)
+	if !got.Equal(want) {
+		t.Errorf("TradeExpiry = %v, want %v", got, want)
+	}
+}
+
+func TestIsInstanceTradeableAt_DayBoundary(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	inst := newTradeableInstance()
+	inst.DueOn = domain.DueOnPtr(time.Date(2025, 3, 10, 0, 0, 0, 0, time.UTC))
+
+	tests := []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{"evening before the due day", time.Date(2025, 3, 9, 20, 0, 0, 0, chicago), true},
+		{"due day, past 00:00 UTC", time.Date(2025, 3, 10, 21, 30, 0, 0, chicago), true},
+		{"last instant of the due day", time.Date(2025, 3, 10, 23, 59, 59, 0, chicago), true},
+		{"local midnight after the due day", time.Date(2025, 3, 11, 0, 0, 0, 0, chicago), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := domain.IsInstanceTradeableAt(inst, tt.now, chicago); got != tt.want {
+				t.Errorf("IsInstanceTradeableAt(now=%v) = %v, want %v", tt.now, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsInstanceTradeableAt_RejectsUntradeableInstance(t *testing.T) {
+	inst := newTradeableInstance()
+	inst.Status = domain.StatusDone
+	if domain.IsInstanceTradeableAt(inst, time.Time{}, time.UTC) {
+		t.Error("IsInstanceTradeableAt(done instance) = true, want false")
+	}
+}
