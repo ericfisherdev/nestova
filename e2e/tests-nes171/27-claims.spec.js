@@ -225,12 +225,13 @@ test.describe.serial('§5.3/§5.1 after a scheduler tick (opt-in)', () => {
     await expect(balanceCard).toContainText('15 pts');
   });
 
-  test('T-5.3.6 a lapse penalty may take a balance below zero (by design)', async () => {
-    // CHECKLIST WRONG: there is no floor. tasks/domain.ClaimExpiryPenalty:
-    // "Penalties are never clamped by a member's balance — callers must apply
-    // the full, unconditional penalty and let balances go negative."
-    expect(ledgerFor(s.brokeClaim.id)).toEqual([{ memberId: s.broke.id, sourceType: 'claim_expiry', points: -1 }]);
-    expect(balanceOf(s.broke.id)).toBe(-1);
+  test('T-5.3.6 a lapse penalty never takes a balance below zero', async () => {
+    test.fail(true, 'DEFECT: NES-205 — the claim-expiry penalty is applied in full and takes a zero balance to -1');
+    // Product decision 2026-09-29: balances have a floor of zero. The penalty
+    // is capped at the member's balance, so a member with nothing to lose gets
+    // no penalty row at all.
+    expect(ledgerFor(s.brokeClaim.id), 'no penalty row against a zero balance').toEqual([]);
+    expect(balanceOf(s.broke.id)).toBe(0);
   });
 
   test('T-5.3.7 claim, expire, then re-claim works', async ({ page }) => {
