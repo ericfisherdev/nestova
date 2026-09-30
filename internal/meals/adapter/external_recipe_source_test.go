@@ -72,9 +72,9 @@ func newFakeEnsurer() *fakeEnsurer {
 }
 
 func (f *fakeEnsurer) EnsureIngredient(_ context.Context, name string) (*tracking.Ingredient, error) {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if n == "" {
-		return nil, tracking.ErrInvalidIngredient
+	n := tracking.NormalizeName(name)
+	if err := tracking.ValidateNormalizedName(n); err != nil {
+		return nil, err // mirrors IngredientRepository.EnsureIngredient
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

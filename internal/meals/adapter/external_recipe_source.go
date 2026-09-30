@@ -308,7 +308,7 @@ func (s *ExternalRecipeSource) cacheAndMap(ctx context.Context, result providerR
 
 	missing := make([]tracking.IngredientID, 0, missed)
 	for _, ingredient := range result.MissedIngredients {
-		normalized, err := s.ensurer.EnsureIngredient(ctx, clampRunes(ingredient.Name, tracking.MaxIngredientNameLength))
+		normalized, err := s.ensurer.EnsureIngredient(ctx, clampRunes(tracking.NormalizeName(ingredient.Name), tracking.MaxIngredientNameLength))
 		if err != nil {
 			// Skip only an invalid provider value (e.g. a blank name); a real failure
 			// (a catalogue/DB error) must surface rather than silently dropping a
