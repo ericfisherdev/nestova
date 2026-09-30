@@ -299,7 +299,7 @@ templ photoCard(photo PhotoView, albums []AlbumOption, csrfToken string) {
 // pre-fill the inputs (empty/default for create, the album's current values for
 // configure). members is non-nil only for the create form's filter picker.
 templ albumForm(mode, action, csrfToken, nameValue string, rotationValue int, members []MediaMemberOption) {
-	<form method="post" action={ templ.URL(action) } hx-post={ action } class="flex flex-col gap-2">
+	<form method="post" action={ templ.URL(action) } hx-post={ action } hx-sync="this:drop" hx-disabled-elt="find button[type='submit']" class="flex flex-col gap-2">
 		<input type="hidden" name="csrf_token" value={ csrfToken }/>
 		<label class="text-xs font-medium text-ink-muted" for={ mode + "-album-name" }>Album name</label>
 		<input id={ mode + "-album-name" } type="text" name="name" required value={ nameValue } placeholder="Album name" class="rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink"/>

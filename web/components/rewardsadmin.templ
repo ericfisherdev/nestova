@@ -63,6 +63,9 @@ type RedemptionInboxItem struct {
 type RewardAdminForm struct {
 	// CSRFToken is the per-session CSRF token embedded as a hidden field.
 	CSRFToken string
+	// FormToken is the one-time submission token of the create form, embedded
+	// as a hidden field. Empty on the edit form, which is idempotent.
+	FormToken string
 	// Error is a validation error shown above the submit button. Empty means
 	// no error is shown.
 	Error string
@@ -257,6 +260,9 @@ templ RewardAdminFormPage(form RewardAdminForm) {
 		<div class="max-w-lg rounded-card bg-surface p-6 shadow-warm">
 			<form method="POST" action={ rewardFormAction(form) } novalidate>
 				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
+				if form.FormToken != "" {
+					<input type="hidden" name="form_token" value={ form.FormToken }/>
+				}
 				<div class="flex flex-col gap-5">
 					<!-- Name -->
 					<div class="flex flex-col gap-1">

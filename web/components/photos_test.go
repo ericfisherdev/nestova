@@ -45,6 +45,10 @@ func TestPhotosPageRendersUploadAlbumsAndGrid(t *testing.T) {
 	if !strings.Contains(out, `hx-post="/albums"`) {
 		t.Errorf("missing create-album form")
 	}
+	// A double click must send one request (NES-201).
+	if !strings.Contains(out, `hx-sync="this:drop"`) || !strings.Contains(out, `hx-disabled-elt=`) {
+		t.Errorf("create-album form does not guard against double submission")
+	}
 	// Album row with its view link, move, and remove actions.
 	if !strings.Contains(out, "/album/alb-1") {
 		t.Errorf("missing album view link")

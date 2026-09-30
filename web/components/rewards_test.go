@@ -240,3 +240,21 @@ func TestRewardsCatalog_EmptyMessage(t *testing.T) {
 		t.Errorf("Empty catalog missing empty-state message: %q", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RewardAdminFormPage one-time form token (NES-201)
+// ---------------------------------------------------------------------------
+
+func TestRewardAdminFormPage_EmbedsFormTokenWhenIssued(t *testing.T) {
+	out := renderString(t, components.RewardAdminFormPage(components.RewardAdminForm{CSRFToken: "csrf", FormToken: "once-abc"}))
+	if !strings.Contains(out, `name="form_token" value="once-abc"`) {
+		t.Errorf("create form missing its one-time token: %q", out)
+	}
+}
+
+func TestRewardAdminFormPage_OmitsFormTokenWhenNotIssued(t *testing.T) {
+	out := renderString(t, components.RewardAdminFormPage(components.RewardAdminForm{CSRFToken: "csrf", IsEdit: true, ID: "r1"}))
+	if strings.Contains(out, "form_token") {
+		t.Errorf("edit form must not carry a one-time token: %q", out)
+	}
+}

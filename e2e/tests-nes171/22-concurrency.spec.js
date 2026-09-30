@@ -192,7 +192,6 @@ test.describe('§0.7 concurrency and double-submit', () => {
   });
 
   test('T-0.7.1 [!] double-clicking a create form\'s submit button makes one record', async ({ page }) => {
-    test.fail(true, 'DEFECT: the hx-post create forms (album, recipe, subscription, shopping item) send both clicks of a double click and create two records');
     test.setTimeout(180_000);
     await login(page, PERSONAS.owner);
 
@@ -273,7 +272,6 @@ test.describe('§0.7 concurrency and double-submit', () => {
   });
 
   test('T-0.7.8 [!] going back and resubmitting a completed form makes no duplicate', async ({ page }) => {
-    test.fail(true, 'DEFECT: create forms carry no one-time submission token, so a form resubmitted from history creates a second record');
     await login(page, PERSONAS.owner);
     const reward = CREATE_FORMS.find((f) => f.name === 'reward');
     const marker = fuzz.uniqueMarker('back');

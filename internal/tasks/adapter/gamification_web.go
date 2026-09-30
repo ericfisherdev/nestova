@@ -595,7 +595,10 @@ func (h *GamificationWebHandlers) NewRewardPage(layoutFn LayoutFunc) http.Handle
 			return
 		}
 
-		form := components.RewardAdminForm{CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm)}
+		form := components.RewardAdminForm{
+			CSRFToken: authadapter.GetCSRFToken(r.Context(), h.sm),
+			FormToken: authadapter.IssueFormToken(r.Context(), h.sm),
+		}
 		content := components.RewardAdminFormPage(form)
 		if err := render.Page(r.Context(), w, r, layoutFn(member), content); err != nil {
 			h.logger.ErrorContext(r.Context(), "new reward page: render", "error", err)
@@ -612,6 +615,7 @@ func (h *GamificationWebHandlers) NewRewardPage(layoutFn LayoutFunc) http.Handle
 //   - bad CSRF                        → 403
 //   - not a parent (owner/adult)      → 403
 //   - missing/invalid name/cost/qty   → 422 (form re-render)
+//   - form token already spent/absent → 409 (form re-render, fresh token)
 //   - other                           → 500
 func (h *GamificationWebHandlers) CreateReward(layoutFn LayoutFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -639,6 +643,13 @@ func (h *GamificationWebHandlers) CreateReward(layoutFn LayoutFunc) http.Handler
 			return
 		}
 
+		if !authadapter.HasFormToken(r, h.sm) {
+			form.FormToken = authadapter.IssueFormToken(r.Context(), h.sm)
+			form.Error = rewardAlreadySubmittedMessage
+			h.renderRewardAdminForm(w, r, http.StatusConflict, form, layoutFn(member))
+			return
+		}
+
 		if _, err := h.rewardAdminSvc.Create(r.Context(), member.HouseholdID, name, description, cost, imageRef, quantity); err != nil {
 			errMsg := rewardAdminErrMessage(err)
 			if errMsg == "" {
@@ -651,6 +662,7 @@ func (h *GamificationWebHandlers) CreateReward(layoutFn LayoutFunc) http.Handler
 			return
 		}
 
+		authadapter.ConsumeFormToken(r, h.sm)
 		http.Redirect(w, r, "/admin/rewards", http.StatusSeeOther)
 	}
 }
@@ -850,6 +862,7 @@ func parseRewardAdminForm(
 
 	form = components.RewardAdminForm{
 		CSRFToken:         authadapter.GetCSRFToken(r.Context(), sm),
+		FormToken:         submittedFormToken(r, editID),
 		ID:                editID,
 		IsEdit:            editID != "",
 		Name:              rawName,
@@ -886,6 +899,20 @@ func parseRewardAdminForm(
 	}
 
 	return rawName, rawDescription, cost, imageRefPtr, quantityPtr, form, ""
+}
+
+// rewardAlreadySubmittedMessage is shown when a create form is submitted a
+// second time, for instance by going Back and pressing submit again.
+const rewardAlreadySubmittedMessage = "This reward was already submitted. Check the rewards list before adding it again."
+
+// submittedFormToken echoes the create form's one-time token so a submission
+// that fails validation can be corrected and resubmitted with the same token.
+// The edit form (editID != "") carries none.
+func submittedFormToken(r *http.Request, editID string) string {
+	if editID != "" {
+		return ""
+	}
+	return r.FormValue(authadapter.FormTokenField)
 }
 
 // rewardAdminErrMessage maps a RewardAdminService validation error to a
