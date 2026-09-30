@@ -21,6 +21,8 @@ func TestRefuseNULBytes(t *testing.T) {
 		{"NUL in a form value is refused", "/x", "name=" + url.QueryEscape("a\x00b"), http.StatusUnprocessableEntity},
 		{"NUL in a form key is refused", "/x", url.QueryEscape("a\x00b") + "=1", http.StatusUnprocessableEntity},
 		{"NUL in the query string is refused", "/x?q=" + url.QueryEscape("a\x00b"), "", http.StatusUnprocessableEntity},
+		{"NUL beside a malformed pair is refused, not forwarded", "/x", "name=" + url.QueryEscape("a\x00b") + "&junk=%zz", http.StatusBadRequest},
+		{"a body over the form cap is refused", "/x", "name=" + strings.Repeat("a", maxFormBodyBytes), http.StatusBadRequest},
 		{"other control characters pass", "/x", "name=" + url.QueryEscape("tab\there"), http.StatusNoContent},
 	}
 	for _, tc := range tests {

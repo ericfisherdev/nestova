@@ -256,6 +256,10 @@ func (h *WebAuthnWebHandlers) RegisterFinish(w http.ResponseWriter, r *http.Requ
 			http.Error(w, nicknameTooLongMessage, http.StatusUnprocessableEntity)
 			return
 		}
+		if errors.Is(err, authdomain.ErrNicknameHasNULByte) {
+			http.Error(w, "passkey nickname must not contain null characters", http.StatusUnprocessableEntity)
+			return
+		}
 		if errors.Is(err, authdomain.ErrWebAuthnVerificationFailed) {
 			http.Error(w, webauthnRegistrationErrorMessage, http.StatusUnauthorized)
 			return

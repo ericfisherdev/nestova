@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -58,6 +59,10 @@ var (
 	// ErrNicknameTooLong is returned by ValidateNickname when a passkey nickname
 	// exceeds MaxNicknameLength runes (NES-194).
 	ErrNicknameTooLong = errors.New("auth: passkey nickname is too long")
+	// ErrNicknameHasNULByte is returned by ValidateNickname when a passkey
+	// nickname contains a NUL byte, which Postgres text columns cannot store
+	// (NES-195).
+	ErrNicknameHasNULByte = errors.New("auth: passkey nickname contains a null character")
 )
 
 // MaxNicknameLength bounds a passkey nickname, counted in runes rather than
@@ -66,11 +71,14 @@ var (
 const MaxNicknameLength = 100
 
 // ValidateNickname returns ErrNicknameTooLong when nickname exceeds
-// MaxNicknameLength runes. A blank nickname is valid: the service substitutes a
+// MaxNicknameLength runes and ErrNicknameHasNULByte when it contains a NUL. A blank nickname is valid: the service substitutes a
 // default.
 func ValidateNickname(nickname string) error {
 	if utf8.RuneCountInString(nickname) > MaxNicknameLength {
 		return ErrNicknameTooLong
+	}
+	if strings.ContainsRune(nickname, 0) {
+		return ErrNicknameHasNULByte
 	}
 	return nil
 }

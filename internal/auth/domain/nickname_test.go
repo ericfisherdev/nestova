@@ -21,6 +21,7 @@ func TestValidateNickname(t *testing.T) {
 		{"multibyte at the limit", strings.Repeat("家", authdomain.MaxNicknameLength), nil},
 		{"one over", strings.Repeat("a", authdomain.MaxNicknameLength+1), authdomain.ErrNicknameTooLong},
 		{"multibyte one over", strings.Repeat("家", authdomain.MaxNicknameLength+1), authdomain.ErrNicknameTooLong},
+		{"NUL byte", "Phone\x00", authdomain.ErrNicknameHasNULByte},
 		{"far over", strings.Repeat("n", 10_000), authdomain.ErrNicknameTooLong},
 	}
 	for _, tc := range tests {
