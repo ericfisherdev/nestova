@@ -63,6 +63,8 @@ func NewTradeService(
 //     requestedInstanceID, when either instance fails
 //     domain.IsInstanceTradeable, or when either instance already carries a
 //     live proposal.
+//   - Returns domain.ErrTradeWindowClosed when the earlier due day of the two
+//     instances has already ended in local time.
 //   - Returns domain.ErrNotYourChore when the offered instance is not
 //     assigned to proposerID, or the requested instance is not assigned to
 //     responderID.
