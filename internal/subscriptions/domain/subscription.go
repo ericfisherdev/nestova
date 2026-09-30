@@ -20,7 +20,17 @@ var (
 	// ErrSubscriptionNameTooLong is returned by Validate when the name exceeds
 	// MaxNameLength runes (NES-194). It wraps ErrInvalidSubscription.
 	ErrSubscriptionNameTooLong = fmt.Errorf("%w: name is too long", ErrInvalidSubscription)
+
+	// ErrAmountTooLarge is returned by Validate for a per-cycle amount above
+	// MaxAmountCents. It wraps ErrInvalidSubscription.
+	ErrAmountTooLarge = fmt.Errorf("%w: amount exceeds the maximum", ErrInvalidSubscription)
 )
+
+// MaxAmountCents is the largest accepted per-cycle amount in minor units
+// ($1,000,000,000). It sits far below math.MaxInt64/52, so every cycle
+// normalizes to a monthly figure without overflowing, and a household would
+// need millions of such rows before their sum could overflow.
+const MaxAmountCents int64 = 100_000_000_000
 
 // Subscription is a recurring household expense billed on a Cycle. Amount is the
 // per-cycle cost (strictly positive). NextRenewalOn is the date the next charge
@@ -72,6 +82,9 @@ func (s Subscription) Validate() error {
 	// aligned.
 	if s.Amount.Cents <= 0 {
 		return fmt.Errorf("%w: amount must be positive", ErrInvalidSubscription)
+	}
+	if s.Amount.Cents > MaxAmountCents {
+		return fmt.Errorf("%w: %d cents", ErrAmountTooLarge, s.Amount.Cents)
 	}
 	if !s.Cycle.Valid() {
 		return fmt.Errorf("%w: unknown cycle %q", ErrInvalidSubscription, s.Cycle)

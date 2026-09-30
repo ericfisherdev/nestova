@@ -12,6 +12,9 @@ var (
 	// ErrInvalidMoney is returned for malformed money: a negative amount or a
 	// currency code that is not three uppercase ASCII letters.
 	ErrInvalidMoney = errors.New("household: invalid money")
+	// ErrMoneyTooLarge is returned by ParseMoneyCents for an amount above
+	// MaxMoneyMajorUnits. It wraps ErrInvalidMoney.
+	ErrMoneyTooLarge = fmt.Errorf("%w: amount is too large", ErrInvalidMoney)
 	// ErrCurrencyMismatch is returned by Add when operands carry different
 	// currencies. Money performs no currency conversion.
 	ErrCurrencyMismatch = errors.New("household: money currency mismatch")
@@ -60,7 +63,7 @@ func ParseMoneyCents(s string) (int64, error) {
 	}
 	units, err := strconv.ParseInt(whole, 10, 64)
 	if err != nil || units > MaxMoneyMajorUnits {
-		return 0, fmt.Errorf("%w: amount is too large", ErrInvalidMoney)
+		return 0, ErrMoneyTooLarge
 	}
 	cents := int64(0)
 	if fraction != "" {

@@ -30,13 +30,17 @@ const dateLayout = "2006-01-02"
 // displayDateLayout is the human-readable date layout shown in the UI.
 const displayDateLayout = "Jan 2, 2006"
 
-// Member-facing parse errors. They are sentences shown verbatim in a 400
-// response, so they must never wrap a domain error and leak its Go prefix.
+// Member-facing parse errors. They are sentences shown verbatim in a 400 (422
+// for errAmountTooLarge) response, so they must never wrap a domain error and leak its Go prefix.
 var (
+	errAmountTooLarge  = errors.New("amount is too large")
 	errInvalidAmount   = errors.New("amount must be a plain number such as 9.99, with at most two decimal places")
 	errInvalidCurrency = errors.New("currency must be a three-letter code such as USD")
 	errInvalidCycle    = errors.New("invalid billing cycle")
 )
+
+// amountTooLargeMessage is the 422 body for an amount above the ceiling.
+const amountTooLargeMessage = "invalid subscription: amount is too large"
 
 // mixedCurrencyLabel is shown for the monthly rollup when a household's active
 // subscriptions span more than one currency (no single total exists).
@@ -102,7 +106,7 @@ func (h *WebHandlers) Add(w http.ResponseWriter, r *http.Request) {
 	}
 	in, err := parseSubscriptionInput(r)
 	if err != nil {
-		http.Error(w, "invalid subscription: "+err.Error(), http.StatusBadRequest)
+		respondInvalidInput(w, err)
 		return
 	}
 	if _, err := h.subs.Add(r.Context(), member.HouseholdID, in); err != nil {
@@ -125,7 +129,7 @@ func (h *WebHandlers) Edit(w http.ResponseWriter, r *http.Request) {
 	}
 	in, err := parseSubscriptionInput(r)
 	if err != nil {
-		http.Error(w, "invalid subscription: "+err.Error(), http.StatusBadRequest)
+		respondInvalidInput(w, err)
 		return
 	}
 	if err := h.subs.Edit(r.Context(), member.HouseholdID, id, in); err != nil {
@@ -272,10 +276,25 @@ func parseSubscriptionInput(r *http.Request) (app.SubscriptionInput, error) {
 // integer cents, returning a member-facing error for anything else.
 func parseAmountCents(s string) (int64, error) {
 	cents, err := household.ParseMoneyCents(strings.TrimSpace(s))
-	if err != nil {
+	switch {
+	case errors.Is(err, household.ErrMoneyTooLarge):
+		return 0, errAmountTooLarge
+	case err != nil:
 		return 0, errInvalidAmount
+	case cents > domain.MaxAmountCents:
+		return 0, errAmountTooLarge
 	}
 	return cents, nil
+}
+
+// respondInvalidInput writes a 422 for an out-of-range amount and a 400 for any
+// other malformed form input.
+func respondInvalidInput(w http.ResponseWriter, err error) {
+	if errors.Is(err, errAmountTooLarge) {
+		http.Error(w, amountTooLargeMessage, http.StatusUnprocessableEntity)
+		return
+	}
+	http.Error(w, "invalid subscription: "+err.Error(), http.StatusBadRequest)
 }
 
 func (h *WebHandlers) beginMutation(w http.ResponseWriter, r *http.Request) (*household.Member, bool) {
@@ -308,6 +327,8 @@ func respondAfterMutation(w http.ResponseWriter, r *http.Request, target string)
 // handleMutationError maps domain errors to HTTP status codes.
 func (h *WebHandlers) handleMutationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, domain.ErrAmountTooLarge):
+		http.Error(w, amountTooLargeMessage, http.StatusUnprocessableEntity)
 	case errors.Is(err, domain.ErrSubscriptionNotFound),
 		errors.Is(err, household.ErrHouseholdNotFound),
 		errors.Is(err, household.ErrMemberNotFound):

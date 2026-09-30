@@ -34,6 +34,20 @@ func TestSubscriptionValidate(t *testing.T) {
 	}
 }
 
+func TestSubscriptionValidateAcceptsCeilingForEveryCycle(t *testing.T) {
+	for _, cycle := range []subscriptions.Cycle{subscriptions.CycleWeekly, subscriptions.CycleMonthly, subscriptions.CycleYearly} {
+		sub := validSubscription(t)
+		sub.Amount = mustMoney(t, subscriptions.MaxAmountCents, "USD")
+		sub.Cycle = cycle
+		if err := sub.Validate(); err != nil {
+			t.Fatalf("Validate() at ceiling for %s error = %v", cycle, err)
+		}
+		if _, err := subscriptions.NormalizeMonthly(sub.Amount, cycle); err != nil {
+			t.Fatalf("NormalizeMonthly() at ceiling for %s error = %v", cycle, err)
+		}
+	}
+}
+
 func TestSubscriptionValidateRejects(t *testing.T) {
 	zeroAmount := mustMoney(t, 0, "USD")
 	cases := []struct {
@@ -45,6 +59,9 @@ func TestSubscriptionValidateRejects(t *testing.T) {
 		{"whitespace name", func(s *subscriptions.Subscription) { s.Name = "   " }, subscriptions.ErrInvalidSubscription},
 		{"zero amount", func(s *subscriptions.Subscription) { s.Amount = zeroAmount }, subscriptions.ErrInvalidSubscription},
 		{"invalid money", func(s *subscriptions.Subscription) { s.Amount = household.Money{Cents: -1, Currency: "USD"} }, household.ErrInvalidMoney},
+		{"amount above ceiling", func(s *subscriptions.Subscription) {
+			s.Amount = mustMoney(t, subscriptions.MaxAmountCents+1, "USD")
+		}, subscriptions.ErrAmountTooLarge},
 		{"unknown cycle", func(s *subscriptions.Subscription) { s.Cycle = subscriptions.Cycle("daily") }, subscriptions.ErrInvalidSubscription},
 		{"zero renewal date", func(s *subscriptions.Subscription) { s.NextRenewalOn = time.Time{} }, subscriptions.ErrInvalidSubscription},
 		{"renewal date with time component", func(s *subscriptions.Subscription) {

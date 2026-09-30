@@ -43,7 +43,10 @@ func NewCostService(subs activeSubscriptionLister) *CostService {
 // treated as a zero contribution). When the household has no active normalizable
 // subscriptions it returns a zero Money in defaultRollupCurrency. It returns
 // household.ErrCurrencyMismatch when the active subscriptions span more than one
-// currency, since a mixed-currency total is not meaningful.
+// currency, since a mixed-currency total is not meaningful. A row whose amount
+// cannot be normalized or added without overflow (domain.ErrInvalidMoney, e.g.
+// stored before amounts were capped) is excluded so one bad row cannot fail the
+// whole rollup.
 func (s *CostService) MonthlyCost(ctx context.Context, householdID household.HouseholdID) (household.Money, error) {
 	subs, err := s.subs.ListActiveByHousehold(ctx, householdID)
 	if err != nil {
@@ -60,16 +63,23 @@ func (s *CostService) MonthlyCost(ctx context.Context, householdID household.Hou
 			if errors.Is(err, domain.ErrUnsupportedCycle) {
 				continue // custom cycle: excluded from the rollup
 			}
+			if errors.Is(err, household.ErrInvalidMoney) {
+				continue // out-of-range amount: excluded from the rollup
+			}
 			return household.Money{}, fmt.Errorf("monthly cost: %w", err)
 		}
 		if !have {
 			total, have = monthly, true
 			continue
 		}
-		total, err = total.Add(monthly) // surfaces household.ErrCurrencyMismatch on mixed currencies
+		sum, err := total.Add(monthly) // surfaces household.ErrCurrencyMismatch on mixed currencies
+		if errors.Is(err, household.ErrInvalidMoney) {
+			continue // the sum would overflow: exclude this row
+		}
 		if err != nil {
 			return household.Money{}, fmt.Errorf("monthly cost: %w", err)
 		}
+		total = sum
 	}
 	if !have {
 		return household.NewMoney(0, defaultRollupCurrency)
