@@ -53,7 +53,7 @@ CSS_OUTPUT := web/static/css/app.css
 # Coverage profile written by `make test` and read by `make cover`.
 COVERAGE_OUT := coverage.out
 
-.PHONY: all build run test test-gated cover lint fmt generate assets hooks hooks-uninstall tidy clean help \
+.PHONY: all build run test test-gated cover lint check-sonarcloud-exclusions fmt generate assets hooks hooks-uninstall tidy clean help \
 	migrate-up migrate-down migrate-status migrate-reset migrate-create \
 	supabase-up supabase-down supabase-status require-supabase-cli
 
@@ -122,6 +122,10 @@ cover: test
 ## lint: run static analysis (golangci-lint, config in .golangci.yml)
 lint:
 	golangci-lint run
+
+## check-sonarcloud-exclusions: fail if .sonarcloud.properties omits a generated *_templ.go file (NES-208)
+check-sonarcloud-exclusions:
+	scripts/check-sonarcloud-exclusions.sh
 
 ## fmt: format templ and Go sources (golangci-lint runs gofumpt + goimports)
 fmt:
