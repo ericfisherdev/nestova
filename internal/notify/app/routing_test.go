@@ -315,19 +315,21 @@ func TestRoutingEnqueuer_SMSPreference_UTCScheduledForInLocalWindow_ShiftsToLoca
 	}}
 	contacts := &fakeContactDirectory{contact: readySMSContact(memberID)}
 
+	loc := time.FixedZone("UTC-5", -5*60*60)
 	start, end := 22*time.Hour, 7*time.Hour
 	qh := &domain.QuietHours{Start: &start, End: &end}
 	quietHours := &fakeQuietHoursReader{quietHours: qh}
-	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger())
+	e := app.NewRoutingEnqueuer(outbox, prefs, contacts, quietHours, silentLogger(), app.WithQuietHoursLocation(loc))
 
-	// 23:00 local, expressed in UTC: must be held even though its UTC
-	// clock reading may sit outside the window.
-	local := time.Date(2026, time.July, 19, 23, 0, 0, 0, time.Local)
+	// 23:00 at UTC-5 is 04:00 UTC the next day: inside the local window,
+	// and an EndAfter computed on the UTC reading would land on 07:00 UTC
+	// (02:00 local) instead of 07:00 local.
+	local := time.Date(2026, time.July, 19, 23, 0, 0, 0, loc)
 	n := newRoutedNotification(memberID, domain.EventTypeClaimExpiring, local.UTC())
 	if err := e.Enqueue(context.Background(), n); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	want := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.Local)
+	want := time.Date(2026, time.July, 20, 7, 0, 0, 0, loc)
 	if !n.ScheduledFor.Equal(want) {
 		t.Errorf("ScheduledFor = %v, want local window end %v", n.ScheduledFor, want)
 	}

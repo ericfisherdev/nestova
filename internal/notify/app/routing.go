@@ -37,6 +37,16 @@ type RoutingEnqueuer struct {
 	contacts    domain.ContactDirectory
 	quietHours  domain.QuietHoursReader
 	logger      *slog.Logger
+	loc         *time.Location
+}
+
+// RoutingEnqueuerOption customises a RoutingEnqueuer at construction.
+type RoutingEnqueuerOption func(*RoutingEnqueuer)
+
+// WithQuietHoursLocation sets the zone whose wall clock quiet hours are
+// read in (NES-204). The default is time.Local.
+func WithQuietHoursLocation(loc *time.Location) RoutingEnqueuerOption {
+	return func(e *RoutingEnqueuer) { e.loc = loc }
 }
 
 // Compile-time assurance the decorator satisfies the port it wraps.
@@ -50,6 +60,7 @@ func NewRoutingEnqueuer(
 	contacts domain.ContactDirectory,
 	quietHours domain.QuietHoursReader,
 	logger *slog.Logger,
+	opts ...RoutingEnqueuerOption,
 ) *RoutingEnqueuer {
 	if next == nil {
 		panic("app: NewRoutingEnqueuer requires a non-nil Enqueuer")
@@ -66,7 +77,11 @@ func NewRoutingEnqueuer(
 	if logger == nil {
 		panic("app: NewRoutingEnqueuer requires a non-nil logger")
 	}
-	return &RoutingEnqueuer{next: next, preferences: preferences, contacts: contacts, quietHours: quietHours, logger: logger}
+	e := &RoutingEnqueuer{next: next, preferences: preferences, contacts: contacts, quietHours: quietHours, logger: logger, loc: time.Local}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
 
 // Enqueue resolves n's Channel from member preference (when routable —
@@ -122,8 +137,8 @@ func (e *RoutingEnqueuer) route(ctx context.Context, n *domain.Notification) {
 	// Quiet hours are a local clock window, and InQuietHours reads the
 	// hour in the timestamp's own zone, so a caller that stamps UTC would
 	// be tested against the wrong window (NES-204). Compare in the
-	// server's local zone, as trade notifications already do (NES-198).
-	local := n.ScheduledFor.In(time.Local)
+	// configured zone (default: server local), as trade notifications already do (NES-198).
+	local := n.ScheduledFor.In(e.loc)
 	if qh.InQuietHours(local) {
 		n.ScheduledFor = qh.EndAfter(local)
 	}
