@@ -123,7 +123,7 @@ cover: test
 lint:
 	golangci-lint run
 
-## check-sonarcloud-exclusions: fail if .sonarcloud.properties omits a generated *_templ.go file (NES-208)
+## check-sonarcloud-exclusions: fail if .sonarcloud.properties omits a *_templ.go or *_test.go file (NES-208, NES-209)
 check-sonarcloud-exclusions:
 	scripts/check-sonarcloud-exclusions.sh
 
