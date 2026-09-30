@@ -22,7 +22,7 @@ test.describe('§4 dashboard', () => {
     await login(page, PERSONAS.owner);
     const missing = [];
     for (const card of CARDS) {
-      if (await page.locator(`text=${card}`).count() === 0) missing.push(card);
+      if (await page.locator('main section h2', { hasText: card }).count() === 0) missing.push(card);
     }
     expect(missing, 'dashboard cards that did not render').toEqual([]);
   });
