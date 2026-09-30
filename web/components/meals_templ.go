@@ -324,7 +324,7 @@ func recipeCard(recipe MealRecipeView, units []UnitOption, csrfToken string) tem
 				return templ_7745c5c3_Err
 			}
 			for _, line := range recipe.Ingredients {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<li>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<li class=\"break-words\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -876,7 +876,7 @@ func assignMealForm(week MealWeekView, options []MealRecipeOption, csrfToken str
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</select></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\">Meal</label> <select name=\"meal\" class=\"rounded-control border border-sidebar-border bg-surface px-2 py-1 text-sm text-ink\"><option value=\"breakfast\">Breakfast</option> <option value=\"lunch\">Lunch</option> <option value=\"dinner\">Dinner</option> <option value=\"snack\">Snack</option></select></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\">Recipe</label> <select name=\"recipe_id\" class=\"rounded-control border border-sidebar-border bg-surface px-2 py-1 text-sm text-ink\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "</select></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\">Meal</label> <select name=\"meal\" class=\"rounded-control border border-sidebar-border bg-surface px-2 py-1 text-sm text-ink\"><option value=\"breakfast\">Breakfast</option> <option value=\"lunch\">Lunch</option> <option value=\"dinner\">Dinner</option> <option value=\"snack\">Snack</option></select></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs font-medium text-ink-muted\">Recipe</label> <select name=\"recipe_id\" class=\"max-w-xs rounded-control border border-sidebar-border bg-surface px-2 py-1 text-sm text-ink\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

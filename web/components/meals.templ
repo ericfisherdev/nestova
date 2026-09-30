@@ -140,7 +140,7 @@ templ recipeCard(recipe MealRecipeView, units []UnitOption, csrfToken string) {
 		if len(recipe.Ingredients) > 0 {
 			<ul class="mt-2 flex flex-col gap-0.5 text-xs text-ink-muted">
 				for _, line := range recipe.Ingredients {
-					<li>
+					<li class="break-words">
 						{ line.Quantity } { line.Name }
 						if line.Optional {
 							<span class="text-ink-subtle">(optional)</span>
@@ -268,7 +268,7 @@ templ assignMealForm(week MealWeekView, options []MealRecipeOption, csrfToken st
 		</div>
 		<div class="flex flex-col gap-1">
 			<label class="text-xs font-medium text-ink-muted">Recipe</label>
-			<select name="recipe_id" class="rounded-control border border-sidebar-border bg-surface px-2 py-1 text-sm text-ink">
+			<select name="recipe_id" class="max-w-xs rounded-control border border-sidebar-border bg-surface px-2 py-1 text-sm text-ink">
 				for _, option := range options {
 					<option value={ option.ID }>{ option.Title }</option>
 				}

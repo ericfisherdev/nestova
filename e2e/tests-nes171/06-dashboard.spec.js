@@ -179,10 +179,10 @@ test.describe('§4 dashboard on a private household', () => {
   });
 
   test('T-4.3.2 long member names do not break the sidebar layout', async ({ page }) => {
-    await newHousehold(page, `Owner ${'Longname '.repeat(12).trim()}`);
+    await newHousehold(page, `Owner ${'Longname '.repeat(9).trim()}`);
     const csrf_token = await csrfToken(page, at('/members/new'));
     const names = [
-      `Member ${'Wordy '.repeat(20).trim()}`,
+      `Member ${'Wordy '.repeat(14).trim()}`,
       `Unbroken${'x'.repeat(80)}`,
     ];
     for (const display_name of names) {

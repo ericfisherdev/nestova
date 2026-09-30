@@ -74,6 +74,13 @@ async function submit(page, path, pairs) {
   }, { path, pairs });
 }
 
+// formTokenFor reads the one-time form_token a create form embeds (NES-201).
+// Unlike the session CSRF token, each create needs a fresh one.
+async function formTokenFor(page, path) {
+  await page.goto(path);
+  return page.locator('input[name="form_token"]').first().inputValue();
+}
+
 function taskPairs(title) {
   return [
     ['title', title], ['category', 'chore'], ['freq', 'daily'], ['interval', '1'],
@@ -149,6 +156,7 @@ const TEXT_FIELDS = [
   {
     name: 'reward name',
     path: '/admin/rewards',
+    formTokenPage: '/admin/rewards/new',
     pairs: rewardPairs,
     accepted: 303,
     maxLength: 200,
@@ -159,6 +167,7 @@ const TEXT_FIELDS = [
   {
     name: 'reward description',
     path: '/admin/rewards',
+    formTokenPage: '/admin/rewards/new',
     pairs: (v) => [...rewardPairs(uniqueMarker('Described ')), ['description', v]],
     accepted: 303,
     maxLength: 1000,
@@ -367,7 +376,9 @@ function renderedFields() {
 // stored is every row the marker finds afterwards. An accepted value is made
 // renderable (see beforeView) before returning.
 async function createWith(page, csrf_token, field, value, marker) {
-  const res = await submit(page, field.path, [['csrf_token', csrf_token], ...field.pairs(value)]);
+  const pairs = [['csrf_token', csrf_token], ...field.pairs(value)];
+  if (field.formTokenPage) pairs.push(['form_token', await formTokenFor(page, field.formTokenPage)]);
+  const res = await submit(page, field.path, pairs);
   if (res.status === field.accepted && field.beforeView) field.beforeView(marker);
   return { ...res, stored: storedValues(field.table, field.column, marker) };
 }
@@ -460,6 +471,16 @@ function overflowingElements(word) {
       if (overflowX !== 'visible') visibleRight = Math.min(visibleRight, a.getBoundingClientRect().right);
     }
     if (visibleRight > viewport + 1) out.push(`${el.tagName} right edge ${Math.round(visibleRight)} > viewport ${viewport}`);
+  }
+  // The per-element boxes above cannot see text overflowing its own block or an
+  // <option> widening its <select>; the page-level scroll extent catches both.
+  const scrollWidth = document.documentElement.scrollWidth;
+  if (scrollWidth > viewport + 1) {
+    const widest = [...document.querySelectorAll('body *')]
+      .filter((el) => el.scrollWidth > el.clientWidth + 1 && el.clientWidth > 0)
+      .slice(0, 3)
+      .map((el) => `${el.tagName}.${String(el.className).slice(0, 40)} sw${el.scrollWidth} cw${el.clientWidth}`);
+    out.push(`page scrolls sideways: scrollWidth ${scrollWidth} > viewport ${viewport} (${widest.join(', ')})`);
   }
   return out;
 }
