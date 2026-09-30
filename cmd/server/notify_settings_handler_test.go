@@ -430,6 +430,60 @@ func TestNotifySettings_NoSMSSender_RefusesSMSWrites(t *testing.T) {
 	}
 }
 
+// A member who gave consent while SMS was wired keeps a working way to
+// remove the number and withdraw consent after it is unwired: the settings
+// page offers exactly those two controls and the routes accept them.
+func TestNotifySettings_NoSMSSender_StoredContact_CanBeWithdrawnFromThePage(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	handler, sm, contacts, _ := buildNotifySettingsTestHandlerWithChannels(t, hhRepo)
+	cookie, csrfToken := seedAuthedSession(t, handler, sm, member.ID.String())
+
+	phone, err := notifydomain.ParseE164Phone("+15551234567")
+	if err != nil {
+		t.Fatalf("ParseE164Phone: %v", err)
+	}
+	if err := contacts.SetPhone(context.Background(), member.ID, &phone); err != nil {
+		t.Fatalf("SetPhone: %v", err)
+	}
+	if err := contacts.SetOptedIn(context.Background(), member.ID, true); err != nil {
+		t.Fatalf("SetOptedIn: %v", err)
+	}
+
+	body := doForm(t, handler, http.MethodGet, "/settings", cookie, "").Body.String()
+	for _, want := range []string{"Withdraw text message consent", "Remove phone number", `action="/settings/notify/opt-in"`, `action="/settings/notify/phone"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings page missing %q for a member with stored contact data", want)
+		}
+	}
+	for _, hidden := range []string{`id="notify-phone"`, `id="notify-opted-in"`} {
+		if strings.Contains(body, hidden) {
+			t.Errorf("settings page must not offer %q when no SMS sender is wired", hidden)
+		}
+	}
+
+	rec := doForm(t, handler, http.MethodPost, "/settings/notify/opt-in", cookie, "csrf_token="+csrfToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/notify/opt-in (withdraw): status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	contact, err := contacts.GetContact(context.Background(), member.ID)
+	if err != nil || contact.SMSOptedIn || contact.Phone == nil {
+		t.Fatalf("after withdrawing consent got (%v, %v), want phone kept and SMSOptedIn=false", contact, err)
+	}
+
+	rec = doForm(t, handler, http.MethodPost, "/settings/notify/phone", cookie, "csrf_token="+csrfToken+"&phone=")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/notify/phone (remove): status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	contact, err = contacts.GetContact(context.Background(), member.ID)
+	if err != nil || contact.Phone != nil {
+		t.Fatalf("after removing the phone got (%v, %v), want no phone", contact, err)
+	}
+	if strings.Contains(rec.Body.String(), "Remove phone number") {
+		t.Error("the removal control must disappear once no phone is on file")
+	}
+}
+
 func TestNotifySettings_SetPreference_InApp_Succeeds(t *testing.T) {
 	member := settingsTestAdultInHousehold(household.NewHouseholdID())
 	hhRepo := newMultiMemberHouseholdRepo(member)

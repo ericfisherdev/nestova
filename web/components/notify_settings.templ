@@ -33,7 +33,8 @@ type NotifySettingsView struct {
 	OptedIn bool
 	// SMSAvailable is true only when this deployment has an SMS sender
 	// wired (NES-206). When false the text-message option, the phone
-	// field and the consent checkbox are all hidden.
+	// field and the consent checkbox are all hidden; a member with a
+	// number on file still gets controls to remove it and withdraw consent.
 	SMSAvailable bool
 	// EmailAvailable is true only when this deployment has an email
 	// sender wired (NES-206); when false the email option is hidden.
@@ -82,6 +83,8 @@ templ notifySection(view NotifySettingsView) {
 			if view.Phone != "" {
 				@notifyOptInForm(view)
 			}
+		} else if view.Phone != "" {
+			@notifyContactWithdrawal(view)
 		}
 		@notifyPreferencesForm(view)
 	}
@@ -130,6 +133,38 @@ templ notifyOptInForm(view NotifySettingsView) {
 			class="min-h-[48px] rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink hover:bg-sidebar-border/20"
 		>
 			Save
+		</button>
+	</form>
+}
+
+// notifyContactWithdrawal is what a member with a phone number on file sees
+// when no SMS sender is wired: no way to add or change a number or to give
+// consent, only the two data-rights controls — removing the number and, if
+// consent is on file, withdrawing it.
+templ notifyContactWithdrawal(view NotifySettingsView) {
+	<p class="mb-3 text-sm text-ink-secondary">
+		Text messages are not set up on this server, but your phone number is
+		still on file: <span class="font-mono text-ink">{ view.Phone }</span>.
+	</p>
+	if view.OptedIn {
+		<form method="post" action="/settings/notify/opt-in" class="mb-4">
+			<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+			<button
+				type="submit"
+				class="min-h-[48px] rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink hover:bg-sidebar-border/20"
+			>
+				Withdraw text message consent
+			</button>
+		</form>
+	}
+	<form method="post" action="/settings/notify/phone" class="mb-4">
+		<input type="hidden" name="csrf_token" value={ view.CSRFToken }/>
+		<input type="hidden" name="phone" value=""/>
+		<button
+			type="submit"
+			class="min-h-[48px] rounded-control border border-sidebar-border bg-surface px-4 py-2 font-medium text-ink hover:bg-sidebar-border/20"
+		>
+			Remove phone number
 		</button>
 	</form>
 }
