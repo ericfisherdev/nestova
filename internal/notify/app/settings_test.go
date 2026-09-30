@@ -37,7 +37,7 @@ func (s *contactSpy) SetOptedIn(_ context.Context, _ household.MemberID, optIn b
 }
 
 func newSettingsService(contacts domain.ContactDirectory, prefs domain.PreferenceRepository, households *fakeQuietHoursReader) *app.SettingsService {
-	return app.NewSettingsService(contacts, prefs, households)
+	return app.NewSettingsService(contacts, prefs, households, []domain.Channel{domain.ChannelSMS, domain.ChannelEmail})
 }
 
 // ----------------------------------------------------------------------------
@@ -346,6 +346,106 @@ func TestSettingsService_SetPreferences_EmailChannel_Accepted(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Optional channels without a wired sender (NES-206)
+// ----------------------------------------------------------------------------
+
+// newSettingsServiceWithChannels builds a service whose deliverable set is
+// exactly channels (plus the always-deliverable in-app).
+func newSettingsServiceWithChannels(contacts domain.ContactDirectory, prefs domain.PreferenceRepository, channels ...domain.Channel) *app.SettingsService {
+	return app.NewSettingsService(contacts, prefs, &fakeQuietHoursReader{}, channels)
+}
+
+func TestSettingsService_ChannelDeliverable(t *testing.T) {
+	tests := []struct {
+		name      string
+		wired     []domain.Channel
+		channel   domain.Channel
+		wantAvail bool
+	}{
+		{"in-app is always deliverable", nil, domain.ChannelInApp, true},
+		{"sms without a sender", nil, domain.ChannelSMS, false},
+		{"email without a sender", nil, domain.ChannelEmail, false},
+		{"push is never deliverable", []domain.Channel{domain.ChannelSMS, domain.ChannelEmail}, domain.ChannelPush, false},
+		{"sms with a sender", []domain.Channel{domain.ChannelSMS}, domain.ChannelSMS, true},
+		{"email with a sender", []domain.Channel{domain.ChannelEmail}, domain.ChannelEmail, true},
+		{"email stays off when only sms is wired", []domain.Channel{domain.ChannelSMS}, domain.ChannelEmail, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newSettingsServiceWithChannels(&fakeContactDirectory{}, &fakePreferenceRepo{}, tt.wired...)
+			if got := svc.ChannelDeliverable(tt.channel); got != tt.wantAvail {
+				t.Errorf("ChannelDeliverable(%s) = %v, want %v", tt.channel, got, tt.wantAvail)
+			}
+		})
+	}
+}
+
+func TestSettingsService_SetPreferences_UnwiredOptionalChannel_Rejected(t *testing.T) {
+	for _, channel := range []domain.Channel{domain.ChannelSMS, domain.ChannelEmail} {
+		t.Run(channel.String(), func(t *testing.T) {
+			prefs := &fakePreferenceRepo{}
+			contacts := &fakeContactDirectory{}
+			svc := newSettingsServiceWithChannels(contacts, prefs)
+
+			updates := map[domain.EventType]domain.Channel{
+				domain.EventTypeClaimExpiring: domain.ChannelInApp,
+				domain.EventTypeTaskOverdue:   channel,
+			}
+			err := svc.SetPreferences(context.Background(), household.NewHouseholdID(), household.NewMemberID(), updates)
+			if !errors.Is(err, domain.ErrChannelNotDeliverable) {
+				t.Fatalf("SetPreferences error = %v, want ErrChannelNotDeliverable", err)
+			}
+			if contacts.getContactCalls != 0 {
+				t.Errorf("GetContact calls = %d, want 0 (rejected before any readiness lookup)", contacts.getContactCalls)
+			}
+			if len(prefs.prefs) != 0 {
+				t.Errorf("stored preferences = %d, want 0 (whole batch rejected)", len(prefs.prefs))
+			}
+		})
+	}
+}
+
+func TestSettingsService_UpdatePhone_SMSNotWired(t *testing.T) {
+	contacts := &contactSpy{}
+	svc := newSettingsServiceWithChannels(contacts, &fakePreferenceRepo{})
+
+	err := svc.UpdatePhone(context.Background(), household.NewMemberID(), "+15555550100")
+	if !errors.Is(err, domain.ErrChannelNotDeliverable) {
+		t.Fatalf("UpdatePhone error = %v, want ErrChannelNotDeliverable", err)
+	}
+	if len(contacts.setPhoneCalls) != 0 {
+		t.Error("SetPhone must not be called when SMS has no sender")
+	}
+
+	if err := svc.UpdatePhone(context.Background(), household.NewMemberID(), ""); err != nil {
+		t.Fatalf("clearing a phone must stay allowed: %v", err)
+	}
+	if len(contacts.setPhoneCalls) != 1 || contacts.setPhoneCalls[0] != nil {
+		t.Errorf("SetPhone calls = %v, want a single nil call (clear)", contacts.setPhoneCalls)
+	}
+}
+
+func TestSettingsService_SetOptIn_SMSNotWired(t *testing.T) {
+	contacts := &contactSpy{}
+	svc := newSettingsServiceWithChannels(contacts, &fakePreferenceRepo{})
+
+	err := svc.SetOptIn(context.Background(), household.NewMemberID(), true)
+	if !errors.Is(err, domain.ErrChannelNotDeliverable) {
+		t.Fatalf("SetOptIn(true) error = %v, want ErrChannelNotDeliverable", err)
+	}
+	if len(contacts.setOptedInCalls) != 0 {
+		t.Error("SetOptedIn must not be called when SMS has no sender")
+	}
+
+	if err := svc.SetOptIn(context.Background(), household.NewMemberID(), false); err != nil {
+		t.Fatalf("withdrawing consent must stay allowed: %v", err)
+	}
+	if len(contacts.setOptedInCalls) != 1 || contacts.setOptedInCalls[0] {
+		t.Errorf("SetOptedIn calls = %v, want [false]", contacts.setOptedInCalls)
+	}
+}
+
+// ----------------------------------------------------------------------------
 // QuietHours / SetQuietHours
 // ----------------------------------------------------------------------------
 
@@ -408,9 +508,9 @@ func TestNewSettingsService_NilDependencies_Panic(t *testing.T) {
 		name string
 		fn   func()
 	}{
-		{"nil contacts", func() { app.NewSettingsService(nil, prefs, households) }},
-		{"nil preferences", func() { app.NewSettingsService(contacts, nil, households) }},
-		{"nil households", func() { app.NewSettingsService(contacts, prefs, nil) }},
+		{"nil contacts", func() { app.NewSettingsService(nil, prefs, households, nil) }},
+		{"nil preferences", func() { app.NewSettingsService(contacts, nil, households, nil) }},
+		{"nil households", func() { app.NewSettingsService(contacts, prefs, nil, nil) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

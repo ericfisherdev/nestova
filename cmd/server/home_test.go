@@ -179,7 +179,7 @@ type testHouseholdRepoWithQuietHours interface {
 // no-op fakes above, for tests that register the shared /settings page
 // without exercising NES-139's own sections.
 func newTestNotifyWebHandlers(households quietHoursCapableHouseholdRepo, sm *scs.SessionManager, logger *slog.Logger) *notifyadapter.NotifyWebHandlers {
-	settings := notifyapp.NewSettingsService(fakeContactDirectory{}, fakePreferenceRepository{}, households)
+	settings := notifyapp.NewSettingsService(fakeContactDirectory{}, fakePreferenceRepository{}, households, nil)
 	return notifyadapter.NewNotifyWebHandlers(settings, sm, logger)
 }
 

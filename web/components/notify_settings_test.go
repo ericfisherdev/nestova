@@ -9,7 +9,7 @@ import (
 
 func TestSettingsPage_NotifySection_NoPhone_HidesOptInForm(t *testing.T) {
 	view := components.SettingsView{
-		Notify:    components.NotifySettingsView{Phone: "", CSRFToken: "csrf-test"},
+		Notify:    components.NotifySettingsView{Phone: "", SMSAvailable: true, CSRFToken: "csrf-test"},
 		CSRFToken: "csrf-test",
 	}
 	out := renderString(t, components.SettingsPage(view))
@@ -24,7 +24,7 @@ func TestSettingsPage_NotifySection_NoPhone_HidesOptInForm(t *testing.T) {
 
 func TestSettingsPage_NotifySection_WithPhone_ShowsOptInForm(t *testing.T) {
 	view := components.SettingsView{
-		Notify:    components.NotifySettingsView{Phone: "+15551234567", CSRFToken: "csrf-test"},
+		Notify:    components.NotifySettingsView{Phone: "+15551234567", SMSAvailable: true, CSRFToken: "csrf-test"},
 		CSRFToken: "csrf-test",
 	}
 	out := renderString(t, components.SettingsPage(view))
@@ -40,9 +40,10 @@ func TestSettingsPage_NotifySection_WithPhone_ShowsOptInForm(t *testing.T) {
 func TestSettingsPage_NotifySection_OptedIn_SMSOptionSelectable(t *testing.T) {
 	view := components.SettingsView{
 		Notify: components.NotifySettingsView{
-			Phone:     "+15551234567",
-			OptedIn:   true,
-			CSRFToken: "csrf-test",
+			Phone:        "+15551234567",
+			OptedIn:      true,
+			SMSAvailable: true,
+			CSRFToken:    "csrf-test",
 			Preferences: []components.NotifyPreferenceRow{
 				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "sms"},
 			},
@@ -65,9 +66,10 @@ func TestSettingsPage_NotifySection_NotOptedIn_SMSOptionDisabled(t *testing.T) {
 	// OptedIn is false, regardless of Phone.
 	view := components.SettingsView{
 		Notify: components.NotifySettingsView{
-			Phone:     "+15551234567",
-			OptedIn:   false,
-			CSRFToken: "csrf-test",
+			Phone:        "+15551234567",
+			OptedIn:      false,
+			SMSAvailable: true,
+			CSRFToken:    "csrf-test",
 			Preferences: []components.NotifyPreferenceRow{
 				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "inapp"},
 			},
@@ -92,7 +94,8 @@ func TestSettingsPage_NotifySection_NotOptedIn_SMSOptionDisabled(t *testing.T) {
 func TestSettingsPage_NotifySection_EmailOption_AlwaysSelectableAndNeverDisabled(t *testing.T) {
 	view := components.SettingsView{
 		Notify: components.NotifySettingsView{
-			CSRFToken: "csrf-test",
+			EmailAvailable: true,
+			CSRFToken:      "csrf-test",
 			Preferences: []components.NotifyPreferenceRow{
 				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "email"},
 			},
@@ -167,5 +170,47 @@ func TestSettingsPage_QuietHoursSection_ErrorMessage_RendersInline(t *testing.T)
 
 	if !strings.Contains(out, "Enter both a start and end time") {
 		t.Errorf("quiet hours section missing the inline error message: %q", out)
+	}
+}
+
+func TestSettingsPage_NotifySection_NoSMSSender_HidesSMSControls(t *testing.T) {
+	view := components.SettingsView{
+		Notify: components.NotifySettingsView{
+			Phone:     "+15551234567",
+			CSRFToken: "csrf-test",
+			Preferences: []components.NotifyPreferenceRow{
+				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "inapp"},
+			},
+		},
+		CSRFToken: "csrf-test",
+	}
+	out := renderString(t, components.SettingsPage(view))
+
+	for _, hidden := range []string{`action="/settings/notify/phone"`, `action="/settings/notify/opt-in"`, `value="sms"`, `value="email"`, "SMS messages"} {
+		if strings.Contains(out, hidden) {
+			t.Errorf("notify section must not contain %q without an SMS or email sender: %q", hidden, out)
+		}
+	}
+	if !strings.Contains(out, `value="inapp"`) {
+		t.Errorf("the in-app option must always be offered: %q", out)
+	}
+}
+
+// A preference stored before its sender was removed stays visible but
+// disabled, so saving the form neither offers the channel nor rewrites it.
+func TestSettingsPage_NotifySection_StoredSMSPreferenceWithoutSender_StaysDisabled(t *testing.T) {
+	view := components.SettingsView{
+		Notify: components.NotifySettingsView{
+			CSRFToken: "csrf-test",
+			Preferences: []components.NotifyPreferenceRow{
+				{EventType: "claim_expiring", Label: "Claim expiring soon", Channel: "sms"},
+			},
+		},
+		CSRFToken: "csrf-test",
+	}
+	out := renderString(t, components.SettingsPage(view))
+
+	if !strings.Contains(out, `<option value="sms" disabled selected>`) {
+		t.Errorf("a stored sms preference must render disabled and selected: %q", out)
 	}
 }
