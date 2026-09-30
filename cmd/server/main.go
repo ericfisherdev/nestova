@@ -155,13 +155,6 @@ const (
 // raw secret directly) even though both trace back to the same root secret.
 const deepLinkSignerPurpose = "nestova:deeplink:v1"
 
-// rememberDeviceSignerPurpose is the derivation label passed to
-// authapp.NewRememberDeviceSignerFromSecret (NES-135), keeping the "remember
-// this device" cookie's signing key cryptographically distinct from every
-// other consumer of cfg.Session.Secret, per the same reasoning as
-// deepLinkSignerPurpose above.
-const rememberDeviceSignerPurpose = "nestova:auth:remember-device:v1"
-
 // webauthnUserHandleSignerPurpose is the derivation label passed to
 // authapp.NewWebAuthnUserHandleDeriverFromSecret (NES-136), keeping the
 // per-member WebAuthn user handle's derivation key cryptographically
@@ -689,7 +682,14 @@ func runServer(logger *slog.Logger) error {
 	// the member-lookup port ResetMemberMFA uses to resolve the acting
 	// owner's role/household independently of any caller claim.
 	mfaRepo := authadapter.NewMFARepository(pool)
-	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, householdRepo, passwordHasher, logger)
+	// NES-200: remembered devices are stored server-side, and MFA disenrolment
+	// and owner reset revoke them.
+	rememberDeviceService, err := authapp.NewRememberDeviceService(authadapter.NewRememberedDeviceRepository(pool))
+	if err != nil {
+		return fmt.Errorf("create remember-device service: %w", err)
+	}
+	mfaService, err := authapp.NewMFAService(mfaRepo, tokenCipher, totp.NewProvider(), credRepo, householdRepo, passwordHasher, logger,
+		authapp.WithRememberedDeviceRevoker(rememberDeviceService))
 	if err != nil {
 		return fmt.Errorf("create mfa service: %w", err)
 	}
@@ -781,22 +781,15 @@ func runServer(logger *slog.Logger) error {
 		loginPasskeyHandlers = authadapter.NewLoginPasskeyHandlers(sm, webauthnService, logger)
 	}
 
-	// NES-135: login MFA enforcement. rememberDeviceSigner is keyed the
-	// same way deepLinkSigner below is (a purpose-scoped derivation from
-	// cfg.Session.Secret) so its key stays cryptographically independent of
-	// every other consumer despite tracing back to the same root secret.
-	// authHandlers is constructed here — rather than alongside credRepo/
-	// authn/householdRepo above — because Login now depends on mfaService
-	// and rememberDeviceSigner, both of which must exist first. outboxRepo
-	// (constructed above for the NES-24 notification outbox) satisfies
-	// LoginMFAHandlers' notify.Enqueuer dependency: a lockout notification
-	// rides the same outbox every other Nestova notification does.
-	rememberDeviceSigner, err := authapp.NewRememberDeviceSignerFromSecret([]byte(cfg.Session.Secret), rememberDeviceSignerPurpose)
-	if err != nil {
-		return fmt.Errorf("create remember-device signer: %w", err)
-	}
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceSigner, webauthnService, logger)
-	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceSigner, webauthnService, outboxRepo, cfg.Session.Secure, logger)
+	// NES-135: login MFA enforcement. authHandlers is constructed here —
+	// rather than alongside credRepo/authn/householdRepo above — because Login
+	// depends on mfaService and rememberDeviceService, both of which must
+	// exist first. outboxRepo (constructed above for the NES-24 notification
+	// outbox) satisfies LoginMFAHandlers' notify.Enqueuer dependency: a
+	// lockout notification rides the same outbox every other Nestova
+	// notification does.
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceService, webauthnService, logger)
+	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceService, webauthnService, outboxRepo, cfg.Session.Secure, logger)
 
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
 	if err != nil {

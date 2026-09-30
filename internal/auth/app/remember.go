@@ -1,14 +1,16 @@
 package app
 
 import (
-	"crypto/hmac"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"strconv"
+	"fmt"
 	"strings"
 	"time"
 
+	authdomain "github.com/ericfisherdev/nestova/internal/auth/domain"
 	household "github.com/ericfisherdev/nestova/internal/household/domain"
 )
 
@@ -19,99 +21,98 @@ import (
 // action.
 const RememberDeviceTTL = 30 * 24 * time.Hour
 
-// ErrInvalidRememberToken is returned by RememberDeviceSigner.Verify when a
-// presented remember-device token is malformed, has a bad signature, or has
-// expired — deliberately coarse (mirrors calendarapp.OAuthStateSigner's
-// ErrInvalidState) so a caller cannot distinguish tampering from expiry.
-var ErrInvalidRememberToken = errors.New("auth: invalid remember-device token")
+// rememberTokenBytes is the entropy of a remember-device token: 256 bits, far
+// beyond guessing, so a plain SHA-256 (no salt or stretching) is the right
+// at-rest hash.
+const rememberTokenBytes = 32
 
-// RememberDeviceSigner signs and verifies the "remember this device" cookie
-// value: a stateless (no server-side storage) HMAC-SHA256-signed token
-// binding a memberID and an expiry, mirroring
-// internal/deeplink/app.Signer and internal/calendar/app.OAuthStateSigner's
-// own purpose-scoped derivation pattern. The signature is NOT itself an
-// authorization grant beyond "skip the login MFA prompt": every
-// security-sensitive action still goes through RequireStepUp independently.
-type RememberDeviceSigner struct {
-	key []byte
+// RememberDeviceService issues, checks and revokes the server-side
+// "remember this device" tokens (NES-200). The cookie value is a random opaque
+// token; only its SHA-256 is stored, so each use is a database lookup and
+// revocation is a delete. A token is a bearer credential for the login MFA
+// prompt only — it is not bound to a user agent or address, because both
+// change legitimately (browser updates, roaming between networks) and the user
+// agent is attacker-controlled anyway. Revocation, not binding, is the
+// defense: see MFAService for the events that revoke.
+type RememberDeviceService struct {
+	repo authdomain.RememberedDeviceRepository
 }
 
-// NewRememberDeviceSigner constructs a signer from a non-empty HMAC key.
-func NewRememberDeviceSigner(key []byte) (*RememberDeviceSigner, error) {
-	if len(key) == 0 {
-		return nil, errors.New("auth: remember-device signer requires a non-empty key")
+// NewRememberDeviceService constructs the service with its repository.
+func NewRememberDeviceService(repo authdomain.RememberedDeviceRepository) (*RememberDeviceService, error) {
+	if repo == nil {
+		return nil, errors.New("auth: NewRememberDeviceService requires a non-nil RememberedDeviceRepository")
 	}
-	return &RememberDeviceSigner{key: key}, nil
+	return &RememberDeviceService{repo: repo}, nil
 }
 
-// NewRememberDeviceSignerFromSecret derives a purpose-scoped HMAC key from
-// secret via HMAC-SHA256(secret, purpose) and constructs a
-// RememberDeviceSigner from it — mirroring
-// internal/deeplink/app.NewSignerFromSecret's doc for why: cfg.Session.Secret
-// is shared by every signing consumer in this codebase, and deriving a
-// distinct subkey per purpose keeps each cryptographically independent even
-// though they trace back to the same root secret.
-func NewRememberDeviceSignerFromSecret(secret []byte, purpose string) (*RememberDeviceSigner, error) {
-	if len(secret) == 0 {
-		return nil, errors.New("auth: remember-device signer requires a non-empty secret")
+// Issue records a new remembered device for memberID, valid until
+// now+RememberDeviceTTL, and returns the raw token to hand to the browser.
+// userAgent is stored (truncated to authdomain.MaxUserAgentLength runes) for
+// display only.
+//
+// Returns household.ErrMemberNotFound (wrapped) when memberID does not exist.
+func (s *RememberDeviceService) Issue(ctx context.Context, memberID household.MemberID, userAgent string, now time.Time) (string, error) {
+	raw := make([]byte, rememberTokenBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("remember device: generate token: %w", err)
 	}
-	if purpose == "" {
-		return nil, errors.New("auth: remember-device signer requires a non-empty purpose label")
+	device := &authdomain.RememberedDevice{
+		ID:         authdomain.NewRememberedDeviceID(),
+		MemberID:   memberID,
+		TokenHash:  hashRememberToken(raw),
+		UserAgent:  truncateRunes(userAgent, authdomain.MaxUserAgentLength),
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(RememberDeviceTTL),
+		LastUsedAt: now,
 	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(purpose))
-	return NewRememberDeviceSigner(mac.Sum(nil))
+	if err := s.repo.Create(ctx, device); err != nil {
+		return "", fmt.Errorf("remember device: issue: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// Sign returns a signed token binding memberID, valid until now+RememberDeviceTTL.
-func (s *RememberDeviceSigner) Sign(memberID household.MemberID, now time.Time) string {
-	payload := []byte(memberID.String() + "|" + strconv.FormatInt(now.Add(RememberDeviceTTL).Unix(), 10))
-	return rememberEncode(payload) + "." + rememberEncode(s.mac(payload))
+// IsRemembered reports whether token is a live remembered-device token for
+// memberID as of now, stamping its last-used time when it is. A malformed,
+// unknown, expired, revoked or other-member's token is simply false — never an
+// error — so a caller cannot distinguish them. A non-nil error means the
+// lookup itself failed.
+func (s *RememberDeviceService) IsRemembered(ctx context.Context, memberID household.MemberID, token string, now time.Time) (bool, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != rememberTokenBytes {
+		return false, nil
+	}
+	err = s.repo.MarkUsed(ctx, memberID, hashRememberToken(raw), now)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, authdomain.ErrRememberedDeviceNotFound):
+		return false, nil
+	default:
+		return false, fmt.Errorf("remember device: check: %w", err)
+	}
 }
 
-// Verify checks token's signature and expiry as of now and returns the
-// member id it carries, or ErrInvalidRememberToken.
-func (s *RememberDeviceSigner) Verify(token string, now time.Time) (household.MemberID, error) {
-	encPayload, encMAC, ok := strings.Cut(token, ".")
-	if !ok {
-		return household.MemberID{}, ErrInvalidRememberToken
+// RevokeAll deletes every remembered device of memberID, so no copy of a
+// previously issued cookie skips the login MFA prompt again.
+func (s *RememberDeviceService) RevokeAll(ctx context.Context, memberID household.MemberID) error {
+	if err := s.repo.RevokeAllForMember(ctx, memberID); err != nil {
+		return fmt.Errorf("remember device: revoke all: %w", err)
 	}
-	payload, err := rememberDecode(encPayload)
-	if err != nil {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-	gotMAC, err := rememberDecode(encMAC)
-	if err != nil {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-	if !hmac.Equal(gotMAC, s.mac(payload)) {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-
-	memberIDStr, expiryStr, ok := strings.Cut(string(payload), "|")
-	if !ok {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
-	if err != nil {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-	if now.Unix() > expiry {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-	memberID, err := household.ParseMemberID(memberIDStr)
-	if err != nil {
-		return household.MemberID{}, ErrInvalidRememberToken
-	}
-	return memberID, nil
+	return nil
 }
 
-func (s *RememberDeviceSigner) mac(payload []byte) []byte {
-	m := hmac.New(sha256.New, s.key)
-	m.Write(payload)
-	return m.Sum(nil)
+func hashRememberToken(raw []byte) []byte {
+	sum := sha256.Sum256(raw)
+	return sum[:]
 }
 
-func rememberEncode(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
-
-func rememberDecode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
+// truncateRunes drops invalid UTF-8 (Postgres text rejects it) and cuts s to
+// at most n runes, never splitting a multi-byte rune.
+func truncateRunes(s string, n int) string {
+	runes := []rune(strings.ToValidUTF8(s, ""))
+	if len(runes) > n {
+		runes = runes[:n]
+	}
+	return string(runes)
+}

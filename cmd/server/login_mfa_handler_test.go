@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
@@ -124,17 +125,18 @@ func buildLoginMFATestHandler(t *testing.T, hhRepo household.HouseholdRepository
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger)
+	rememberService, err := authapp.NewRememberDeviceService(newFakeRememberedDeviceRepo())
+	if err != nil {
+		t.Fatalf("NewRememberDeviceService: %v", err)
+	}
+	mfaService, err := authapp.NewMFAService(newFakeMFARepo(), cipher, totp.NewProvider(), credRepo, hhRepo, cryptotest.Hasher(), logger,
+		authapp.WithRememberedDeviceRevoker(rememberService))
 	if err != nil {
 		t.Fatalf("NewMFAService: %v", err)
 	}
-	rememberSigner, err := authapp.NewRememberDeviceSigner([]byte("login-mfa-test-harness-remember-key"))
-	if err != nil {
-		t.Fatalf("NewRememberDeviceSigner: %v", err)
-	}
 	authn := authapp.New(credRepo, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberSigner, nil, logger)
-	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberSigner, nil, notify, false, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberService, nil, logger)
+	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberService, nil, notify, false, logger)
 
 	requireMember := authadapter.RequireMember(sm)
 	requireStepUp := authadapter.RequireStepUp(sm, mfaService, nil, "/settings", logger)
@@ -583,6 +585,58 @@ func TestLoginMFA_RememberedDevice_SkipsPromptButStillStepsUp(t *testing.T) {
 	retryRec := flow2.do(http.MethodPost, "/settings/kiosk/generate", "csrf_token="+flow2.csrf)
 	if retryRec.Code != http.StatusOK {
 		t.Fatalf("step-up action after completing the step-up prompt: status = %d, want 200; body: %s", retryRec.Code, retryRec.Body.String())
+	}
+}
+
+// NES-200: remember-device tokens are server-side, so a copied cookie stops
+// skipping the prompt once the member's MFA is disenrolled and re-enrolled.
+func TestLoginMFA_RememberedDevice_RevokedOnDisenroll(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	credRepo := newLoginTestCredRepo()
+	credRepo.seed(t, member.ID, "adult@example.com", loginMFATestPassword)
+	handler, _, mfaService := buildLoginMFATestHandler(t, hhRepo, credRepo, &recordingEnqueuer{})
+	secret, recoveryCodes := enrollMemberMFAWithRecoveryCodes(t, mfaService, member)
+
+	flow := newLoginFlow(t, handler)
+	flow.login("adult@example.com", loginMFATestPassword, "/settings")
+	if rec := flow.verifyMFA(computeTOTPCode(t, secret), "", "/settings", true); rec.Code != http.StatusSeeOther {
+		t.Fatalf("first login (remember device): status = %d, want 303", rec.Code)
+	}
+	rememberValue, ok := flow.getRememberCookie()
+	if !ok {
+		t.Fatal("no remember-device cookie was set after checking 'remember this device'")
+	}
+
+	if err := mfaService.Disenroll(context.Background(), member.ID, member.HouseholdID, "", recoveryCodes[0]); err != nil {
+		t.Fatalf("Disenroll: %v", err)
+	}
+	enrollMemberMFAWithRecoveryCodes(t, mfaService, member)
+
+	copied := newLoginFlow(t, handler)
+	copied.cookie = copied.cookie + "; " + authadapter.RememberDeviceCookieName + "=" + rememberValue
+	loginRec := copied.login("adult@example.com", loginMFATestPassword, "/settings")
+	if loc := loginRec.Header().Get("Location"); !strings.HasPrefix(loc, "/login/mfa") {
+		t.Fatalf("login with a revoked remember cookie: Location = %q, want a /login/mfa hand-off", loc)
+	}
+}
+
+// A well-formed but unknown token (never issued, or issued to someone else)
+// must not skip the prompt.
+func TestLoginMFA_UnknownRememberToken_StillPrompts(t *testing.T) {
+	member := settingsTestAdultInHousehold(household.NewHouseholdID())
+	hhRepo := newMultiMemberHouseholdRepo(member)
+	credRepo := newLoginTestCredRepo()
+	credRepo.seed(t, member.ID, "adult@example.com", loginMFATestPassword)
+	handler, _, mfaService := buildLoginMFATestHandler(t, hhRepo, credRepo, &recordingEnqueuer{})
+	enrollMemberMFAWithRecoveryCodes(t, mfaService, member)
+
+	forged := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	flow := newLoginFlow(t, handler)
+	flow.cookie = flow.cookie + "; " + authadapter.RememberDeviceCookieName + "=" + forged
+	loginRec := flow.login("adult@example.com", loginMFATestPassword, "/settings")
+	if loc := loginRec.Header().Get("Location"); !strings.HasPrefix(loc, "/login/mfa") {
+		t.Fatalf("login with an unknown remember token: Location = %q, want a /login/mfa hand-off", loc)
 	}
 }
 

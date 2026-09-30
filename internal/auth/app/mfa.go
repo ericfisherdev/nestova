@@ -62,6 +62,24 @@ type memberLookup interface {
 	GetMember(ctx context.Context, id household.MemberID) (*household.Member, error)
 }
 
+// rememberedDeviceRevoker is the minimal seam over RememberDeviceService that
+// MFAService needs to invalidate a member's remembered devices (NES-200).
+type rememberedDeviceRevoker interface {
+	RevokeAll(ctx context.Context, memberID household.MemberID) error
+}
+
+// MFAOption customizes NewMFAService.
+type MFAOption func(*MFAService)
+
+// WithRememberedDeviceRevoker makes Disenroll and ResetMemberMFA revoke the
+// affected member's remembered devices (NES-200), so a remember-device cookie
+// cannot outlive the MFA it bypassed. It is an option rather than a required
+// argument to keep the many existing NewMFAService callers compiling; the
+// composition root always supplies it.
+func WithRememberedDeviceRevoker(r rememberedDeviceRevoker) MFAOption {
+	return func(s *MFAService) { s.devices = r }
+}
+
 // MFAService orchestrates TOTP enrollment, confirmation, recovery codes, and
 // the household-owner admin reset. It is the auth context's use-case
 // boundary for NES-134; login enforcement is NES-135 and is not implemented
@@ -73,12 +91,13 @@ type MFAService struct {
 	passwords passwordVerifier
 	members   memberLookup
 	hasher    passwordHasher
+	devices   rememberedDeviceRevoker // optional; nil skips revocation
 	logger    *slog.Logger
 }
 
-// NewMFAService constructs the service with injected dependencies. All seven
-// are required.
-func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totpProvider, passwords passwordVerifier, members memberLookup, hasher passwordHasher, logger *slog.Logger) (*MFAService, error) {
+// NewMFAService constructs the service with injected dependencies. The first seven
+// are required; opts are optional.
+func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totpProvider, passwords passwordVerifier, members memberLookup, hasher passwordHasher, logger *slog.Logger, opts ...MFAOption) (*MFAService, error) {
 	if repo == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil MFARepository")
 	}
@@ -100,7 +119,23 @@ func NewMFAService(repo authdomain.MFARepository, cipher secretCipher, totp totp
 	if logger == nil {
 		return nil, errors.New("auth: NewMFAService requires a non-nil logger")
 	}
-	return &MFAService{repo: repo, cipher: cipher, totp: totp, passwords: passwords, members: members, hasher: hasher, logger: logger}, nil
+	svc := &MFAService{repo: repo, cipher: cipher, totp: totp, passwords: passwords, members: members, hasher: hasher, logger: logger}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc, nil
+}
+
+// revokeRememberedDevices invalidates memberID's remembered devices when a
+// revoker is wired. It runs BEFORE the enrollment is deleted: if it fails the
+// enrollment is untouched and the caller can simply retry, whereas the
+// reverse order could leave a live remember cookie behind a deleted
+// enrollment that the member later re-enrolls.
+func (s *MFAService) revokeRememberedDevices(ctx context.Context, memberID household.MemberID) error {
+	if s.devices == nil {
+		return nil
+	}
+	return s.devices.RevokeAll(ctx, memberID)
 }
 
 // Status returns the member's current enrollment, or nil if none exists
@@ -231,6 +266,9 @@ func (s *MFAService) Disenroll(ctx context.Context, memberID household.MemberID,
 	if err := s.verifyTOTPOrRecovery(ctx, memberID, totpCode, recoveryCode); err != nil {
 		return err
 	}
+	if err := s.revokeRememberedDevices(ctx, memberID); err != nil {
+		return fmt.Errorf("mfa: disenroll: %w", err)
+	}
 	if err := s.repo.DeleteEnrollment(ctx, householdID, memberID); err != nil {
 		return fmt.Errorf("mfa: disenroll: %w", err)
 	}
@@ -292,6 +330,9 @@ func (s *MFAService) ResetMemberMFA(ctx context.Context, actingOwnerID household
 		return authdomain.ErrOwnerReauthRequired
 	}
 
+	if err := s.revokeRememberedDevices(ctx, targetMemberID); err != nil {
+		return fmt.Errorf("mfa: reset member mfa: %w", err)
+	}
 	if err := s.repo.DeleteEnrollment(ctx, owner.HouseholdID, targetMemberID); err != nil {
 		return fmt.Errorf("mfa: reset member mfa: %w", err)
 	}

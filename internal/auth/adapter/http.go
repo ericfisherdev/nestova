@@ -57,7 +57,7 @@ type Handlers struct {
 	sm       *scs.SessionManager
 	authn    *authapp.Authenticator
 	mfa      *authapp.MFAService
-	remember *authapp.RememberDeviceSigner
+	remember *authapp.RememberDeviceService
 	// webauthn is used two ways (NES-137), both optional: LoginPage reads
 	// webauthn != nil to decide whether to show "Sign in with passkey" at
 	// all, and Login calls webauthn.ListDevices to decide whether THIS
@@ -88,7 +88,7 @@ type Handlers struct {
 // always supplies mfa+remember together, and webauthn whenever
 // Server.PublicBaseURL is configured — nil is a test-harness
 // accommodation, not a supported production configuration.
-func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceSigner, webauthnService *authapp.WebAuthnService, logger *slog.Logger) *Handlers {
+func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceService, webauthnService *authapp.WebAuthnService, logger *slog.Logger) *Handlers {
 	if sm == nil {
 		panic("adapter: NewHandlers requires a non-nil session manager")
 	}
@@ -258,11 +258,13 @@ func (h *Handlers) hasConfirmedMFA(ctx context.Context, memberID household.Membe
 	return enrollment.Confirmed(), nil
 }
 
-// hasRememberedDevice reports whether r carries a valid, unexpired
-// remember-device cookie naming memberID specifically — a cookie belonging
+// hasRememberedDevice reports whether r carries a live server-side
+// remember-device token issued to memberID specifically — a token belonging
 // to a DIFFERENT member (e.g. a shared household device where someone else
-// last checked "remember this device") must not skip THIS member's MFA
-// step.
+// last checked "remember this device"), or one that has expired or been
+// revoked (MFA disenrolment or reset), must not skip THIS member's MFA step.
+// A failed lookup is logged and treated as "not remembered", so the safe
+// outcome is the MFA prompt.
 func (h *Handlers) hasRememberedDevice(r *http.Request, memberID household.MemberID) bool {
 	if h.remember == nil {
 		return false
@@ -271,8 +273,12 @@ func (h *Handlers) hasRememberedDevice(r *http.Request, memberID household.Membe
 	if err != nil || cookie.Value == "" {
 		return false
 	}
-	rememberedID, err := h.remember.Verify(cookie.Value, time.Now())
-	return err == nil && rememberedID == memberID
+	remembered, err := h.remember.IsRemembered(r.Context(), memberID, cookie.Value, time.Now())
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "remembered device check", "member_id", memberID.String(), "error", err)
+		return false
+	}
+	return remembered
 }
 
 // finishLogin promotes the session to authenticated by memberID: renews the

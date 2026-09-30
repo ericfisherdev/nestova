@@ -26,3 +26,24 @@ func ParseRecoveryCodeID(s string) (RecoveryCodeID, error) {
 	}
 	return RecoveryCodeID(u), nil
 }
+
+// RememberedDeviceID uniquely identifies one server-side remembered device
+// (NES-200).
+type RememberedDeviceID uuid.UUID
+
+// NewRememberedDeviceID returns a new time-ordered (UUIDv7) remembered device
+// id. See NewRecoveryCodeID for why uuid.Must is appropriate.
+func NewRememberedDeviceID() RememberedDeviceID { return RememberedDeviceID(uuid.Must(uuid.NewV7())) }
+
+// String returns the canonical UUID string.
+func (id RememberedDeviceID) String() string { return uuid.UUID(id).String() }
+
+// ParseRememberedDeviceID parses a canonical UUID string into a
+// RememberedDeviceID.
+func ParseRememberedDeviceID(s string) (RememberedDeviceID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return RememberedDeviceID{}, fmt.Errorf("parse remembered device id: %w", err)
+	}
+	return RememberedDeviceID(u), nil
+}
