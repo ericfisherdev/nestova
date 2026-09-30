@@ -10,6 +10,7 @@
 // instance. search_path is pinned because Nestova's tables live in the
 // "nestova" schema (NSTR-118), not public.
 const { execFileSync } = require('child_process');
+const { tool } = require('./tools');
 
 const CONTAINER = process.env.NESTOVA_E2E_PG_CONTAINER || 'nestova-test-db';
 const DATABASE = process.env.NESTOVA_E2E_PG_DB || 'nestova_test';
@@ -20,7 +21,7 @@ const USER = process.env.NESTOVA_E2E_PG_USER || 'nestova';
 // than silently seeding nothing.
 function psql(sql) {
   return execFileSync(
-    'docker',
+    tool('docker'),
     ['exec', '-i', CONTAINER, 'psql', '-U', USER, '-d', DATABASE, '-v', 'ON_ERROR_STOP=1', '-q', '-At'],
     { input: `SET search_path TO nestova, identity, public;\n${sql}` },
   ).toString();

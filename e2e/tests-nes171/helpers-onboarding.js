@@ -15,6 +15,7 @@ const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tool } = require('../tests/tools');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const PG_CONTAINER = process.env.NESTOVA_E2E_PG_CONTAINER || 'nestova-test-db';
@@ -40,7 +41,7 @@ let binariesBuilt = false;
 function buildBinaries() {
   if (binariesBuilt) return;
   fs.mkdirSync(BIN_DIR, { recursive: true });
-  execFileSync('go', ['build', '-o', `${BIN_DIR}/`, './cmd/server', './cmd/migrate'], {
+  execFileSync(tool('go'), ['build', '-o', `${BIN_DIR}/`, './cmd/server', './cmd/migrate'], {
     cwd: REPO_ROOT,
     stdio: 'pipe',
   });
@@ -50,13 +51,13 @@ function buildBinaries() {
 // adminPsql runs sql against the container's maintenance database, for
 // statements (CREATE/DROP DATABASE) that cannot run inside the target database.
 function adminPsql(sql) {
-  execFileSync('docker', ['exec', PG_CONTAINER, 'psql', '-U', PG_USER, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-c', sql]);
+  execFileSync(tool('docker'), ['exec', PG_CONTAINER, 'psql', '-U', PG_USER, '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-c', sql]);
 }
 
 // privatePsql mirrors tests/db.js psql, pointed at a private database.
 function privatePsql(database, sql) {
   return execFileSync(
-    'docker',
+    tool('docker'),
     ['exec', '-i', PG_CONTAINER, 'psql', '-U', PG_USER, '-d', database, '-v', 'ON_ERROR_STOP=1', '-q', '-At'],
     { input: `SET search_path TO nestova, identity, public;\n${sql}` },
   ).toString();
@@ -168,7 +169,7 @@ class PrivateServer {
 // PRIVATE_PORT, so a crashed run cannot make the next one test a stale server.
 function freePort() {
   try {
-    execFileSync('fuser', ['-k', `${PRIVATE_PORT}/tcp`], { stdio: 'ignore' });
+    execFileSync(tool('fuser'), ['-k', `${PRIVATE_PORT}/tcp`], { stdio: 'ignore' });
   } catch {
     // Nothing was listening.
   }

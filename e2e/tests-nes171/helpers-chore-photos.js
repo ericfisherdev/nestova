@@ -14,6 +14,7 @@
 const { execFileSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const { tool } = require('../tests/tools');
 const os = require('os');
 const path = require('path');
 const { psql } = require('../tests/db');
@@ -185,7 +186,7 @@ function spliceExif(jpeg, fields) {
 // fixture byte-distinct, so no two uploads share a content hash.
 function noiseJpeg(side = 96) {
   const out = path.join(dir(), `noise-${crypto.randomBytes(6).toString('hex')}.jpg`);
-  execFileSync('magick', ['-size', `${side}x${side}`, 'xc:', '+noise', 'Random', out], { stdio: 'pipe' });
+  execFileSync(tool('magick'), ['-size', `${side}x${side}`, 'xc:', '+noise', 'Random', out], { stdio: 'pipe' });
   const bytes = fs.readFileSync(out);
   fs.rmSync(out, { force: true });
   return bytes;
@@ -202,7 +203,7 @@ function readBackDateTimeOriginal(bytes) {
   const file = path.join(dir(), `readback-${crypto.randomBytes(6).toString('hex')}.jpg`);
   fs.writeFileSync(file, bytes);
   try {
-    return execFileSync('magick', ['identify', '-format', '%[EXIF:DateTimeOriginal]', file]).toString().trim();
+    return execFileSync(tool('magick'), ['identify', '-format', '%[EXIF:DateTimeOriginal]', file]).toString().trim();
   } finally {
     fs.rmSync(file, { force: true });
   }
