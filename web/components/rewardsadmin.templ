@@ -258,7 +258,13 @@ templ RewardAdminFormPage(form RewardAdminForm) {
 			<p class="mt-1 text-sm text-ink-muted">Define what household members can redeem their points for.</p>
 		</div>
 		<div class="max-w-lg rounded-card bg-surface p-6 shadow-warm">
-			<form method="POST" action={ rewardFormAction(form) } novalidate>
+			<form
+				method="POST"
+				action={ rewardFormAction(form) }
+				novalidate
+				x-data
+				x-on:submit="$el.querySelectorAll('button[type=submit]').forEach((b) => b.disabled = true)"
+			>
 				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
 				if form.FormToken != "" {
 					<input type="hidden" name="form_token" value={ form.FormToken }/>
