@@ -366,8 +366,9 @@ type TaskInstanceRepository interface {
 	// (source_type [SourceTypeClaimExpiry]) of -[ClaimExpiryPenalty] is
 	// appended for each claimant in the SAME transaction as the revert, so a
 	// claimant's balance always reflects an actually-reverted claim. The
-	// penalty is applied unconditionally — it is never clamped or skipped
-	// because a member's balance is already zero or negative.
+	// penalty is capped at the claimant's balance, read under the same lock
+	// as reward redemption, so a balance never goes below zero; no entry is
+	// written when the balance is already zero (NES-205).
 	//
 	// NES-116: reverting a standing instance's claim is not a terminal
 	// transition. The row keeps its id, stays pending, and is not respawned —
