@@ -643,8 +643,8 @@ test.describe('§6 rewards', () => {
     ]);
     expect(ledgerFor(second.id)).toEqual([{ sourceType: 'redemption', points: -15 }]);
     expect(await shownBalance(page)).toBe(25);
-    // The single unit is taken again. Redeeming it a third time would hit the
-    // out-of-stock 500 that T-6.2.3 records, so the storefront is checked.
+    // The single unit is taken again. A third redeem would be refused with the
+    // out-of-stock 409 that T-6.2.3 asserts, so the storefront is checked here.
     expect(await storefrontNames(page), 'the unit is spoken for again').not.toContain(rewardRow(reward).name);
   });
 
