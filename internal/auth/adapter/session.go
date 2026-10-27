@@ -133,6 +133,32 @@ func RequireMember(_ *scs.SessionManager) middleware.Middleware {
 	}
 }
 
+// RequireAdministrator enforces that the current Member can administer the
+// household (Role.CanAdminister: owner or adult) and otherwise writes 403
+// Forbidden — for HTMX and full navigations alike, matching the handler-local
+// administrator gates (kiosk settings, PIN admin, rewards).
+//
+// It must be composed inside RequireMember, which owns the unauthenticated
+// redirect; a missing Member here is therefore a wiring guard and writes 401
+// rather than redirecting. Kept separate from RequireMember so routes that
+// only need authentication do not pay for a role check.
+func RequireAdministrator() middleware.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			member, ok := CurrentMember(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if !member.Role.CanAdminister() {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // escapePath percent-encodes a path+query string for safe use as a query
 // parameter value. It uses url.QueryEscape so that the `next` value can be
 // round-tripped through the login form hidden field.

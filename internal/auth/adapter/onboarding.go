@@ -227,20 +227,37 @@ func (h *OnboardingHandlers) Onboard(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// NewMemberPage handles GET /members/new (RequireMember-gated). It renders the
-// add-member form with a CSRF token inside the app shell.
+// NewMemberPage handles GET /members/new (RequireMember- and
+// RequireAdministrator-gated; the administrator check is repeated here as
+// defence in depth, NES-85). It renders the add-member form with a CSRF token
+// inside the app shell.
 func (h *OnboardingHandlers) NewMemberPage(
 	w http.ResponseWriter,
 	r *http.Request,
 	props components.ShellProps,
 	nav []components.NavItem,
 ) {
+	currentMember, ok := CurrentMember(r.Context())
+	if !ok {
+		// RequireMember should prevent reaching here, but guard defensively.
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !currentMember.Role.CanAdminister() {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	token := GetCSRFToken(r.Context(), h.sm)
 	form := components.AddMemberForm{CSRFToken: token}
 	h.renderAddMemberPage(w, r, http.StatusOK, props, nav, form)
 }
 
-// AddMember handles POST /members (RequireMember-gated). It validates the form,
+// AddMember handles POST /members (RequireMember- and
+// RequireAdministrator-gated; the role checks are repeated here as defence in
+// depth, NES-85). It refuses a caller who cannot administer the household, or
+// who may not mint the requested role (household.CanProvisionRole), with 403
+// before any repository or provisioner call. It then validates the form,
 // creates the member within the current household, and optionally stores
 // login credentials when email and password are both supplied. On success it
 // redirects to /.
@@ -266,6 +283,10 @@ func (h *OnboardingHandlers) AddMember(
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	if !currentMember.Role.CanAdminister() {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	displayName := strings.TrimSpace(r.FormValue("display_name"))
 	roleStr := r.FormValue("role")
@@ -283,6 +304,10 @@ func (h *OnboardingHandlers) AddMember(
 			Email:       email,
 			Error:       "Please choose a valid role (adult or child).",
 		})
+		return
+	}
+	if !household.CanProvisionRole(currentMember.Role, role) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 

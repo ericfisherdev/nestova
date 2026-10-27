@@ -614,6 +614,148 @@ func TestAddMember_EmailInUse(t *testing.T) {
 	}
 }
 
+// memberRoleHarness serves the member routes with a session already
+// authenticated as caller, calling the handlers directly (no route
+// middleware) so the tests prove the handlers' own defence in depth (NES-85).
+type memberRoleHarness struct {
+	t       *testing.T
+	handler http.Handler
+	cookies []*http.Cookie
+	csrf    string
+	prov    *fakeProvisioner
+}
+
+func newMemberRoleHarness(t *testing.T, role household.Role) *memberRoleHarness {
+	t.Helper()
+	caller := &household.Member{
+		ID:          household.NewMemberID(),
+		HouseholdID: household.NewHouseholdID(),
+		DisplayName: "Caller",
+		Role:        role,
+		Color:       household.ColorSage,
+	}
+	repo := &fakeHouseholdRepo{currentMember: caller}
+	prov := &fakeProvisioner{}
+	sm := newOnboardingSessionManager()
+	h := adapter.NewOnboardingHandlers(repo, fakeCredStore{}, prov, sm, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /members/new", func(w http.ResponseWriter, r *http.Request) {
+		h.NewMemberPage(w, r, components.ShellProps{}, nil)
+	})
+	mux.HandleFunc("POST /members", func(w http.ResponseWriter, r *http.Request) {
+		h.AddMember(w, r, components.ShellProps{}, nil)
+	})
+	mux.HandleFunc("GET /seed", func(w http.ResponseWriter, r *http.Request) {
+		sm.Put(r.Context(), "member_id", caller.ID.String())
+		_ = adapter.GetCSRFToken(r.Context(), sm)
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := sm.LoadAndSave(adapter.Authenticate(sm, repo)(mux))
+
+	seedRec := httptest.NewRecorder()
+	handler.ServeHTTP(seedRec, httptest.NewRequest(http.MethodGet, "/seed", nil))
+	cookies := seedRec.Result().Cookies()
+
+	return &memberRoleHarness{t: t, handler: handler, cookies: cookies, csrf: readSessionCSRF(t, sm, cookies), prov: prov}
+}
+
+func (h *memberRoleHarness) get(path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	for _, c := range h.cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func (h *memberRoleHarness) addMember(role string) *httptest.ResponseRecorder {
+	form := url.Values{
+		"csrf_token":   {h.csrf},
+		"display_name": {"Jamie"},
+		"role":         {role},
+		"email":        {"jamie@example.com"},
+		"password":     {"supersecret"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/members", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, c := range h.cookies {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAddMember_ChildIsForbidden(t *testing.T) {
+	for _, role := range []string{"adult", "child"} {
+		t.Run(role, func(t *testing.T) {
+			h := newMemberRoleHarness(t, household.RoleChild)
+			rec := h.addMember(role)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 for a child minting %s", rec.Code, role)
+			}
+			if h.prov.memberCalls != 0 {
+				t.Errorf("ProvisionMember called %d times, want 0", h.prov.memberCalls)
+			}
+		})
+	}
+}
+
+func TestNewMemberPage_ChildIsForbidden(t *testing.T) {
+	h := newMemberRoleHarness(t, household.RoleChild)
+	if rec := h.get("/members/new"); rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestNewMemberPage_AdministratorsSeeTheForm(t *testing.T) {
+	for _, role := range []household.Role{household.RoleOwner, household.RoleAdult} {
+		t.Run(role.String(), func(t *testing.T) {
+			h := newMemberRoleHarness(t, role)
+			if rec := h.get("/members/new"); rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+		})
+	}
+}
+
+func TestAddMember_AdministratorsMayMintAdultOrChild(t *testing.T) {
+	for _, caller := range []household.Role{household.RoleOwner, household.RoleAdult} {
+		for _, target := range []string{"adult", "child"} {
+			t.Run(caller.String()+" adds "+target, func(t *testing.T) {
+				h := newMemberRoleHarness(t, caller)
+				rec := h.addMember(target)
+				if rec.Code != http.StatusSeeOther {
+					t.Fatalf("status = %d, want 303", rec.Code)
+				}
+				if h.prov.memberCalls != 1 {
+					t.Errorf("ProvisionMember called %d times, want 1", h.prov.memberCalls)
+				}
+				if got := h.prov.lastMember.Role.String(); got != target {
+					t.Errorf("provisioned role = %q, want %q", got, target)
+				}
+			})
+		}
+	}
+}
+
+func TestAddMember_NobodyMayMintOwner(t *testing.T) {
+	for _, caller := range []household.Role{household.RoleOwner, household.RoleAdult} {
+		t.Run(caller.String(), func(t *testing.T) {
+			h := newMemberRoleHarness(t, caller)
+			rec := h.addMember("owner")
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422", rec.Code)
+			}
+			if h.prov.memberCalls != 0 {
+				t.Errorf("ProvisionMember called %d times, want 0", h.prov.memberCalls)
+			}
+		})
+	}
+}
+
 // readSessionCSRF returns the CSRF token stored in the session identified by
 // cookies, by invoking a throwaway GET that echoes it.
 func readSessionCSRF(t *testing.T, sm *scs.SessionManager, cookies []*http.Cookie) string {
