@@ -342,6 +342,73 @@ func TestLoginThrottle_InternalAuthenticatorErrorCountsNoStrike(t *testing.T) {
 	assertThrottled(t, "past the budget", h.wrong("alice@example.com"))
 }
 
+// TestLoginThrottle_InFlightInternalErrorsNeverEngageALockout covers requests
+// that are admitted concurrently, before any of them has failed: the last one
+// to be admitted engages the lockout, and when every one of them then hits an
+// internal error, none should have counted.
+func TestLoginThrottle_InFlightInternalErrorsNeverEngageALockout(t *testing.T) {
+	const budget = 3
+	th := newLoginThrottle(policy(budget), policy(budget))
+	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	now := time.Now()
+
+	var inFlight []loginAdmission
+	for range budget {
+		a := th.admit(r, "alice@example.com", now)
+		if !a.allowed {
+			t.Fatal("setup: attempt within the budget was not admitted")
+		}
+		inFlight = append(inFlight, a)
+	}
+	for _, a := range inFlight {
+		th.recordInternalError(a)
+	}
+
+	if th.account.Locked(accountKey("alice@example.com"), now) {
+		t.Error("account locked by attempts that all ended in internal errors")
+	}
+	if th.ip.Locked(ipKey(r), now) {
+		t.Error("client IP locked by attempts that all ended in internal errors")
+	}
+}
+
+// TestLoginThrottle_InternalErrorOfAnEarlierAttemptDoesNotUndoALockout: the
+// attempt that engaged the lockout failed for real, so a different attempt's
+// internal error must not lift it.
+func TestLoginThrottle_InternalErrorOfAnEarlierAttemptDoesNotUndoALockout(t *testing.T) {
+	const budget = 3
+	th := newLoginThrottle(policy(budget), policy(hugeBudget))
+	r := httptest.NewRequest(http.MethodPost, "/login", nil)
+	now := time.Now()
+
+	earlier := th.admit(r, "alice@example.com", now)
+	th.admit(r, "alice@example.com", now)
+	th.admit(r, "alice@example.com", now) // engages the lockout
+
+	th.recordInternalError(earlier)
+
+	if !th.account.Locked(accountKey("alice@example.com"), now) {
+		t.Error("an unrelated internal error lifted the account lockout")
+	}
+}
+
+func TestAccountKey_IsAFixedSizeDigestOfTheNormalisedEmail(t *testing.T) {
+	huge := strings.Repeat("a", 1<<20) + "@example.com"
+
+	if got, want := len(accountKey(huge)), len(accountKey("a@b.c")); got != want {
+		t.Errorf("key length for a 1 MiB email = %d, want the fixed %d", got, want)
+	}
+	if accountKey("  Alice@Example.COM ") != accountKey("alice@example.com") {
+		t.Error("case and whitespace variants must share a key")
+	}
+	if accountKey("alice@example.com") == accountKey("bob@example.com") {
+		t.Error("distinct emails must not share a key")
+	}
+	if strings.Contains(accountKey("alice@example.com"), "alice") {
+		t.Error("the key must not retain the email (PII, unbounded size)")
+	}
+}
+
 func TestLoginThrottle_LockoutIsLoggedOnceWithoutTheEmail(t *testing.T) {
 	h := newThrottleHarness(t, newLoginThrottle(policy(accountLoginAttempts), policy(hugeBudget)), nil)
 	for range accountLoginAttempts + 5 {
@@ -358,6 +425,25 @@ func TestLoginThrottle_LockoutIsLoggedOnceWithoutTheEmail(t *testing.T) {
 	if !strings.Contains(logs, "account_locked=true") {
 		t.Errorf("lockout log does not name the locked dimension: %s", logs)
 	}
+}
+
+// TestLoginThrottle_IPLockoutEngagedByASuccessIsStillLogged: a success counts
+// against the IP, so the attempt that exhausts the IP budget may be a correct
+// password. The lockout then stands and an operator must be able to see it.
+func TestLoginThrottle_IPLockoutEngagedByASuccessIsStillLogged(t *testing.T) {
+	h := newThrottleHarness(t, newLoginThrottle(policy(hugeBudget), policy(2)), nil)
+	h.wrong(emailN(1))
+
+	assertStatus(t, "success", h.post(loginRequest{email: "alice@example.com", password: throttleTestPassword}), http.StatusSeeOther)
+
+	logs := h.logs.String()
+	if got := strings.Count(logs, "login throttle engaged"); got != 1 {
+		t.Fatalf("lockout logged %d times, want once; logs: %s", got, logs)
+	}
+	if !strings.Contains(logs, "ip_locked=true") || !strings.Contains(logs, "account_locked=false") {
+		t.Errorf("log should name only the IP dimension: %s", logs)
+	}
+	assertThrottled(t, "next attempt", h.wrong(emailN(2)))
 }
 
 func TestLoginThrottle_BareHandlerSharesOneIPBucket(t *testing.T) {

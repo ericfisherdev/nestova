@@ -195,7 +195,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	memberID, err := h.authn.Login(r.Context(), email, password)
 	if err != nil {
 		if errors.Is(err, authdomain.ErrInvalidCredentials) {
-			h.logLoginLockout(r, admission)
+			h.logLoginLockout(r, admission.ipLockedOut, admission.accountLockedOut)
 			token := GetCSRFToken(r.Context(), h.sm)
 			h.renderLoginPage(w, r, http.StatusUnauthorized, components.LoginForm{
 				CSRFToken:        token,
@@ -206,12 +206,15 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		h.throttle.recordInternalError(r, email)
+		h.throttle.recordInternalError(admission)
 		h.logger.ErrorContext(r.Context(), "login internal error", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	h.throttle.recordSuccess(email)
+	// A success clears the account's strikes but not the IP's, so a lockout the
+	// IP limiter engaged on this very attempt still stands and must be logged.
+	h.logLoginLockout(r, admission.ipLockedOut, false)
 
 	if h.mfa != nil {
 		needsStepUp, err := h.needsLoginStepUp(r.Context(), memberID)
@@ -266,16 +269,17 @@ func (h *Handlers) renderThrottledLogin(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-// logLoginLockout logs one Warn line when a failed attempt used up a budget.
-// It names the client IP and which dimension locked, never the email (PII).
-func (h *Handlers) logLoginLockout(r *http.Request, admission loginAdmission) {
-	if !admission.ipLockedOut && !admission.accountLockedOut {
+// logLoginLockout logs one Warn line when an attempt used up a budget and the
+// resulting lockout stands. It names the client IP and which dimension locked,
+// never the email (PII).
+func (h *Handlers) logLoginLockout(r *http.Request, ipLocked, accountLocked bool) {
+	if !ipLocked && !accountLocked {
 		return
 	}
 	h.logger.WarnContext(r.Context(), "login throttle engaged",
 		"client_ip", middleware.ClientIP(r.Context()),
-		"ip_locked", admission.ipLockedOut,
-		"account_locked", admission.accountLockedOut,
+		"ip_locked", ipLocked,
+		"account_locked", accountLocked,
 	)
 }
 

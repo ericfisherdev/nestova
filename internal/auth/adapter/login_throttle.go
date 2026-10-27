@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"time"
@@ -19,7 +21,7 @@ import (
 // everyone, while twenty attempts per fifteen minutes still bounds one host
 // spraying many emails.
 //
-// maxLoginThrottleKeys sizes both tables. An entry costs about 250 bytes, so
+// maxLoginThrottleKeys sizes both tables. An entry costs about 250 bytes (keys are fixed-size: IPs and email digests), so
 // 50,000 keys is about 12 MB per table. The keys are attacker-supplied (any
 // submitted email, any resolved client address), and filling a table takes
 // roughly this many distinct keys inside one window; because the per-IP
@@ -44,6 +46,10 @@ type loginAdmission struct {
 	// line per lockout. They are only meaningful when allowed is true.
 	ipLockedOut      bool
 	accountLockedOut bool
+	// ipAttempt and accountAttempt identify the admitted attempts, so an
+	// internal error can take back exactly those (recordInternalError).
+	ipAttempt      ratelimit.Reservation
+	accountAttempt ratelimit.Reservation
 }
 
 // LoginThrottle bounds password login attempts per submitted email and per
@@ -83,9 +89,13 @@ func newLoginThrottle(account, ip ratelimit.Policy) *LoginThrottle {
 
 // accountKey normalises email: the credential lookup is an exact match, so
 // without lower-casing and trimming every case variant would buy a fresh
-// bucket and a fresh dummy verification.
+// bucket and a fresh dummy verification. The key is a fixed-size digest of the
+// normalised address rather than the address itself: the email is
+// attacker-supplied and can be megabytes long, and the limiter bounds the
+// NUMBER of keys it holds, not their bytes.
 func accountKey(email string) string {
-	return "email:" + strings.ToLower(strings.TrimSpace(email))
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return "email:" + hex.EncodeToString(sum[:])
 }
 
 func ipKey(r *http.Request) string {
@@ -106,20 +116,22 @@ func (t *LoginThrottle) admit(r *http.Request, email string, now time.Time) logi
 		return loginAdmission{}
 	}
 	ip := ipKey(r)
-	ipOutcome := t.ip.Attempt(ip, now)
+	ipOutcome, ipAttempt := t.ip.Reserve(ip, now)
 	if !ipOutcome.Permitted() {
 		return loginAdmission{}
 	}
-	accountOutcome := t.account.Attempt(account, now)
+	accountOutcome, accountAttempt := t.account.Reserve(account, now)
 	if !accountOutcome.Permitted() {
 		// Only reachable when the account locked between the peek and here.
-		t.ip.Refund(ip)
+		t.ip.Cancel(ipAttempt)
 		return loginAdmission{}
 	}
 	return loginAdmission{
 		allowed:          true,
 		ipLockedOut:      ipOutcome == ratelimit.AllowedLastAttempt,
 		accountLockedOut: accountOutcome == ratelimit.AllowedLastAttempt,
+		ipAttempt:        ipAttempt,
+		accountAttempt:   accountAttempt,
 	}
 }
 
@@ -132,9 +144,11 @@ func (t *LoginThrottle) recordSuccess(email string) {
 	t.account.Reset(accountKey(email))
 }
 
-// recordInternalError gives back an attempt that failed for a reason that is
-// not the client's fault (a repository outage), so it counts no strike.
-func (t *LoginThrottle) recordInternalError(r *http.Request, email string) {
-	t.account.Refund(accountKey(email))
-	t.ip.Refund(ipKey(r))
+// recordInternalError takes back an admitted attempt that failed for a reason
+// that is not the client's fault (a repository outage), so it counts no strike.
+// Cancelling the reservation, not the key, is what lets it undo a lockout that
+// this very attempt engaged without ever lifting one that other attempts did.
+func (t *LoginThrottle) recordInternalError(admission loginAdmission) {
+	t.account.Cancel(admission.accountAttempt)
+	t.ip.Cancel(admission.ipAttempt)
 }
