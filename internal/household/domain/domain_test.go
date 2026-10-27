@@ -17,6 +17,31 @@ func TestRoleParse(t *testing.T) {
 	}
 }
 
+func TestCanProvisionRole(t *testing.T) {
+	const invalid = domain.Role("monarch")
+	tests := []struct {
+		actor, target domain.Role
+		want          bool
+	}{
+		{domain.RoleOwner, domain.RoleOwner, false},
+		{domain.RoleOwner, domain.RoleAdult, true},
+		{domain.RoleOwner, domain.RoleChild, true},
+		{domain.RoleAdult, domain.RoleOwner, false},
+		{domain.RoleAdult, domain.RoleAdult, true},
+		{domain.RoleAdult, domain.RoleChild, true},
+		{domain.RoleChild, domain.RoleOwner, false},
+		{domain.RoleChild, domain.RoleAdult, false},
+		{domain.RoleChild, domain.RoleChild, false},
+		{invalid, domain.RoleChild, false},
+		{domain.RoleOwner, invalid, false},
+	}
+	for _, tt := range tests {
+		if got := domain.CanProvisionRole(tt.actor, tt.target); got != tt.want {
+			t.Errorf("CanProvisionRole(%q, %q) = %v, want %v", tt.actor, tt.target, got, tt.want)
+		}
+	}
+}
+
 func TestMemberColorParse(t *testing.T) {
 	for _, c := range domain.MemberColors() {
 		if got, err := domain.ParseMemberColor(c.String()); err != nil || got != c {

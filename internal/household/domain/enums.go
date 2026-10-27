@@ -26,6 +26,26 @@ const (
 // ParseRole validates and returns a Role, or an error for an unknown value.
 func ParseRole(s string) (Role, error) { return identity.ParseRole(s) }
 
+// CanProvisionRole reports whether a member holding the actor role may create
+// a new member holding the target role (NES-85).
+//
+// Policy: only administrators (Role.CanAdminister: owner or adult) may
+// provision members, and what they may mint is adult or child. An adult
+// minting another adult is lateral, not escalation — it is the normal "add my
+// partner" flow. Nobody can mint an owner through member provisioning (the
+// owner is created once, by the onboarding wizard), and a child can mint
+// nothing. An invalid actor or target is refused.
+//
+// This is a free function rather than a Role method because Role is an alias
+// of nestcore's identity.Role; lifting the rule into nestcore is a follow-up
+// should Nestorage ever grow a member-creation form.
+func CanProvisionRole(actor, target Role) bool {
+	if !actor.CanAdminister() {
+		return false
+	}
+	return target == RoleAdult || target == RoleChild
+}
+
 // MemberColor is one of the five A · Hearth palette keys. The value matches the
 // Tailwind member-color token infix (see web/static/css/input.css), so a member
 // renders as bg-member-<color>-tint etc.

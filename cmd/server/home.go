@@ -144,18 +144,21 @@ func registerWebRoutes(
 	mux.HandleFunc("POST /onboarding", onboardingHandlers.Onboard)
 
 	requireMember := authadapter.RequireMember(sm)
+	requireAdmin := authadapter.RequireAdministrator()
 
-	// Add-member routes — RequireMember-gated.
-	mux.Handle("GET /members/new", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Add-member routes — RequireMember-gated, then administrator-only
+	// (owner or adult, Role.CanAdminister) so a child cannot mint a login
+	// (NES-85); see docs/roles.md.
+	mux.Handle("GET /members/new", requireMember(requireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, _ := authadapter.CurrentMember(r.Context())
 		props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 		onboardingHandlers.NewMemberPage(w, r, props, nav)
-	})))
-	mux.Handle("POST /members", requireMember(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}))))
+	mux.Handle("POST /members", requireMember(requireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		member, _ := authadapter.CurrentMember(r.Context())
 		props, nav := dashboardShell(r, sm, member, households, logger, "", peerCfg, peerProbe)
 		onboardingHandlers.AddMember(w, r, props, nav)
-	})))
+	}))))
 
 	// Dashboard — protected: RequireMember redirects unauthenticated visitors
 	// to /login?next=/ before the handler runs.

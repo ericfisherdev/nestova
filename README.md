@@ -439,6 +439,11 @@ compiles type-safe `.templ` components to Go.
 - After editing a `.templ` file, run `make generate` and commit the updated
   `*_templ.go` alongside it. CI verifies generated output is in sync.
 
+### Roles and route gates
+
+Which member roles may reach which state-changing routes, and where each gate is
+enforced, is tabulated in [`docs/roles.md`](docs/roles.md).
+
 ### Notifications (NES-24)
 
 The `internal/notify` bounded context implements a durable notification outbox.

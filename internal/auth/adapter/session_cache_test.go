@@ -47,3 +47,38 @@ func TestRequireMemberRedirectsAnonymousRequestsWithoutCacheHeader(t *testing.T)
 		t.Errorf("Cache-Control = %q on a redirect, want none", got)
 	}
 }
+
+func serveThroughRequireAdministrator(t *testing.T, member *household.Member) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := RequireAdministrator()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/members", nil)
+	if member != nil {
+		req = req.WithContext(context.WithValue(req.Context(), currentMemberKey, member))
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRequireAdministrator(t *testing.T) {
+	tests := []struct {
+		name   string
+		member *household.Member
+		want   int
+	}{
+		{"owner passes", &household.Member{Role: household.RoleOwner}, http.StatusOK},
+		{"adult passes", &household.Member{Role: household.RoleAdult}, http.StatusOK},
+		{"child is forbidden", &household.Member{Role: household.RoleChild}, http.StatusForbidden},
+		{"no member is unauthorized", nil, http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serveThroughRequireAdministrator(t, tt.member)
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
