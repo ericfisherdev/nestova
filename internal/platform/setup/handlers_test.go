@@ -20,6 +20,10 @@ import (
 	"github.com/ericfisherdev/nestova/internal/platform/setup"
 )
 
+// testSetupToken is the wizard token every harness is gated with; postSetup
+// submits it unless the form already carries a setup_token field.
+const testSetupToken = "test-setup-token"
+
 type fakeApplier struct {
 	err   error
 	calls int32
@@ -96,7 +100,18 @@ func (h *harness) getCSRF(t *testing.T) string {
 	return string(m[1])
 }
 
+// postSetup submits form with the harness's setup token filled in, unless the
+// form already sets one, so tests only spell out the token when it is the subject.
 func (h *harness) postSetup(t *testing.T, form url.Values) (*http.Response, string) {
+	t.Helper()
+	if !form.Has("setup_token") {
+		form.Set("setup_token", testSetupToken)
+	}
+	return h.postSetupRaw(t, form)
+}
+
+// postSetupRaw submits form exactly as given.
+func (h *harness) postSetupRaw(t *testing.T, form url.Values) (*http.Response, string) {
 	t.Helper()
 	resp, err := h.client.PostForm(h.server.URL+"/setup", form)
 	if err != nil {
@@ -108,7 +123,7 @@ func (h *harness) postSetup(t *testing.T, form url.Values) (*http.Response, stri
 }
 
 func TestGetSetup_RendersForm(t *testing.T) {
-	h := newHarness(t, &fakeApplier{}, "")
+	h := newHarness(t, &fakeApplier{}, testSetupToken)
 	resp, err := h.client.Get(h.server.URL + "/setup")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -124,10 +139,26 @@ func TestGetSetup_RendersForm(t *testing.T) {
 	if !csrfRe.Match(body) {
 		t.Fatal("CSRF token field missing")
 	}
+	if !strings.Contains(string(body), `name="setup_token"`) {
+		t.Fatalf("setup_token input missing:\n%s", body)
+	}
+}
+
+func TestNewHandlers_PanicsOnEmptyToken(t *testing.T) {
+	for _, token := range []string{"", "   "} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("NewHandlers did not panic for token %q", token)
+				}
+			}()
+			setup.NewHandlers(&fakeApplier{}, scs.New(), slog.New(slog.DiscardHandler), func() {}, token)
+		}()
+	}
 }
 
 func TestCatchAll_RedirectsToSetup(t *testing.T) {
-	h := newHarness(t, &fakeApplier{}, "")
+	h := newHarness(t, &fakeApplier{}, testSetupToken)
 	resp, err := h.client.Get(h.server.URL + "/something/else")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
@@ -142,7 +173,7 @@ func TestCatchAll_RedirectsToSetup(t *testing.T) {
 }
 
 func TestPostSetup_InvalidCSRF_Forbidden(t *testing.T) {
-	h := newHarness(t, &fakeApplier{}, "")
+	h := newHarness(t, &fakeApplier{}, testSetupToken)
 	// No prior GET and no csrf_token field -> rejected before any work.
 	resp, _ := h.postSetup(t, url.Values{"host": {"localhost"}, "database": {"db"}, "user": {"u"}})
 	if resp.StatusCode != http.StatusForbidden {
@@ -154,7 +185,7 @@ func TestPostSetup_InvalidCSRF_Forbidden(t *testing.T) {
 }
 
 func TestPostSetup_Success_AppliesAndSignalsComplete(t *testing.T) {
-	h := newHarness(t, &fakeApplier{}, "")
+	h := newHarness(t, &fakeApplier{}, testSetupToken)
 	csrf := h.getCSRF(t)
 	resp, body := h.postSetup(t, url.Values{
 		"csrf_token": {csrf},
@@ -184,7 +215,7 @@ func TestPostSetup_Success_AppliesAndSignalsComplete(t *testing.T) {
 }
 
 func TestPostSetup_PlumbsProviderFields(t *testing.T) {
-	h := newHarness(t, &fakeApplier{}, "")
+	h := newHarness(t, &fakeApplier{}, testSetupToken)
 	csrf := h.getCSRF(t)
 	resp, body := h.postSetup(t, url.Values{
 		"csrf_token":    {csrf},
@@ -208,7 +239,7 @@ func TestPostSetup_PlumbsProviderFields(t *testing.T) {
 }
 
 func TestPostSetup_ConnectFailure_422_NoPasswordEcho(t *testing.T) {
-	h := newHarness(t, &fakeApplier{err: fmt.Errorf("%w: dial tcp", setup.ErrConnect)}, "")
+	h := newHarness(t, &fakeApplier{err: fmt.Errorf("%w: dial tcp", setup.ErrConnect)}, testSetupToken)
 	csrf := h.getCSRF(t)
 	resp, body := h.postSetup(t, url.Values{
 		"csrf_token": {csrf},
@@ -232,7 +263,7 @@ func TestPostSetup_ConnectFailure_422_NoPasswordEcho(t *testing.T) {
 }
 
 func TestPostSetup_RawDSNCredentialsNotEchoed(t *testing.T) {
-	h := newHarness(t, &fakeApplier{err: fmt.Errorf("%w: dial tcp", setup.ErrConnect)}, "")
+	h := newHarness(t, &fakeApplier{err: fmt.Errorf("%w: dial tcp", setup.ErrConnect)}, testSetupToken)
 	csrf := h.getCSRF(t)
 	resp, body := h.postSetup(t, url.Values{
 		"csrf_token": {csrf},
@@ -284,4 +315,76 @@ func TestPostSetup_SetupTokenGate(t *testing.T) {
 	if n := atomic.LoadInt32(&h.applier.calls); n != 1 {
 		t.Fatalf("service called %d times with correct token, want 1", n)
 	}
+}
+
+func TestPostSetup_MissingToken_Forbidden_NoApply(t *testing.T) {
+	h := newHarness(t, &fakeApplier{}, testSetupToken)
+	csrf := h.getCSRF(t)
+	// No setup_token field at all, as a scripted prober would send.
+	resp, body := h.postSetupRaw(t, url.Values{
+		"csrf_token": {csrf},
+		"host":       {"192.0.2.1"},
+		"port":       {"5432"},
+		"database":   {"db"},
+		"user":       {"u"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if !strings.Contains(body, "Incorrect setup token") {
+		t.Fatalf("expected token error:\n%s", body)
+	}
+	if n := atomic.LoadInt32(&h.applier.calls); n != 0 {
+		t.Fatalf("service called %d times without a token, want 0", n)
+	}
+}
+
+// TestPostSetup_ConnectFailures_IdenticalResponse guards against the wizard
+// working as a probing oracle: a refused connection, a timeout and a rejected
+// password must be indistinguishable in the response, with the cause only in the
+// server log.
+func TestPostSetup_ConnectFailures_IdenticalResponse(t *testing.T) {
+	causes := []string{
+		"dial tcp 192.0.2.1:5432: connect: connection refused",
+		"dial tcp 192.0.2.1:5432: i/o timeout",
+		"FATAL: password authentication failed for user \"u\" (SQLSTATE 28P01)",
+	}
+	var wantStatus int
+	var wantBody string
+	for i, cause := range causes {
+		h := newHarness(t, &fakeApplier{err: fmt.Errorf("%w: %s", setup.ErrConnect, cause)}, testSetupToken)
+		csrf := h.getCSRF(t)
+		resp, body := h.postSetup(t, url.Values{
+			"csrf_token": {csrf},
+			"host":       {"192.0.2.1"},
+			"port":       {"5432"},
+			"database":   {"db"},
+			"user":       {"u"},
+			"password":   {"pw"},
+		})
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("cause %q: status = %d, want 422", cause, resp.StatusCode)
+		}
+		for _, leak := range []string{"refused", "timeout", "authentication", "SQLSTATE"} {
+			if strings.Contains(body, leak) {
+				t.Fatalf("cause %q: response leaks %q:\n%s", cause, leak, body)
+			}
+		}
+		if i == 0 {
+			wantStatus, wantBody = resp.StatusCode, normalizeCSRF(body)
+			continue
+		}
+		if resp.StatusCode != wantStatus {
+			t.Fatalf("cause %q: status = %d, want %d", cause, resp.StatusCode, wantStatus)
+		}
+		if got := normalizeCSRF(body); got != wantBody {
+			t.Fatalf("cause %q: body differs from the first failure's:\n%s\n--- vs ---\n%s", cause, got, wantBody)
+		}
+	}
+}
+
+// normalizeCSRF blanks the per-session CSRF token, the only part of the form
+// that legitimately differs between two sessions.
+func normalizeCSRF(body string) string {
+	return csrfRe.ReplaceAllString(body, `name="csrf_token" value=""`)
 }

@@ -56,9 +56,7 @@ type SetupForm struct {
 	SSLRootCert string
 	// RawDSN pre-fills the advanced raw-DSN override field.
 	RawDSN string
-	// TokenRequired shows the setup-token field when NESTOVA_SETUP_TOKEN gates
-	// the wizard.
-	TokenRequired bool
+
 	// Error is a validation or connection error shown below the form. Empty means
 	// no error is shown.
 	Error string
@@ -112,20 +110,20 @@ templ SetupPage(form SetupForm) {
 									<option value="supabase" selected?={ form.Provider == "supabase" }>Supabase (cloud or local)</option>
 								</select>
 							</div>
-							if form.TokenRequired {
-								<div class="flex flex-col gap-1">
-									<label for="setup_token" class="text-sm font-medium text-ink-secondary">Setup token</label>
-									<input
-										id="setup_token"
-										type="password"
-										name="setup_token"
-										autocomplete="off"
-										required
-										class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
-										placeholder="Printed in the server log"
-									/>
-								</div>
-							}
+							<div class="flex flex-col gap-1">
+								<label for="setup_token" class="text-sm font-medium text-ink-secondary">Setup token</label>
+								<input
+									id="setup_token"
+									type="password"
+									name="setup_token"
+									autocomplete="off"
+									required
+									aria-describedby="setup_token_help"
+									class="rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-sage focus:outline-none"
+									placeholder="Printed in the server log"
+								/>
+								<p id="setup_token_help" class="text-xs text-ink-muted">Find it in the server log, for example with journalctl -u nestova-server and a search for setup_token.</p>
+							</div>
 							<div class="flex gap-3">
 								<div class="flex flex-1 flex-col gap-1">
 									<label for="host" class="text-sm font-medium text-ink-secondary">Host</label>
