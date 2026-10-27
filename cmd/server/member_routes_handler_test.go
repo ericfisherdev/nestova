@@ -28,10 +28,14 @@ func TestMemberRoutes_RequireAdministrator(t *testing.T) {
 	tests := []struct {
 		role     household.Role
 		wantPage int
+		// wantPostBody distinguishes who refused the token-less POST: the
+		// route middleware ("forbidden") or, for an administrator that got
+		// past it, the handler's own CSRF check.
+		wantPostBody string
 	}{
-		{household.RoleOwner, http.StatusOK},
-		{household.RoleAdult, http.StatusOK},
-		{household.RoleChild, http.StatusForbidden},
+		{household.RoleOwner, http.StatusOK, "invalid CSRF token"},
+		{household.RoleAdult, http.StatusOK, "invalid CSRF token"},
+		{household.RoleChild, http.StatusForbidden, "forbidden"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.role.String(), func(t *testing.T) {
@@ -47,19 +51,21 @@ func TestMemberRoutes_RequireAdministrator(t *testing.T) {
 				t.Errorf("GET /members/new status = %d, want %d", getRec.Code, tt.wantPage)
 			}
 
-			// No CSRF token is sent: the route middleware must refuse a child
-			// with its own "forbidden" body before the handler's CSRF check
-			// ("invalid CSRF token") could ever run.
+			// No CSRF token is sent, so the POST is always refused with 403; the
+			// body says which layer refused it. A child must be stopped by the
+			// route middleware before the handler's CSRF check could run, and
+			// an administrator must reach the handler (a dropped route or a
+			// misfiring middleware would produce another status or body).
 			postReq := httptest.NewRequest(http.MethodPost, "/members", strings.NewReader(url.Values{}.Encode()))
 			postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			postReq.Header.Set("Cookie", cookie)
 			postRec := httptest.NewRecorder()
 			handler.ServeHTTP(postRec, postReq)
-			gotMiddlewareRefusal := postRec.Code == http.StatusForbidden &&
-				strings.TrimSpace(postRec.Body.String()) == "forbidden"
-			if wantRefusal := tt.role == household.RoleChild; gotMiddlewareRefusal != wantRefusal {
-				t.Errorf("POST /members middleware refusal = %v, want %v (status %d, body %q)",
-					gotMiddlewareRefusal, wantRefusal, postRec.Code, postRec.Body.String())
+			if postRec.Code != http.StatusForbidden {
+				t.Errorf("POST /members status = %d, want 403", postRec.Code)
+			}
+			if got := strings.TrimSpace(postRec.Body.String()); got != tt.wantPostBody {
+				t.Errorf("POST /members body = %q, want %q", got, tt.wantPostBody)
 			}
 		})
 	}
