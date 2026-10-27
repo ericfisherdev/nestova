@@ -127,12 +127,13 @@ selection: NES-83.)
 
 The wizard always requires a **setup token**, so nobody who can merely reach the
 port can use it to probe the network or run migrations. When `NESTOVA_SETUP_TOKEN`
-is unset, a random token is generated at boot and printed **once** to the server
-log in a `setup_token` attribute; enter it in the wizard's *Setup token* field.
-Read it from the journal when running under systemd:
+is unset, a random token is generated each time the server starts in setup mode
+and printed **once** to the server log in a `setup_token` attribute; only the
+most recent one is accepted. Enter it in the wizard's *Setup token* field. Read
+it from the journal when running under systemd:
 
 ```sh
-journalctl -u nestova-server | grep setup_token
+journalctl -u nestova-server | grep setup_token | tail -n 1
 ```
 
 Setting `NESTOVA_SETUP_TOKEN` pins a known token instead; nothing is generated
