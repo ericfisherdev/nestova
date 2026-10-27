@@ -482,6 +482,10 @@ func TestNewLoginThrottle_UsesTheDocumentedPolicies(t *testing.T) {
 	if th.ip.Locked("k", now) {
 		t.Errorf("ip limiter locked before %d attempts", ipLoginAttempts)
 	}
+	th.ip.Attempt("k", now)
+	if !th.ip.Locked("k", now) {
+		t.Errorf("ip limiter did not lock after %d attempts", ipLoginAttempts)
+	}
 }
 
 func emailN(i int) string { return fmt.Sprintf("user-%d@example.com", i) }
