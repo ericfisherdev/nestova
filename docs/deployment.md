@@ -235,6 +235,27 @@ HSTS_MAX_AGE=4320h                    # 180 days (Go duration; "180d" is invalid
 PUBLIC_BASE_URL=https://nestova.<tailnet>.ts.net
 ```
 
+### Login attempt limiting (NES-86)
+
+Password login is throttled in two dimensions: **5** attempts per submitted
+email and **20** per resolved client IP, each per 15 minutes. The sixth (or
+twenty-first) attempt gets a `429` and never reaches the password hasher, so a
+throttled request costs the Pi no Argon2id work. Case and whitespace variants
+of an email share one bucket, and a success clears the account's strikes but
+never the IP's.
+
+The IP comes from the same `TRUSTED_PROXIES` logic as the scheme. If
+`TRUSTED_PROXIES` does not list the proxy actually in front of Nestova, every
+client resolves to the proxy's address and shares **one** IP bucket, so
+twenty wrong passwords from anyone lock sign-in for the whole household.
+Check it whenever the proxy topology changes.
+
+Strike state is in memory: a restart clears every lockout (no worse than
+waiting out the window). Nestorage keeps its own separate counters, so a
+shared credential gets the budget once per app. The limiter tables are capped
+at 50,000 keys each (about 12 MB); see `ratelimit.AttemptLimiter` in nestcore
+for the threat model.
+
 `SESSION_COOKIE_SECURE=true` is what stops the session cookie being
 rejected: `auto` ties Secure to `APP_ENV=prod`, so a non-prod appliance
 serving real HTTPS would otherwise emit non-Secure cookies.

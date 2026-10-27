@@ -10,7 +10,7 @@
 const crypto = require('crypto');
 const { test, expect } = require('@playwright/test');
 const { psql } = require('../tests/db');
-const { login } = require('./helpers');
+const { login, isolateClientIP } = require('./helpers');
 const totp = require('./totp');
 const wa = require('./helpers-webauthn');
 
@@ -50,6 +50,7 @@ async function credentialOf(authenticator, user) {
 // ceremony. Returns the CSRF token for finish and the server's challenge.
 async function beginLogin(page) {
   await page.context().clearCookies();
+  await isolateClientIP(page.context());
   await page.goto('/login');
   const csrf = await wa.passkeyCSRFToken(page);
   const begin = await wa.fetchInPage(page, '/login/passkey/begin');
@@ -105,6 +106,7 @@ async function renameCSRFToken(page) {
 
 test.describe('unwired server', () => {
   test('T-2.3.7 with WebAuthn unwired the passkey button is hidden and every endpoint is 404', async ({ page, baseURL }) => {
+    await isolateClientIP(page.context());
     await page.goto('/login');
     await expect(page.locator('button[type="submit"]:has-text("Sign in")')).toBeVisible();
     await expect(page.getByText('Sign in with passkey')).toHaveCount(0);
@@ -195,6 +197,7 @@ test.describe('wired server', () => {
 
     // Sanity guard: before revocation the passkey signs in.
     await page.context().clearCookies();
+    await isolateClientIP(page.context());
     await page.goto('/login');
     expect((await clickPasskeyButton(page, 'Sign in with passkey', LOGIN_FINISH)).status()).toBe(200);
     await page.waitForURL((u) => new URL(u).pathname === '/');
@@ -209,6 +212,7 @@ test.describe('wired server', () => {
 
     // The authenticator still holds the key; the server must refuse it.
     await page.context().clearCookies();
+    await isolateClientIP(page.context());
     await page.goto('/login');
     expect((await clickPasskeyButton(page, 'Sign in with passkey', LOGIN_FINISH)).status(), 'a revoked passkey must be refused').toBe(401);
     await expect(page.locator('[role="alert"]').first()).toContainText('Could not complete passkey verification');
@@ -237,6 +241,7 @@ test.describe('wired server', () => {
   test('T-2.3.5 passkey login signs the member in', async ({ page }) => {
     await passkeyMember(page, { email: 'pk-login@test.local', displayName: 'PK Login', nickname: 'Login key' });
     await page.context().clearCookies();
+    await isolateClientIP(page.context());
     await page.goto('/login');
     expect((await clickPasskeyButton(page, 'Sign in with passkey', LOGIN_FINISH)).status()).toBe(200);
     await page.waitForURL((u) => new URL(u).pathname === '/');
@@ -310,6 +315,7 @@ test.describe('wired server', () => {
 
     // Login: finish with no begin, then (sanity guard) begin + finish.
     await page.context().clearCookies();
+    await isolateClientIP(page.context());
     await page.goto('/login');
     let csrf = await wa.passkeyCSRFToken(page);
     const orphan = await wa.fetchInPage(page, LOGIN_FINISH, {
@@ -393,6 +399,7 @@ test.describe('wired server', () => {
 
     // Capture the assertion the browser itself sends on a real login.
     await page.context().clearCookies();
+    await isolateClientIP(page.context());
     await page.goto('/login');
     const sent = page.waitForRequest((r) => new URL(r.url()).pathname === LOGIN_FINISH);
     expect((await clickPasskeyButton(page, 'Sign in with passkey', LOGIN_FINISH)).status(), 'the original login').toBe(200);

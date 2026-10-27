@@ -2,7 +2,7 @@
 // session ending (T-0.1.4, T-0.1.5).
 const { test, expect } = require('@playwright/test');
 const { PERSONAS } = require('../tests/fixtures');
-const { login, csrfToken, postForm } = require('./helpers');
+const { login, csrfToken, postForm, isolateClientIP } = require('./helpers');
 const { psql, seedMemberInA } = require('../tests/db');
 
 const TS = Date.now();
@@ -45,6 +45,7 @@ test.describe('§0.4 session and auth state', () => {
   });
 
   test('T-0.4.3 the session cookie changes on login (fixation)', async ({ page, context }) => {
+    await isolateClientIP(page.context());
     await page.goto('/login');
     const before = (await context.cookies()).find((c) => c.name === 'session');
 
@@ -148,6 +149,7 @@ test.describe('§0.4 session and auth state', () => {
     // And the deactivated member cannot simply sign back in.
     const context = await browser.newContext();
     const page = await context.newPage();
+    await isolateClientIP(page.context());
     await page.goto('/login');
     await page.fill('input[name="email"]', members[0].email);
     await page.fill('input[name="password"]', members[0].password);

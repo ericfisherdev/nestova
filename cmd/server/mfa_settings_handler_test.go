@@ -182,7 +182,7 @@ func buildSettingsTestHandler(t *testing.T, hhRepo testHouseholdRepoWithQuietHou
 	}
 	mfaHandlers := authadapter.NewMFAWebHandlers(mfaService, hhRepo, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

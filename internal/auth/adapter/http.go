@@ -15,6 +15,7 @@ import (
 
 	"github.com/alexedwards/scs/v2"
 
+	"github.com/ericfisherdev/nestcore/httpserver/middleware"
 	identitysession "github.com/ericfisherdev/nestcore/identity/session"
 	"github.com/ericfisherdev/nestcore/render"
 
@@ -51,11 +52,23 @@ const (
 	csrfTokenLen = 32
 )
 
+// loginAuthenticator is the one Authenticator method the Login handler needs,
+// so the handler depends on that narrow behaviour rather than the whole
+// service and tests can substitute a counting fake.
+type loginAuthenticator interface {
+	Login(ctx context.Context, email, password string) (household.MemberID, error)
+}
+
+// loginThrottledMessage is shown, with a 429, when the login throttle rejects
+// an attempt. It is the same for a real and a non-existent account.
+const loginThrottledMessage = "Too many sign-in attempts. Please wait a few minutes and try again."
+
 // Handlers holds the HTTP handler methods for the auth context (login page,
 // login form submission, logout).
 type Handlers struct {
 	sm       *scs.SessionManager
-	authn    *authapp.Authenticator
+	authn    loginAuthenticator
+	throttle *LoginThrottle
 	mfa      *authapp.MFAService
 	remember *authapp.RememberDeviceService
 	// webauthn is used two ways (NES-137), both optional: LoginPage reads
@@ -70,8 +83,8 @@ type Handlers struct {
 	logger   *slog.Logger
 }
 
-// NewHandlers constructs auth Handlers. sm, authn, and logger are required
-// and panic when nil, matching this codebase's usual "every dependency is
+// NewHandlers constructs auth Handlers. sm, authn, throttle, and logger are
+// required and panic when nil, matching this codebase's usual "every dependency is
 // required, fail fast at construction" DI convention.
 //
 // mfa, remember (NES-135), and webauthn (NES-137) are a DELIBERATE
@@ -88,17 +101,24 @@ type Handlers struct {
 // always supplies mfa+remember together, and webauthn whenever
 // Server.PublicBaseURL is configured — nil is a test-harness
 // accommodation, not a supported production configuration.
-func NewHandlers(sm *scs.SessionManager, authn *authapp.Authenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceService, webauthnService *authapp.WebAuthnService, logger *slog.Logger) *Handlers {
+//
+// throttle (NES-86) is deliberately NOT nil-able like mfa and webauthn: a
+// nil-disables test accommodation on a brute-force control would silently
+// ship as "off". Constructing one is a single NewLoginThrottle() call.
+func NewHandlers(sm *scs.SessionManager, authn loginAuthenticator, mfa *authapp.MFAService, remember *authapp.RememberDeviceService, webauthnService *authapp.WebAuthnService, throttle *LoginThrottle, logger *slog.Logger) *Handlers {
 	if sm == nil {
 		panic("adapter: NewHandlers requires a non-nil session manager")
 	}
 	if authn == nil {
 		panic("adapter: NewHandlers requires a non-nil Authenticator")
 	}
+	if throttle == nil {
+		panic("adapter: NewHandlers requires a non-nil LoginThrottle")
+	}
 	if logger == nil {
 		panic("adapter: NewHandlers requires a non-nil logger")
 	}
-	return &Handlers{sm: sm, authn: authn, mfa: mfa, remember: remember, webauthn: webauthnService, logger: logger}
+	return &Handlers{sm: sm, authn: authn, mfa: mfa, remember: remember, webauthn: webauthnService, throttle: throttle, logger: logger}
 }
 
 // GetCSRFToken returns the per-session CSRF token stored in the session,
@@ -166,9 +186,16 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	next := sanitizeNext(r.FormValue("next"))
 
+	admission := h.throttle.admit(r, email, time.Now())
+	if !admission.allowed {
+		h.renderThrottledLogin(w, r, email, next)
+		return
+	}
+
 	memberID, err := h.authn.Login(r.Context(), email, password)
 	if err != nil {
 		if errors.Is(err, authdomain.ErrInvalidCredentials) {
+			h.logLoginLockout(r, admission)
 			token := GetCSRFToken(r.Context(), h.sm)
 			h.renderLoginPage(w, r, http.StatusUnauthorized, components.LoginForm{
 				CSRFToken:        token,
@@ -179,10 +206,12 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		h.throttle.recordInternalError(r, email)
 		h.logger.ErrorContext(r.Context(), "login internal error", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	h.throttle.recordSuccess(email)
 
 	if h.mfa != nil {
 		needsStepUp, err := h.needsLoginStepUp(r.Context(), memberID)
@@ -222,6 +251,32 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+// renderThrottledLogin re-renders the login page with a 429 and the generic
+// throttled message. It is reached before the authenticator, so a throttled
+// request never runs the password hasher.
+func (h *Handlers) renderThrottledLogin(w http.ResponseWriter, r *http.Request, email, next string) {
+	h.renderLoginPage(w, r, http.StatusTooManyRequests, components.LoginForm{
+		CSRFToken:        GetCSRFToken(r.Context(), h.sm),
+		Next:             next,
+		Email:            email,
+		Error:            loginThrottledMessage,
+		ShowPasskeyLogin: h.webauthn != nil,
+	})
+}
+
+// logLoginLockout logs one Warn line when a failed attempt used up a budget.
+// It names the client IP and which dimension locked, never the email (PII).
+func (h *Handlers) logLoginLockout(r *http.Request, admission loginAdmission) {
+	if !admission.ipLockedOut && !admission.accountLockedOut {
+		return
+	}
+	h.logger.WarnContext(r.Context(), "login throttle engaged",
+		"client_ip", middleware.ClientIP(r.Context()),
+		"ip_locked", admission.ipLockedOut,
+		"account_locked", admission.accountLockedOut,
+	)
 }
 
 // needsLoginStepUp reports whether memberID must complete a second factor

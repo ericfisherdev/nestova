@@ -5,7 +5,7 @@
 // recovery code.
 const { test, expect } = require('@playwright/test');
 const { PERSONAS, PASSWORD } = require('../tests/fixtures');
-const { login, postForm } = require('./helpers');
+const { login, postForm, isolateClientIP } = require('./helpers');
 const { psql, seedMemberInA } = require('../tests/db');
 const totp = require('./totp');
 const {
@@ -63,6 +63,7 @@ test('T-2.2.9 a recovery code satisfies the second factor exactly once', async (
   expect(codeToUse, 'the previous test must have captured codes').toBeTruthy();
 
   async function loginToSecondFactor() {
+    await isolateClientIP(page.context());
     await page.goto('/login');
     await page.fill('input[name="email"]', USER.email);
     await page.fill('input[name="password"]', USER.password);
@@ -81,6 +82,7 @@ test('T-2.2.9 a recovery code satisfies the second factor exactly once', async (
 });
 
 test('T-2.2.11 disenrolling with a wrong code is refused', async ({ page }) => {
+  await isolateClientIP(page.context());
   await page.goto('/login');
   await page.fill('input[name="email"]', USER.email);
   await page.fill('input[name="password"]', USER.password);

@@ -5,12 +5,24 @@
 // refused what owner is allowed), and a saved storageState proved unreliable
 // here — the captured cookie was not the token the server had persisted, so
 // reused contexts arrived unauthenticated.
+const { randomInt } = require('node:crypto');
 const { expect } = require('@playwright/test');
+
+// isolateClientIP gives the browser context its own client address, sent as
+// X-Forwarded-For (loopback is in the default TRUSTED_PROXIES, so the server
+// honours it). Login throttling (NES-86) keys on client IP and counts
+// successful sign-ins too, while this whole run comes from one loopback
+// address and signs in hundreds of times; without a per-login address the
+// run would lock itself out after twenty.
+async function isolateClientIP(context) {
+  await context.setExtraHTTPHeaders({ 'X-Forwarded-For': `10.${randomInt(256)}.${randomInt(256)}.${randomInt(1, 255)}` });
+}
 
 // login signs persona in through the real form and leaves the page on the
 // dashboard. Throws if the app does not land on "/", so a broken login fails
 // the calling test at the point of setup rather than somewhere downstream.
 async function login(page, persona) {
+  await isolateClientIP(page.context());
   await page.goto('/login');
   await page.fill('input[name="email"]', persona.email);
   await page.fill('input[name="password"]', persona.password);
@@ -48,4 +60,4 @@ async function postForm(page, path, fields) {
   }, { path, fields });
 }
 
-module.exports = { login, csrfToken, postForm };
+module.exports = { login, isolateClientIP, csrfToken, postForm };

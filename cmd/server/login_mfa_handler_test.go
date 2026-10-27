@@ -135,7 +135,7 @@ func buildLoginMFATestHandler(t *testing.T, hhRepo household.HouseholdRepository
 		t.Fatalf("NewMFAService: %v", err)
 	}
 	authn := authapp.New(credRepo, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberService, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberService, nil, authadapter.NewLoginThrottle(), logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberService, nil, notify, false, logger)
 
 	requireMember := authadapter.RequireMember(sm)

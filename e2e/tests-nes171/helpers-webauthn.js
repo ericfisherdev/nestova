@@ -26,6 +26,7 @@ const { expect } = require('@playwright/test');
 const { PERSONAS, PASSWORD } = require('../tests/fixtures');
 const { psql, seedMemberInA } = require('../tests/db');
 const totp = require('./totp');
+const { isolateClientIP } = require('./helpers');
 
 const WEBAUTHN_BASE_URL = process.env.NESTOVA_WEBAUTHN_BASE_URL || '';
 
@@ -59,6 +60,7 @@ async function storedCredentials({ cdp, authenticatorId }) {
 // lands on — "/" for a member with no second factor, "/login/mfa" for one
 // with TOTP or a passkey.
 async function signInWithPassword(page, persona) {
+  await isolateClientIP(page.context());
   await page.goto('/login');
   await page.fill('input[name="email"]', persona.email);
   await page.fill('input[name="password"]', persona.password);

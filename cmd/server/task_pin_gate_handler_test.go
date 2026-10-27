@@ -160,7 +160,7 @@ func buildPINGateFixture(t *testing.T) *pinGateFixture {
 	taskWebHandlers := tasksadapter.NewWebHandlers(taskService, recurringRepo, instances, householdRepo, pinService, sm, logger, nil)
 
 	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	mux := http.NewServeMux()

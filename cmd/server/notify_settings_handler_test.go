@@ -175,7 +175,7 @@ func buildNotifySettingsTestHandlerWithChannels(t *testing.T, hhRepo *multiMembe
 	settingsService := notifyapp.NewSettingsService(contacts, prefs, hhRepo, channels)
 	notifyHandlers := notifyadapter.NewNotifyWebHandlers(settingsService, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

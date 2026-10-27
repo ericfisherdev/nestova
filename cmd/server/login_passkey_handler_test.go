@@ -174,7 +174,7 @@ func buildLoginPasskeyTestHandler(t *testing.T, hhRepo household.HouseholdReposi
 	loginPasskeyHandlers := authadapter.NewLoginPasskeyHandlers(sm, webauthnService, logger)
 
 	authn := authapp.New(credRepo, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberService, webauthnService, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberService, webauthnService, authadapter.NewLoginThrottle(), logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberService, webauthnService, notify, false, logger)
 
 	requireMember := authadapter.RequireMember(sm)

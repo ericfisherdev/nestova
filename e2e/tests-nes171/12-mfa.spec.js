@@ -4,7 +4,7 @@
 // for that account, so using a shared persona would break the rest of the suite.
 const { test, expect } = require('@playwright/test');
 const { PERSONAS, PASSWORD } = require('../tests/fixtures');
-const { login, postForm } = require('./helpers');
+const { login, postForm, isolateClientIP } = require('./helpers');
 const { psql, seedMemberInA } = require('../tests/db');
 const totp = require('./totp');
 const {
@@ -95,6 +95,7 @@ test('T-2.2.2 confirming with a valid code enrols the member', async ({ page }) 
 });
 
 test('T-2.2.7 login now demands a second factor', async ({ page }) => {
+  await isolateClientIP(page.context());
   await page.goto('/login');
   await page.fill('input[name="email"]', MFA_USER.email);
   await page.fill('input[name="password"]', MFA_USER.password);
@@ -105,6 +106,7 @@ test('T-2.2.7 login now demands a second factor', async ({ page }) => {
 });
 
 test('T-2.2.8 the app is unreachable between the two login steps', async ({ page }) => {
+  await isolateClientIP(page.context());
   await page.goto('/login');
   await page.fill('input[name="email"]', MFA_USER.email);
   await page.fill('input[name="password"]', MFA_USER.password);
@@ -118,6 +120,8 @@ test('T-2.2.8 the app is unreachable between the two login steps', async ({ page
 test('T-2.2.4b completing the second factor signs the member in', async ({ page }) => {
   const secret = process.env.__MFA_SECRET;
   expect(secret, 'the enrolment test must have run first').toBeTruthy();
+
+  await isolateClientIP(page.context());
 
   await page.goto('/login');
   await page.fill('input[name="email"]', MFA_USER.email);
@@ -146,6 +150,8 @@ test('T-2.2.13 repeated wrong codes lock the second factor', async ({ page }) =>
   await login(page, lockUser);
   const { secret, csrf_token: enrolToken } = await enroll(page);
   expect(await postForm(page, '/settings/mfa/confirm', { csrf_token: enrolToken, code: totp.code(secret) })).toBe(200);
+
+  await isolateClientIP(page.context());
 
   await page.goto('/login');
   await page.fill('input[name="email"]', lockUser.email);

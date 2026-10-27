@@ -2,24 +2,44 @@
 // brute-force limiting and oversized passwords.
 //
 // Wrong-password traffic is aimed at members seeded for this file, never at
-// the shared owner/adult/child: once login rate limiting exists (T-2.1.7), a
-// burst of failures against a shared persona would lock the rest of the suite
-// out.
+// the shared owner/adult/child: login rate limiting (T-2.1.7) locks an account
+// after five failures, so a burst against a shared persona would lock the rest
+// of the suite out.
+//
+// The limiter also keys on client IP, and the whole suite runs from one
+// loopback address while T-2.1.7 alone makes 40 failed attempts. Loopback is in
+// the default TRUSTED_PROXIES, so every test here sends its own
+// X-Forwarded-For (see beforeEach) to get an IP bucket isolated from the rest
+// of the run.
+//
+// Five attempts against one account lock it, and a lock outlives a later
+// correct password, so each test that makes more than a couple of wrong
+// attempts has an account of its own (TIMING_PROBES, HUGE_PROBE, RATE_PROBE).
 const { test, expect } = require('@playwright/test');
 const { PERSONAS, PASSWORD } = require('../tests/fixtures');
 const { seedMemberInA } = require('../tests/db');
-const { login, csrfToken } = require('./helpers');
+const { login, csrfToken, isolateClientIP } = require('./helpers');
 
 const GENERIC_ERROR = 'Invalid email or password.';
 const PROTECTED = ['/', '/tasks', '/settings', '/photos', '/calendar', '/groceries', '/meals', '/subscriptions', '/rewards', '/members/new'];
 
 const PROBE = { displayName: 'Login Probe', email: 'login-probe@test.local' };
 const RATE_PROBE = { displayName: 'Rate Limit Probe', email: 'ratelimit-probe@test.local' };
+const HUGE_PROBE = { displayName: 'Huge Password Probe', email: 'huge-probe@test.local' };
+// T-2.1.3 times the wrong-password path over several attempts; each gets its
+// own existing account so none reaches the per-account limit.
+const TIMING_PROBES = Array.from({ length: 7 }, (_, i) => ({ displayName: `Timing Probe ${i}`, email: `timing-probe-${i}@test.local` }));
 
 test.beforeAll(() => {
-  for (const probe of [PROBE, RATE_PROBE]) {
+  for (const probe of [PROBE, RATE_PROBE, HUGE_PROBE, ...TIMING_PROBES]) {
     seedMemberInA({ ...probe, role: 'adult', copyHashFrom: PERSONAS.owner.email });
   }
+});
+
+// A fresh client address per test, so one test's attempts never spend another's
+// per-IP budget.
+test.beforeEach(async ({ context }) => {
+  await isolateClientIP(context);
 });
 
 // postLogin submits the login form from inside the page (so the session and
@@ -78,7 +98,7 @@ test.describe('§2.1 password login', () => {
     const wrong = [];
     const unknown = [];
     for (let i = 0; i < 7; i += 1) {
-      wrong.push(await postLogin(page, PROBE.email, `wrong-password-${i}`));
+      wrong.push(await postLogin(page, TIMING_PROBES[i].email, `wrong-password-${i}`));
       unknown.push(await postLogin(page, `nobody-${i}-${Date.now()}@test.local`, `wrong-password-${i}`));
     }
 
@@ -122,6 +142,7 @@ test.describe('§2.1 password login', () => {
     ];
     for (const email of variants) {
       const ctx = await browser.newContext();
+      await isolateClientIP(ctx);
       const page = await ctx.newPage();
       const r = await postLogin(page, email, PASSWORD);
       expect(r.status, JSON.stringify(email)).toBe(303);
@@ -131,6 +152,7 @@ test.describe('§2.1 password login', () => {
     }
     // The password, by contrast, is NOT trimmed: a padded password is wrong.
     const ctx = await browser.newContext();
+    await isolateClientIP(ctx);
     const page = await ctx.newPage();
     expect((await postLogin(page, PROBE.email, ` ${PASSWORD} `)).status).toBe(401);
     await ctx.close();
@@ -160,7 +182,6 @@ test.describe('§2.1 password login', () => {
   });
 
   test('T-2.1.7 repeated failures are rate limited without confirming the account exists', async ({ page }) => {
-    test.fail(true, 'DEFECT: password login has no attempt limiting (NES-86 never implemented; only the MFA step is limited) — 20 wrong passwords in a row all return 401');
     expect((await postLogin(page, RATE_PROBE.email, PASSWORD)).status, 'sanity: the right password signs in').toBe(303);
     await page.context().clearCookies();
 
@@ -183,16 +204,16 @@ test.describe('§2.1 password login', () => {
 
   test('T-2.1.8 [!] a 10,000-character password is rejected promptly, without hanging argon2id', async ({ page }) => {
     const samples = [];
-    for (let i = 0; i < 3; i += 1) samples.push((await postLogin(page, PROBE.email, `wrong-password-${i}`)).ms);
+    for (let i = 0; i < 3; i += 1) samples.push((await postLogin(page, HUGE_PROBE.email, `wrong-password-${i}`)).ms);
     const baseline = median(samples);
 
     const huge = 'p'.repeat(10_000);
-    for (const email of [PROBE.email, `nobody-${Date.now()}@test.local`]) {
+    for (const email of [HUGE_PROBE.email, `nobody-${Date.now()}@test.local`]) {
       const r = await postLogin(page, email, huge);
       expect(r.status, email).toBe(401);
       expect(r.alert, email).toBe(GENERIC_ERROR);
       expect(r.ms, `${email}: ${r.ms.toFixed(0)}ms vs ${baseline.toFixed(0)}ms baseline`).toBeLessThan(Math.max(2_000, baseline * 5));
     }
-    expect((await postLogin(page, PROBE.email, PASSWORD)).status, 'sanity: the real password still signs in').toBe(303);
+    expect((await postLogin(page, HUGE_PROBE.email, PASSWORD)).status, 'sanity: the real password still signs in').toBe(303);
   });
 });
