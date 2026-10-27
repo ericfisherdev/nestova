@@ -30,6 +30,8 @@ const PRIVATE_BASE_URL = `http://localhost:${PRIVATE_PORT}`;
 const WORK_DIR = path.join(os.tmpdir(), `nestova-nes171-private-${PRIVATE_PORT}`);
 const BIN_DIR = path.join(WORK_DIR, 'bin');
 const PID_FILE = path.join(WORK_DIR, 'server.pid');
+// SETUP_TOKEN is the first-run wizard token the setup-mode server is pinned to.
+const SETUP_TOKEN = 'e2e-private-setup-token';
 
 const READY_TIMEOUT_MS = 60_000;
 const STOP_TIMEOUT_MS = 10_000;
@@ -225,12 +227,20 @@ function portInUse() {
 // file, so it serves only the first-run wizard. NESTOVA_FORCE_SETUP is needed
 // because APP_ENV=dev is otherwise exempt (bootstrap.NeedsSetup); main() clears
 // it again once the wizard completes, so the restart boots normally.
+//
+// The wizard is gated by a setup token (NES-87). SETUP_TOKEN is passed as
+// NESTOVA_SETUP_TOKEN so the tests know it, exactly as an operator who pins the
+// token would; without it the server generates one and only logs it.
 function setupModeServer() {
   const stateFile = path.join(WORK_DIR, 'state.json');
   fs.rmSync(stateFile, { force: true });
   return {
     stateFile,
-    server: new PrivateServer({ NESTOVA_FORCE_SETUP: '1', NESTOVA_STATE_FILE: stateFile }),
+    server: new PrivateServer({
+      NESTOVA_FORCE_SETUP: '1',
+      NESTOVA_STATE_FILE: stateFile,
+      NESTOVA_SETUP_TOKEN: SETUP_TOKEN,
+    }),
   };
 }
 
@@ -268,6 +278,7 @@ module.exports = {
   PG_PORT,
   PG_USER,
   PG_PASSWORD,
+  SETUP_TOKEN,
   privatePsql,
   recreateDatabase,
   migrateDatabase,
