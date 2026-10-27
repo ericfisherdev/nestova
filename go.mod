@@ -18,7 +18,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2 v1.31.1
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.107.3
 	github.com/aws/aws-sdk-go-v2/service/sesv2 v1.63.1
-	github.com/ericfisherdev/nestcore v0.3.0
+	github.com/ericfisherdev/nestcore v0.4.0
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
@@ -76,7 +76,7 @@ require (
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/danwakefield/fnmatch v0.0.0-20160403171240-cbb64ac3d964 // indirect
 	github.com/denormal/go-gitignore v0.0.0-20180930084346-ae8ad1d07817 // indirect
-	github.com/dgraph-io/badger/v4 v4.9.5 // indirect
+	github.com/dgraph-io/badger/v4 v4.9.6 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
@@ -163,8 +163,8 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/yeqown/go-qrcode/v2 v2.2.5 // indirect
-	github.com/yeqown/go-qrcode/writer/standard v1.3.0 // indirect
+	github.com/yeqown/go-qrcode/v2 v2.3.0 // indirect
+	github.com/yeqown/go-qrcode/writer/standard v1.4.0 // indirect
 	github.com/yeqown/reedsolomon v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
