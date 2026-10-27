@@ -122,8 +122,21 @@ or a raw `postgres://` DSN) and the **provider**:
 On submit it validates connectivity through the same path the server boots with,
 applies the migrations, and persists the configuration plus generated secrets to
 a `0600` state file, then restarts into normal mode where the onboarding flow
-creates the first administrator account. The wizard can be gated with
-`NESTOVA_SETUP_TOKEN`. (First-run wizard: NES-78; provider selection: NES-83.)
+creates the first administrator account. (First-run wizard: NES-78; provider
+selection: NES-83.)
+
+The wizard always requires a **setup token**, so nobody who can merely reach the
+port can use it to probe the network or run migrations. When `NESTOVA_SETUP_TOKEN`
+is unset, a random token is generated at boot and printed **once** to the server
+log in a `setup_token` attribute; enter it in the wizard's *Setup token* field.
+Read it from the journal when running under systemd:
+
+```sh
+journalctl -u nestova-server | grep setup_token
+```
+
+Setting `NESTOVA_SETUP_TOKEN` pins a known token instead; nothing is generated
+and nothing is logged. (Setup token default: NES-87.)
 
 ### Database (local Postgres)
 

@@ -136,6 +136,15 @@ WantedBy=multi-user.target
 step 0 created it with the permissions it needs, since it contains the
 database password.
 
+**First boot.** A server with no `DATABASE_URL` and no state file serves
+the first-run setup wizard, which is always gated by a setup token. Either
+put `NESTOVA_SETUP_TOKEN` in `/etc/nestova/server.env` to choose it, or
+leave it unset and read the one generated at boot from the journal:
+
+```sh
+journalctl -u nestova-server | grep setup_token
+```
+
 ```sh
 sudo install -m 0755 -o root -g root server /opt/nestova/bin/server
 sudo systemctl daemon-reload
