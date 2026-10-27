@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +114,62 @@ func TestSetupServerConfig_RequestTimeoutLeavesAUsableDeadline(t *testing.T) {
 	if cfg.Server.RequestTimeout <= httpserverRequestTimeoutMargin {
 		t.Fatalf("setupServerConfig().Server.RequestTimeout = %s, want more than the %s httpserver margin",
 			cfg.Server.RequestTimeout, httpserverRequestTimeoutMargin)
+	}
+}
+
+// logRecords decodes the JSON log lines captured in buf.
+func logRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func TestResolveSetupToken_GeneratesAndLogsOnce(t *testing.T) {
+	t.Setenv(setup.SetupTokenEnv, "")
+	if err := os.Unsetenv(setup.SetupTokenEnv); err != nil {
+		t.Fatalf("unset %s: %v", setup.SetupTokenEnv, err)
+	}
+	var buf bytes.Buffer
+
+	token, err := resolveSetupToken(slog.New(slog.NewJSONHandler(&buf, nil)))
+	if err != nil {
+		t.Fatalf("resolveSetupToken: %v", err)
+	}
+	if len(token) != 64 {
+		t.Fatalf("generated token length = %d, want 64 hex chars", len(token))
+	}
+
+	records := logRecords(t, &buf)
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want exactly 1:\n%s", len(records), buf.String())
+	}
+	if got := records[0]["setup_token"]; got != token {
+		t.Fatalf("logged setup_token = %v, want the returned token", got)
+	}
+}
+
+func TestResolveSetupToken_EnvWinsAndIsSilent(t *testing.T) {
+	t.Setenv(setup.SetupTokenEnv, "operator-pinned")
+	var buf bytes.Buffer
+
+	token, err := resolveSetupToken(slog.New(slog.NewJSONHandler(&buf, nil)))
+	if err != nil {
+		t.Fatalf("resolveSetupToken: %v", err)
+	}
+	if token != "operator-pinned" {
+		t.Fatalf("token = %q, want operator-pinned", token)
+	}
+	if records := logRecords(t, &buf); len(records) != 0 {
+		t.Fatalf("logged %d records, want 0 (a pinned token is never logged):\n%s", len(records), buf.String())
 	}
 }

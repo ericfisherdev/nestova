@@ -100,9 +100,9 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 	var once sync.Once
 	onComplete := func() { once.Do(func() { close(done) }) }
 
-	setupToken := os.Getenv(setup.SetupTokenEnv)
-	if setupToken == "" {
-		logger.Warn("first-run setup screen is unauthenticated; set NESTOVA_SETUP_TOKEN to require a token")
+	setupToken, err := resolveSetupToken(logger)
+	if err != nil {
+		return outcomeShutdown, err
 	}
 	handlers := setup.NewHandlers(service, sm, logger, onComplete, setupToken)
 
@@ -142,6 +142,24 @@ func runSetup(logger *slog.Logger, statePath string) (outcome, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+// resolveSetupToken returns the token that gates the wizard. An operator-pinned
+// NESTOVA_SETUP_TOKEN wins and is never logged; otherwise a token is generated
+// and logged exactly once so an operator with log access can enter it. main()
+// re-enters run() only after setup completes, so each process generates at most
+// one token. A generator failure is returned: the wizard must never be served
+// without a token.
+func resolveSetupToken(logger *slog.Logger) (string, error) {
+	token, generated, err := setup.ResolveToken(os.Getenv, bootstrap.GenerateSecret)
+	if err != nil {
+		return "", fmt.Errorf("resolve setup token: %w", err)
+	}
+	if generated {
+		logger.Info("first-run setup token generated; enter it in the wizard's Setup token field",
+			"setup_token", token)
+	}
+	return token, nil
 }
 
 // setupServerConfig is the minimal configuration the wizard's HTTP layer needs.

@@ -24,10 +24,10 @@ const (
 	sessionKeyCSRF = "csrf_token"
 	// csrfTokenLen is the CSRF token length in bytes (64-char hex string).
 	csrfTokenLen = 32
-	// SetupTokenEnv optionally gates the wizard behind a shared secret. When set,
-	// the value must be supplied in the form; when unset, the setup screen is open
-	// (the composition root logs a warning). First-run setup is expected on a
-	// trusted network.
+	// SetupTokenEnv names the variable that pins the wizard's setup token. The
+	// wizard is always gated: when the variable is unset or blank, ResolveToken
+	// generates a token at boot and the composition root logs it once, so the
+	// variable overrides the generated token and does not enable the gate.
 	SetupTokenEnv = "NESTOVA_SETUP_TOKEN"
 )
 
@@ -48,7 +48,9 @@ type Handlers struct {
 	setupToken string
 }
 
-// NewHandlers constructs the wizard handlers. All dependencies are required.
+// NewHandlers constructs the wizard handlers. All dependencies are required,
+// including a non-blank setupToken: the composition root always supplies one
+// (see ResolveToken), so a blank value is a programming error, not an open mode.
 // onComplete is invoked once, after a successful setup, so the composition root
 // can shut the setup server down and restart in normal mode; it must not block
 // (the handler calls it after the response is written).
@@ -65,12 +67,16 @@ func NewHandlers(service Applier, sm *scs.SessionManager, logger *slog.Logger, o
 	if onComplete == nil {
 		panic("setup: NewHandlers requires a non-nil onComplete callback")
 	}
+	token := strings.TrimSpace(setupToken)
+	if token == "" {
+		panic("setup: NewHandlers requires a non-blank setup token")
+	}
 	return &Handlers{
 		service:    service,
 		sm:         sm,
 		logger:     logger,
 		onComplete: onComplete,
-		setupToken: strings.TrimSpace(setupToken),
+		setupToken: token,
 	}
 }
 
@@ -92,18 +98,17 @@ func (h *Handlers) redirectToSetup(w http.ResponseWriter, r *http.Request) {
 // local defaults and a CSRF token.
 func (h *Handlers) Page(w http.ResponseWriter, r *http.Request) {
 	form := components.SetupForm{
-		CSRFToken:     h.csrfToken(r.Context()),
-		Provider:      "postgres",
-		Host:          "localhost",
-		Port:          "5432",
-		SSLMode:       "disable",
-		PoolMode:      "session",
-		TokenRequired: h.setupToken != "",
+		CSRFToken: h.csrfToken(r.Context()),
+		Provider:  "postgres",
+		Host:      "localhost",
+		Port:      "5432",
+		SSLMode:   "disable",
+		PoolMode:  "session",
 	}
 	h.renderForm(w, r, http.StatusOK, form)
 }
 
-// Submit handles POST /setup: CSRF + optional setup-token checks, then runs the
+// Submit handles POST /setup: CSRF + setup-token checks, then runs the
 // setup service. On success it renders the completion page and signals the
 // composition root to restart in normal mode; on failure it re-renders the form
 // with a stage-specific message (422) and never echoes the password back.
@@ -133,18 +138,17 @@ func (h *Handlers) Submit(w http.ResponseWriter, r *http.Request) {
 			SSLRootCert: strings.TrimSpace(r.FormValue("ssl_root_cert")),
 			// Never echo the raw DSN back: it may embed credentials, which would
 			// then be exposed in the rendered HTML on a validation error.
-			RawDSN:        "",
-			TokenRequired: h.setupToken != "",
-			Error:         errMsg,
+			RawDSN: "",
+			Error:  errMsg,
 		}
 	}
 
-	if h.setupToken != "" {
-		supplied := strings.TrimSpace(r.FormValue("setup_token"))
-		if subtle.ConstantTimeCompare([]byte(h.setupToken), []byte(supplied)) != 1 {
-			h.renderForm(w, r, http.StatusForbidden, formFromRequest("Incorrect setup token."))
-			return
-		}
+	// The token is checked before Input is built and before Apply, so an absent
+	// or wrong token never causes an outbound connection attempt.
+	supplied := strings.TrimSpace(r.FormValue("setup_token"))
+	if subtle.ConstantTimeCompare([]byte(h.setupToken), []byte(supplied)) != 1 {
+		h.renderForm(w, r, http.StatusForbidden, formFromRequest("Incorrect setup token."))
+		return
 	}
 
 	in := Input{
