@@ -19,6 +19,7 @@ const {
   PG_PORT,
   PG_USER,
   PG_PASSWORD,
+  SETUP_TOKEN,
   privatePsql,
   recreateDatabase,
   migrateDatabase,
@@ -64,6 +65,7 @@ test.describe('§1 first-run setup wizard', () => {
       database: SETUP_DB,
       user: PG_USER,
       password: PG_PASSWORD,
+      setup_token: SETUP_TOKEN,
       ...overrides,
     };
     await page.locator('select[name="provider"]').selectOption('postgres');
@@ -83,6 +85,22 @@ test.describe('§1 first-run setup wizard', () => {
     ]);
     return { status: res.status(), ms: Date.now() - started };
   }
+
+  test('a blank setup token is refused with a 403 and no connection is attempted (NES-87)', async ({ page }) => {
+    const failedAttempts = () => wizard.server.log().split('\n').filter((line) => line.includes('setup attempt failed')).length;
+    const before = failedAttempts();
+
+    await page.goto(at('/setup'));
+    await expect(page.locator('input[name="setup_token"]')).toBeVisible();
+    // 192.0.2.1 is TEST-NET-1: were a connection attempted, it would hang for the
+    // 5s connect budget, so a fast 403 shows Apply was never reached.
+    await fillWizard(page, { host: '192.0.2.1', setup_token: '' });
+    const refused = await submitWizard(page);
+    expect(refused.status).toBe(403);
+    expect(refused.ms, 'a refused token must not wait on a connection attempt').toBeLessThan(3_000);
+    await expect(page.getByRole('alert')).toHaveText('Incorrect setup token.');
+    expect(failedAttempts(), 'a connection attempt was logged').toBe(before);
+  });
 
   test('T-1.2.4 an unreachable database host errors promptly instead of hanging', async ({ page }) => {
     await page.goto(at('/setup'));

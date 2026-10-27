@@ -11,11 +11,13 @@
 // schema yet:
 //
 //   PORT=8099 APP_ENV=dev NESTOVA_FORCE_SETUP=1 \
+//     NESTOVA_SETUP_TOKEN=... \
 //     NESTOVA_STATE_FILE=/tmp/nestova-e2e/state.json ./bin/server
 //
 // then run:
 //
 //   NESTOVA_E2E_SETUP=1 NESTOVA_SETUP_DB_PORT=5442 \
+//     NESTOVA_SETUP_TOKEN=... \
 //     NESTOVA_EMAIL=... NESTOVA_PASSWORD=... \
 //     npx playwright test --project=setup-wizard
 //
@@ -42,6 +44,8 @@ test.describe('First-run setup', () => {
     await expect(page.locator('select[name="provider"]')).toBeVisible();
 
     await page.locator('select[name="provider"]').selectOption('postgres');
+    // The wizard is always gated; the server above was started with the same token.
+    await page.locator('input[name="setup_token"]').fill(requireEnv('NESTOVA_SETUP_TOKEN'));
     await page.locator('input[name="host"]').fill(process.env.NESTOVA_SETUP_DB_HOST || 'localhost');
     await page.locator('input[name="port"]').fill(process.env.NESTOVA_SETUP_DB_PORT || '5432');
     await page.locator('input[name="database"]').fill(process.env.NESTOVA_SETUP_DB_NAME || 'nest');
