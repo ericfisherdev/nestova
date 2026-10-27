@@ -95,7 +95,7 @@ func buildCreateTaskHandler(
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	sm := newTestSessionManager()
 	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(
 		householdRepo, testCredStore{}, testProvisioner{}, sm, logger,
 	)

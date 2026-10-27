@@ -347,7 +347,7 @@ func buildTestHandler() http.Handler {
 	sm := newTestSessionManager()
 	repo := testHouseholdRepo{}
 	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(repo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	// Stub task dependencies so the composition root builds without a database.

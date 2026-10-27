@@ -172,7 +172,7 @@ func buildWebAuthnSettingsTestHandler(t *testing.T) (http.Handler, *scs.SessionM
 	}
 	webauthnHandlers := authadapter.NewWebAuthnWebHandlers(webauthnService, sm, logger)
 
-	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authapp.New(credRepo, cryptotest.Hasher()), nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", authHandlers.LoginPage)

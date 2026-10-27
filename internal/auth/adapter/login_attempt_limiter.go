@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-// Login MFA attempt-limiting tuning (NES-135). This closes the NES-86 gap
-// (login brute-force limiting) for the login MFA step specifically: NES-86
-// itself was never implemented (see this ticket's Description), so there is
-// no other rate/backoff/lockout code in internal/ to build alongside.
+// Login MFA attempt-limiting tuning (NES-135). This guards the login MFA step
+// only; the password step is throttled separately by LoginThrottle (NES-86,
+// login_throttle.go, built on nestcore's ratelimit package). This limiter is
+// keyed by an already-authenticated member id, so it stays unbounded and is
+// not reusable for attacker-supplied keys.
 const (
 	// loginMFAAttemptThreshold is how many consecutive wrong login MFA codes
 	// (TOTP or recovery) a member may submit before backoff engages. Five

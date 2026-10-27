@@ -304,7 +304,7 @@ func buildGamificationTestHandlerWithLedger(
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(
 		householdRepo, testCredStore{}, testProvisioner{}, sm, logger,
 	)

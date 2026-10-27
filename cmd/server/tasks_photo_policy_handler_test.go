@@ -98,7 +98,7 @@ func buildPhotoPolicyTestHandler(
 	sm = newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	task := &tasksdomain.RecurringTask{
@@ -257,7 +257,7 @@ func TestTasksList_PhotoPolicy_BatchesProofPhotoLookupAcrossRows(t *testing.T) {
 	sm := newTestSessionManager()
 	householdRepo := authedHouseholdRepo{member: member}
 	authn := authapp.New(testCredRepo{}, cryptotest.Hasher())
-	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, nil, nil, nil, authadapter.NewLoginThrottle(), logger)
 	onboardingHandlers := authadapter.NewOnboardingHandlers(householdRepo, testCredStore{}, testProvisioner{}, sm, logger)
 
 	task := &tasksdomain.RecurringTask{

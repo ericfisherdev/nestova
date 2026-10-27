@@ -794,7 +794,7 @@ func runServer(logger *slog.Logger) error {
 	// outbox) satisfies LoginMFAHandlers' notify.Enqueuer dependency: a
 	// lockout notification rides the same outbox every other Nestova
 	// notification does.
-	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceService, webauthnService, logger)
+	authHandlers := authadapter.NewHandlers(sm, authn, mfaService, rememberDeviceService, webauthnService, authadapter.NewLoginThrottle(), logger)
 	loginMFAHandlers := authadapter.NewLoginMFAHandlers(sm, mfaService, rememberDeviceService, webauthnService, outboxRepo, cfg.Session.Secure, logger)
 
 	oauthStateSigner, err := calendarapp.NewOAuthStateSigner([]byte(cfg.Session.Secret))
