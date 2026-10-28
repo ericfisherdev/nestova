@@ -2,11 +2,11 @@
 //
 // Shared by photos.spec.js and csp.spec.js so the dedup-avoiding encoder
 // lives in one place.
-const crypto = require('crypto');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const zlib = require('zlib');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const zlib = require('node:zlib');
 
 // CRC32 (IEEE 802.3 polynomial, as PNG requires), table-driven. Implemented
 // here rather than via zlib.crc32(), which only exists on Node v20.12+ and
@@ -81,7 +81,7 @@ function randomOneByOnePng() {
  * dedup by reusing ONE call's result twice; only separate calls must differ.
  */
 function writeTempPng() {
-  const filePath = path.join(os.tmpdir(), `nestova-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+  const filePath = path.join(os.tmpdir(), `nestova-e2e-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.png`);
   fs.writeFileSync(filePath, randomOneByOnePng());
   return filePath;
 }
