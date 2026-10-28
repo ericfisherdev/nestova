@@ -26,7 +26,7 @@
 // Storage keeps its data — deleting every key would silently wipe a
 // neighbouring feature's cache each time this worker activates.
 const CACHE_PREFIX = 'nestova-static-';
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v2`;
 
 // Pre-cached on install. Only immutable, household-data-free assets, plus
 // the offline page itself — that one is the reason install must succeed

@@ -40,7 +40,7 @@ paths. `CACHE_NAME` in `web/static/sw.js` carries the version:
 
 ```js
 const CACHE_PREFIX = 'nestova-static-';
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v2`;
 ```
 
 Bump only the version suffix, keeping the prefix: `activate` evicts
@@ -62,6 +62,10 @@ reproduce in a fresh browser, which makes it painful to diagnose.
 
 Treat it as part of the release checklist, alongside `make assets`.
 
+The version is `v2` as of NES-211, which changed the pre-cached `/offline`
+page (its "Try again" button became a plain link so the page needs no inline
+handler).
+
 ## Why `/sw.js` is served from the site root
 
 A service worker's scope is capped at the directory it is served from. A
@@ -80,8 +84,10 @@ than a full refetch.
 
 ## Registration is optional by design
 
-The registration snippet in `layout.templ` is guarded by
-`'serviceWorker' in navigator` and swallows registration errors.
+The registration script, `web/static/js/sw-register.js` (loaded by
+`layout.templ` with `defer`; it was an inline `<script>` until NES-211, which
+moved it out so the page needs no `'unsafe-inline'` script source), is guarded
+by `'serviceWorker' in navigator` and swallows registration errors.
 `navigator.serviceWorker` is undefined outside a secure context, so:
 
 - The **kiosk** and any **plain-HTTP LAN** access simply skip registration
@@ -105,7 +111,7 @@ With the server running and a household onboarded:
 
 1. **Registration** — DevTools > Application > Service Workers shows
    `/sw.js` **activated and running**, scope `/`.
-2. **Pre-cache** — Application > Cache Storage > `nestova-static-v1`
+2. **Pre-cache** — Application > Cache Storage > `nestova-static-v2`
    contains `/offline`, the favicon, the CSS, both fonts, the manifest, and all five
    icons (11 entries).
 3. **No cached HTML** — nothing in Cache Storage besides `/offline` is a
