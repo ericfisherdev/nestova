@@ -8,7 +8,7 @@
 //   - Supabase requires TLS, so an insecure sslmode is upgraded to 'require'.
 //   - The port follows the pooler mode, because buildConn requires them to
 //     agree: 6543 for the transaction pooler, 5432 for session/direct.
-const SECURE_SSL_MODES = ['require', 'verify-ca', 'verify-full'];
+const SECURE_SSL_MODES = new Set(['require', 'verify-ca', 'verify-full']);
 
 document.addEventListener('alpine:init', () => {
   Alpine.data('setupForm', () => ({
@@ -29,7 +29,7 @@ document.addEventListener('alpine:init', () => {
       if (this.provider !== 'supabase') {
         return;
       }
-      if (!SECURE_SSL_MODES.includes(this.sslmode)) {
+      if (!SECURE_SSL_MODES.has(this.sslmode)) {
         this.sslmode = 'require';
       }
       this.port = this.poolMode === 'transaction' ? '6543' : '5432';
