@@ -305,6 +305,10 @@ report collector to receive violations.
 - Anything hosted elsewhere (a CDN script, a web font, a remote image) is
   blocked. Self-host it under `web/static/` instead; the appliance has to
   render with the internet down anyway.
+- The one exception is photo storage on S3 (`MEDIA_STORAGE_BACKEND=s3`):
+  `/photos/{id}/raw` redirects to a presigned URL on the S3 endpoint, so at
+  startup the server reads that origin off a presigned probe URL and adds it
+  to `img-src` (and only `img-src`). Local storage adds nothing.
 - `upgrade-insecure-requests` is deliberately not set, so plain-HTTP LAN
   and kiosk access keep working alongside the Tailscale HTTPS URL.
 - `X-Frame-Options`, `X-Content-Type-Options` and `Referrer-Policy` are sent

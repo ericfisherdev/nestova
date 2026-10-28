@@ -928,8 +928,18 @@ func runServer(logger *slog.Logger) error {
 	// directly-tested extraction of this construction — see its own doc.
 	peerProbe := newPeerProbe(cfg.Peer)
 
+	// NES-212: with the S3 media backend, photo bytes arrive by redirect to
+	// the S3 origin, which the Content-Security-Policy's img-src must name.
+	originCtx, cancelOriginCtx := context.WithTimeout(context.Background(), photoStoreInitTimeout)
+	photoImageOrigins, err := mediabootstrap.DirectURLOrigins(originCtx, photoStoreResolver)
+	cancelOriginCtx()
+	if err != nil {
+		return fmt.Errorf("find photo image origins: %w", err)
+	}
+
 	srv := httpserver.New(cfg, httpserver.Deps{
-		Logger: logger,
+		Logger:       logger,
+		ImageOrigins: photoImageOrigins,
 		Ready: func(ctx context.Context) error {
 			return db.Health(ctx, pool)
 		},

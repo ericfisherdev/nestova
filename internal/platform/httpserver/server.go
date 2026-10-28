@@ -66,6 +66,10 @@ type Deps struct {
 	// scrape endpoint, typically promhttp.HandlerFor over the registry that
 	// HTTPMetrics is registered on). nil leaves the route unregistered.
 	MetricsHandler http.Handler
+	// ImageOrigins are extra Content-Security-Policy img-src sources beyond
+	// 'self' and data:, e.g. the S3 origin /photos/{id}/raw redirects to when
+	// MEDIA_STORAGE_BACKEND=s3 (NES-212). nil adds none.
+	ImageOrigins []string
 }
 
 // New builds the application's HTTP server from cfg and deps with the core
@@ -111,7 +115,7 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	chain := []middleware.Middleware{
 		middleware.RequestID,
 		middleware.ForwardedHeaders(cfg.Server.TrustedProxyPrefixes()),
-		middleware.SecurityHeadersWithPolicy(hstsHeaderValue(cfg.HSTS), contentSecurityPolicy()),
+		middleware.SecurityHeadersWithPolicy(hstsHeaderValue(cfg.HSTS), contentSecurityPolicy(deps.ImageOrigins)),
 		middleware.RequestLogger(deps.Logger),
 		middleware.Metrics(deps.HTTPMetrics),
 		middleware.Recoverer(deps.Logger),
