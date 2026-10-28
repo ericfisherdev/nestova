@@ -779,7 +779,7 @@ func RewardAdminFormPage(form RewardAdminForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" novalidate x-data x-on:submit=\"$el.querySelectorAll('button[type=submit]').forEach((b) => b.disabled = true)\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "\" novalidate x-data=\"submitOnce\" x-on:submit=\"disableSubmitButtons()\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

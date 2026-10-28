@@ -10,8 +10,12 @@ package components
 // trip, so it can reference nothing beyond the pre-cached stylesheet and
 // icon.
 //
-// Deliberately script-free apart from the reload button: it has to work
-// when everything else is unreachable.
+// Deliberately script-free: it has to work when everything else is
+// unreachable. "Try again" is therefore a plain link to the empty URL, which
+// re-navigates to the current document URL — under the worker's navigation
+// fallback, still the page the member originally asked for (NES-211; it was
+// a button with an inline location.reload() handler, which a strict CSP
+// blocks).
 templ OfflinePage() {
 	<!DOCTYPE html>
 	<html lang="en" class="h-full">
@@ -39,13 +43,12 @@ templ OfflinePage() {
 						as you're back on the house network.
 					</p>
 				</div>
-				<button
-					type="button"
-					onclick="location.reload()"
-					class="min-h-[44px] rounded-xl bg-sage px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-dark"
+				<a
+					href=""
+					class="inline-flex min-h-[44px] items-center rounded-xl bg-sage px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-dark"
 				>
 					Try again
-				</button>
+				</a>
 			</main>
 		</body>
 	</html>

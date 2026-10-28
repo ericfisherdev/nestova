@@ -235,10 +235,13 @@ func TestNewTaskPageAlpineFreqBinding(t *testing.T) {
 	}
 	out := renderString(t, components.NewTaskPage(form))
 
-	// The seeded freq must live inside the JSON x-data initialiser (templ
+	// The seeded freq must live inside the JSON data-state initialiser (templ
 	// HTML-escapes the JSON quotes to &#34;), not merely the freq <select>.
+	if !strings.Contains(out, `x-data="taskForm"`) || !strings.Contains(out, "data-state=") {
+		t.Errorf("new-task form missing taskForm component or its data-state: %q", out)
+	}
 	if !strings.Contains(out, "&#34;freq&#34;:&#34;weekly&#34;") {
-		t.Errorf("new-task form x-data initialiser does not seed freq=weekly: %q", out)
+		t.Errorf("new-task form data-state does not seed freq=weekly: %q", out)
 	}
 	// The weekday section must be gated by an x-show keyed off freq === 'weekly'.
 	if !strings.Contains(out, `x-show="freq === 'weekly'"`) {
@@ -252,8 +255,9 @@ func TestNewTaskPageAlpineFreqBinding(t *testing.T) {
 
 // TestNewTaskPageAsNeededOption verifies the as-needed frequency option is
 // present, the interval/anchor fields and the rotation-policy select are gated
-// by an x-show keyed off freq !== 'as_needed', and an x-effect forces the
-// policy to claimable whenever as-needed is selected (NES-116).
+// by an x-show keyed off freq !== 'as_needed', and the taskForm component
+// forces the policy to claimable whenever as-needed is selected (NES-116;
+// the rule moved from an x-effect block into task-form.js in NES-211).
 func TestNewTaskPageAsNeededOption(t *testing.T) {
 	form := components.NewTaskForm{CSRFToken: "tok"}
 	out := renderString(t, components.NewTaskPage(form))
@@ -264,8 +268,8 @@ func TestNewTaskPageAsNeededOption(t *testing.T) {
 	if !strings.Contains(out, `x-show="freq !== 'as_needed'"`) {
 		t.Errorf("new-task form missing x-show gating on freq !== 'as_needed': %q", out)
 	}
-	if !strings.Contains(out, "policy = 'claimable'") {
-		t.Errorf("new-task form missing x-effect forcing policy to claimable for as-needed: %q", out)
+	if !strings.Contains(out, `x-data="taskForm"`) {
+		t.Errorf("new-task form missing the taskForm component that forces claimable for as-needed: %q", out)
 	}
 }
 

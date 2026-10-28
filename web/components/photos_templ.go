@@ -229,7 +229,7 @@ func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" data-accept=\"image/jpeg,image/png,image/webp\" x-data=\"uploadQueue()\" @dragover.prevent=\"dragActive = true\" @dragleave.prevent=\"dragActive = false\" @drop.prevent=\"dragActive = false; enqueueFiles($event.dataTransfer.files)\" :class=\"dragActive ? 'border-sage bg-surface-warm' : 'border-sidebar-border'\" class=\"flex flex-col gap-2 rounded-control border-2 border-dashed p-3 text-center transition-colors\"><form id=\"upload-form\" method=\"post\" action=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "\" data-accept=\"image/jpeg,image/png,image/webp\" x-data=\"uploadQueue()\" @dragover.prevent=\"dragActive = true\" @dragleave.prevent=\"dragActive = false\" @drop.prevent=\"handleDrop($event)\" :class=\"dragActive ? 'border-sage bg-surface-warm' : 'border-sidebar-border'\" class=\"flex flex-col gap-2 rounded-control border-2 border-dashed p-3 text-center transition-colors\"><form id=\"upload-form\" method=\"post\" action=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -255,7 +255,7 @@ func uploadDropzone(csrfToken string, maxUploadBytes int64) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\"><p class=\"text-sm text-ink-muted\">Drag photos here, or <label class=\"cursor-pointer rounded-control font-medium text-accent underline focus-within:outline-none focus-within:ring-2 focus-within:ring-sage focus-within:ring-offset-2\">choose files <input id=\"photo-file\" type=\"file\" name=\"photo\" multiple accept=\"image/jpeg,image/png,image/webp\" class=\"sr-only\" @change=\"enqueueFiles($event.target.files); $event.target.value = ''\"></label></p><label class=\"text-left text-xs font-medium text-ink-muted\" for=\"upload-caption\">Caption (optional, applied to this batch)</label> <input id=\"upload-caption\" type=\"text\" name=\"caption\" placeholder=\"e.g. Beach day\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></form><p class=\"text-xs text-ink-muted\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\"><p class=\"text-sm text-ink-muted\">Drag photos here, or <label class=\"cursor-pointer rounded-control font-medium text-accent underline focus-within:outline-none focus-within:ring-2 focus-within:ring-sage focus-within:ring-offset-2\">choose files <input id=\"photo-file\" type=\"file\" name=\"photo\" multiple accept=\"image/jpeg,image/png,image/webp\" class=\"sr-only\" @change=\"handleFileInput($event)\"></label></p><label class=\"text-left text-xs font-medium text-ink-muted\" for=\"upload-caption\">Caption (optional, applied to this batch)</label> <input id=\"upload-caption\" type=\"text\" name=\"caption\" placeholder=\"e.g. Beach day\" class=\"rounded-control border border-sidebar-border bg-surface px-3 py-2 text-sm text-ink\"></form><p class=\"text-xs text-ink-muted\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

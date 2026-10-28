@@ -75,7 +75,14 @@ templ KioskLayout(props KioskShellProps, content templ.Component) {
 			     dependency on the other scripts here, unlike
 			     kiosk-idle.js/alpine.min.js below, so its position relative to them
 			     does not matter; it is placed first purely to match layout.templ's
-			     convention). -->
+			     convention).
+			     The htmx-config meta mirrors layout.templ's two CSP-related keys
+			     (NES-211): includeIndicatorStyles:false stops htmx injecting an
+			     inline <style> that a strict style-src blocks (nothing here uses
+			     .htmx-indicator), and allowEval:false makes explicit that htmx
+			     never evaluates strings. The kiosk has no use for layout.templ's
+			     422-swap responseHandling override, so it is not copied. -->
+			<meta name="htmx-config" content={ `{"includeIndicatorStyles":false,"allowEval":false}` }/>
 			<script src="/static/js/htmx.min.js" defer></script>
 			<!-- kiosk-idle.js and album.js each register an Alpine component via an
 			     'alpine:init' listener, so BOTH must load and run BEFORE
@@ -87,7 +94,9 @@ templ KioskLayout(props KioskShellProps, content templ.Component) {
 			     kiosk-idle.js only listens for touchstart/mousedown/keydown (NES-128):
 			     it does not observe htmx events or DOM mutations, so the NES-130
 			     content polls above never reset the idle timer on their own — only an
-			     actual touch/click/keypress does. -->
+			     actual touch/click/keypress does. alpine.min.js is the Alpine CSP
+			     build (@alpinejs/csp@3.15.12), vendored over the path every page
+			     already references (NES-211). -->
 			<script src="/static/js/kiosk-idle.js" defer></script>
 			<script src="/static/js/album.js" defer></script>
 			<script src="/static/js/gsap.min.js" defer></script>

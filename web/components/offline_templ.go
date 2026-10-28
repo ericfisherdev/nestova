@@ -18,8 +18,12 @@ import templruntime "github.com/a-h/templ/runtime"
 // trip, so it can reference nothing beyond the pre-cached stylesheet and
 // icon.
 //
-// Deliberately script-free apart from the reload button: it has to work
-// when everything else is unreachable.
+// Deliberately script-free: it has to work when everything else is
+// unreachable. "Try again" is therefore a plain link to the empty URL, which
+// re-navigates to the current document URL — under the worker's navigation
+// fallback, still the page the member originally asked for (NES-211; it was
+// a button with an inline location.reload() handler, which a strict CSP
+// blocks).
 func OfflinePage() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -41,7 +45,7 @@ func OfflinePage() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" class=\"h-full\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Offline — Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><meta name=\"theme-color\" content=\"#6f8c6a\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"flex h-full items-center justify-center bg-sand p-6 text-ink\"><main class=\"flex max-w-sm flex-col items-center gap-5 text-center\" data-testid=\"offline-page\"><img src=\"/static/icons/icon-192.png\" alt=\"\" width=\"72\" height=\"72\" class=\"rounded-2xl\"><div class=\"flex flex-col gap-2\"><h1 class=\"text-2xl font-semibold\">You're offline</h1><p class=\"text-sm leading-relaxed text-ink-secondary\">Nestova can't reach the home server. It'll be here as soon as you're back on the house network.</p></div><button type=\"button\" onclick=\"location.reload()\" class=\"min-h-[44px] rounded-xl bg-sage px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-dark\">Try again</button></main></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" class=\"h-full\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Offline — Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><meta name=\"theme-color\" content=\"#6f8c6a\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"></head><body class=\"flex h-full items-center justify-center bg-sand p-6 text-ink\"><main class=\"flex max-w-sm flex-col items-center gap-5 text-center\" data-testid=\"offline-page\"><img src=\"/static/icons/icon-192.png\" alt=\"\" width=\"72\" height=\"72\" class=\"rounded-2xl\"><div class=\"flex flex-col gap-2\"><h1 class=\"text-2xl font-semibold\">You're offline</h1><p class=\"text-sm leading-relaxed text-ink-secondary\">Nestova can't reach the home server. It'll be here as soon as you're back on the house network.</p></div><a href=\"\" class=\"inline-flex min-h-[44px] items-center rounded-xl bg-sage px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-sage-dark\">Try again</a></main></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

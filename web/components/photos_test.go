@@ -103,7 +103,7 @@ func TestUploadDropzoneMarkup(t *testing.T) {
 	if !strings.Contains(out, `id="photo-file"`) || !strings.Contains(out, "multiple") {
 		t.Errorf("missing multi-file input: %q", out)
 	}
-	if !strings.Contains(out, `@change="enqueueFiles($event.target.files)`) {
+	if !strings.Contains(out, `@change="handleFileInput($event)"`) {
 		t.Errorf("file input must enqueue on change: %q", out)
 	}
 	// Retry control and per-file progress/status markup for the queue list.

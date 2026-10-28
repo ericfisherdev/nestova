@@ -220,7 +220,8 @@ templ TaskRowItem(row TaskRow) {
 		id={ fmt.Sprintf("task-%s", row.InstanceID) }
 		class="flex flex-wrap items-center justify-between gap-3 rounded-card bg-surface px-4 py-3 shadow-warm"
 		if row.ClaimExpiresAtISO != "" {
-			x-data={ fmt.Sprintf("claimCountdown('%s')", row.ClaimExpiresAtISO) }
+			x-data="claimCountdown"
+			data-expires-at={ row.ClaimExpiresAtISO }
 			hx-trigger="claim-expired"
 			hx-get="/tasks/groups"
 			hx-target="#task-groups"
@@ -401,7 +402,9 @@ templ proofPhotoSection(row TaskRow) {
 // image, via GET /tasks/photos/{id}/raw) once rawURL is non-empty, or a
 // camera-direct capture button that posts straight to the NES-119 upload
 // endpoint (POST /tasks/{id}/photos) otherwise. The file input auto-submits
-// its enclosing form on selection (onchange) so taking the photo IS the
+// its enclosing form on selection (data-autosubmit, handled by
+// web/static/js/auto-submit.js; an inline onchange would need a CSP
+// 'unsafe-inline' script source, NES-211) so taking the photo IS the
 // upload action — no separate "upload" button — matching the ticket's
 // camera-direct capture guidance; capture="environment" and
 // accept="image/jpeg" steer a phone's camera app to the rear camera and
@@ -453,7 +456,7 @@ templ proofPhotoSlot(instanceID, csrfToken, kind, label, rawURL string) {
 						accept="image/jpeg"
 						capture="environment"
 						class="sr-only"
-						onchange="this.form.requestSubmit()"
+						data-autosubmit
 						data-testid={ "proof-photo-input-" + kind }
 					/>
 				</label>
