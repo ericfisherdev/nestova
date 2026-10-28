@@ -50,26 +50,58 @@ func cspPages(t *testing.T) map[string]string {
 	}
 }
 
+// inlineCodeViolations lists every way the markup would need an
+// 'unsafe-inline' script or style source.
+func inlineCodeViolations(markup string) []string {
+	var found []string
+	for _, tag := range scriptOpenTag.FindAllString(markup, -1) {
+		if !strings.Contains(tag, ` src="`) {
+			found = append(found, "inline <script> block: "+tag)
+		}
+	}
+	if m := inlineEventHandler.FindString(markup); m != "" {
+		found = append(found, "inline event-handler attribute "+strings.TrimSpace(m))
+	}
+	if strings.Contains(markup, "<style") {
+		found = append(found, "inline <style> element")
+	}
+	if strings.Contains(markup, ` style="`) {
+		found = append(found, "inline style attribute")
+	}
+	return found
+}
+
 func TestPages_HaveNoInlineScriptOrEventHandlers(t *testing.T) {
 	for name, page := range cspPages(t) {
 		t.Run(name, func(t *testing.T) {
-			markup := htmlComment.ReplaceAllString(page, "")
-			for _, tag := range scriptOpenTag.FindAllString(markup, -1) {
-				if !strings.Contains(tag, ` src="`) {
-					t.Errorf("inline <script> block (needs script-src 'unsafe-inline'): %s", tag)
-				}
-			}
-			if m := inlineEventHandler.FindString(markup); m != "" {
-				t.Errorf("inline event-handler attribute %q (needs script-src 'unsafe-inline')", strings.TrimSpace(m))
-			}
-			if strings.Contains(markup, "<style") {
-				t.Errorf("inline <style> element (needs style-src 'unsafe-inline')")
-			}
-			if strings.Contains(markup, ` style="`) {
-				t.Errorf("inline style attribute (needs style-src 'unsafe-inline')")
+			for _, violation := range inlineCodeViolations(htmlComment.ReplaceAllString(page, "")) {
+				t.Error(violation)
 			}
 		})
 	}
+}
+
+// unsupportedAlpineConstruct names the construct in expr that the Alpine CSP
+// build cannot evaluate, or "" when expr is within the supported subset.
+func unsupportedAlpineConstruct(expr string) string {
+	trimmed := strings.TrimSpace(expr)
+	checks := []struct {
+		name    string
+		matches bool
+	}{
+		{"arrow function", strings.Contains(expr, "=>")},
+		{"multiple statements", strings.Contains(expr, ";")},
+		{"template literal", strings.Contains(expr, "`")},
+		{"spread", strings.Contains(expr, "...")},
+		{"statement block", strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(")},
+		{"property assignment", propertyAssignment.MatchString(expr)},
+	}
+	for _, check := range checks {
+		if check.matches {
+			return check.name
+		}
+	}
+	return ""
 }
 
 func TestPages_AlpineExpressionsStayWithinCSPSubset(t *testing.T) {
@@ -78,19 +110,8 @@ func TestPages_AlpineExpressionsStayWithinCSPSubset(t *testing.T) {
 			markup := htmlComment.ReplaceAllString(page, "")
 			for _, match := range alpineAttribute.FindAllStringSubmatch(markup, -1) {
 				expr := html.UnescapeString(match[1])
-				switch {
-				case strings.Contains(expr, "=>"):
-					t.Errorf("arrow function in Alpine expression %q", expr)
-				case strings.Contains(expr, ";"):
-					t.Errorf("multiple statements in Alpine expression %q", expr)
-				case strings.Contains(expr, "`"):
-					t.Errorf("template literal in Alpine expression %q", expr)
-				case strings.Contains(expr, "..."):
-					t.Errorf("spread in Alpine expression %q", expr)
-				case strings.HasPrefix(strings.TrimSpace(expr), "if "), strings.HasPrefix(strings.TrimSpace(expr), "if("):
-					t.Errorf("statement block in Alpine expression %q", expr)
-				case propertyAssignment.MatchString(expr):
-					t.Errorf("property assignment in Alpine expression %q", expr)
+				if construct := unsupportedAlpineConstruct(expr); construct != "" {
+					t.Errorf("%s in Alpine expression %q", construct, expr)
 				}
 			}
 		})
