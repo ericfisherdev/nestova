@@ -241,7 +241,7 @@ test.describe('§14 the worker in use', () => {
 
     await login(page, PERSONAS.owner);
     await waitForController(page);
-    await expect.poll(async () => Object.keys(await cacheInventory(page))).toEqual(['nestova-static-v1']);
+    await expect.poll(async () => Object.keys(await cacheInventory(page))).toEqual(['nestova-static-v2']);
 
     // Leftovers a real upgrade meets: a previous version's cache, and a cache
     // some other feature on the origin owns.
@@ -283,7 +283,7 @@ test.describe('§14 the worker in use', () => {
 
     // activate() evicts only its own prefix's stale versions.
     await expect.poll(async () => Object.keys(await cacheInventory(page)).sort())
-      .toEqual(['nestova-static-v1', 'unrelated-feature']);
+      .toEqual(['nestova-static-v2', 'unrelated-feature']);
 
     // The new worker serves: the offline fallback still works under it.
     await page.context().setOffline(true);
