@@ -291,6 +291,29 @@ is a recovery-time hazard rather than a cosmetic change. See
 
 Restart after editing: `sudo systemctl restart nestova-server.service`.
 
+### Security headers (NES-212)
+
+Every response carries a strict `Content-Security-Policy`. The policy is
+fixed in the binary (`internal/platform/httpserver/csp.go`): there is no
+environment toggle and no Report-Only mode, because a LAN appliance has no
+report collector to receive violations.
+
+- Scripts, styles, fonts, images, XHR/`fetch`, the service worker and the
+  web manifest may load from Nestova's own origin only; `img-src` also
+  allows `data:` for the MFA and kiosk QR codes. There is no
+  `'unsafe-inline'`, `'unsafe-eval'`, nonce or hash.
+- Anything hosted elsewhere (a CDN script, a web font, a remote image) is
+  blocked. Self-host it under `web/static/` instead; the appliance has to
+  render with the internet down anyway.
+- `upgrade-insecure-requests` is deliberately not set, so plain-HTTP LAN
+  and kiosk access keep working alongside the Tailscale HTTPS URL.
+- `X-Frame-Options`, `X-Content-Type-Options` and `Referrer-Policy` are sent
+  alongside it; `frame-ancestors 'self'` keeps framing limited to Nestova's
+  own origin.
+
+A blocked load shows in the browser console as a "Content Security Policy"
+error, which is what `e2e/tests/csp.spec.js` asserts is absent on every page.
+
 ### Troubleshooting: "current schema is ... want nestova"
 
 The server fails to boot with this error for one of two reasons — a
