@@ -195,9 +195,8 @@ func TestLayout_RendersPWAHead(t *testing.T) {
 		`name="theme-color"`,
 		`content="#6f8c6a"`, // --color-sage, the Hearth status-bar tint
 		`rel="apple-touch-icon"`,
-		`href="/static/icons/icon-180.png"`,          // iOS ignores the manifest icons
-		`navigator.serviceWorker.register('/sw.js')`, // NES-152 registration
-		`'serviceWorker' in navigator`,               // guarded for insecure contexts
+		`href="/static/icons/icon-180.png"`,     // iOS ignores the manifest icons
+		`src="/static/js/sw-register.js" defer`, // NES-152 registration, static since NES-211
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("layout head missing %s: %q", want, out)

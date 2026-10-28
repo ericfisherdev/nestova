@@ -6,12 +6,17 @@
 // #task-groups container to its post-sweep state. The background scheduler
 // sweep still owns the actual revert; this only asks the server to re-render
 // once the client believes the claim has lapsed.
+//
+// The deadline arrives as an RFC 3339 timestamp in the row's data-expires-at
+// attribute and is read in init(), rather than passed as an argument from
+// markup: x-data="claimCountdown('<ts>')" interpolated server data into an
+// expression, which the Alpine CSP build cannot evaluate (NES-211).
 document.addEventListener('alpine:init', () => {
-  Alpine.data('claimCountdown', (expiresAtISO) => ({
+  Alpine.data('claimCountdown', () => ({
     label: '',
     tickTimer: null,
     retryTimer: null,
-    expiresAtMs: new Date(expiresAtISO).getTime(),
+    expiresAtMs: 0,
     // retryDelayMs bounds the wait before re-dispatching claim-expired when
     // the countdown is ALREADY past its deadline the moment this component
     // mounts. That happens when a group refresh completes before the
@@ -25,6 +30,7 @@ document.addEventListener('alpine:init', () => {
     retryDelayMs: 30000,
 
     init() {
+      this.expiresAtMs = new Date(this.$el.dataset.expiresAt).getTime();
       if (this.isExpired()) {
         this.label = 'Claim expiring…';
         this.retryTimer = setTimeout(() => this.dispatchExpired(), this.retryDelayMs);

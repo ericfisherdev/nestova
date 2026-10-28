@@ -262,8 +262,8 @@ templ RewardAdminFormPage(form RewardAdminForm) {
 				method="POST"
 				action={ rewardFormAction(form) }
 				novalidate
-				x-data
-				x-on:submit="$el.querySelectorAll('button[type=submit]').forEach((b) => b.disabled = true)"
+				x-data="submitOnce"
+				x-on:submit="disableSubmitButtons()"
 			>
 				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
 				if form.FormToken != "" {

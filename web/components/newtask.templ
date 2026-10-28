@@ -84,8 +84,8 @@ templ NewTaskPage(form NewTaskForm) {
 		</div>
 		<div
 			class="max-w-lg rounded-card bg-surface p-6 shadow-warm"
-			x-data={ alpineTaskState(form.Freq, form.RotationPolicy) }
-			x-effect="if (freq === 'as_needed') { policy = 'claimable' }"
+			x-data="taskForm"
+			data-state={ alpineTaskState(form.Freq, form.RotationPolicy) }
 		>
 			<form method="POST" action="/tasks" novalidate>
 				<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>

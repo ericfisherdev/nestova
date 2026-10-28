@@ -77,8 +77,11 @@ templ SetupPage(form SetupForm) {
 			<link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			<!-- This standalone page is outside the app shell, so it loads Alpine
-			     itself: the provider selector drives the Supabase-only fields and the
-			     sslmode auto-upgrade via x-data/x-model/x-effect/x-show. -->
+			     itself (the Alpine CSP build, see layout.templ): the provider selector
+			     drives the Supabase-only fields and the sslmode auto-upgrade via the
+			     setupForm component, x-model and x-show. setup-form.js registers that
+			     component and so must load before alpine.min.js (NES-211). -->
+			<script src="/static/js/setup-form.js" defer></script>
 			<script src="/static/js/alpine.min.js" defer></script>
 		</head>
 		<body class="bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4">
@@ -93,8 +96,8 @@ templ SetupPage(form SetupForm) {
 						method="POST"
 						action="/setup"
 						novalidate
-						x-data={ alpineSetupState(form.Provider, form.SSLMode, form.PoolMode, form.Port) }
-						x-effect="if (provider === 'supabase') { if (!['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'; port = (poolMode === 'transaction' ? '6543' : '5432') }"
+						x-data="setupForm"
+						data-state={ alpineSetupState(form.Provider, form.SSLMode, form.PoolMode, form.Port) }
 					>
 						<input type="hidden" name="csrf_token" value={ form.CSRFToken }/>
 						<div class="flex flex-col gap-4">

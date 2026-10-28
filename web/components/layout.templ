@@ -60,17 +60,11 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			     a secure context: the kiosk and any plain-HTTP LAN access skip
 			     this and keep working exactly as before. The catch matters for
 			     the same reason — the app is fully functional without a
-			     worker, so a failed registration must never break the page. -->
-			<script>
-				if ('serviceWorker' in navigator) {
-					window.addEventListener('load', function() {
-						navigator.serviceWorker.register('/sw.js').catch(function() {
-							/* No worker: the offline page and asset caching are
-							   unavailable; everything else works normally. */
-						});
-					});
-				}
-			</script>
+			     worker, so a failed registration must never break the page.
+			     A static file rather than an inline script so the page needs no
+			     'unsafe-inline' script source (NES-211); deferred scripts still
+			     run before the window 'load' event the registration waits for. -->
+			<script src="/static/js/sw-register.js" defer></script>
 			<link rel="stylesheet" href="/static/css/app.css"/>
 			<!-- htmx by default never swaps a 4xx/5xx response into the DOM (see
 			     htmx's own QUIRKS.md, "By Default 4xx & 5xx Responses Do Not
@@ -82,10 +76,16 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			     ChoreProofWebHandlers.handleUploadError). This is the exact
 			     configuration htmx's own docs recommend for that case; every
 			     other status keeps its default (no-swap-on-error) behavior, so
-			     this has no effect on any other action's error handling. -->
+			     this has no effect on any other action's error handling.
+			     includeIndicatorStyles:false stops htmx injecting its inline
+			     <style> for .htmx-indicator, which a strict style-src blocks;
+			     nothing here uses .htmx-indicator. allowEval:false makes explicit
+			     that htmx never evaluates strings (hx-on, js: prefixes, trigger
+			     filters), which a policy without 'unsafe-eval' would block anyway
+			     (NES-211). -->
 			<meta
 				name="htmx-config"
-				content={ `{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}` }
+				content={ `{"includeIndicatorStyles":false,"allowEval":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"422","swap":true},{"code":"[45]..","swap":false,"error":true},{"code":"...","swap":false}]}` }
 			/>
 			<script src="/static/js/htmx.min.js" defer></script>
 			<!-- Claim countdown badge for claimed chores (NES-118), the photo
@@ -99,8 +99,21 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<script src="/static/js/claim-countdown.js" defer></script>
 			<script src="/static/js/upload-queue.js" defer></script>
 			<script src="/static/js/webauthn-register.js" defer></script>
+			<!-- Shell state (drawer), submit-once guard and new-task form rules
+			     (NES-211): expressions the Alpine CSP build cannot evaluate live in
+			     these components instead of in markup. auto-submit.js is a plain
+			     delegated listener (data-autosubmit), not an Alpine component. -->
+			<script src="/static/js/shell.js" defer></script>
+			<script src="/static/js/submit-once.js" defer></script>
+			<script src="/static/js/task-form.js" defer></script>
+			<script src="/static/js/auto-submit.js" defer></script>
 			<!-- Offline notice for failed HTMX requests (NES-202). -->
 			<script src="/static/js/network-alert.js" defer></script>
+			<!-- Alpine CSP build: @alpinejs/csp@3.15.12, dist/cdn.min.js, vendored
+			     verbatim (NES-211). It is a full replacement for alpinejs, not an
+			     add-on, and evaluates expressions without new Function, so no page
+			     needs 'unsafe-eval'. To upgrade, download the same file from
+			     https://cdn.jsdelivr.net/npm/@alpinejs/csp@<version>/dist/cdn.min.js. -->
 			<script src="/static/js/alpine.min.js" defer></script>
 			<!-- GSAP entrance/transition polish (NES-77); scoped to the shell and the album viewer. -->
 			<script src="/static/js/gsap.min.js" defer></script>
@@ -108,8 +121,8 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 		</head>
 		<body
 			class="bg-sand font-sans text-ink min-h-screen"
-			x-data="{ open: false }"
-			@keydown.escape.window="if (open) { open = false; $refs.navToggle.focus() }"
+			x-data="shell"
+			@keydown.escape.window="onEscape()"
 		>
 			<a
 				href="#main-content"
@@ -121,7 +134,7 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 				type="button"
 				x-ref="navToggle"
 				class="fixed left-3 top-3 z-40 inline-flex h-10 w-10 items-center justify-center rounded-control bg-sidebar shadow-warm md:hidden"
-				@click="open = true; $nextTick(() => $refs.navPanel.focus())"
+				@click="openNav()"
 				aria-label="Open navigation"
 				aria-controls="sidebar"
 				:aria-expanded="open"
@@ -136,7 +149,7 @@ templ Layout(props ShellProps, nav []NavItem, content templ.Component) {
 			<div
 				x-show="open"
 				x-cloak
-				@click="open = false; $refs.navToggle.focus()"
+				@click="closeNav()"
 				class="fixed inset-0 z-30 bg-ink/30 md:hidden"
 				aria-hidden="true"
 			></div>

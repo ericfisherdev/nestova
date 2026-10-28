@@ -105,20 +105,20 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"p-6\"><div class=\"mb-6\"><h1 class=\"text-2xl font-semibold\">Add a chore or maintenance task</h1><p class=\"mt-1 text-sm text-ink-muted\">Define a recurring task and assign it to your household.</p></div><div class=\"max-w-lg rounded-card bg-surface p-6 shadow-warm\" x-data=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"p-6\"><div class=\"mb-6\"><h1 class=\"text-2xl font-semibold\">Add a chore or maintenance task</h1><p class=\"mt-1 text-sm text-ink-muted\">Define a recurring task and assign it to your household.</p></div><div class=\"max-w-lg rounded-card bg-surface p-6 shadow-warm\" x-data=\"taskForm\" data-state=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(alpineTaskState(form.Freq, form.RotationPolicy))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 87, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 88, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" x-effect=\"if (freq === 'as_needed') { policy = 'claimable' }\"><form method=\"POST\" action=\"/tasks\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><form method=\"POST\" action=\"/tasks\" novalidate><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

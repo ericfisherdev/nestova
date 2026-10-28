@@ -31,7 +31,8 @@ templ AlbumViewerPage(view AlbumViewerView) {
 			     listener, so it must load and run BEFORE alpine.min.js — Alpine
 			     dispatches 'alpine:init' as soon as its own deferred script runs,
 			     and a listener registered after that has already fired never sees
-			     it (NES-147; same rule as layout.templ's extension scripts). -->
+			     it (NES-147; same rule as layout.templ's extension scripts).
+			     alpine.min.js is the Alpine CSP build (see layout.templ). -->
 			<script src="/static/js/album.js" defer></script>
 			<script src="/static/js/alpine.min.js" defer></script>
 		</head>

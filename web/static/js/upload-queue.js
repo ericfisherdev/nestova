@@ -62,6 +62,21 @@ document.addEventListener('alpine:init', () => {
       this.uploadUrl = this.$el.dataset.uploadUrl;
     },
 
+    // handleDrop and handleFileInput adapt the two browser events to
+    // enqueueFiles. They live here rather than in the markup's @drop/@change
+    // expressions because the Alpine CSP build cannot evaluate multi-statement
+    // expressions (NES-211). Resetting the input's value lets the same file be
+    // chosen again after it was queued.
+    handleDrop(event) {
+      this.dragActive = false;
+      this.enqueueFiles(event.dataTransfer.files);
+    },
+
+    handleFileInput(event) {
+      this.enqueueFiles(event.target.files);
+      event.target.value = '';
+    },
+
     // enqueueFiles accepts a FileList (from a drop event or the hidden file
     // input's change event) and adds one queue item per file, tagged with a
     // new batchSeq, then starts uploading as many as the concurrency cap

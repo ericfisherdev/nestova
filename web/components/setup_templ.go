@@ -96,27 +96,27 @@ func SetupPage(form SetupForm) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Set up Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- This standalone page is outside the app shell, so it loads Alpine\n\t\t\t     itself: the provider selector drives the Supabase-only fields and the\n\t\t\t     sslmode auto-upgrade via x-data/x-model/x-effect/x-show. --><script src=\"/static/js/alpine.min.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-md\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Welcome to Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Connect your database to get started</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><form method=\"POST\" action=\"/setup\" novalidate x-data=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Set up Nestova</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/favicon.svg\"><link rel=\"stylesheet\" href=\"/static/css/app.css\"><!-- This standalone page is outside the app shell, so it loads Alpine\n\t\t\t     itself (the Alpine CSP build, see layout.templ): the provider selector\n\t\t\t     drives the Supabase-only fields and the sslmode auto-upgrade via the\n\t\t\t     setupForm component, x-model and x-show. setup-form.js registers that\n\t\t\t     component and so must load before alpine.min.js (NES-211). --><script src=\"/static/js/setup-form.js\" defer></script><script src=\"/static/js/alpine.min.js\" defer></script></head><body class=\"bg-sand font-sans text-ink min-h-screen flex items-center justify-center p-4\"><div class=\"w-full max-w-md\"><div class=\"mb-8 text-center\"><span class=\"inline-block h-10 w-10 rounded-full border-4 border-sage\" aria-hidden=\"true\"></span><h1 class=\"mt-3 text-2xl font-semibold\">Welcome to Nestova</h1><p class=\"mt-1 text-sm text-ink-muted\">Connect your database to get started</p></div><div class=\"rounded-card bg-surface p-6 shadow-warm\"><form method=\"POST\" action=\"/setup\" novalidate x-data=\"setupForm\" data-state=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.ResolveAttributeValue(alpineSetupState(form.Provider, form.SSLMode, form.PoolMode, form.Port))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 96, Col: 86}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 100, Col: 90}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var2)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" x-effect=\"if (provider === 'supabase') { if (!['require','verify-ca','verify-full'].includes(sslmode)) sslmode = 'require'; port = (poolMode === 'transaction' ? '6543' : '5432') }\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><input type=\"hidden\" name=\"csrf_token\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.CSRFToken)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 99, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 102, Col: 67}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 		if templ_7745c5c3_Err != nil {
@@ -149,7 +149,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Host)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 134, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 137, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 		if templ_7745c5c3_Err != nil {
@@ -162,7 +162,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Port)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 147, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 150, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var5)
 		if templ_7745c5c3_Err != nil {
@@ -175,7 +175,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Database)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 161, Col: 30}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 164, Col: 30}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var6)
 		if templ_7745c5c3_Err != nil {
@@ -188,7 +188,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.User)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 174, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 177, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 		if templ_7745c5c3_Err != nil {
@@ -206,7 +206,7 @@ func SetupPage(form SetupForm) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.ResolveAttributeValue(mode)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 201, Col: 30}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 204, Col: 30}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 			if templ_7745c5c3_Err != nil {
@@ -229,7 +229,7 @@ func SetupPage(form SetupForm) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(mode)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 201, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 204, Col: 74}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 			if templ_7745c5c3_Err != nil {
@@ -267,7 +267,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.SSLRootCert)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 226, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 229, Col: 34}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var10)
 		if templ_7745c5c3_Err != nil {
@@ -280,7 +280,7 @@ func SetupPage(form SetupForm) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.RawDSN)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 241, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 244, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var11)
 		if templ_7745c5c3_Err != nil {
@@ -298,7 +298,7 @@ func SetupPage(form SetupForm) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 250, Col: 65}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/setup.templ`, Line: 253, Col: 65}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {

@@ -139,7 +139,7 @@ templ uploadDropzone(csrfToken string, maxUploadBytes int64) {
 		x-data="uploadQueue()"
 		@dragover.prevent="dragActive = true"
 		@dragleave.prevent="dragActive = false"
-		@drop.prevent="dragActive = false; enqueueFiles($event.dataTransfer.files)"
+		@drop.prevent="handleDrop($event)"
 		:class="dragActive ? 'border-sage bg-surface-warm' : 'border-sidebar-border'"
 		class="flex flex-col gap-2 rounded-control border-2 border-dashed p-3 text-center transition-colors"
 	>
@@ -166,7 +166,7 @@ templ uploadDropzone(csrfToken string, maxUploadBytes int64) {
 						multiple
 						accept="image/jpeg,image/png,image/webp"
 						class="sr-only"
-						@change="enqueueFiles($event.target.files); $event.target.value = ''"
+						@change="handleFileInput($event)"
 					/>
 				</label>
 			</p>

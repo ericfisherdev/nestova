@@ -399,10 +399,9 @@ func TestTaskRowItemClaimedWithExpiryShowsBadge(t *testing.T) {
 	}
 	out := renderString(t, components.TaskRowItem(row))
 
-	// templ HTML-escapes the attribute value, turning the JS call's single
-	// quotes into &#39; entities; browsers decode these back to ' before
-	// Alpine ever reads the attribute, so this is the correct rendered form.
-	if !strings.Contains(out, `x-data="claimCountdown(&#39;2026-07-16T14:00:00Z&#39;)"`) {
+	// The deadline travels as data, not as an interpolated argument in the
+	// x-data expression, which the Alpine CSP build cannot evaluate (NES-211).
+	if !strings.Contains(out, `x-data="claimCountdown"`) || !strings.Contains(out, `data-expires-at="2026-07-16T14:00:00Z"`) {
 		t.Errorf("row missing claimCountdown x-data with the claim expiry instant: %q", out)
 	}
 	if !strings.Contains(out, `x-text="label"`) {
