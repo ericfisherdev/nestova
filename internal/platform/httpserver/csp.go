@@ -9,10 +9,16 @@ import "github.com/ericfisherdev/nestcore/httpserver/middleware"
 // e2e csp.spec.js asserts on them; every page loads only self-hosted assets
 // and carries no inline script or style (NES-211).
 //
+// imageOrigins are extra img-src sources for photo bytes served from another
+// origin: with the S3 media backend, /photos/{id}/raw redirects to a presigned
+// URL on the S3 endpoint, and the browser checks the redirect target against
+// img-src. Nil adds none (local storage, setup mode).
+//
 // The directive order is part of the contract: tests assert the rendered
 // header byte for byte.
-func contentSecurityPolicy() middleware.ContentSecurityPolicy {
+func contentSecurityPolicy(imageOrigins []string) middleware.ContentSecurityPolicy {
 	self := []string{"'self'"}
+	imgSrc := append([]string{"'self'", "data:"}, imageOrigins...)
 	return middleware.ContentSecurityPolicy{
 		// Fallback for every fetch directive not listed below.
 		{Name: "default-src", Values: self},
@@ -23,8 +29,9 @@ func contentSecurityPolicy() middleware.ContentSecurityPolicy {
 		// and <style> blocks are not used.
 		{Name: "style-src", Values: self},
 		// 'self' for photos and icons; data: for the MFA enrolment and kiosk
-		// QR codes, which render as data:image/png;base64 URIs.
-		{Name: "img-src", Values: []string{"'self'", "data:"}},
+		// QR codes, which render as data:image/png;base64 URIs; plus the S3
+		// origin photos redirect to, when that backend is configured.
+		{Name: "img-src", Values: imgSrc},
 		// Self-hosted Hanken Grotesk and Space Mono under /static/fonts.
 		{Name: "font-src", Values: self},
 		// HTMX requests, fetch() uploads and the WebAuthn ceremonies all go

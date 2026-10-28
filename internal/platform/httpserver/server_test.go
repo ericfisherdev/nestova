@@ -317,3 +317,20 @@ func TestContentSecurityPolicyIsStrict(t *testing.T) {
 		}
 	}
 }
+
+// TestContentSecurityPolicyAllowsConfiguredImageOrigins confirms the S3
+// photo origin is added to img-src and only there: photos redirect to it, but
+// scripts, styles and connections must stay same-origin.
+func TestContentSecurityPolicyAllowsConfiguredImageOrigins(t *testing.T) {
+	srv := httpserver.New(testConfig(), httpserver.Deps{
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ImageOrigins: []string{"https://s3.example.com"},
+	})
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+	want := strings.Replace(strictCSP, "img-src 'self' data:", "img-src 'self' data: https://s3.example.com", 1)
+	if got := rec.Header().Get("Content-Security-Policy"); got != want {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, want)
+	}
+}

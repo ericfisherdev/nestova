@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -311,6 +312,46 @@ func (s *S3PhotoStore) URL(ctx context.Context, ref domain.StorageRef, ttl time.
 		return "", fmt.Errorf("media/adapter: presign photo url: %w", err)
 	}
 	return req.URL, nil
+}
+
+// DirectURLOrigin returns the scheme://host origin that URL's presigned GETs
+// point at, so the composition root can allow it as an image source: a
+// browser follows /photos/{id}/raw's redirect to this origin, and the
+// Content-Security-Policy's img-src has to name it (NES-212).
+//
+// The origin is read off a presigned probe URL rather than rebuilt from the
+// configured endpoint, because the SDK decides it: virtual-hosted addressing
+// puts the bucket in the host, path-style (UsePathStyle) does not. Presigning
+// is local signing, so this makes no network call.
+//
+// Errors: a wrapped SDK error when the probe cannot be signed (for example
+// no resolvable credentials), or a wrapped url parse error. It never returns
+// a domain error.
+func (s *S3PhotoStore) DirectURLOrigin(ctx context.Context) (string, error) {
+	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(originProbeKey),
+	}, s3.WithPresignExpires(time.Minute))
+	if err != nil {
+		return "", fmt.Errorf("media/adapter: presign origin probe: %w", err)
+	}
+	return originOf(req.URL)
+}
+
+// originProbeKey is the object name DirectURLOrigin presigns. The object
+// need not exist: only the URL's origin is read, and the URL is discarded.
+const originProbeKey = "origin-probe"
+
+// originOf returns rawURL's scheme://host (host includes any port).
+func originOf(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("media/adapter: parse presigned url: %w", err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("media/adapter: presigned url %q has no scheme or host", rawURL)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 // SupportsDirectURL always reports true: S3PhotoStore's URL returns a real,
