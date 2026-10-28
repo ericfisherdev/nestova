@@ -300,7 +300,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></fieldset><!-- Rotation policy — hidden for as-needed, which is always claimable\n\t\t\t\t\t     (enforced by x-effect above and by the server-side domain rule). --><div x-show=\"freq !== 'as_needed'\" x-cloak class=\"flex flex-col gap-1\"><label for=\"nt_rotation_policy\" class=\"text-sm font-medium text-ink-secondary\">Assignment</label> <select id=\"nt_rotation_policy\" name=\"rotation_policy\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\" x-model=\"policy\"><option value=\"fixed\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\"></div></fieldset><!-- Rotation policy — hidden for as-needed, which is always claimable\n\t\t\t\t\t     (enforced by the taskForm component in task-form.js and by the\n\t\t\t\t\t     server-side domain rule). --><div x-show=\"freq !== 'as_needed'\" x-cloak class=\"flex flex-col gap-1\"><label for=\"nt_rotation_policy\" class=\"text-sm font-medium text-ink-secondary\">Assignment</label> <select id=\"nt_rotation_policy\" name=\"rotation_policy\" class=\"rounded-control border border-sidebar-border bg-surface-warm px-3 py-2 text-sm text-ink focus:border-sage focus:outline-none\" x-model=\"policy\"><option value=\"fixed\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -367,7 +367,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.Points)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 295, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 296, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 		if templ_7745c5c3_Err != nil {
@@ -380,7 +380,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.ResolveAttributeValue(form.LeadTimeDays)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 307, Col: 33}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 308, Col: 33}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var8)
 		if templ_7745c5c3_Err != nil {
@@ -403,7 +403,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(m.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 324, Col: 23}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 325, Col: 23}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 				if templ_7745c5c3_Err != nil {
@@ -448,7 +448,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 				var templ_7745c5c3_Var12 string
 				templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(m.Name)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 332, Col: 18}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 333, Col: 18}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 				if templ_7745c5c3_Err != nil {
@@ -476,7 +476,7 @@ func NewTaskPage(form NewTaskForm) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(form.Error)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 340, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/components/newtask.templ`, Line: 341, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {

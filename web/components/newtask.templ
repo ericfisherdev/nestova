@@ -257,7 +257,8 @@ templ NewTaskPage(form NewTaskForm) {
 						</div>
 					</fieldset>
 					<!-- Rotation policy — hidden for as-needed, which is always claimable
-					     (enforced by x-effect above and by the server-side domain rule). -->
+					     (enforced by the taskForm component in task-form.js and by the
+					     server-side domain rule). -->
 					<div x-show="freq !== 'as_needed'" x-cloak class="flex flex-col gap-1">
 						<label for="nt_rotation_policy" class="text-sm font-medium text-ink-secondary">Assignment</label>
 						<select
