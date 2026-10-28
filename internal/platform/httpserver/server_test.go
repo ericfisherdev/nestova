@@ -269,3 +269,51 @@ func TestServiceWorkerRouteRevalidates(t *testing.T) {
 		t.Errorf("conditional GET status = %d, want %d", rec.Code, http.StatusNotModified)
 	}
 }
+
+// strictCSP is the exact Content-Security-Policy every response must carry
+// (NES-212). It is spelled out in full rather than derived from the
+// production constructor so a change to the policy has to be made twice, on
+// purpose.
+const strictCSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
+	"img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+	"worker-src 'self'; manifest-src 'self'; object-src 'none'; " +
+	"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+
+// TestSecurityHeaders pins the security headers on a probe, a static asset,
+// the service worker script and an HTML page: the policy is set by middleware
+// above the router, so no route may escape it.
+func TestSecurityHeaders(t *testing.T) {
+	for _, path := range []string{"/healthz", "/static/css/app.css", "/sw.js", "/offline"} {
+		t.Run(path, func(t *testing.T) {
+			rec := doRequest(t, nil, path)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			want := map[string]string{
+				"Content-Security-Policy": strictCSP,
+				"X-Frame-Options":         "SAMEORIGIN",
+				"X-Content-Type-Options":  "nosniff",
+				"Referrer-Policy":         "strict-origin-when-cross-origin",
+			}
+			for header, value := range want {
+				if got := rec.Header().Get(header); got != value {
+					t.Errorf("%s = %q, want %q", header, got, value)
+				}
+			}
+		})
+	}
+}
+
+// TestContentSecurityPolicyIsStrict guards the properties the exact-string
+// assertion above cannot name: nothing that re-opens inline execution, and
+// nothing that forces HTTPS on the plain-HTTP LAN and kiosk.
+func TestContentSecurityPolicyIsStrict(t *testing.T) {
+	policy := doRequest(t, nil, "/healthz").Header().Get("Content-Security-Policy")
+
+	for _, forbidden := range []string{"unsafe-inline", "unsafe-eval", "nonce-", "sha256-", "upgrade-insecure-requests"} {
+		if strings.Contains(policy, forbidden) {
+			t.Errorf("policy contains %q: %s", forbidden, policy)
+		}
+	}
+}

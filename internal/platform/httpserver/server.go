@@ -92,8 +92,9 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	// Canonical middleware order (outermost first): request id wraps everything so
 	// every request is logged with an id even on panic; ForwardedHeaders resolves
 	// the effective scheme/client IP from a trusted proxy before anything reads
-	// them; SecurityHeaders sets baseline headers (and HSTS, gated on the resolved
-	// scheme) on every response; logging records the request; metrics observes it
+	// them; SecurityHeadersWithPolicy sets baseline headers, the strict CSP
+	// (NES-212) and HSTS (gated on the resolved scheme) on every response;
+	// logging records the request; metrics observes it
 	// (NES-114) — it sits inside RequestLogger so it reuses the responseWriter the
 	// logger creates, and outside Recoverer so a recovered panic's 500 (written
 	// through that shared wrapper) is recorded with the real final status;
@@ -110,7 +111,7 @@ func New(cfg config.Config, deps Deps) *http.Server {
 	chain := []middleware.Middleware{
 		middleware.RequestID,
 		middleware.ForwardedHeaders(cfg.Server.TrustedProxyPrefixes()),
-		middleware.SecurityHeaders(hstsHeaderValue(cfg.HSTS)),
+		middleware.SecurityHeadersWithPolicy(hstsHeaderValue(cfg.HSTS), contentSecurityPolicy()),
 		middleware.RequestLogger(deps.Logger),
 		middleware.Metrics(deps.HTTPMetrics),
 		middleware.Recoverer(deps.Logger),
