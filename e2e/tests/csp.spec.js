@@ -244,6 +244,12 @@ test.describe('photos and albums', () => {
         return transfer;
       }, bytes);
       await page.getByTestId('upload-dropzone').dispatchEvent('drop', { dataTransfer });
+      // The picker batch already left "1 uploaded" in the summary, so a summary
+      // check alone would pass even if the drop handler never ran. Prove the
+      // drop itself enqueued the file and finished uploading it.
+      await expect(
+        page.getByTestId('upload-queue').locator('li').filter({ hasText: 'dropped.png' }),
+      ).toContainText('uploaded');
       await expect(page.getByTestId('upload-summary')).toHaveText(/1 uploaded/);
     } finally {
       fs.rmSync(picked, { force: true });
