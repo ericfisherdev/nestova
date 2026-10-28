@@ -2,8 +2,10 @@ package components
 
 import "encoding/json"
 
-// alpineSetupState is the JSON-encoded Alpine x-data for the setup form. It
-// tracks the selected provider (to x-show the Supabase-only fields), the sslmode
+// alpineSetupState is the JSON-encoded initial state for the setup form's
+// data-state attribute, which setup-form.js JSON.parses (it is never evaluated
+// as an Alpine expression). It tracks the selected provider (to x-show the
+// Supabase-only fields), the sslmode
 // (so selecting Supabase can auto-upgrade an insecure sslmode), and the pooler
 // mode + port (so the port follows the Supabase pooler choice — 6543 for the
 // transaction pooler, 5432 for session/direct — which buildConn requires to

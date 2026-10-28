@@ -47,6 +47,9 @@ func cspPages(t *testing.T) map[string]string {
 		"MealsPage":       renderString(t, components.MealsPage(sampleMealsView())),
 		"RewardFormPage":  renderString(t, components.RewardAdminFormPage(components.RewardAdminForm{CSRFToken: "tok"})),
 		"TaskRowItem":     renderString(t, components.TaskRowItem(proofRow)),
+		"SettingsPage": renderString(t, components.SettingsPage(components.SettingsView{
+			CSRFToken: "tok", ShowWebAuthnSection: true, ShowQuietHoursSection: true, ShowKioskSection: true,
+		})),
 	}
 }
 
