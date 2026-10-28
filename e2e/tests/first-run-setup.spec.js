@@ -25,6 +25,7 @@
 // state file, and restart itself in normal mode on the same port.
 const { test, expect } = require('@playwright/test');
 const { requireEnv } = require('./env');
+const { watchCSP } = require('./csp-watch');
 
 const enabled = process.env.NESTOVA_E2E_SETUP === '1';
 
@@ -36,7 +37,11 @@ test.describe('First-run setup', () => {
   test.setTimeout(180_000);
 
   test('the wizard configures the database and the owner account can be created', async ({ page }) => {
-    await page.goto('/setup');
+    // The setup-mode server builds through the same httpserver.New, so the
+    // wizard must satisfy the strict Content-Security-Policy too (NES-212).
+    const csp = await watchCSP(page);
+    const response = await page.goto('/setup');
+    expect(response.headers()['content-security-policy']).toContain("script-src 'self'");
 
     // The form must actually render: a zero RequestTimeout in setup mode used to
     // serve an empty 200 here (NES-164), so assert a field, not just the URL.
@@ -81,5 +86,7 @@ test.describe('First-run setup', () => {
     await page.waitForURL((u) => new URL(u).pathname === '/', { timeout: 30_000 });
     await expect(page).toHaveTitle(/Nestova/);
     await expect(page.getByRole('heading', { name: 'Family' })).toBeVisible();
+
+    csp.expectNone('setup wizard, completion page and onboarding');
   });
 });
